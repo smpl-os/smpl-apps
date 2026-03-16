@@ -1,9 +1,8 @@
 [package]
-name    = "smpl-common"
-version = "0.1.0"
+name              = "smpl-common"
+version.workspace = true
 edition.workspace = true
-authors.workspace = true
 
 [dependencies]
-slint              = { workspace = true }
 i-slint-backend-winit = { workspace = true }
+slint                 = { workspace = true }

@@ -1,27 +1,51 @@
 name: Release
 
-# Triggers on version tags: v1.2.3
-# To release: git tag v1.2.3 && git push origin v1.2.3
+# Triggered manually. Every run increments the patch version, commits it,
+# tags the release, builds all apps, and publishes binaries.
+#
+# Usage: GitHub → Actions → Release → Run workflow
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write   # needed to create GitHub releases
+  contents: write
 
 jobs:
-  build:
-    name: Build smpl-apps
+  bump-and-release:
+    name: Bump version, build, release
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
-      options: --privileged   # needed for pacman keyring init
+      options: --privileged
 
     steps:
-      - name: Install git (needed for checkout)
+      - name: Install git
         run: pacman -Sy --noconfirm --needed git
 
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump patch version in workspace Cargo.toml
+        id: version
+        run: |
+          CURRENT=$(grep -m1 '^version\s*=' Cargo.toml | grep -oP '\d+\.\d+\.\d+')
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          sed -i "0,/^version\s*=\s*\"${CURRENT}\"/s//version    = \"${NEW_VERSION}\"/" Cargo.toml
+          echo "old=$CURRENT"     >> "$GITHUB_OUTPUT"
+          echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumped $CURRENT -> $NEW_VERSION"
 
       - name: Install build dependencies
         run: |
@@ -30,9 +54,11 @@ jobs:
             fontconfig freetype2 \
             libxkbcommon wayland wayland-protocols \
             pixman libglvnd mesa \
-            gtk4 gtk4-layer-shell libadwaita
+            gtk4 gtk4-layer-shell libadwaita \
+            glib2 gobject-introspection \
+            dbus
 
-      - name: Cache cargo registry + build artifacts
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
@@ -40,41 +66,45 @@ jobs:
             ~/.cargo/git
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build all apps (release)
         run: |
-          # Use mold for faster linking
           export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
           cargo build --release --workspace
+
+      - name: Commit version bump and tag
+        run: |
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: release v${{ steps.version.outputs.new }}"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin main
+          git push origin "${{ steps.version.outputs.tag }}"
 
       - name: Strip and collect binaries
         run: |
           mkdir -p dist
-          # Collect all workspace binaries (exclude smpl-common — it's a lib)
           for bin in start-menu notif-center settings app-center webapp-center \
-                     sync-center sync-center-daemon sync-center-gui; do
+                     sync-center-daemon sync-center-gui; do
             src="target/release/$bin"
             if [[ -f "$src" ]]; then
               strip "$src"
               cp "$src" dist/
-              echo "  $bin: $(du -h "dist/$bin" | cut -f1)"
             fi
           done
           ls -lh dist/
 
       - name: Create bundle tarball
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          tar -czf smpl-apps-${VERSION}-x86_64.tar.gz -C dist .
+          VERSION="${{ steps.version.outputs.new }}"
+          tar -czf "smpl-apps-${VERSION}-x86_64.tar.gz" -C dist .
           echo "BUNDLE=smpl-apps-${VERSION}-x86_64.tar.gz" >> "$GITHUB_ENV"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "smpl-apps v${{ env.VERSION }}"
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "smpl-apps v${{ steps.version.outputs.new }}"
           generate_release_notes: true
           files: |
             ${{ env.BUNDLE }}
@@ -83,6 +113,5 @@ jobs:
             dist/settings
             dist/app-center
             dist/webapp-center
-            dist/sync-center
             dist/sync-center-daemon
             dist/sync-center-gui

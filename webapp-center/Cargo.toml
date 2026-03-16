@@ -1,0 +1,13 @@
+[package]
+name              = "webapp-center"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+slint                 = { workspace = true }
+i-slint-backend-winit = { workspace = true }
+smpl-common           = { workspace = true }
+url                   = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }
