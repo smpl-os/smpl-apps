@@ -18,10 +18,10 @@ use slint::PlatformError;
 /// Must be called **before** creating any Slint component.
 ///
 /// # Arguments
-/// * `app_id`  – Wayland `app_id` / instance name (matches binary name).
-///               Must match the `initialClass` in Hyprland `windowrulev2`.
-/// * `width`   – Logical width in DIPs.
-/// * `height`  – Logical height in DIPs.
+/// * `app_id` – Wayland `app_id` / instance name (matches binary name).
+///   Must match the `initialClass` in Hyprland `windowrulev2`.
+/// * `width` – Logical width in DIPs.
+/// * `height` – Logical height in DIPs.
 ///
 /// # Example
 /// ```no_run
