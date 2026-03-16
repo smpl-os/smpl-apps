@@ -28,7 +28,7 @@ fn is_likely_text_file(path: &Path) -> bool {
 /// Detects if two files have conflicting content
 fn files_conflict(source: &Path, dest: &Path) -> Result<bool> {
     let source_meta = fs::metadata(source).map_err(SyncError::Io)?;
-    let dest_meta = fs::metadata(dest).map_err(SyncError::Io)?
+    let dest_meta = fs::metadata(dest).map_err(SyncError::Io)?;
 
     // If sizes are different, they definitely conflict
     if source_meta.len() != dest_meta.len() {
@@ -148,7 +148,7 @@ pub fn detect_conflicts(
                     }
                 } else if path.is_dir() && dest_path.is_dir() {
                     // Recurse into subdirectories
-                    walk_conflicts(&path, &dest_path, profile_id, conflicts)?;
+                    walk_conflicts(&path, &dest_path, _profile_id, conflicts)?;
                 }
             }
         }

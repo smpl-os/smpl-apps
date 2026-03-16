@@ -266,6 +266,7 @@ fn to_ui_item(app: &AppEntry, path_cache: &HashMap<String, String>, img_cache: &
 
 // ── Update the visible app list ──
 
+#[allow(clippy::too_many_arguments)]
 fn update_view(
     ui: &MainWindow,
     all_apps: &[AppEntry],

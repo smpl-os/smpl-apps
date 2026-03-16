@@ -15,7 +15,7 @@ impl Default for Notifier {
 
 impl Notifier {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     pub fn show_sync_started(_profile_name: &str) -> Result<()> {
