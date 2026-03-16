@@ -7,9 +7,15 @@ use anyhow::Result;
 
 pub struct Notifier;
 
+impl Default for Notifier {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl Notifier {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     pub fn show_sync_started(_profile_name: &str) -> Result<()> {

@@ -537,7 +537,7 @@ fn get_about_info() -> (String, String, String, String, String, String, String) 
         let lspci = String::from_utf8_lossy(&lspci_out.stdout);
         let gpu_name = lspci.lines()
             .find(|l| l.contains("VGA") || l.contains("3D controller"))
-            .and_then(|l| l.split(':').last())
+            .and_then(|l| l.split(':').next_back())
             .map(|s| s.trim().to_string())?;
 
         // AMD: try sysfs for VRAM
