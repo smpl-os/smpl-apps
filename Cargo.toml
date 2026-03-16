@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "smpl-common",
+    # Apps are moved in from smpl-os/smplos — uncomment as each is added:
+    # "start-menu",
+    # "notif-center",
+    # "settings",
+    # "app-center",
+    # "webapp-center",
+    # "sync-center",
+]
+resolver = "2"
+
+# Workspace-wide dependency versions — apps inherit these so bumping slint
+# here updates everything at once.
+[workspace.dependencies]
+slint = { version = "1.8", default-features = false, features = ["backend-winit", "renderer-software", "compat-1-2"] }
+i-slint-backend-winit = "1.8"
+slint-build = "1.8"
+
+[workspace.package]
+edition = "2021"
+authors   = ["smplOS <https://github.com/smpl-os>"]
+license   = "MIT"
+repository = "https://github.com/smpl-os/smpl-apps"
