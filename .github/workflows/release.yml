@@ -79,6 +79,7 @@ jobs:
           git add Cargo.toml Cargo.lock
           git commit -m "chore: release v${{ steps.version.outputs.new }}"
           git tag "${{ steps.version.outputs.tag }}"
+          git pull --rebase origin main || true
           git push origin main
           git push origin "${{ steps.version.outputs.tag }}"
 
