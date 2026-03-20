@@ -42,8 +42,3 @@ slint-build = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.8"
-
-# Override workspace profile: sync-center needs max speed (file I/O loops)
-[profile.release]
-opt-level = 3
-lto       = true

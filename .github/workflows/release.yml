@@ -86,7 +86,8 @@ jobs:
         run: |
           mkdir -p dist
           for bin in start-menu notif-center settings app-center webapp-center \
-                     sync-center-daemon sync-center-gui; do
+                     sync-center-daemon sync-center-gui \
+                     smpl-calendar smpl-calendar-alertd; do
             src="target/release/$bin"
             if [[ -f "$src" ]]; then
               strip "$src"
@@ -116,3 +117,5 @@ jobs:
             dist/webapp-center
             dist/sync-center-daemon
             dist/sync-center-gui
+            dist/smpl-calendar
+            dist/smpl-calendar-alertd
