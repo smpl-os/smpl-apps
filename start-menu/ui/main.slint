@@ -343,7 +343,7 @@ export component MainWindow inherits Window {
     title: "smplOS";
     width: 520px;
     height: 580px;
-    background: transparent;
+    background: Theme.bg.transparentize(1.0 - Theme.opacity);
     no-frame: true;
 
     // Properties
@@ -448,7 +448,7 @@ export component MainWindow inherits Window {
     Rectangle {
         width: root.width;
         height: root.height;
-        background: Theme.bg.transparentize(1.0 - Theme.opacity);
+        background: transparent;
         border-radius: Theme.border_radius;
         border-width: 1px;
         border-color: Theme.bg_lighter.transparentize(0.5);
