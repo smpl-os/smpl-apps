@@ -4,6 +4,7 @@ mod theme;
 use backend::{delete_all_webapps, delete_webapp, list_vpn_interfaces, save_webapp, scan_webapps, WebApp};
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Model, ModelRc, SharedString, VecModel};
+use smpl_common::keybindings;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -236,8 +237,39 @@ fn main() -> Result<(), slint::PlatformError> {
                 vpn.as_str(),
                 vpn_required,
             ) {
-                Ok(_slug) => {
+                Ok(slug) => {
                     if let Some(ui) = ui_weak.upgrade() {
+                        // Save hotkey binding if one was captured
+                        let hk_mods = ui.get_form_hotkey_mods().to_string();
+                        let hk_key = ui.get_form_hotkey_key().to_string();
+                        if !hk_key.is_empty() {
+                            if let Ok(mut file) = keybindings::BindingsFile::load() {
+                                // Remove any old binding for this webapp
+                                let launch_cmd = format!("launch-webapp --name {slug}");
+                                let to_remove: Vec<usize> = file.bindings.iter().enumerate()
+                                    .filter(|(_, b)| b.args.contains(&launch_cmd) || b.args.contains(&format!("\"--name\" \"{slug}\"")))
+                                    .map(|(i, _)| i)
+                                    .collect();
+                                for idx in to_remove.into_iter().rev() {
+                                    file.remove(idx);
+                                }
+
+                                // Add the new binding
+                                file.add(keybindings::Keybinding {
+                                    bind_type: "bindd".to_string(),
+                                    mods: hk_mods.trim().to_string(),
+                                    key: hk_key,
+                                    description: format!("Launch {}", name),
+                                    dispatcher: "exec".to_string(),
+                                    args: format!("launch-webapp \"--name\" \"{slug}\" \"{}\"", url),
+                                    section: "Application Launchers".to_string(),
+                                    submap: String::new(),
+                                });
+
+                                let _ = file.save_and_reload();
+                            }
+                        }
+
                         refresh_model(&ui, &state, &model);
                         ui.invoke_go_back_to_list();
                     }
@@ -245,6 +277,123 @@ fn main() -> Result<(), slint::PlatformError> {
                 Err(msg) => {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_form_error(msg.into());
+                    }
+                }
+            }
+        });
+    }
+
+    // Hotkey: start capture (enter empty submap so keys pass through)
+    {
+        ui.on_hotkey_start_capture(move || {
+            let _ = std::process::Command::new("hyprctl")
+                .args(["dispatch", "submap", "kb-capture"])
+                .output();
+        });
+    }
+
+    // Hotkey: cancel capture
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_hotkey_cancel_capture(move || {
+            let _ = std::process::Command::new("hyprctl")
+                .args(["dispatch", "submap", "reset"])
+                .output();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_form_hotkey_capturing(false);
+            }
+        });
+    }
+
+    // Hotkey: save combo (after key capture) with conflict check
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_hotkey_save_combo(move |mods, key_text| {
+            let _ = std::process::Command::new("hyprctl")
+                .args(["dispatch", "submap", "reset"])
+                .output();
+
+            let mods_clean = mods.trim().to_string();
+            let hypr_key = keybindings::slint_key_to_hyprland(key_text.as_str());
+
+            if hypr_key.is_empty() {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_form_hotkey_conflict("Unknown key - try again".into());
+                }
+                return;
+            }
+
+            // Check for conflicts
+            if let Ok(file) = keybindings::BindingsFile::load() {
+                if let Some(conflict) = file.find_conflict(&mods_clean, &hypr_key, "", None) {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let combo = keybindings::Keybinding {
+                            bind_type: String::new(),
+                            mods: mods_clean.clone(),
+                            key: hypr_key.clone(),
+                            description: String::new(),
+                            dispatcher: String::new(),
+                            args: String::new(),
+                            section: String::new(),
+                            submap: String::new(),
+                        };
+                        ui.set_form_hotkey_combo(combo.combo_display().into());
+                        ui.set_form_hotkey_mods(mods_clean.into());
+                        ui.set_form_hotkey_key(hypr_key.into());
+                        ui.set_form_hotkey_conflict(SharedString::from(format!(
+                            "Warning: {} is used by \"{}\" -- will be overwritten on save",
+                            conflict.existing.combo_display(),
+                            conflict.existing.description,
+                        )));
+                    }
+                    return;
+                }
+            }
+
+            // No conflict — set the combo
+            if let Some(ui) = ui_weak.upgrade() {
+                let combo = keybindings::Keybinding {
+                    bind_type: String::new(),
+                    mods: mods_clean.clone(),
+                    key: hypr_key.clone(),
+                    description: String::new(),
+                    dispatcher: String::new(),
+                    args: String::new(),
+                    section: String::new(),
+                    submap: String::new(),
+                };
+                ui.set_form_hotkey_combo(combo.combo_display().into());
+                ui.set_form_hotkey_mods(mods_clean.into());
+                ui.set_form_hotkey_key(hypr_key.into());
+                ui.set_form_hotkey_conflict(SharedString::default());
+            }
+        });
+    }
+
+    // Hotkey: clear
+    {
+        ui.on_hotkey_clear(move || {
+            // Nothing extra needed — UI already clears the properties
+        });
+    }
+
+    // Load existing hotkey for a webapp by slug
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_load_hotkey(move |slug| {
+            let slug_str = slug.to_string();
+            if let Ok(file) = keybindings::BindingsFile::load() {
+                for kb in &file.bindings {
+                    if kb.dispatcher == "exec"
+                        && (kb.args.contains(&format!("--name {slug_str}"))
+                            || kb.args.contains(&format!("\"--name\" \"{slug_str}\"")))
+                    {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_form_hotkey_combo(SharedString::from(kb.combo_display()));
+                            ui.set_form_hotkey_mods(SharedString::from(&kb.mods));
+                            ui.set_form_hotkey_key(SharedString::from(&kb.key));
+                        }
+                        return;
                     }
                 }
             }

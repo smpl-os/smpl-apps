@@ -654,55 +654,17 @@ fn push_keybindings_to_ui(
     )));
 }
 
-/// Map Slint key event text to Hyprland key names.
-/// Slint sends single chars for printable keys, and Unicode PUA chars for
-/// special keys (Key.Return = \u{e010}, etc.).
+/// Map Slint key event text to Hyprland key names — delegates to smpl-common.
 fn slint_key_to_hyprland(text: &str) -> String {
-    // Single printable character → uppercase
-    if text.len() == 1 {
-        let c = text.chars().next().unwrap();
-        if c.is_alphanumeric() || c.is_ascii_punctuation() {
-            return c.to_uppercase().to_string();
-        }
+    let result = keybindings::slint_key_to_hyprland(text);
+    if result.is_empty() {
+        debug_log!(
+            "[settings] unknown key capture: {:?} (bytes: {:?})",
+            text,
+            text.as_bytes()
+        );
     }
-
-    // Slint special keys (Unicode PUA in 0xE000 range)
-    // These constants match slint::platform::Key / slint::SharedString representations
-    match text {
-        "\n" | "\r" => "RETURN".into(),
-        " " => "SPACE".into(),
-        "\t" => "TAB".into(),
-        "\u{7f}" | "\u{08}" => "BACKSPACE".into(),
-        "\u{1b}" => "ESCAPE".into(),
-        // Slint PUA key codes (from slint::platform::Key enum)
-        "\u{f700}" => "UP".into(),       // UpArrow (macOS-style, Slint uses this)
-        "\u{f701}" => "DOWN".into(),
-        "\u{f702}" => "LEFT".into(),
-        "\u{f703}" => "RIGHT".into(),
-        "\u{f728}" => "DELETE".into(),
-        "\u{f729}" => "HOME".into(),
-        "\u{f72b}" => "END".into(),
-        "\u{f72c}" => "PAGEUP".into(),
-        "\u{f72d}" => "PAGEDOWN".into(),
-        "\u{f704}" => "F1".into(),
-        "\u{f705}" => "F2".into(),
-        "\u{f706}" => "F3".into(),
-        "\u{f707}" => "F4".into(),
-        "\u{f708}" => "F5".into(),
-        "\u{f709}" => "F6".into(),
-        "\u{f70a}" => "F7".into(),
-        "\u{f70b}" => "F8".into(),
-        "\u{f70c}" => "F9".into(),
-        "\u{f70d}" => "F10".into(),
-        "\u{f70e}" => "F11".into(),
-        "\u{f70f}" => "F12".into(),
-        _ => {
-            // Unknown key — log for debugging
-            debug_log!("[settings] unknown key capture: {:?} (bytes: {:?})",
-                text, text.as_bytes());
-            String::new()
-        }
-    }
+    result
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -1694,6 +1656,24 @@ fn main() -> Result<(), slint::PlatformError> {
             if !hypr_key.is_empty() {
                 let mut st = kb.borrow_mut();
                 if let Some(file) = &mut st.file {
+                    // Check for conflicts before applying
+                    let submap = file.bindings.get(idx as usize)
+                        .map(|b| b.submap.clone())
+                        .unwrap_or_default();
+                    if let Some(conflict) = file.find_conflict(
+                        &mods_clean, &hypr_key, &submap, Some(idx as usize),
+                    ) {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_kb_capturing(false);
+                            ui.set_kb_status_text(slint::SharedString::from(format!(
+                                "Conflict: {} is already used by \"{}\"",
+                                conflict.existing.combo_display(),
+                                conflict.existing.description,
+                            )));
+                        }
+                        return;
+                    }
+
                     file.edit_combo(idx as usize, &mods_clean, &hypr_key);
 
                     // Auto-save to file and reload Hyprland immediately
