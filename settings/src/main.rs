@@ -954,6 +954,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // ── About tab init ───────────────────────────────────────────────────────
 
+    ui.set_app_version(slint::SharedString::from(format!("v{}", env!("CARGO_PKG_VERSION"))));
     {
         let (version, kernel, uptime, hostname, cpu, ram, gpu) = get_about_info();
         ui.set_about_version(slint::SharedString::from(format!("v{}", version)));

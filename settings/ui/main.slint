@@ -462,6 +462,7 @@ export component MainWindow inherits Window {
     in property <bool> power-profiles-available: true;
 
     // ── About tab properties ──
+    in property <string> app-version: "dev";
     in property <string> about-version: "dev";
     in property <string> about-kernel: "";
     in property <string> about-uptime: "";
@@ -3474,7 +3475,7 @@ export component MainWindow inherits Window {
                         horizontal-alignment: center;
                     }
                     Text {
-                        text: "v2.0.0";
+                        text: root.app-version;
                         color: Theme.fg_dim;
                         font-size: 12px;
                         horizontal-alignment: center;
