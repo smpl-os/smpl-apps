@@ -1,5 +1,6 @@
 mod dictation;
 mod display;
+mod keybindings;
 mod layouts;
 mod theme;
 mod xkb_labels;
@@ -559,6 +560,151 @@ fn get_about_info() -> (String, String, String, String, String, String, String) 
     (version, kernel, uptime, hostname, cpu, ram, gpu)
 }
 
+// ── Keybindings helpers ──────────────────────────────────────────────────────
+
+struct KeybindingsState {
+    file: Option<keybindings::BindingsFile>,
+    /// Snapshot of serialized content to detect changes.
+    original_serial: String,
+}
+
+impl KeybindingsState {
+    fn new() -> Self {
+        Self { file: None, original_serial: String::new() }
+    }
+
+    fn load(&mut self) -> Result<(), String> {
+        let f = keybindings::BindingsFile::load()?;
+        self.original_serial = f.serialize();
+        self.file = Some(f);
+        Ok(())
+    }
+
+    fn has_changes(&self) -> bool {
+        self.file.as_ref()
+            .map(|f| f.serialize() != self.original_serial)
+            .unwrap_or(false)
+    }
+}
+
+fn push_keybindings_to_ui(
+    ui: &MainWindow,
+    state: &KeybindingsState,
+    filter: &str,
+    section_idx: i32,
+) {
+    let file = match &state.file {
+        Some(f) => f,
+        None => return,
+    };
+
+    // Section filter
+    let sections = keybindings::unique_sections(&file.bindings);
+    let section_name = if section_idx > 0 {
+        sections.get(section_idx as usize).cloned().unwrap_or_default()
+    } else {
+        String::new() // "All"
+    };
+
+    let filter_lower = filter.to_lowercase();
+
+    let entries: Vec<BindingEntry> = file.bindings.iter().enumerate()
+        .filter(|(_, kb)| {
+            if !section_name.is_empty() && kb.section != section_name {
+                return false;
+            }
+            if !filter_lower.is_empty() {
+                let haystack = format!(
+                    "{} {} {} {}",
+                    kb.combo_display(),
+                    kb.description,
+                    kb.dispatcher,
+                    kb.args
+                ).to_lowercase();
+                if !haystack.contains(&filter_lower) {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|(i, kb)| BindingEntry {
+            idx: i as i32,
+            combo: kb.combo_display().into(),
+            description: kb.description.clone().into(),
+            dispatcher: kb.dispatcher.clone().into(),
+            args: kb.args.clone().into(),
+            section: kb.section.clone().into(),
+            submap: kb.submap.clone().into(),
+            is_exec: kb.dispatcher == "exec",
+        })
+        .collect();
+
+    ui.set_kb_bindings(slint::ModelRc::new(slint::VecModel::from(entries)));
+
+    let section_strings: Vec<slint::SharedString> = sections.iter()
+        .map(|s| slint::SharedString::from(s.as_str()))
+        .collect();
+    ui.set_kb_sections(slint::ModelRc::new(slint::VecModel::from(section_strings)));
+
+    ui.set_kb_has_changes(state.has_changes());
+    ui.set_kb_status_text(slint::SharedString::from(format!(
+        "{} -- {} bindings",
+        file.path_display(),
+        file.bindings.len()
+    )));
+}
+
+/// Map Slint key event text to Hyprland key names.
+/// Slint sends single chars for printable keys, and Unicode PUA chars for
+/// special keys (Key.Return = \u{e010}, etc.).
+fn slint_key_to_hyprland(text: &str) -> String {
+    // Single printable character → uppercase
+    if text.len() == 1 {
+        let c = text.chars().next().unwrap();
+        if c.is_alphanumeric() || c.is_ascii_punctuation() {
+            return c.to_uppercase().to_string();
+        }
+    }
+
+    // Slint special keys (Unicode PUA in 0xE000 range)
+    // These constants match slint::platform::Key / slint::SharedString representations
+    match text {
+        "\n" | "\r" => "RETURN".into(),
+        " " => "SPACE".into(),
+        "\t" => "TAB".into(),
+        "\u{7f}" | "\u{08}" => "BACKSPACE".into(),
+        "\u{1b}" => "ESCAPE".into(),
+        // Slint PUA key codes (from slint::platform::Key enum)
+        "\u{f700}" => "UP".into(),       // UpArrow (macOS-style, Slint uses this)
+        "\u{f701}" => "DOWN".into(),
+        "\u{f702}" => "LEFT".into(),
+        "\u{f703}" => "RIGHT".into(),
+        "\u{f728}" => "DELETE".into(),
+        "\u{f729}" => "HOME".into(),
+        "\u{f72b}" => "END".into(),
+        "\u{f72c}" => "PAGEUP".into(),
+        "\u{f72d}" => "PAGEDOWN".into(),
+        "\u{f704}" => "F1".into(),
+        "\u{f705}" => "F2".into(),
+        "\u{f706}" => "F3".into(),
+        "\u{f707}" => "F4".into(),
+        "\u{f708}" => "F5".into(),
+        "\u{f709}" => "F6".into(),
+        "\u{f70a}" => "F7".into(),
+        "\u{f70b}" => "F8".into(),
+        "\u{f70c}" => "F9".into(),
+        "\u{f70d}" => "F10".into(),
+        "\u{f70e}" => "F11".into(),
+        "\u{f70f}" => "F12".into(),
+        _ => {
+            // Unknown key — log for debugging
+            debug_log!("[settings] unknown key capture: {:?} (bytes: {:?})",
+                text, text.as_bytes());
+            String::new()
+        }
+    }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -587,6 +733,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "dictation" => 2,
                         "display" => 3,
                         "power" => 4,
+                        "keybindings" => 5,
                         _ => 0,
                     };
                     i += 1;
@@ -816,6 +963,17 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.set_about_cpu(slint::SharedString::from(cpu));
         ui.set_about_ram(slint::SharedString::from(ram));
         ui.set_about_gpu(slint::SharedString::from(gpu));
+    }
+
+    // ── Keybindings tab init (deferred if opened via --tab) ──────────────────
+
+    if initial_tab == 5 {
+        let ui_weak = ui.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.invoke_kb_load();
+            }
+        });
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1454,11 +1612,244 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // ── Keybindings callbacks ────────────────────────────────────────────────
+
+    let kb_state = Rc::new(RefCell::new(KeybindingsState::new()));
+
+    // Load
+    {
+        let kb = kb_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_kb_load(move || {
+            let mut st = kb.borrow_mut();
+            if st.file.is_some() {
+                // Already loaded — just refresh UI
+                if let Some(ui) = ui_weak.upgrade() {
+                    let filter = ui.get_kb_filter_text().to_string();
+                    let sec = ui.get_kb_selected_section();
+                    push_keybindings_to_ui(&ui, &st, &filter, sec);
+                }
+                return;
+            }
+            match st.load() {
+                Ok(()) => {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        push_keybindings_to_ui(&ui, &st, "", 0);
+                    }
+                }
+                Err(e) => {
+                    debug_log!("[settings] keybindings load error: {e}");
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_kb_status_text(slint::SharedString::from(format!("Error: {e}")));
+                    }
+                }
+            }
+        });
+    }
+
+    // Filter
+    {
+        let kb = kb_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_kb_filter(move |query, section_idx| {
+            let st = kb.borrow();
+            if let Some(ui) = ui_weak.upgrade() {
+                push_keybindings_to_ui(&ui, &st, query.as_str(), section_idx);
+            }
+        });
+    }
+
+    // Edit combo (start capture — enters empty submap so keys pass through)
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_kb_edit_combo(move |_idx| {
+            // Enter a submap with no bindings so keys pass to the app
+            let _ = std::process::Command::new("hyprctl")
+                .args(["dispatch", "submap", "kb-capture"])
+                .output();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_kb_capture_combo(slint::SharedString::from(""));
+            }
+        });
+    }
+
+    // Save combo (after key capture)
+    {
+        let kb = kb_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_kb_save_combo(move |idx, mods, key| {
+            // Exit capture submap
+            let _ = std::process::Command::new("hyprctl")
+                .args(["dispatch", "submap", "reset"])
+                .output();
+
+            // Clean up mods: trim whitespace
+            let mods_clean = mods.trim().to_string();
+
+            // Map Slint key text to Hyprland key name
+            let key_str = key.as_str();
+            let hypr_key = slint_key_to_hyprland(key_str);
+
+            if !hypr_key.is_empty() {
+                let mut st = kb.borrow_mut();
+                if let Some(file) = &mut st.file {
+                    file.edit_combo(idx as usize, &mods_clean, &hypr_key);
+                }
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_kb_capturing(false);
+                    let filter = ui.get_kb_filter_text().to_string();
+                    let sec = ui.get_kb_selected_section();
+                    push_keybindings_to_ui(&ui, &st, &filter, sec);
+                }
+            }
+        });
+    }
+
+    // Cancel capture
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_kb_cancel_capture(move || {
+            let _ = std::process::Command::new("hyprctl")
+                .args(["dispatch", "submap", "reset"])
+                .output();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_kb_capturing(false);
+            }
+        });
+    }
+
+    // Edit args (command for exec bindings)
+    {
+        let kb = kb_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_kb_edit_args(move |idx, new_args| {
+            let mut st = kb.borrow_mut();
+            if let Some(file) = &mut st.file {
+                file.edit_args(idx as usize, new_args.as_str());
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                let filter = ui.get_kb_filter_text().to_string();
+                let sec = ui.get_kb_selected_section();
+                push_keybindings_to_ui(&ui, &st, &filter, sec);
+            }
+        });
+    }
+
+    // Remove binding
+    {
+        let kb = kb_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_kb_remove(move |idx| {
+            let mut st = kb.borrow_mut();
+            if let Some(file) = &mut st.file {
+                file.remove(idx as usize);
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                let filter = ui.get_kb_filter_text().to_string();
+                let sec = ui.get_kb_selected_section();
+                push_keybindings_to_ui(&ui, &st, &filter, sec);
+            }
+        });
+    }
+
+    // Add binding
+    {
+        let kb = kb_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_kb_add(move |desc, cmd| {
+            let mut st = kb.borrow_mut();
+            if let Some(file) = &mut st.file {
+                let kb_entry = keybindings::Keybinding {
+                    bind_type: "bindd".to_string(),
+                    mods: "SUPER".to_string(),
+                    key: String::new(),
+                    description: desc.to_string(),
+                    dispatcher: "exec".to_string(),
+                    args: cmd.to_string(),
+                    section: "Application Launchers".to_string(),
+                    submap: String::new(),
+                };
+                file.add(kb_entry);
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                let filter = ui.get_kb_filter_text().to_string();
+                let sec = ui.get_kb_selected_section();
+                push_keybindings_to_ui(&ui, &st, &filter, sec);
+            }
+        });
+    }
+
+    // Save
+    {
+        let kb = kb_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_kb_save(move || {
+            let mut st = kb.borrow_mut();
+            let result = st.file.as_ref().map(|f| f.save_and_reload());
+            match result {
+                Some(Ok(())) => {
+                    st.original_serial = st.file.as_ref()
+                        .map(|f| f.serialize())
+                        .unwrap_or_default();
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let filter = ui.get_kb_filter_text().to_string();
+                        let sec = ui.get_kb_selected_section();
+                        push_keybindings_to_ui(&ui, &st, &filter, sec);
+                        ui.set_kb_status_text("Saved and reloaded".into());
+                    }
+                }
+                Some(Err(e)) => {
+                    debug_log!("[settings] keybindings save error: {e}");
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_kb_status_text(slint::SharedString::from(format!("Error: {e}")));
+                    }
+                }
+                None => {}
+            }
+        });
+    }
+
+    // Revert
+    {
+        let kb = kb_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_kb_revert(move || {
+            let mut st = kb.borrow_mut();
+            match st.load() {
+                Ok(()) => {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        push_keybindings_to_ui(&ui, &st, "", 0);
+                        ui.set_kb_filter_text("".into());
+                        ui.set_kb_selected_section(0);
+                        ui.set_kb_edit_idx(-1);
+                        ui.set_kb_status_text("Reverted to saved".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_kb_status_text(slint::SharedString::from(format!("Error: {e}")));
+                    }
+                }
+            }
+        });
+    }
+
+    // Open in editor
+    {
+        let kb = kb_state.clone();
+        ui.on_kb_open_editor(move || {
+            let st = kb.borrow();
+            if let Some(file) = &st.file {
+                file.open_in_editor();
+            }
+        });
+    }
+
     // ── Search callback ──────────────────────────────────────────────────────
 
     {
         // Searchable items: (label, tab_name, tab_index)
-        // Tab indices: About=0, Keyboard=1, Dictation=2, Display=3, Power=4
+        // Tab indices: About=0, Keyboard=1, Dictation=2, Display=3, Power=4, Keybindings=5
         let search_index: Vec<(&str, &str, i32)> = vec![
             // About
             ("About smplOS", "About", 0),
@@ -1505,6 +1896,13 @@ fn main() -> Result<(), slint::PlatformError> {
             ("Restart", "Power", 4),
             ("Reboot", "Power", 4),
             ("Log Out", "Power", 4),
+            // Keybindings
+            ("Keybindings", "Keybindings", 5),
+            ("Keyboard Shortcuts", "Keybindings", 5),
+            ("Hotkeys", "Keybindings", 5),
+            ("Key Binding", "Keybindings", 5),
+            ("Shortcut", "Keybindings", 5),
+            ("Rebind Key", "Keybindings", 5),
         ];
 
         let ui_handle = ui.as_weak();
