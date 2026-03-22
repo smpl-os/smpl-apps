@@ -1674,7 +1674,7 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Save combo (after key capture)
+    // Save combo (after key capture) — auto-saves to file + reloads Hyprland
     {
         let kb = kb_state.clone();
         let ui_weak = ui.as_weak();
@@ -1695,12 +1695,37 @@ fn main() -> Result<(), slint::PlatformError> {
                 let mut st = kb.borrow_mut();
                 if let Some(file) = &mut st.file {
                     file.edit_combo(idx as usize, &mods_clean, &hypr_key);
+
+                    // Auto-save to file and reload Hyprland immediately
+                    match file.save_and_reload() {
+                        Ok(()) => {
+                            st.original_serial = file.serialize();
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_kb_capturing(false);
+                                ui.set_kb_capture_combo(slint::SharedString::from(""));
+                                let filter = ui.get_kb_filter_text().to_string();
+                                let sec = ui.get_kb_selected_section();
+                                push_keybindings_to_ui(&ui, &st, &filter, sec);
+                                ui.set_kb_status_text("Saved and reloaded".into());
+                            }
+                        }
+                        Err(e) => {
+                            debug_log!("[settings] keybindings auto-save error: {e}");
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_kb_capturing(false);
+                                let filter = ui.get_kb_filter_text().to_string();
+                                let sec = ui.get_kb_selected_section();
+                                push_keybindings_to_ui(&ui, &st, &filter, sec);
+                                ui.set_kb_status_text(slint::SharedString::from(format!("Error saving: {e}")));
+                            }
+                        }
+                    }
                 }
+            } else {
+                // Unknown key — cancel capture
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_kb_capturing(false);
-                    let filter = ui.get_kb_filter_text().to_string();
-                    let sec = ui.get_kb_selected_section();
-                    push_keybindings_to_ui(&ui, &st, &filter, sec);
+                    ui.set_kb_status_text("Unknown key - try again".into());
                 }
             }
         });

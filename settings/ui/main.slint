@@ -480,6 +480,7 @@ export component MainWindow inherits Window {
     in property <string> kb-status-text: "";
     in property <bool> kb-has-changes: false;
     in-out property <bool> kb-capturing: false;
+    in-out property <int> kb-capture-idx: -1;
     in property <string> kb-capture-combo: "";
     property <bool> kb-adding: false;
     in-out property <string> kb-new-desc: "";
@@ -550,6 +551,7 @@ export component MainWindow inherits Window {
             if root.kb-capturing {
                 if e.text == Key.Escape {
                     root.kb-capturing = false;
+                    root.kb-capture-idx = -1;
                     root.kb-cancel-capture();
                     return accept;
                 }
@@ -558,13 +560,15 @@ export component MainWindow inherits Window {
                 if e.text != Key.Control && e.text != Key.Alt && e.text != Key.Shift && e.text != Key.Meta {
                     // Build mods string for Hyprland format
                     root.kb-save-combo(
-                        root.kb-edit-idx,
+                        root.kb-capture-idx,
                         (e.modifiers.meta ? "SUPER " : "")
                             + (e.modifiers.control ? "CTRL " : "")
                             + (e.modifiers.alt ? "ALT " : "")
                             + (e.modifiers.shift ? "SHIFT " : ""),
                         e.text
                     );
+                    root.kb-capturing = false;
+                    root.kb-capture-idx = -1;
                     return accept;
                 }
                 return accept;
@@ -588,6 +592,8 @@ export component MainWindow inherits Window {
                 }
                 if root.kb-edit-idx >= 0 {
                     root.kb-edit-idx = -1;
+                    root.kb-capture-idx = -1;
+                    root.kb-capturing = false;
                     return accept;
                 }
                 if root.kb-adding {
@@ -2839,16 +2845,21 @@ export component MainWindow inherits Window {
                                     spacing: 8px;
                                     height: 34px;
 
-                                    // Key combo badge
+                                    // Key combo badge — click to rebind directly
                                     Rectangle {
                                         width: 160px;
                                         height: 24px;
                                         border-radius: 4px;
-                                        background: Theme.bg;
+                                        background: root.kb-capturing && root.kb-capture-idx == entry.idx
+                                            ? Theme.warning.transparentize(50%)
+                                            : kb-combo-touch.has-hover ? Theme.accent.transparentize(70%) : Theme.bg;
 
                                         Text {
-                                            text: entry.combo;
-                                            color: Theme.accent;
+                                            text: root.kb-capturing && root.kb-capture-idx == entry.idx
+                                                ? "Press keys..."
+                                                : entry.combo;
+                                            color: root.kb-capturing && root.kb-capture-idx == entry.idx
+                                                ? Theme.bg : Theme.accent;
                                             font-size: 11px;
                                             font-weight: 600;
                                             vertical-alignment: center;
@@ -2856,6 +2867,15 @@ export component MainWindow inherits Window {
                                             width: parent.width;
                                             height: parent.height;
                                             overflow: elide;
+                                        }
+
+                                        kb-combo-touch := TouchArea {
+                                            clicked => {
+                                                root.kb-capture-idx = entry.idx;
+                                                root.kb-capturing = true;
+                                                root.kb-edit-combo(entry.idx);
+                                            }
+                                            mouse-cursor: pointer;
                                         }
 
                                         y: 5px;
@@ -2890,7 +2910,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
 
-                                    // Edit button
+                                    // Edit button (expand for args/delete)
                                     Rectangle {
                                         width: 28px;
                                         height: 24px;
@@ -2950,6 +2970,7 @@ export component MainWindow inherits Window {
 
                                             kb-rebind-touch := TouchArea {
                                                 clicked => {
+                                                    root.kb-capture-idx = entry.idx;
                                                     root.kb-capturing = true;
                                                     root.kb-edit-combo(entry.idx);
                                                 }
