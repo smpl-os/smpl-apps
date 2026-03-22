@@ -483,6 +483,8 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = std::process::Command::new("smplos-update")
                 .args(["--mode", "apps"])
                 .spawn();
+            // Close app-center so it doesn't float over the update terminal
+            std::process::exit(0);
         });
     }
 
@@ -492,6 +494,8 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = std::process::Command::new("smplos-update")
                 .args(["--mode", "full"])
                 .spawn();
+            // Close app-center so it doesn't float over the update terminal
+            std::process::exit(0);
         });
     }
 
