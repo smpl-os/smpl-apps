@@ -28,7 +28,9 @@ jobs:
             fontconfig freetype2 \
             libxkbcommon wayland wayland-protocols \
             pixman libglvnd mesa \
-            gtk4 gtk4-layer-shell libadwaita
+            gtk4 gtk4-layer-shell libadwaita \
+            glib2 gobject-introspection \
+            dbus
 
       - name: Cache cargo
         uses: actions/cache@v5

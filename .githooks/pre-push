@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# ── pre-push hook ────────────────────────────────────────────────────────────
+# Runs ./check.sh (quick mode) before every `git push`.
+# Prevents pushing code that will fail CI.
+#
+# Install:  ./setup-hooks.sh
+# Bypass:   git push --no-verify
+# ──────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+echo "Running pre-push checks..."
+"$REPO_ROOT/check.sh"
