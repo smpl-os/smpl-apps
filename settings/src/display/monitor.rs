@@ -60,47 +60,6 @@ impl MonitorConfig {
     }
 }
 
-/// Edge-snapping: given a monitor being dragged, snap it to the nearest
-/// edge of another monitor.
-pub fn snap_to_nearest_edge(
-    dragged_x: i32,
-    dragged_y: i32,
-    dragged_w: i32,
-    dragged_h: i32,
-    others: &[(i32, i32, i32, i32)],
-    threshold: i32,
-) -> (i32, i32) {
-    let mut best_x = dragged_x;
-    let mut best_y = dragged_y;
-    let mut best_dist = i32::MAX;
-
-    for &(ox, oy, ow, oh) in others {
-        let snap_candidates: [(i32, i32); 8] = [
-            (ox - dragged_w, dragged_y),
-            (ox + ow, dragged_y),
-            (dragged_x, oy - dragged_h),
-            (dragged_x, oy + oh),
-            (dragged_x, oy),
-            (dragged_x, oy + oh - dragged_h),
-            (ox, dragged_y),
-            (ox + ow - dragged_w, dragged_y),
-        ];
-
-        for (cx, cy) in snap_candidates {
-            let dx = (cx - dragged_x).abs();
-            let dy = (cy - dragged_y).abs();
-            let dist = dx + dy;
-            if dist < best_dist && dist < threshold {
-                best_dist = dist;
-                best_x = cx;
-                best_y = cy;
-            }
-        }
-    }
-
-    (best_x, best_y)
-}
-
 /// Calculate a uniform scale factor so all monitors fit inside the given canvas dimensions.
 pub fn canvas_scale_factor(monitors: &[Monitor], canvas_w: f64, canvas_h: f64) -> f64 {
     if monitors.is_empty() {

@@ -171,7 +171,7 @@ impl DisplayBackend for HyprlandBackend {
             // [monitor:name] tells Hyprland to open the next window from this
             // process on the named output — reliable regardless of cursor position.
             let rule = format!(
-                "[float;monitor:{};size 560 180;center;stayfocused;noborder;rounding 14;opacity 0.9 0.9]",
+                "[float;monitor:{};size 560 180;center;noborder;rounding 14;opacity 0.9 0.9]",
                 m.name
             );
             let exec_cmd = format!("{} st-wl -T smplos-identify -e {}", rule, script_path);

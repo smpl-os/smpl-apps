@@ -6,7 +6,7 @@ mod theme;
 mod xkb_labels;
 
 use display::backend::DisplayBackend;
-use display::monitor::{canvas_scale_factor, snap_to_nearest_edge, Monitor, MonitorConfig};
+use display::monitor::{canvas_scale_factor, Monitor, MonitorConfig};
 use slint::Model;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -1348,22 +1348,32 @@ fn main() -> Result<(), slint::PlatformError> {
             st.monitors[idx].x = real_x;
             st.monitors[idx].y = real_y;
 
-            // Snap uses logical pixels: pos (m.x/m.y) and logical size (width/scale).
-            let others: Vec<(i32, i32, i32, i32)> = st
-                .monitors.iter().enumerate()
-                .filter(|(i, _)| *i != idx)
-                .map(|(_, m)| (m.x, m.y, (m.width as f64 / m.scale) as i32, (m.height as f64 / m.scale) as i32))
-                .collect();
-
-            let m = &st.monitors[idx];
-            // 30px threshold — tight enough to not interfere with intentional
-            // small vertical offsets, loose enough to assist edge placement.
-            let snap_threshold = 30_i32;
-            let logical_w = (m.width as f64 / m.scale) as i32;
-            let logical_h = (m.height as f64 / m.scale) as i32;
-            let (sx, sy) = snap_to_nearest_edge(m.x, m.y, logical_w, logical_h, &others, snap_threshold);
-            st.monitors[idx].x = sx;
-            st.monitors[idx].y = sy;
+            // X-only glue snap: always force the dragged monitor to touch the
+            // nearest adjacent edge of another monitor horizontally.
+            // Y is never snapped so the user can freely align monitors vertically.
+            let logical_w = (st.monitors[idx].width as f64 / st.monitors[idx].scale) as i32;
+            let snapped_x = {
+                let mut best_x = real_x;
+                let mut best_dist = i32::MAX;
+                for (i, m) in st.monitors.iter().enumerate() {
+                    if i == idx { continue; }
+                    let ow = (m.width as f64 / m.scale) as i32;
+                    // Candidate: place dragged immediately right of this monitor
+                    let right_of = m.x + ow;
+                    // Candidate: place dragged immediately left of this monitor
+                    let left_of = m.x - logical_w;
+                    for cx in [right_of, left_of] {
+                        let dist = (cx - real_x).abs();
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_x = cx;
+                        }
+                    }
+                }
+                best_x
+            };
+            st.monitors[idx].x = snapped_x;
+            // Y stays exactly where the user dropped it — no vertical snapping.
 
             st.recalc_canvas();
             let ui = ui_handle.unwrap();
