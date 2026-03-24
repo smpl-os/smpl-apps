@@ -107,20 +107,23 @@ pub fn canvas_scale_factor(monitors: &[Monitor], canvas_w: f64, canvas_h: f64) -
         return 1.0;
     }
 
-    let mut min_x = i32::MAX;
-    let mut min_y = i32::MAX;
-    let mut max_x = i32::MIN;
-    let mut max_y = i32::MIN;
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
 
     for m in monitors {
-        min_x = min_x.min(m.x);
-        min_y = min_y.min(m.y);
-        max_x = max_x.max(m.x + m.width);
-        max_y = max_y.max(m.y + m.height);
+        // Positions are logical pixels; width/height are physical — divide by scale.
+        let logical_w = m.width as f64 / m.scale;
+        let logical_h = m.height as f64 / m.scale;
+        min_x = min_x.min(m.x as f64);
+        min_y = min_y.min(m.y as f64);
+        max_x = max_x.max(m.x as f64 + logical_w);
+        max_y = max_y.max(m.y as f64 + logical_h);
     }
 
-    let total_w = (max_x - min_x) as f64;
-    let total_h = (max_y - min_y) as f64;
+    let total_w = max_x - min_x;
+    let total_h = max_y - min_y;
 
     if total_w <= 0.0 || total_h <= 0.0 {
         return 1.0;

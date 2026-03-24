@@ -169,10 +169,11 @@ impl DisplayState {
 
     fn recalc_canvas(&mut self) {
         self.scale = canvas_scale_factor(&self.monitors, CANVAS_W, CANVAS_H);
-        let min_x = self.monitors.iter().map(|m| m.x).min().unwrap_or(0) as f64;
-        let min_y = self.monitors.iter().map(|m| m.y).min().unwrap_or(0) as f64;
-        self.offset_x = -min_x;
-        self.offset_y = -min_y;
+        // Positions are logical pixels; use f64 min to match canvas_scale_factor.
+        let min_x = self.monitors.iter().map(|m| m.x as f64).fold(f64::MAX, f64::min);
+        let min_y = self.monitors.iter().map(|m| m.y as f64).fold(f64::MAX, f64::min);
+        self.offset_x = if min_x == f64::MAX { 0.0 } else { -min_x };
+        self.offset_y = if min_y == f64::MAX { 0.0 } else { -min_y };
     }
 
     fn to_slint_model(&self) -> Vec<MonitorInfo> {
@@ -210,8 +211,9 @@ impl DisplayState {
                     is_primary: m.name == self.primary,
                     canvas_x: ((m.x as f64 + self.offset_x) * self.scale + margin) as f32,
                     canvas_y: ((m.y as f64 + self.offset_y) * self.scale + margin) as f32,
-                    canvas_w: (m.width as f64 * self.scale) as f32,
-                    canvas_h: (m.height as f64 * self.scale) as f32,
+                    // Positions are logical; width/height are physical — use logical size.
+                    canvas_w: (m.width as f64 / m.scale * self.scale) as f32,
+                    canvas_h: (m.height as f64 / m.scale * self.scale) as f32,
                     available_modes: slint::ModelRc::new(slint::VecModel::from(modes)),
                     current_mode_index: cur_mode_idx,
                 }
@@ -1346,15 +1348,20 @@ fn main() -> Result<(), slint::PlatformError> {
             st.monitors[idx].x = real_x;
             st.monitors[idx].y = real_y;
 
+            // Snap uses logical pixels: pos (m.x/m.y) and logical size (width/scale).
             let others: Vec<(i32, i32, i32, i32)> = st
                 .monitors.iter().enumerate()
                 .filter(|(i, _)| *i != idx)
-                .map(|(_, m)| (m.x, m.y, m.width, m.height))
+                .map(|(_, m)| (m.x, m.y, (m.width as f64 / m.scale) as i32, (m.height as f64 / m.scale) as i32))
                 .collect();
 
             let m = &st.monitors[idx];
-            let snap_threshold = (50.0 / st.scale) as i32;
-            let (sx, sy) = snap_to_nearest_edge(m.x, m.y, m.width, m.height, &others, snap_threshold);
+            // 30px threshold — tight enough to not interfere with intentional
+            // small vertical offsets, loose enough to assist edge placement.
+            let snap_threshold = 30_i32;
+            let logical_w = (m.width as f64 / m.scale) as i32;
+            let logical_h = (m.height as f64 / m.scale) as i32;
+            let (sx, sy) = snap_to_nearest_edge(m.x, m.y, logical_w, logical_h, &others, snap_threshold);
             st.monitors[idx].x = sx;
             st.monitors[idx].y = sy;
 
