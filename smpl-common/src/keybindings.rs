@@ -108,15 +108,19 @@ pub struct BindingsFile {
 
 fn bindings_conf_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let smplos = PathBuf::from(&home).join(".config/smplos/bindings.conf");
-    if smplos.exists() {
-        return smplos;
-    }
+    // Prefer the live Hyprland config (what Hyprland actually sources at runtime).
+    // ~/.config/smplos/bindings.conf is the smplos source-of-truth template but
+    // Hyprland only reads ~/.config/hypr/bindings.conf, so writing to smplos would
+    // silently produce keybindings that never fire.
     let hypr = PathBuf::from(&home).join(".config/hypr/bindings.conf");
     if hypr.exists() {
         return hypr;
     }
-    smplos // default write target
+    let smplos = PathBuf::from(&home).join(".config/smplos/bindings.conf");
+    if smplos.exists() {
+        return smplos;
+    }
+    hypr // default write target
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────────────
