@@ -486,6 +486,10 @@ export component MainWindow inherits Window {
     in-out property <string> kb-new-desc: "";
     in-out property <string> kb-new-cmd: "";
 
+    // ── Taskbar tab properties ──
+    in-out property <int> tb-ws-count: 7;
+    in-out property <int> tb-ws-position-index: 0;   // 0 = center, 1 = left
+
     // ── Callbacks ──
     callback close();
     callback move-window(float, float);
@@ -538,6 +542,10 @@ export component MainWindow inherits Window {
     callback kb-revert();
     callback kb-open-editor();
     callback kb-cancel-capture();
+
+    // Taskbar
+    callback tb-set-ws-count(int);
+    callback tb-set-ws-position(int);
 
     // Search
     callback filter-search(string);
@@ -686,7 +694,7 @@ export component MainWindow inherits Window {
                 focus-scope.focus();
                 return accept;
             }
-            // Tab switching: 1-5
+            // Tab switching: 1-7
             if !root.dropdown-open && !root.dictation-lang-dropdown-open {
                 if e.text == "1" { root.active-tab = 0; return accept; }
                 if e.text == "2" { root.active-tab = 1; return accept; }
@@ -694,6 +702,7 @@ export component MainWindow inherits Window {
                 if e.text == "4" { root.active-tab = 3; return accept; }
                 if e.text == "5" { root.active-tab = 4; return accept; }
                 if e.text == "6" { root.active-tab = 5; root.kb-load(); return accept; }
+                if e.text == "7" { root.active-tab = 6; return accept; }
             }
             reject
         }
@@ -932,6 +941,17 @@ export component MainWindow inherits Window {
                             root.active-tab = 5;
                             root.dropdown-open = false;
                             root.kb-load();
+                            focus-scope.focus();
+                        }
+                    }
+
+                    TabButton {
+                        label: "Taskbar";
+                        icon: "\u{2261}";
+                        active: root.active-tab == 6;
+                        clicked => {
+                            root.active-tab = 6;
+                            root.dropdown-open = false;
                             focus-scope.focus();
                         }
                     }
@@ -3340,6 +3360,271 @@ export component MainWindow inherits Window {
             }
 
             // ══════════════════════════════════════════════════════════════
+            // TASKBAR TAB
+            // ══════════════════════════════════════════════════════════════
+
+            if root.active-tab == 6: Flickable {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 4px;
+                    spacing: 12px;
+
+                Text {
+                    text: "Taskbar";
+                    color: Theme.fg;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+
+                // ── Workspace Count card ──
+                Rectangle {
+                    border-radius: 6px;
+                    background: Theme.bg_light;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+
+                        Text {
+                            text: "Workspace Count";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "Number of workspace indicators shown in the taskbar (1–10).";
+                            color: Theme.fg_dim;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+
+                            Text {
+                                text: "1";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {
+                                width: 220px;
+                                height: 30px;
+                                border-radius: 4px;
+                                background: Theme.bg_lighter.transparentize(50%);
+
+                                // Track
+                                Rectangle {
+                                    x: 8px;
+                                    y: (parent.height - 4px) / 2;
+                                    width: parent.width - 16px;
+                                    height: 4px;
+                                    border-radius: 2px;
+                                    background: Theme.bg_lighter;
+
+                                    // Filled portion
+                                    Rectangle {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width * (root.tb-ws-count - 1) / 9;
+                                        height: parent.height;
+                                        border-radius: 2px;
+                                        background: Theme.accent;
+                                    }
+                                }
+
+                                // Thumb
+                                Rectangle {
+                                    x: 8px + (parent.width - 16px - self.width) * (root.tb-ws-count - 1) / 9;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 16px;
+                                    height: 16px;
+                                    border-radius: 8px;
+                                    background: ws-slider-touch.has-hover ? Theme.accent.brighter(20%)
+                                                : ws-slider-touch.pressed ? Theme.accent.brighter(40%)
+                                                : Theme.accent;
+
+                                    ws-slider-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                // Click area for the entire slider track
+                                ws-track-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        // Map click x to 1–10
+                                        root.tb-ws-count = clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10);
+                                        root.tb-set-ws-count(root.tb-ws-count);
+                                    }
+                                    moved => {
+                                        if self.pressed {
+                                            root.tb-ws-count = clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10);
+                                            root.tb-set-ws-count(root.tb-ws-count);
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "10";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+
+                            // Current value badge
+                            Rectangle {
+                                width: 32px;
+                                height: 24px;
+                                border-radius: 4px;
+                                background: Theme.accent.transparentize(70%);
+
+                                Text {
+                                    text: root.tb-ws-count;
+                                    color: Theme.accent;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Workspace Position card ──
+                Rectangle {
+                    border-radius: 6px;
+                    background: Theme.bg_light;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Workspace Position";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "Place workspace indicators in the center of the bar or on the left next to the start button.";
+                            color: Theme.fg_dim;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        // Center option
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: root.tb-ws-position-index == 0
+                                ? Theme.accent.transparentize(70%)
+                                : ws-pos-center-touch.has-hover ? Theme.bg_lighter : transparent;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    width: 14px;
+                                    Rectangle {
+                                        width: 14px; height: 14px;
+                                        border-radius: 7px;
+                                        border-width: 1.5px;
+                                        border-color: root.tb-ws-position-index == 0 ? Theme.accent : Theme.fg_dim;
+                                        background: transparent;
+                                        Rectangle {
+                                            visible: root.tb-ws-position-index == 0;
+                                            x: 3px; y: 3px; width: 8px; height: 8px;
+                                            border-radius: 4px;
+                                            background: Theme.accent;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text { text: "Center"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "Workspace dots centered in the taskbar"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                            }
+
+                            ws-pos-center-touch := TouchArea {
+                                clicked => {
+                                    root.tb-ws-position-index = 0;
+                                    root.tb-set-ws-position(0);
+                                }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        // Left option
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: root.tb-ws-position-index == 1
+                                ? Theme.accent.transparentize(70%)
+                                : ws-pos-left-touch.has-hover ? Theme.bg_lighter : transparent;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    width: 14px;
+                                    Rectangle {
+                                        width: 14px; height: 14px;
+                                        border-radius: 7px;
+                                        border-width: 1.5px;
+                                        border-color: root.tb-ws-position-index == 1 ? Theme.accent : Theme.fg_dim;
+                                        background: transparent;
+                                        Rectangle {
+                                            visible: root.tb-ws-position-index == 1;
+                                            x: 3px; y: 3px; width: 8px; height: 8px;
+                                            border-radius: 4px;
+                                            background: Theme.accent;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text { text: "Left"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "Workspace dots next to the start button"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                            }
+
+                            ws-pos-left-touch := TouchArea {
+                                clicked => {
+                                    root.tb-ws-position-index = 1;
+                                    root.tb-set-ws-position(1);
+                                }
+                                mouse-cursor: pointer;
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+                }
+            }
+
+            // ══════════════════════════════════════════════════════════════
             // ABOUT TAB
             // ══════════════════════════════════════════════════════════════
 
@@ -3516,7 +3801,7 @@ export component MainWindow inherits Window {
                             font-weight: 600;
                         }
                         Text {
-                            text: "1-6       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Set primary monitor\nEsc      Close overlay / app\n?         Toggle this Help";
+                            text: "1-7       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Set primary monitor\nEsc      Close overlay / app\n?         Toggle this Help";
                             color: Theme.fg;
                             font-size: 12px;
                             wrap: word-wrap;

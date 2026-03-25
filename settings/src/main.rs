@@ -2,6 +2,7 @@ mod dictation;
 mod display;
 mod keybindings;
 mod layouts;
+mod taskbar;
 mod theme;
 mod xkb_labels;
 
@@ -702,6 +703,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "display" => 3,
                         "power" => 4,
                         "keybindings" => 5,
+                        "taskbar" => 6,
                         _ => 0,
                     };
                     i += 1;
@@ -944,6 +946,11 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     }
+
+    // ── Taskbar tab init ──────────────────────────────────────────────────────
+
+    ui.set_tb_ws_count(taskbar::ws_count());
+    ui.set_tb_ws_position_index(taskbar::ws_position_index());
 
     // ══════════════════════════════════════════════════════════════════════════
     // CALLBACKS
@@ -1879,11 +1886,21 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // ── Taskbar callbacks ────────────────────────────────────────────────────
+
+    ui.on_tb_set_ws_count(|count| {
+        taskbar::set_ws_count(count);
+    });
+
+    ui.on_tb_set_ws_position(|idx| {
+        taskbar::set_ws_position(idx);
+    });
+
     // ── Search callback ──────────────────────────────────────────────────────
 
     {
         // Searchable items: (label, tab_name, tab_index)
-        // Tab indices: About=0, Keyboard=1, Dictation=2, Display=3, Power=4, Keybindings=5
+        // Tab indices: About=0, Keyboard=1, Dictation=2, Display=3, Power=4, Keybindings=5, Taskbar=6
         let search_index: Vec<(&str, &str, i32)> = vec![
             // About
             ("About smplOS", "About", 0),
@@ -1937,6 +1954,13 @@ fn main() -> Result<(), slint::PlatformError> {
             ("Key Binding", "Keybindings", 5),
             ("Shortcut", "Keybindings", 5),
             ("Rebind Key", "Keybindings", 5),
+            // Taskbar
+            ("Taskbar", "Taskbar", 6),
+            ("Workspace Count", "Taskbar", 6),
+            ("Workspace Position", "Taskbar", 6),
+            ("Workspaces", "Taskbar", 6),
+            ("Bar", "Taskbar", 6),
+            ("EWW", "Taskbar", 6),
         ];
 
         let ui_handle = ui.as_weak();
