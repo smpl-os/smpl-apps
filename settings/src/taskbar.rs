@@ -67,6 +67,21 @@ fn eww_update(var: &str, val: &str) {
         .output();
 }
 
+/// Run clock-top.sh and clock-bot.sh immediately and push their output to
+/// the running eww instance — so the bar updates the instant a setting
+/// changes rather than waiting for the next poll tick.
+fn eww_update_clock() {
+    let scripts = format!("{}/scripts", eww_config_dir());
+    if let Ok(out) = Command::new("sh").arg(format!("{}/clock-top.sh", scripts)).output() {
+        let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !val.is_empty() { eww_update("clock-top", &val); }
+    }
+    if let Ok(out) = Command::new("sh").arg(format!("{}/clock-bot.sh", scripts)).output() {
+        let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        eww_update("clock-bot", &val);
+    }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Read current workspace count from config (default 4).
@@ -187,7 +202,7 @@ pub fn set_clock_format(index: i32) {
     let mut map = read_conf();
     map.insert("clock_format".into(), val.to_string());
     write_conf(&map);
-    // Scripts poll bar.conf each tick; no eww variable needed.
+    eww_update_clock();
 }
 
 /// Read whether 24-hour time is active.
@@ -209,6 +224,7 @@ pub fn set_clock_24h(on: bool) {
     let mut map = read_conf();
     map.insert("clock_24h".into(), on.to_string());
     write_conf(&map);
+    eww_update_clock();
 }
 
 /// Read date format index: 0=M/D, 1=D/M, 2=ISO, 3=Mon D.
@@ -247,6 +263,7 @@ pub fn set_clock_date_fmt(index: i32) {
     let mut map = read_conf();
     map.insert("clock_date_fmt".into(), val.to_string());
     write_conf(&map);
+    eww_update_clock();
 }
 
 // ── Workspace window-migration ────────────────────────────────────────────────
