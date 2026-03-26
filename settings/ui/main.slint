@@ -531,10 +531,14 @@ export component MainWindow inherits Window {
     in-out property <string> kb-new-cmd: "";
 
     // ── Taskbar tab properties ──
-    in-out property <int> tb-ws-count: 4;
-    in-out property <int> tb-ws-position-index: 0;   // 0 = center, 1 = left
-    in-out property <int> tb-ws-spacing: 1;            // pixel gap between dots (1-10)
-    in-out property <int> tb-ws-style-index: 0;        // 0 = numbers, 1 = squares
+    in-out property <int>  tb-ws-count: 4;
+    in-out property <int>  tb-ws-position-index: 0;      // 0 = center, 1 = left
+    in-out property <int>  tb-ws-spacing: 1;             // pixel gap between dots (1-10)
+    in-out property <int>  tb-ws-style-index: 0;         // 0 = numbers, 1 = squares
+    // Clock
+    in-out property <int>  tb-clock-format-index: 0;    // 0=time, 1=dow, 2=date
+    in-out property <bool> tb-clock-24h: false;          // true=24h, false=AM/PM
+    in-out property <int>  tb-clock-date-fmt-index: 0;  // 0=M/D, 1=D/M, 2=ISO, 3=Mon D
 
     // ── Callbacks ──
     callback close();
@@ -592,6 +596,9 @@ export component MainWindow inherits Window {
     callback tb-set-ws-position(int);
     callback tb-set-ws-spacing(int);
     callback tb-set-ws-style(int);
+    callback tb-set-clock-format(int);     // 0=time, 1=dow, 2=date
+    callback tb-set-clock-24h(bool);       // true=24h, false=AM/PM
+    callback tb-set-clock-date-fmt(int);   // 0=M/D, 1=D/M, 2=ISO, 3=Mon D
 
     // Search
     callback filter-search(string);
@@ -4198,6 +4205,370 @@ export component MainWindow inherits Window {
                                     root.tb-set-ws-style(1);
                                 }
                                 mouse-cursor: pointer;
+                            }
+                        }
+                    }
+                }
+
+                // ── Clock Format card ──────────────────────────────────
+                Rectangle {
+                    border-radius: 6px;
+                    background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Clock Format" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Clock Format" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Clock Format";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "Choose what appears in the taskbar clock. Two-line formats show time larger with a smaller line below.";
+                            color: Theme.fg_dim;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        // ── Display format options ──────────────────────
+
+                        // Time only
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: root.tb-clock-format-index == 0
+                                ? Theme.accent.transparentize(70%)
+                                : clock-fmt-time-touch.has-hover ? Theme.bg_lighter : transparent;
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px; spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; width: 14px;
+                                    Rectangle {
+                                        width: 14px; height: 14px; border-radius: 7px;
+                                        border-width: 1.5px;
+                                        border-color: root.tb-clock-format-index == 0 ? Theme.accent : Theme.fg_dim;
+                                        background: transparent;
+                                        Rectangle {
+                                            visible: root.tb-clock-format-index == 0;
+                                            x: 3px; y: 3px; width: 8px; height: 8px;
+                                            border-radius: 4px; background: Theme.accent;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; spacing: 1px;
+                                    Text { text: "Time only"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "e.g.  3:42 PM"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                            }
+                            clock-fmt-time-touch := TouchArea {
+                                clicked => { root.tb-clock-format-index = 0; root.tb-set-clock-format(0); }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        // Time & day of week
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: root.tb-clock-format-index == 1
+                                ? Theme.accent.transparentize(70%)
+                                : clock-fmt-dow-touch.has-hover ? Theme.bg_lighter : transparent;
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px; spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; width: 14px;
+                                    Rectangle {
+                                        width: 14px; height: 14px; border-radius: 7px;
+                                        border-width: 1.5px;
+                                        border-color: root.tb-clock-format-index == 1 ? Theme.accent : Theme.fg_dim;
+                                        background: transparent;
+                                        Rectangle {
+                                            visible: root.tb-clock-format-index == 1;
+                                            x: 3px; y: 3px; width: 8px; height: 8px;
+                                            border-radius: 4px; background: Theme.accent;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; spacing: 1px;
+                                    Text { text: "Time & day of week"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "e.g.  3:42 PM  /  Wed"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                            }
+                            clock-fmt-dow-touch := TouchArea {
+                                clicked => { root.tb-clock-format-index = 1; root.tb-set-clock-format(1); }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        // Time & date
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: root.tb-clock-format-index == 2
+                                ? Theme.accent.transparentize(70%)
+                                : clock-fmt-date-touch.has-hover ? Theme.bg_lighter : transparent;
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px; spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; width: 14px;
+                                    Rectangle {
+                                        width: 14px; height: 14px; border-radius: 7px;
+                                        border-width: 1.5px;
+                                        border-color: root.tb-clock-format-index == 2 ? Theme.accent : Theme.fg_dim;
+                                        background: transparent;
+                                        Rectangle {
+                                            visible: root.tb-clock-format-index == 2;
+                                            x: 3px; y: 3px; width: 8px; height: 8px;
+                                            border-radius: 4px; background: Theme.accent;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; spacing: 1px;
+                                    Text { text: "Time & date"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "e.g.  3:42 PM  /  3/26"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                            }
+                            clock-fmt-date-touch := TouchArea {
+                                clicked => { root.tb-clock-format-index = 2; root.tb-set-clock-format(2); }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg_lighter; }
+
+                        // ── Time format (24h vs AM/PM) ──────────────────
+                        Text {
+                            text: "Time Format";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            // 24-hour
+                            Rectangle {
+                                height: 36px; border-radius: 4px; horizontal-stretch: 1;
+                                background: root.tb-clock-24h
+                                    ? Theme.accent.transparentize(70%)
+                                    : clock-24h-touch.has-hover ? Theme.bg_lighter : transparent;
+                                HorizontalLayout {
+                                    padding-left: 10px; spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center; width: 14px;
+                                        Rectangle {
+                                            width: 14px; height: 14px; border-radius: 7px;
+                                            border-width: 1.5px;
+                                            border-color: root.tb-clock-24h ? Theme.accent : Theme.fg_dim;
+                                            background: transparent;
+                                            Rectangle {
+                                                visible: root.tb-clock-24h;
+                                                x: 3px; y: 3px; width: 8px; height: 8px;
+                                                border-radius: 4px; background: Theme.accent;
+                                            }
+                                        }
+                                    }
+                                    Text { text: "24-hour"; color: Theme.fg; font-size: 12px; vertical-alignment: center; }
+                                }
+                                clock-24h-touch := TouchArea {
+                                    clicked => { root.tb-clock-24h = true; root.tb-set-clock-24h(true); }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+
+                            // AM / PM
+                            Rectangle {
+                                height: 36px; border-radius: 4px; horizontal-stretch: 1;
+                                background: !root.tb-clock-24h
+                                    ? Theme.accent.transparentize(70%)
+                                    : clock-ampm-touch.has-hover ? Theme.bg_lighter : transparent;
+                                HorizontalLayout {
+                                    padding-left: 10px; spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center; width: 14px;
+                                        Rectangle {
+                                            width: 14px; height: 14px; border-radius: 7px;
+                                            border-width: 1.5px;
+                                            border-color: !root.tb-clock-24h ? Theme.accent : Theme.fg_dim;
+                                            background: transparent;
+                                            Rectangle {
+                                                visible: !root.tb-clock-24h;
+                                                x: 3px; y: 3px; width: 8px; height: 8px;
+                                                border-radius: 4px; background: Theme.accent;
+                                            }
+                                        }
+                                    }
+                                    Text { text: "AM / PM"; color: Theme.fg; font-size: 12px; vertical-alignment: center; }
+                                }
+                                clock-ampm-touch := TouchArea {
+                                    clicked => { root.tb-clock-24h = false; root.tb-set-clock-24h(false); }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+
+                        // ── Date format (only when clock_format == date) ─
+                        if root.tb-clock-format-index == 2: Rectangle { height: 1px; background: Theme.bg_lighter; }
+
+                        if root.tb-clock-format-index == 2: Text {
+                            text: "Date Format";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        if root.tb-clock-format-index == 2: GridLayout {
+                            spacing: 8px;
+
+                            Row {
+                                // M/D
+                                Rectangle {
+                                    height: 36px; border-radius: 4px;
+                                    background: root.tb-clock-date-fmt-index == 0
+                                        ? Theme.accent.transparentize(70%)
+                                        : clock-date-md-touch.has-hover ? Theme.bg_lighter : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; width: 14px;
+                                            Rectangle {
+                                                width: 14px; height: 14px; border-radius: 7px;
+                                                border-width: 1.5px;
+                                                border-color: root.tb-clock-date-fmt-index == 0 ? Theme.accent : Theme.fg_dim;
+                                                background: transparent;
+                                                Rectangle {
+                                                    visible: root.tb-clock-date-fmt-index == 0;
+                                                    x: 3px; y: 3px; width: 8px; height: 8px;
+                                                    border-radius: 4px; background: Theme.accent;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            Text { text: "M/D"; color: Theme.fg; font-size: 12px; }
+                                            Text { text: "3/26"; color: Theme.fg_dim; font-size: 10px; }
+                                        }
+                                    }
+                                    clock-date-md-touch := TouchArea {
+                                        clicked => { root.tb-clock-date-fmt-index = 0; root.tb-set-clock-date-fmt(0); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                // D/M
+                                Rectangle {
+                                    height: 36px; border-radius: 4px;
+                                    background: root.tb-clock-date-fmt-index == 1
+                                        ? Theme.accent.transparentize(70%)
+                                        : clock-date-dm-touch.has-hover ? Theme.bg_lighter : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; width: 14px;
+                                            Rectangle {
+                                                width: 14px; height: 14px; border-radius: 7px;
+                                                border-width: 1.5px;
+                                                border-color: root.tb-clock-date-fmt-index == 1 ? Theme.accent : Theme.fg_dim;
+                                                background: transparent;
+                                                Rectangle {
+                                                    visible: root.tb-clock-date-fmt-index == 1;
+                                                    x: 3px; y: 3px; width: 8px; height: 8px;
+                                                    border-radius: 4px; background: Theme.accent;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            Text { text: "D/M"; color: Theme.fg; font-size: 12px; }
+                                            Text { text: "26/3"; color: Theme.fg_dim; font-size: 10px; }
+                                        }
+                                    }
+                                    clock-date-dm-touch := TouchArea {
+                                        clicked => { root.tb-clock-date-fmt-index = 1; root.tb-set-clock-date-fmt(1); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            Row {
+                                // YYYY-MM-DD
+                                Rectangle {
+                                    height: 36px; border-radius: 4px;
+                                    background: root.tb-clock-date-fmt-index == 2
+                                        ? Theme.accent.transparentize(70%)
+                                        : clock-date-iso-touch.has-hover ? Theme.bg_lighter : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; width: 14px;
+                                            Rectangle {
+                                                width: 14px; height: 14px; border-radius: 7px;
+                                                border-width: 1.5px;
+                                                border-color: root.tb-clock-date-fmt-index == 2 ? Theme.accent : Theme.fg_dim;
+                                                background: transparent;
+                                                Rectangle {
+                                                    visible: root.tb-clock-date-fmt-index == 2;
+                                                    x: 3px; y: 3px; width: 8px; height: 8px;
+                                                    border-radius: 4px; background: Theme.accent;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            Text { text: "YYYY-MM-DD"; color: Theme.fg; font-size: 12px; }
+                                            Text { text: "2026-03-26"; color: Theme.fg_dim; font-size: 10px; }
+                                        }
+                                    }
+                                    clock-date-iso-touch := TouchArea {
+                                        clicked => { root.tb-clock-date-fmt-index = 2; root.tb-set-clock-date-fmt(2); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                // Mon D
+                                Rectangle {
+                                    height: 36px; border-radius: 4px;
+                                    background: root.tb-clock-date-fmt-index == 3
+                                        ? Theme.accent.transparentize(70%)
+                                        : clock-date-mon-touch.has-hover ? Theme.bg_lighter : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; width: 14px;
+                                            Rectangle {
+                                                width: 14px; height: 14px; border-radius: 7px;
+                                                border-width: 1.5px;
+                                                border-color: root.tb-clock-date-fmt-index == 3 ? Theme.accent : Theme.fg_dim;
+                                                background: transparent;
+                                                Rectangle {
+                                                    visible: root.tb-clock-date-fmt-index == 3;
+                                                    x: 3px; y: 3px; width: 8px; height: 8px;
+                                                    border-radius: 4px; background: Theme.accent;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            Text { text: "Mon D"; color: Theme.fg; font-size: 12px; }
+                                            Text { text: "Mar 26"; color: Theme.fg_dim; font-size: 10px; }
+                                        }
+                                    }
+                                    clock-date-mon-touch := TouchArea {
+                                        clicked => { root.tb-clock-date-fmt-index = 3; root.tb-set-clock-date-fmt(3); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
                             }
                         }
                     }

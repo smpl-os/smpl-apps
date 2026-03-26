@@ -140,6 +140,11 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("Workspace Position", "taskbar", 6),
         ("Workspace Spacing", "taskbar", 6),
         ("Workspace Style", "taskbar", 6),
+        ("Clock Format", "taskbar", 6),
+        ("Time Format", "taskbar", 6),
+        ("Date Format", "taskbar", 6),
+        ("24-hour", "taskbar", 6),
+        ("AM PM", "taskbar", 6),
     ]
 }
 
@@ -1113,6 +1118,9 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_tb_ws_position_index(taskbar::ws_position_index());
     ui.set_tb_ws_spacing(taskbar::ws_spacing());
     ui.set_tb_ws_style_index(taskbar::ws_style_index());
+    ui.set_tb_clock_format_index(taskbar::clock_format());
+    ui.set_tb_clock_24h(taskbar::clock_24h());
+    ui.set_tb_clock_date_fmt_index(taskbar::clock_date_fmt());
 
     // ══════════════════════════════════════════════════════════════════════════
     // CALLBACKS
@@ -2059,6 +2067,18 @@ fn main() -> Result<(), slint::PlatformError> {
 
     ui.on_tb_set_ws_style(|idx| {
         taskbar::set_ws_style(idx);
+    });
+
+    ui.on_tb_set_clock_format(|idx| {
+        taskbar::set_clock_format(idx);
+    });
+
+    ui.on_tb_set_clock_24h(|on| {
+        taskbar::set_clock_24h(on);
+    });
+
+    ui.on_tb_set_clock_date_fmt(|idx| {
+        taskbar::set_clock_date_fmt(idx);
     });
 
     // ── Search callback ──────────────────────────────────────────────────────
