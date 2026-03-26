@@ -386,6 +386,20 @@ fn main() -> Result<(), slint::PlatformError> {
     // ── Load pinned apps ──
     update_pinned_model(&ui, &all_apps, &pinned_model, &path_cache, &img_cache, &pinned.borrow());
 
+    // ── Search pop-char (Backspace from any pane) ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_search_pop_char(move || {
+            let Some(ui) = ui_weak.upgrade() else { return; };
+            let text = ui.get_search_text().to_string();
+            if !text.is_empty() {
+                let mut chars: Vec<char> = text.chars().collect();
+                chars.pop();
+                ui.set_search_text(chars.into_iter().collect::<String>().into());
+            }
+        });
+    }
+
     // ── Filter callback (search text or category changed) ──
     {
         let ui_weak = ui.as_weak();
