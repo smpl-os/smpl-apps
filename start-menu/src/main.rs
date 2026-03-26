@@ -52,10 +52,16 @@ fn load_apps() -> Vec<AppEntry> {
         std::fs::read_to_string(&path).unwrap_or_default()
     });
 
+    // Also load settings search index (deep-link entries)
+    let settings_path = format!("{}/.cache/smplos/settings_index", home);
+    let settings_content = std::fs::read_to_string(&settings_path).unwrap_or_default();
+
+    let combined = format!("{}\n{}", content, settings_content);
+
     let mut apps = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for line in content.lines() {
+    for line in combined.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -244,6 +250,8 @@ fn to_ui_item(app: &AppEntry, path_cache: &HashMap<String, String>, img_cache: &
         "Flatpak"
     } else if app.exec.ends_with(".AppImage") || app.exec.ends_with(".appimage") {
         "AppImage"
+    } else if app.exec.starts_with("settings --") {
+        "Setting"
     } else if app.exec.starts_with("smplos-settings") {
         ""
     } else {

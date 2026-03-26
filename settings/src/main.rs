@@ -23,9 +23,40 @@ macro_rules! debug_log {
 }
 pub(crate) use debug_log;
 
+// ── Highlight blink animation ────────────────────────────────────────────────
+
+/// Blink the highlight border 5 times with smooth fade-in/fade-out.
+/// Total duration: 5 blinks × 1s = 5 seconds, then clears.
+fn start_highlight_blink(ui: &MainWindow) {
+    let ui_weak = ui.as_weak();
+    let blink_count = Rc::new(RefCell::new(0u32));
+    let timer = slint::Timer::default();
+    // Start with blink on
+    ui.set_highlight_blink_on(true);
+    let blink_count2 = blink_count.clone();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(500),
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return; };
+            let mut count = blink_count2.borrow_mut();
+            *count += 1;
+            if *count >= 10 {
+                // 5 full on/off cycles done — clear
+                ui.set_highlight_blink_on(false);
+                ui.set_highlight_setting(slint::SharedString::default());
+                return;
+            }
+            // Toggle blink
+            ui.set_highlight_blink_on(*count % 2 == 0);
+        },
+    );
+    std::mem::forget(timer);
+}
+
 // ── Single-instance guard ────────────────────────────────────────────────────
 
-fn acquire_single_instance() {
+fn acquire_single_instance(tab: i32, highlight: &str) {
     use std::os::unix::io::AsRawFd;
     let run_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     let lock_path = format!("{}/settings.lock", run_dir);
@@ -42,6 +73,11 @@ fn acquire_single_instance() {
     let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
     if ret != 0 {
         eprintln!("[settings] another instance is already running — bringing it to focus");
+        // Write deep-link file so the running instance can navigate
+        if !highlight.is_empty() {
+            let deeplink_path = format!("{}/settings-deeplink", run_dir);
+            let _ = std::fs::write(&deeplink_path, format!("{}\n{}", tab, highlight));
+        }
         // Bring the existing window to the foreground
         let _ = std::process::Command::new("hyprctl")
             .args(["dispatch", "focuswindow", "class:settings"])
@@ -49,6 +85,81 @@ fn acquire_single_instance() {
         std::process::exit(0);
     }
     std::mem::forget(file);
+}
+
+// ── Settings search index export ─────────────────────────────────────────────
+
+fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
+    vec![
+        // About
+        ("About smplOS", "about", 0),
+        ("Version", "about", 0),
+        ("Hostname", "about", 0),
+        ("Kernel", "about", 0),
+        ("Uptime", "about", 0),
+        ("Compositor", "about", 0),
+        // Keyboard
+        ("Keyboard Layout", "keyboard", 1),
+        ("Add Layout", "keyboard", 1),
+        ("Remove Layout", "keyboard", 1),
+        ("XKB Layout", "keyboard", 1),
+        ("Input Language", "keyboard", 1),
+        ("Keyboard Preview", "keyboard", 1),
+        // Dictation
+        ("Dictation", "dictation", 2),
+        ("Speech to Text", "dictation", 2),
+        ("Whisper", "dictation", 2),
+        ("Voice Input", "dictation", 2),
+        ("Language Model", "dictation", 2),
+        ("Microphone", "dictation", 2),
+        // Display
+        ("Display", "display", 3),
+        ("Monitor", "display", 3),
+        ("Resolution", "display", 3),
+        ("Scale", "display", 3),
+        ("Primary Monitor", "display", 3),
+        ("Screen Layout", "display", 3),
+        ("Refresh Rate", "display", 3),
+        // Power
+        ("Power Profile", "power", 4),
+        ("Power Saver", "power", 4),
+        ("Balanced", "power", 4),
+        ("Performance", "power", 4),
+        ("Lock Screen Timeout", "power", 4),
+        ("Screen Off Timeout", "power", 4),
+        ("Suspend Timeout", "power", 4),
+        ("Shutdown After", "power", 4),
+        ("Sleep", "power", 4),
+        // Keybindings
+        ("Keybindings", "keybindings", 5),
+        ("Keyboard Shortcuts", "keybindings", 5),
+        ("Hotkeys", "keybindings", 5),
+        ("Shortcut", "keybindings", 5),
+        // Taskbar
+        ("Workspace Count", "taskbar", 6),
+        ("Workspace Position", "taskbar", 6),
+        ("Workspace Spacing", "taskbar", 6),
+        ("Workspace Style", "taskbar", 6),
+    ]
+}
+
+fn export_settings_index() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let cache_dir = format!("{}/.cache/smplos", home);
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let path = format!("{}/settings_index", cache_dir);
+
+    let lines: Vec<String> = settings_search_index()
+        .iter()
+        .map(|(label, tab, _idx)| {
+            format!(
+                "{};settings --tab {} --highlight \"{}\";settings;",
+                label, tab, label
+            )
+        })
+        .collect();
+
+    let _ = std::fs::write(&path, lines.join("\n") + "\n");
 }
 
 // ── Theme application ────────────────────────────────────────────────────────
@@ -326,9 +437,8 @@ fn set_power_profile(profile: &str) {
 // ── Hypridle (idle timeouts) ─────────────────────────────────────────────────
 
 // Preset arrays: index → seconds (0 = disabled/never)
-const LOCK_PRESETS: &[u32] = &[60, 120, 300, 600, 900, 1800, 0];    // 1,2,5,10,15,30 min, Never
-const DPMS_PRESETS: &[u32] = &[60, 120, 300, 600, 900, 1800, 0];    // 1,2,5,10,15,30 min, Never
-const SUSPEND_PRESETS: &[u32] = &[300, 600, 900, 1800, 3600, 0];     // 5,10,15,30,60 min, Never
+// New unified presets: 1min, 5min, 10min, 30min, Never, 1h, 2h, 3h, 5h, 8h
+const IDLE_PRESETS: &[u32] = &[60, 300, 600, 1800, 0, 3600, 7200, 10800, 18000, 28800];
 
 fn hypridle_config_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
@@ -343,9 +453,9 @@ fn read_hypridle_timeouts() -> (u32, u32, u32) {
         Err(_) => return (300, 330, 600), // defaults
     };
 
-    let mut lock = 300u32;
-    let mut dpms = 330u32;
-    let mut suspend = 600u32;
+    let mut lock = 0u32;
+    let mut dpms = 0u32;
+    let mut suspend = 0u32;
 
     // Simple parser: find listener blocks and identify by on-timeout command
     let mut in_listener = false;
@@ -384,12 +494,13 @@ fn read_hypridle_timeouts() -> (u32, u32, u32) {
 /// Find closest preset index for a given timeout value
 fn timeout_to_index(secs: u32, presets: &[u32]) -> i32 {
     if secs == 0 {
-        return (presets.len() - 1) as i32; // "Never" is always last
+        // "Never" is index 4
+        return 4;
     }
     presets
         .iter()
         .enumerate()
-        .filter(|(_, &v)| v > 0) // skip the "never" entry when comparing
+        .filter(|(_, &v)| v > 0)
         .min_by_key(|(_, &v)| (v as i64 - secs as i64).unsigned_abs())
         .map(|(i, _)| i as i32)
         .unwrap_or(2) // default to middle
@@ -453,6 +564,31 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// Schedule a system shutdown after `secs` seconds (0 = cancel any pending shutdown).
+fn schedule_shutdown(secs: u32) {
+    // Cancel any existing scheduled shutdown first (non-blocking, null stdin to avoid sudo hang)
+    let _ = std::process::Command::new("shutdown")
+        .args(["-c"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    if secs == 0 {
+        debug_log!("[settings] shutdown timer cancelled");
+        return;
+    }
+
+    let mins = (secs + 59) / 60; // round up to minutes
+    let _ = std::process::Command::new("shutdown")
+        .args(["-h", &format!("+{}", mins)])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    debug_log!("[settings] shutdown scheduled in {} minutes", mins);
 }
 
 fn get_about_info() -> (String, String, String, String, String, String, String) {
@@ -677,13 +813,11 @@ fn slint_key_to_hyprland(text: &str) -> String {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), slint::PlatformError> {
-    acquire_single_instance();
-    dictation::cleanup_stale_progress();
-
-    // Parse CLI args
+    // Parse CLI args early (before single-instance guard needs tab/highlight)
     let mut initial_tab = 0;
     let mut initial_layout = "us".to_string();
     let mut initial_variant = String::new();
+    let mut initial_highlight = String::new();
     let mut use_demo = false;
 
     let args: Vec<String> = std::env::args().collect();
@@ -692,6 +826,10 @@ fn main() -> Result<(), slint::PlatformError> {
         match args[i].as_str() {
             "-v" | "--version" => {
                 println!("settings v{}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "--export-index" => {
+                export_settings_index();
                 return Ok(());
             }
             "--tab" => {
@@ -706,6 +844,12 @@ fn main() -> Result<(), slint::PlatformError> {
                         "taskbar" => 6,
                         _ => 0,
                     };
+                    i += 1;
+                }
+            }
+            "--highlight" => {
+                if i + 1 < args.len() {
+                    initial_highlight = args[i + 1].clone();
                     i += 1;
                 }
             }
@@ -726,11 +870,21 @@ fn main() -> Result<(), slint::PlatformError> {
         i += 1;
     }
 
+    acquire_single_instance(initial_tab, &initial_highlight);
+    dictation::cleanup_stale_progress();
+
+    // Export settings search index for start menu
+    export_settings_index();
+
     smpl_common::init("settings", 900.0, 560.0)?;
 
     let ui = MainWindow::new()?;
     apply_theme(&ui);
-    ui.set_initial_tab(initial_tab);
+    ui.set_active_tab(initial_tab);
+    if !initial_highlight.is_empty() {
+        ui.set_highlight_setting(slint::SharedString::from(&initial_highlight));
+        start_highlight_blink(&ui);
+    }
 
     // ── Keyboard tab init ────────────────────────────────────────────────────
 
@@ -892,6 +1046,11 @@ fn main() -> Result<(), slint::PlatformError> {
         debug_log!("[settings] failed to query monitors: {e}");
     }
     push_display_state_to_ui(&ui, &disp_state.borrow());
+    // Auto-select first monitor so controls are visible immediately
+    if !disp_state.borrow().monitors.is_empty() {
+        ui.set_disp_selected_index(0);
+        push_display_state_to_ui(&ui, &disp_state.borrow());
+    }
     ui.set_disp_status_text(slint::SharedString::from(format!(
         "Backend: {} | {} monitor(s)",
         disp_state.borrow().backend.name(),
@@ -917,9 +1076,10 @@ fn main() -> Result<(), slint::PlatformError> {
 
         // Idle timeouts from hypridle.conf
         let (lock_s, dpms_s, suspend_s) = read_hypridle_timeouts();
-        ui.set_idle_lock_index(timeout_to_index(lock_s, LOCK_PRESETS));
-        ui.set_idle_dpms_index(timeout_to_index(dpms_s, DPMS_PRESETS));
-        ui.set_idle_suspend_index(timeout_to_index(suspend_s, SUSPEND_PRESETS));
+        ui.set_idle_lock_index(timeout_to_index(lock_s, IDLE_PRESETS));
+        ui.set_idle_dpms_index(timeout_to_index(dpms_s, IDLE_PRESETS));
+        ui.set_idle_suspend_index(timeout_to_index(suspend_s, IDLE_PRESETS));
+        ui.set_idle_shutdown_index(4); // Default: Never
     }
 
     // ── About tab init ───────────────────────────────────────────────────────
@@ -1555,33 +1715,19 @@ fn main() -> Result<(), slint::PlatformError> {
         set_power_profile(profile);
     });
 
-    ui.on_action_power_off(|| {
-        debug_log!("[settings] power off requested");
-        let _ = std::process::Command::new("systemctl").arg("poweroff").spawn();
-    });
-
-    ui.on_action_restart(|| {
-        debug_log!("[settings] restart requested");
-        let _ = std::process::Command::new("systemctl").arg("reboot").spawn();
-    });
-
-    ui.on_action_logout(|| {
-        debug_log!("[settings] logout requested");
-        // Try hyprctl first (Hyprland), fall back to loginctl
-        if std::process::Command::new("hyprctl").args(["dispatch", "exit"]).status().is_err() {
-            let _ = std::process::Command::new("loginctl").arg("terminate-user").arg(std::env::var("USER").unwrap_or_default()).spawn();
-        }
-    });
-
     // Helper: read current indices from UI, resolve to seconds, write config
     let write_idle = |ui: &MainWindow| {
         let lock_idx = ui.get_idle_lock_index() as usize;
         let dpms_idx = ui.get_idle_dpms_index() as usize;
         let susp_idx = ui.get_idle_suspend_index() as usize;
-        let lock_s = LOCK_PRESETS.get(lock_idx).copied().unwrap_or(300);
-        let dpms_s = DPMS_PRESETS.get(dpms_idx).copied().unwrap_or(330);
-        let susp_s = SUSPEND_PRESETS.get(susp_idx).copied().unwrap_or(600);
+        let shutdown_idx = ui.get_idle_shutdown_index() as usize;
+        let lock_s = IDLE_PRESETS.get(lock_idx).copied().unwrap_or(300);
+        let dpms_s = IDLE_PRESETS.get(dpms_idx).copied().unwrap_or(300);
+        let susp_s = IDLE_PRESETS.get(susp_idx).copied().unwrap_or(600);
+        let shutdown_s = IDLE_PRESETS.get(shutdown_idx).copied().unwrap_or(0);
         write_hypridle_config(lock_s, dpms_s, susp_s);
+        // Schedule shutdown timer
+        schedule_shutdown(shutdown_s);
     };
 
     {
@@ -1608,6 +1754,15 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_set_idle_suspend(move |_idx| {
             if let Some(ui) = ui_handle.upgrade() {
                 write_idle3(&ui);
+            }
+        });
+    }
+    let write_idle4 = write_idle;
+    {
+        let ui_handle = ui.as_weak();
+        ui.on_set_idle_shutdown(move |_idx| {
+            if let Some(ui) = ui_handle.upgrade() {
+                write_idle4(&ui);
             }
         });
     }
@@ -1909,73 +2064,20 @@ fn main() -> Result<(), slint::PlatformError> {
     // ── Search callback ──────────────────────────────────────────────────────
 
     {
-        // Searchable items: (label, tab_name, tab_index)
-        // Tab indices: About=0, Keyboard=1, Dictation=2, Display=3, Power=4, Keybindings=5, Taskbar=6
-        let search_index: Vec<(&str, &str, i32)> = vec![
-            // About
-            ("About smplOS", "About", 0),
-            ("Version", "About", 0),
-            ("Hostname", "About", 0),
-            ("Kernel", "About", 0),
-            ("Uptime", "About", 0),
-            ("Compositor", "About", 0),
-            // Keyboard
-            ("Keyboard Layout", "Keyboard", 1),
-            ("Add Layout", "Keyboard", 1),
-            ("Remove Layout", "Keyboard", 1),
-            ("XKB Layout", "Keyboard", 1),
-            ("Input Language", "Keyboard", 1),
-            ("Keyboard Preview", "Keyboard", 1),
-            // Dictation
-            ("Dictation", "Dictation", 2),
-            ("Speech to Text", "Dictation", 2),
-            ("Whisper", "Dictation", 2),
-            ("Voxtype", "Dictation", 2),
-            ("Voice Input", "Dictation", 2),
-            ("Language Model", "Dictation", 2),
-            ("Microphone", "Dictation", 2),
-            // Display
-            ("Display", "Display", 3),
-            ("Monitor", "Display", 3),
-            ("Resolution", "Display", 3),
-            ("Scale", "Display", 3),
-            ("Primary Monitor", "Display", 3),
-            ("Screen Layout", "Display", 3),
-            ("Refresh Rate", "Display", 3),
-            // Power
-            ("Power Profile", "Power", 4),
-            ("Power Saver", "Power", 4),
-            ("Balanced", "Power", 4),
-            ("Performance", "Power", 4),
-            ("Lock Screen Timeout", "Power", 4),
-            ("Screen Off Timeout", "Power", 4),
-            ("Suspend Timeout", "Power", 4),
-            ("Sleep", "Power", 4),
-            ("Idle", "Power", 4),
-            ("Power Off", "Power", 4),
-            ("Shut Down", "Power", 4),
-            ("Restart", "Power", 4),
-            ("Reboot", "Power", 4),
-            ("Log Out", "Power", 4),
-            // Keybindings
-            ("Keybindings", "Keybindings", 5),
-            ("Keyboard Shortcuts", "Keybindings", 5),
-            ("Hotkeys", "Keybindings", 5),
-            ("Key Binding", "Keybindings", 5),
-            ("Shortcut", "Keybindings", 5),
-            ("Rebind Key", "Keybindings", 5),
-            // Taskbar
-            ("Taskbar", "Taskbar", 6),
-            ("Workspace Count", "Taskbar", 6),
-            ("Workspace Position", "Taskbar", 6),
-            ("Workspace Spacing", "Taskbar", 6),
-            ("Workspace Style", "Taskbar", 6),
-            ("Numbers", "Taskbar", 6),
-            ("Squares", "Taskbar", 6),
-            ("Workspaces", "Taskbar", 6),
-            ("Bar", "Taskbar", 6),
-            ("EWW", "Taskbar", 6),
-        ];
+        fn tab_display_name(key: &str) -> &str {
+            match key {
+                "about" => "About",
+                "keyboard" => "Keyboard",
+                "dictation" => "Dictation",
+                "display" => "Display",
+                "power" => "Power",
+                "keybindings" => "Keybindings",
+                "taskbar" => "Taskbar",
+                _ => key,
+            }
+        }
+
+        let search_index = settings_search_index();
 
         let ui_handle = ui.as_weak();
         ui.on_filter_search(move |query| {
@@ -1991,7 +2093,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 .filter(|(label, _, _)| fuzzy_match(label, &q))
                 .map(|(label, tab, idx)| SearchResult {
                     label: slint::SharedString::from(*label),
-                    tab_name: slint::SharedString::from(*tab),
+                    tab_name: slint::SharedString::from(tab_display_name(tab)),
                     tab_index: *idx,
                 })
                 .collect();
@@ -2000,6 +2102,35 @@ fn main() -> Result<(), slint::PlatformError> {
                 Rc::new(slint::VecModel::from(results)),
             ));
         });
+    }
+
+    // ── Deep-link polling timer ──────────────────────────────────────────────
+
+    {
+        let ui_weak = ui.as_weak();
+        let deeplink_timer = slint::Timer::default();
+        deeplink_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(500),
+            move || {
+                let run_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+                let path = format!("{}/settings-deeplink", run_dir);
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let _ = std::fs::remove_file(&path);
+                    let lines: Vec<&str> = content.lines().collect();
+                    if lines.len() >= 2 {
+                        if let (Ok(tab), highlight) = (lines[0].parse::<i32>(), lines[1].to_string()) {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_active_tab(tab);
+                                ui.set_highlight_setting(slint::SharedString::from(&highlight));
+                                start_highlight_blink(&ui);
+                            }
+                        }
+                    }
+                }
+            },
+        );
+        std::mem::forget(deeplink_timer);
     }
 
     // ── Theme polling timer ──────────────────────────────────────────────────
