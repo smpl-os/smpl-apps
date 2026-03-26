@@ -2754,6 +2754,9 @@ export component MainWindow inherits Window {
                     border-color: root.highlight-setting == "Screen Off Timeout" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
                     animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Screen Off Timeout" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Screen Off Timeout" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
 
                     VerticalLayout {
                         padding: 12px;
@@ -2851,6 +2854,9 @@ export component MainWindow inherits Window {
                     border-color: root.highlight-setting == "Suspend Timeout" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
                     animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Suspend Timeout" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Suspend Timeout" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
 
                     VerticalLayout {
                         padding: 12px;
@@ -2948,6 +2954,9 @@ export component MainWindow inherits Window {
                     border-color: root.highlight-setting == "Shutdown After" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
                     animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Shutdown After" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Shutdown After" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
 
                     VerticalLayout {
                         padding: 12px;
@@ -3977,6 +3986,9 @@ export component MainWindow inherits Window {
                     border-color: root.highlight-setting == "Workspace Spacing" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
                     animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Workspace Spacing" { tab6-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Workspace Spacing" { tab6-flick.viewport-y = -max(0px, self.y - 20px); } }
 
                     VerticalLayout {
                         padding: 12px;
@@ -4100,6 +4112,9 @@ export component MainWindow inherits Window {
                     border-color: root.highlight-setting == "Workspace Style" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
                     animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Workspace Style" { tab6-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Workspace Style" { tab6-flick.viewport-y = -max(0px, self.y - 20px); } }
 
                     VerticalLayout {
                         padding: 12px;
@@ -4218,6 +4233,19 @@ export component MainWindow inherits Window {
                     border-color: root.highlight-setting == "Clock Format" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
                     animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => {
+                        if _hl == "Clock Format" || _hl == "Time Format" || _hl == "Date Format"
+                            || _hl == "24-hour" || _hl == "AM PM" {
+                            tab6-flick.viewport-y = -max(0px, self.y - 20px);
+                        }
+                    }
+                    changed _hl => {
+                        if _hl == "Clock Format" || _hl == "Time Format" || _hl == "Date Format"
+                            || _hl == "24-hour" || _hl == "AM PM" {
+                            tab6-flick.viewport-y = -max(0px, self.y - 20px);
+                        }
+                    }
 
                     VerticalLayout {
                         padding: 12px;
