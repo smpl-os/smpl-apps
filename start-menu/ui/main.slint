@@ -538,10 +538,12 @@ export component MainWindow inherits Window {
                         }
                         return accept;
                     }
-                    // Down Arrow: jump into the app list (or categories if no results)
+                    // Down Arrow: jump into the app list (or categories if no results).
+                    // Item 0 is already pre-highlighted as you type, so jump to item 1
+                    // if it exists — matching Windows/KDE/GNOME launcher behavior.
                     if (event.text == Key.DownArrow) {
                         if (root.app-count > 0) {
-                            if (root.selected-app < 0) { root.selected-app = 0; }
+                            root.selected-app = root.app-count > 1 ? 1 : 0;
                             root.focus-app();
                         } else {
                             root.focus-cat();
