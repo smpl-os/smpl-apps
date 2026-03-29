@@ -49,7 +49,7 @@ fn start_highlight_blink(ui: &MainWindow) {
                 return;
             }
             // Toggle blink
-            ui.set_highlight_blink_on(*count % 2 == 0);
+            ui.set_highlight_blink_on((*count).is_multiple_of(2));
         },
     );
     std::mem::forget(timer);
@@ -597,7 +597,7 @@ fn schedule_shutdown(secs: u32) {
         return;
     }
 
-    let mins = (secs + 59) / 60; // round up to minutes
+    let mins = secs.div_ceil(60); // round up to minutes
     let _ = std::process::Command::new("shutdown")
         .args(["-h", &format!("+{}", mins)])
         .stdin(std::process::Stdio::null())

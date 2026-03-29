@@ -38,8 +38,8 @@ fn hotkey_slugs() -> std::collections::HashSet<String> {
                     // Skip optional closing quote of the flag itself
                     let after = after.strip_prefix('"').unwrap_or(after).trim_start();
                     // Parse quoted or unquoted value
-                    let slug = if after.starts_with('"') {
-                        after[1..].split('"').next().unwrap_or_default()
+                    let slug = if let Some(stripped) = after.strip_prefix('"') {
+                        stripped.split('"').next().unwrap_or_default()
                     } else {
                         after.split_whitespace().next().unwrap_or_default()
                     };
@@ -286,7 +286,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
                             if !hk_key.is_empty() {
                                 // Remove any conflicting binding that uses the same key combo
-                                if let Some(conflict) = file.find_conflict(&hk_mods.trim(), &hk_key, "", None) {
+                                if let Some(conflict) = file.find_conflict(hk_mods.trim(), &hk_key, "", None) {
                                     file.remove(conflict.index);
                                 }
 

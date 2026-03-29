@@ -25,6 +25,7 @@ pub struct WifiNetwork {
     /// Human-readable network name.
     pub ssid: String,
     /// MAC address of the access point (may be empty if hidden).
+    #[allow(dead_code)]
     pub bssid: String,
     /// Signal strength 0–100 (as reported by nmcli).
     pub signal: i32,

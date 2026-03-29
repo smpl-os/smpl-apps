@@ -70,6 +70,7 @@ impl SecretString {
 
     /// Number of UTF-8 bytes.
     #[inline]
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
