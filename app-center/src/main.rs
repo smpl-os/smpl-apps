@@ -8,6 +8,8 @@ use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
 
 slint::include_modules!();
 
@@ -114,9 +116,15 @@ fn main() -> Result<(), slint::PlatformError> {
     let state: Rc<RefCell<Vec<AppEntry>>> = Rc::new(RefCell::new(Vec::new()));
     let model = Rc::new(VecModel::<AppItem>::default());
 
-    // -- Search callback --
+    // -- Async search infrastructure --
+    let (search_tx, search_rx) = mpsc::channel::<(usize, Vec<AppEntry>)>();
+    let search_gen = Arc::new(AtomicUsize::new(0));
+
+    // -- Search callback (async) --
     {
         let ui_weak = ui.as_weak();
+        let search_tx = search_tx.clone();
+        let search_gen = search_gen.clone();
         let state = state.clone();
         let model = model.clone();
         ui.on_search(move |query| {
@@ -124,28 +132,39 @@ fn main() -> Result<(), slint::PlatformError> {
             let q = query.to_string();
 
             if q.is_empty() {
+                // Cancel any in-flight search
+                search_gen.fetch_add(1, Ordering::SeqCst);
+                ui.set_searching(false);
+                ui.set_spinner_frame(0);
                 update_results(&ui, &state, &model, Vec::new());
                 return;
             }
 
             ui.set_searching(true);
 
+            let gen = search_gen.fetch_add(1, Ordering::SeqCst) + 1;
             let aur = ui.get_filter_aur();
             let flatpak = ui.get_filter_flatpak();
             let appimage = ui.get_filter_appimage();
             let pacman = ui.get_filter_pacman();
+            let tx = search_tx.clone();
+            let gen_check = search_gen.clone();
 
-            // Run search (blocking but fast for AUR/Pacman; local for cached Flatpak/AppImage)
-            let results = do_search(&q, aur, flatpak, appimage, pacman);
-            update_results(&ui, &state, &model, results);
+            std::thread::spawn(move || {
+                let results = do_search(&q, aur, flatpak, appimage, pacman);
+                // Only send if this generation is still current
+                if gen_check.load(Ordering::SeqCst) == gen {
+                    let _ = tx.send((gen, results));
+                }
+            });
         });
     }
 
-    // -- Filter changed: re-run current search --
+    // -- Filter changed: re-run current search (async) --
     {
         let ui_weak = ui.as_weak();
-        let state = state.clone();
-        let model = model.clone();
+        let search_tx = search_tx.clone();
+        let search_gen = search_gen.clone();
         ui.on_filter_changed(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let q = ui.get_search_text().to_string();
@@ -153,38 +172,64 @@ fn main() -> Result<(), slint::PlatformError> {
                 return;
             }
 
+            ui.set_searching(true);
+
+            let gen = search_gen.fetch_add(1, Ordering::SeqCst) + 1;
             let aur = ui.get_filter_aur();
             let flatpak = ui.get_filter_flatpak();
             let appimage = ui.get_filter_appimage();
             let pacman = ui.get_filter_pacman();
+            let tx = search_tx.clone();
+            let gen_check = search_gen.clone();
 
-            let results = do_search(&q, aur, flatpak, appimage, pacman);
-            update_results(&ui, &state, &model, results);
+            std::thread::spawn(move || {
+                let results = do_search(&q, aur, flatpak, appimage, pacman);
+                if gen_check.load(Ordering::SeqCst) == gen {
+                    let _ = tx.send((gen, results));
+                }
+            });
         });
     }
 
-    // -- Tab switching --
+    // -- Tab switching (async for search) --
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         let model = model.clone();
+        let search_tx = search_tx.clone();
+        let search_gen = search_gen.clone();
         ui.on_switch_tab(move |tab_index| {
             let Some(ui) = ui_weak.upgrade() else { return };
 
             if tab_index == 1 {
+                // Recommended tab: local data, no need for async
+                search_gen.fetch_add(1, Ordering::SeqCst);
+                ui.set_searching(false);
                 let recommended = sources::recommended::get_recommended();
                 update_results(&ui, &state, &model, recommended);
             } else {
                 let q = ui.get_search_text().to_string();
                 if q.is_empty() {
+                    search_gen.fetch_add(1, Ordering::SeqCst);
+                    ui.set_searching(false);
                     update_results(&ui, &state, &model, Vec::new());
                 } else {
+                    ui.set_searching(true);
+
+                    let gen = search_gen.fetch_add(1, Ordering::SeqCst) + 1;
                     let aur = ui.get_filter_aur();
                     let flatpak = ui.get_filter_flatpak();
                     let appimage = ui.get_filter_appimage();
                     let pacman = ui.get_filter_pacman();
-                    let results = do_search(&q, aur, flatpak, appimage, pacman);
-                    update_results(&ui, &state, &model, results);
+                    let tx = search_tx.clone();
+                    let gen_check = search_gen.clone();
+
+                    std::thread::spawn(move || {
+                        let results = do_search(&q, aur, flatpak, appimage, pacman);
+                        if gen_check.load(Ordering::SeqCst) == gen {
+                            let _ = tx.send((gen, results));
+                        }
+                    });
                 }
             }
         });
@@ -527,6 +572,54 @@ fn main() -> Result<(), slint::PlatformError> {
             },
         );
         std::mem::forget(timer);
+    }
+
+    // -- Poll for async search results --
+    {
+        let ui_weak = ui.as_weak();
+        let state = state.clone();
+        let model = model.clone();
+        let search_gen = search_gen.clone();
+        let search_poll = slint::Timer::default();
+        search_poll.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(50),
+            move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let current_gen = search_gen.load(Ordering::SeqCst);
+                // Drain channel, keep only the latest matching result
+                let mut latest: Option<Vec<AppEntry>> = None;
+                while let Ok((gen, results)) = search_rx.try_recv() {
+                    if gen == current_gen {
+                        latest = Some(results);
+                    }
+                }
+                if let Some(results) = latest {
+                    update_results(&ui, &state, &model, results);
+                }
+            },
+        );
+        std::mem::forget(search_poll);
+    }
+
+    // -- Spinner animation timer --
+    {
+        let ui_weak = ui.as_weak();
+        let spinner_timer = slint::Timer::default();
+        spinner_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(250),
+            move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                if ui.get_searching() {
+                    let frame = ui.get_spinner_frame();
+                    ui.set_spinner_frame(frame + 1);
+                } else if ui.get_spinner_frame() != 0 {
+                    ui.set_spinner_frame(0);
+                }
+            },
+        );
+        std::mem::forget(spinner_timer);
     }
 
     ui.invoke_focus_search();
