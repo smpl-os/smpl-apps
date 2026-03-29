@@ -590,6 +590,7 @@ export component MainWindow inherits Window {
     in-out property <float> disp-selected-scale: 1.0;
     in property <string> disp-status-text: "Ready";
     in property <bool> disp-has-changes: false;
+    in-out property <bool> disp-window-guard: true;
 
     // ── Power tab properties ──
     in-out property <int> power-profile-index: 1;
@@ -688,6 +689,7 @@ export component MainWindow inherits Window {
     callback disp-revert-changes();
     callback disp-refresh-monitors();
     callback disp-identify-monitors();
+    callback disp-set-window-guard(bool);
 
     // Power
     callback set-power-profile(int);
@@ -2490,6 +2492,72 @@ export component MainWindow inherits Window {
                                         clicked => {
                                             root.disp-set-primary(root.disp-selected-index);
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Keep windows on-screen card ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 10px;
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                alignment: center;
+
+                                Text {
+                                    text: "Keep windows on-screen";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                }
+
+                                Text {
+                                    text: "Snap floating windows back if they end up outside the visible area";
+                                    color: Theme.fg_dim;
+                                    font-size: 10px;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                width: 42px;
+
+                                Rectangle {
+                                    width: 38px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: root.disp-window-guard
+                                        ? Theme.accent
+                                        : Theme.bg_lighter;
+
+                                    Rectangle {
+                                        x: root.disp-window-guard ? parent.width - self.width - 2px : 2px;
+                                        y: 2px;
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: root.disp-window-guard
+                                            ? Theme.bg
+                                            : Theme.fg_dim;
+
+                                        animate x { duration: 150ms; easing: ease-in-out; }
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.disp-window-guard = !root.disp-window-guard;
+                                            root.disp-set-window-guard(root.disp-window-guard);
+                                        }
+                                        mouse-cursor: pointer;
                                     }
                                 }
                             }

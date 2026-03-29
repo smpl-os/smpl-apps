@@ -429,6 +429,80 @@ fn push_display_state_to_ui(ui: &MainWindow, state: &DisplayState) {
     }
 }
 
+// ── Window guard helpers ─────────────────────────────────────────────────────
+
+fn display_conf_path() -> std::path::PathBuf {
+    let mut p = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    p.push(".config/smplos/display.conf");
+    p
+}
+
+fn read_display_conf() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(data) = std::fs::read_to_string(display_conf_path()) {
+        for line in data.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                map.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    map
+}
+
+fn write_display_conf(map: &std::collections::HashMap<String, String>) {
+    let path = display_conf_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::File::create(&path) {
+        use std::io::Write;
+        let mut pairs: Vec<_> = map.iter().collect();
+        pairs.sort_by_key(|(k, _)| k.to_owned());
+        for (k, v) in pairs {
+            let _ = writeln!(f, "{}={}", k, v);
+        }
+    }
+}
+
+/// Read window-guard enabled setting (default: true).
+fn window_guard_enabled() -> bool {
+    let map = read_display_conf();
+    map.get("window_guard")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true) // on by default
+}
+
+/// Persist and apply window-guard toggle.
+fn set_window_guard(enabled: bool) {
+    let mut map = read_display_conf();
+    map.insert("window_guard".to_string(), if enabled { "true" } else { "false" }.to_string());
+    write_display_conf(&map);
+
+    if enabled {
+        // Start window-guard if not already running
+        let already_running = std::process::Command::new("pgrep")
+            .args(["-f", "window-guard"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !already_running {
+            let _ = std::process::Command::new("bash")
+                .arg("-c")
+                .arg("window-guard &")
+                .spawn();
+        }
+    } else {
+        // Stop window-guard
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "window-guard"])
+            .output();
+    }
+}
+
 // ── Power + About helpers ────────────────────────────────────────────────────
 
 fn is_power_profiles_available() -> bool {
@@ -1132,6 +1206,9 @@ fn main() -> Result<(), slint::PlatformError> {
         disp_state.borrow().monitors.len()
     )));
 
+    // Load window-guard toggle state
+    ui.set_disp_window_guard(window_guard_enabled());
+
     // ── Power tab init ───────────────────────────────────────────────────────
 
     {
@@ -1802,6 +1879,11 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     }
+
+    // Window guard toggle
+    ui.on_disp_set_window_guard(move |enabled| {
+        set_window_guard(enabled);
+    });
 
     // ── Power callbacks ──────────────────────────────────────────────────────
 
