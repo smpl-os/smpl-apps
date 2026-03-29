@@ -103,12 +103,7 @@ pub fn scan_webapps() -> Vec<WebApp> {
 /// Parse a flag value from an Exec= line, handling both quoted and unquoted forms.
 fn parse_exec_flag(exec: &str, flag: &str) -> Option<String> {
     let idx = exec.find(flag)?;
-    let mut after = &exec[idx + flag.len()..];
-    // If the flag was inside quotes (e.g. "--name"), skip the trailing quote
-    if after.starts_with('"') {
-        after = &after[1..];
-    }
-    let after = after.trim_start();
+    let after = &exec[idx + flag.len()..].trim_start();
 
     if after.starts_with('"') {
         // Quoted value

@@ -109,17 +109,18 @@ impl DisplayBackend for HyprlandBackend {
             .join(";");
 
         // Stop Eww BEFORE applying monitor changes to avoid windows appearing
-        // on wrong monitors during the transition.
+        // on wrong monitors during the transition
         let _ = Command::new("bash")
             .args(["-c", "bar-ctl stop 2>/dev/null"])
             .output();
 
+        // Apply monitor changes
         self.hyprctl(&["--batch", &batch])?;
 
-        // Wait for Hyprland to settle monitor topology before reopening Eww.
+        // Wait a moment for Hyprland to stabilize the new layout
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // Restart Eww synchronously after monitor changes are stable.
+        // Restart Eww AFTER monitor changes are applied and stabilized
         let _ = Command::new("bash")
             .args(["-c", "bar-ctl start 2>/dev/null"])
             .output();

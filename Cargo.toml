@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version    = "0.3.16"
+version    = "0.3.17"
 edition    = "2021"
 authors    = ["smplOS <https://github.com/smpl-os>"]
 license    = "MIT"
@@ -56,10 +56,6 @@ zvariant = "3.0"
 # Async (sync-center)
 tokio   = { version = "1", features = ["full"] }
 futures = "0.3"
-
-# QR code generation (settings wifi tab)
-qrcode  = "0.14"
-zeroize = { version = "1", features = ["derive"] }  # audited memory-clearing for passwords
 
 # Logging (sync-center)
 tracing            = "0.1"

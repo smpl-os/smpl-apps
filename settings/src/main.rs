@@ -2,10 +2,8 @@ mod dictation;
 mod display;
 mod keybindings;
 mod layouts;
-mod startup;
 mod taskbar;
 mod theme;
-mod wifi;
 mod xkb_labels;
 
 use display::backend::DisplayBackend;
@@ -25,40 +23,9 @@ macro_rules! debug_log {
 }
 pub(crate) use debug_log;
 
-// ── Highlight blink animation ────────────────────────────────────────────────
-
-/// Blink the highlight border 5 times with smooth fade-in/fade-out.
-/// Total duration: 5 blinks × 1s = 5 seconds, then clears.
-fn start_highlight_blink(ui: &MainWindow) {
-    let ui_weak = ui.as_weak();
-    let blink_count = Rc::new(RefCell::new(0u32));
-    let timer = slint::Timer::default();
-    // Start with blink on
-    ui.set_highlight_blink_on(true);
-    let blink_count2 = blink_count.clone();
-    timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(500),
-        move || {
-            let Some(ui) = ui_weak.upgrade() else { return; };
-            let mut count = blink_count2.borrow_mut();
-            *count += 1;
-            if *count >= 10 {
-                // 5 full on/off cycles done — clear
-                ui.set_highlight_blink_on(false);
-                ui.set_highlight_setting(slint::SharedString::default());
-                return;
-            }
-            // Toggle blink
-            ui.set_highlight_blink_on((*count).is_multiple_of(2));
-        },
-    );
-    std::mem::forget(timer);
-}
-
 // ── Single-instance guard ────────────────────────────────────────────────────
 
-fn acquire_single_instance(tab: i32, highlight: &str) {
+fn acquire_single_instance() {
     use std::os::unix::io::AsRawFd;
     let run_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     let lock_path = format!("{}/settings.lock", run_dir);
@@ -75,11 +42,6 @@ fn acquire_single_instance(tab: i32, highlight: &str) {
     let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
     if ret != 0 {
         eprintln!("[settings] another instance is already running — bringing it to focus");
-        // Write deep-link file so the running instance can navigate
-        if !highlight.is_empty() {
-            let deeplink_path = format!("{}/settings-deeplink", run_dir);
-            let _ = std::fs::write(&deeplink_path, format!("{}\n{}", tab, highlight));
-        }
         // Bring the existing window to the foreground
         let _ = std::process::Command::new("hyprctl")
             .args(["dispatch", "focuswindow", "class:settings"])
@@ -87,105 +49,6 @@ fn acquire_single_instance(tab: i32, highlight: &str) {
         std::process::exit(0);
     }
     std::mem::forget(file);
-}
-
-// ── Settings search index export ─────────────────────────────────────────────
-
-fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
-    vec![
-        // About
-        ("About smplOS", "about", 0),
-        ("Version", "about", 0),
-        ("Hostname", "about", 0),
-        ("Kernel", "about", 0),
-        ("Uptime", "about", 0),
-        ("Compositor", "about", 0),
-        // Keyboard
-        ("Keyboard Layout", "keyboard", 1),
-        ("Add Layout", "keyboard", 1),
-        ("Remove Layout", "keyboard", 1),
-        ("XKB Layout", "keyboard", 1),
-        ("Input Language", "keyboard", 1),
-        ("Keyboard Preview", "keyboard", 1),
-        // Dictation
-        ("Dictation", "dictation", 2),
-        ("Speech to Text", "dictation", 2),
-        ("Whisper", "dictation", 2),
-        ("Voice Input", "dictation", 2),
-        ("Language Model", "dictation", 2),
-        ("Microphone", "dictation", 2),
-        // Display
-        ("Display", "display", 3),
-        ("Monitor", "display", 3),
-        ("Resolution", "display", 3),
-        ("Scale", "display", 3),
-        ("Primary Monitor", "display", 3),
-        ("Screen Layout", "display", 3),
-        ("Refresh Rate", "display", 3),
-        // Power
-        ("Power Profile", "power", 4),
-        ("Power Saver", "power", 4),
-        ("Balanced", "power", 4),
-        ("Performance", "power", 4),
-        ("Lock Screen Timeout", "power", 4),
-        ("Screen Off Timeout", "power", 4),
-        ("Suspend Timeout", "power", 4),
-        ("Shutdown After", "power", 4),
-        ("Sleep", "power", 4),
-        // Keybindings
-        ("Keybindings", "keybindings", 5),
-        ("Keyboard Shortcuts", "keybindings", 5),
-        ("Hotkeys", "keybindings", 5),
-        ("Shortcut", "keybindings", 5),
-        // Taskbar
-        ("Workspace Count", "taskbar", 6),
-        ("Workspace Position", "taskbar", 6),
-        ("Workspace Spacing", "taskbar", 6),
-        ("Workspace Style", "taskbar", 6),
-        ("Clock Format", "taskbar", 6),
-        ("Time Format", "taskbar", 6),
-        ("Date Format", "taskbar", 6),
-        ("24-hour", "taskbar", 6),
-        ("AM PM", "taskbar", 6),
-        // Wi-Fi
-        ("Wi-Fi", "wifi", 7),
-        ("WiFi", "wifi", 7),
-        ("Wireless", "wifi", 7),
-        ("Connect Wi-Fi", "wifi", 7),
-        ("Wi-Fi Password", "wifi", 7),
-        ("Network", "wifi", 7),
-        ("QR Code Wi-Fi", "wifi", 7),
-        ("Share Wi-Fi", "wifi", 7),
-        ("Scan QR", "wifi", 7),
-        // Startup
-        ("Startup Apps", "startup", 8),
-        ("Autostart", "startup", 8),
-        ("Startup", "startup", 8),
-        ("Boot Apps", "startup", 8),
-        ("Login Apps", "startup", 8),
-        ("Daemons", "startup", 8),
-        ("Services", "startup", 8),
-        ("Background Services", "startup", 8),
-    ]
-}
-
-fn export_settings_index() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let cache_dir = format!("{}/.cache/smplos", home);
-    let _ = std::fs::create_dir_all(&cache_dir);
-    let path = format!("{}/settings_index", cache_dir);
-
-    let lines: Vec<String> = settings_search_index()
-        .iter()
-        .map(|(label, tab, _idx)| {
-            format!(
-                "{};settings --tab {} --highlight \"{}\";settings;",
-                label, tab, label
-            )
-        })
-        .collect();
-
-    let _ = std::fs::write(&path, lines.join("\n") + "\n");
 }
 
 // ── Theme application ────────────────────────────────────────────────────────
@@ -429,80 +292,6 @@ fn push_display_state_to_ui(ui: &MainWindow, state: &DisplayState) {
     }
 }
 
-// ── Window guard helpers ─────────────────────────────────────────────────────
-
-fn display_conf_path() -> std::path::PathBuf {
-    let mut p = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    p.push(".config/smplos/display.conf");
-    p
-}
-
-fn read_display_conf() -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    if let Ok(data) = std::fs::read_to_string(display_conf_path()) {
-        for line in data.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((k, v)) = line.split_once('=') {
-                map.insert(k.trim().to_string(), v.trim().to_string());
-            }
-        }
-    }
-    map
-}
-
-fn write_display_conf(map: &std::collections::HashMap<String, String>) {
-    let path = display_conf_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::File::create(&path) {
-        use std::io::Write;
-        let mut pairs: Vec<_> = map.iter().collect();
-        pairs.sort_by_key(|(k, _)| k.to_owned());
-        for (k, v) in pairs {
-            let _ = writeln!(f, "{}={}", k, v);
-        }
-    }
-}
-
-/// Read window-guard enabled setting (default: true).
-fn window_guard_enabled() -> bool {
-    let map = read_display_conf();
-    map.get("window_guard")
-        .map(|v| v != "false" && v != "0")
-        .unwrap_or(true) // on by default
-}
-
-/// Persist and apply window-guard toggle.
-fn set_window_guard(enabled: bool) {
-    let mut map = read_display_conf();
-    map.insert("window_guard".to_string(), if enabled { "true" } else { "false" }.to_string());
-    write_display_conf(&map);
-
-    if enabled {
-        // Start window-guard if not already running
-        let already_running = std::process::Command::new("pgrep")
-            .args(["-f", "window-guard"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !already_running {
-            let _ = std::process::Command::new("bash")
-                .arg("-c")
-                .arg("window-guard &")
-                .spawn();
-        }
-    } else {
-        // Stop window-guard
-        let _ = std::process::Command::new("pkill")
-            .args(["-f", "window-guard"])
-            .output();
-    }
-}
-
 // ── Power + About helpers ────────────────────────────────────────────────────
 
 fn is_power_profiles_available() -> bool {
@@ -537,8 +326,9 @@ fn set_power_profile(profile: &str) {
 // ── Hypridle (idle timeouts) ─────────────────────────────────────────────────
 
 // Preset arrays: index → seconds (0 = disabled/never)
-// New unified presets: 1min, 5min, 10min, 30min, Never, 1h, 2h, 3h, 5h, 8h
-const IDLE_PRESETS: &[u32] = &[60, 300, 600, 1800, 0, 3600, 7200, 10800, 18000, 28800];
+const LOCK_PRESETS: &[u32] = &[60, 120, 300, 600, 900, 1800, 0];    // 1,2,5,10,15,30 min, Never
+const DPMS_PRESETS: &[u32] = &[60, 120, 300, 600, 900, 1800, 0];    // 1,2,5,10,15,30 min, Never
+const SUSPEND_PRESETS: &[u32] = &[300, 600, 900, 1800, 3600, 0];     // 5,10,15,30,60 min, Never
 
 fn hypridle_config_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
@@ -553,9 +343,9 @@ fn read_hypridle_timeouts() -> (u32, u32, u32) {
         Err(_) => return (300, 330, 600), // defaults
     };
 
-    let mut lock = 0u32;
-    let mut dpms = 0u32;
-    let mut suspend = 0u32;
+    let mut lock = 300u32;
+    let mut dpms = 330u32;
+    let mut suspend = 600u32;
 
     // Simple parser: find listener blocks and identify by on-timeout command
     let mut in_listener = false;
@@ -594,13 +384,12 @@ fn read_hypridle_timeouts() -> (u32, u32, u32) {
 /// Find closest preset index for a given timeout value
 fn timeout_to_index(secs: u32, presets: &[u32]) -> i32 {
     if secs == 0 {
-        // "Never" is index 4
-        return 4;
+        return (presets.len() - 1) as i32; // "Never" is always last
     }
     presets
         .iter()
         .enumerate()
-        .filter(|(_, &v)| v > 0)
+        .filter(|(_, &v)| v > 0) // skip the "never" entry when comparing
         .min_by_key(|(_, &v)| (v as i64 - secs as i64).unsigned_abs())
         .map(|(i, _)| i as i32)
         .unwrap_or(2) // default to middle
@@ -664,31 +453,6 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-}
-
-/// Schedule a system shutdown after `secs` seconds (0 = cancel any pending shutdown).
-fn schedule_shutdown(secs: u32) {
-    // Cancel any existing scheduled shutdown first (non-blocking, null stdin to avoid sudo hang)
-    let _ = std::process::Command::new("shutdown")
-        .args(["-c"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-
-    if secs == 0 {
-        debug_log!("[settings] shutdown timer cancelled");
-        return;
-    }
-
-    let mins = secs.div_ceil(60); // round up to minutes
-    let _ = std::process::Command::new("shutdown")
-        .args(["-h", &format!("+{}", mins)])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    debug_log!("[settings] shutdown scheduled in {} minutes", mins);
 }
 
 fn get_about_info() -> (String, String, String, String, String, String, String) {
@@ -910,61 +674,16 @@ fn slint_key_to_hyprland(text: &str) -> String {
     result
 }
 
-// ── Startup helpers ──────────────────────────────────────────────────────────
-
-fn refresh_startup_items(ui: &MainWindow) {
-    let items = startup::list_items();
-    let entries: Vec<StartupEntry> = items
-        .iter()
-        .map(|i| StartupEntry {
-            name: i.name.clone().into(),
-            command: i.command.clone().into(),
-            source: i.source.clone().into(),
-            enabled: i.enabled,
-            toggleable: i.toggleable,
-            description: i.description.clone().into(),
-        })
-        .collect();
-    ui.set_startup_items(slint::ModelRc::from(Rc::new(slint::VecModel::from(entries))));
-    ui.set_startup_status_text(slint::SharedString::from(format!(
-        "{} items",
-        items.len()
-    )));
-}
-
-fn refresh_available_apps(ui: &MainWindow, filter: &str) {
-    let all_apps = startup::list_available_apps();
-    let filtered: Vec<startup::AvailableApp> = if filter.is_empty() {
-        all_apps
-    } else {
-        let q = filter.to_lowercase();
-        all_apps
-            .into_iter()
-            .filter(|a| {
-                a.name.to_lowercase().contains(&q) || a.description.to_lowercase().contains(&q)
-            })
-            .collect()
-    };
-    let entries: Vec<AvailableAppEntry> = filtered
-        .iter()
-        .map(|a| AvailableAppEntry {
-            name: a.name.clone().into(),
-            exec: a.exec.clone().into(),
-            desktop_file: a.desktop_file.clone().into(),
-            description: a.description.clone().into(),
-        })
-        .collect();
-    ui.set_startup_available_apps(slint::ModelRc::from(Rc::new(slint::VecModel::from(entries))));
-}
-
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), slint::PlatformError> {
-    // Parse CLI args early (before single-instance guard needs tab/highlight)
+    acquire_single_instance();
+    dictation::cleanup_stale_progress();
+
+    // Parse CLI args
     let mut initial_tab = 0;
     let mut initial_layout = "us".to_string();
     let mut initial_variant = String::new();
-    let mut initial_highlight = String::new();
     let mut use_demo = false;
 
     let args: Vec<String> = std::env::args().collect();
@@ -973,10 +692,6 @@ fn main() -> Result<(), slint::PlatformError> {
         match args[i].as_str() {
             "-v" | "--version" => {
                 println!("settings v{}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            "--export-index" => {
-                export_settings_index();
                 return Ok(());
             }
             "--tab" => {
@@ -989,16 +704,8 @@ fn main() -> Result<(), slint::PlatformError> {
                         "power" => 4,
                         "keybindings" => 5,
                         "taskbar" => 6,
-                        "wifi" => 7,
-                        "startup" => 8,
                         _ => 0,
                     };
-                    i += 1;
-                }
-            }
-            "--highlight" => {
-                if i + 1 < args.len() {
-                    initial_highlight = args[i + 1].clone();
                     i += 1;
                 }
             }
@@ -1019,21 +726,11 @@ fn main() -> Result<(), slint::PlatformError> {
         i += 1;
     }
 
-    acquire_single_instance(initial_tab, &initial_highlight);
-    dictation::cleanup_stale_progress();
-
-    // Export settings search index for start menu
-    export_settings_index();
-
     smpl_common::init("settings", 900.0, 560.0)?;
 
     let ui = MainWindow::new()?;
     apply_theme(&ui);
-    ui.set_active_tab(initial_tab);
-    if !initial_highlight.is_empty() {
-        ui.set_highlight_setting(slint::SharedString::from(&initial_highlight));
-        start_highlight_blink(&ui);
-    }
+    ui.set_initial_tab(initial_tab);
 
     // ── Keyboard tab init ────────────────────────────────────────────────────
 
@@ -1195,19 +892,11 @@ fn main() -> Result<(), slint::PlatformError> {
         debug_log!("[settings] failed to query monitors: {e}");
     }
     push_display_state_to_ui(&ui, &disp_state.borrow());
-    // Auto-select first monitor so controls are visible immediately
-    if !disp_state.borrow().monitors.is_empty() {
-        ui.set_disp_selected_index(0);
-        push_display_state_to_ui(&ui, &disp_state.borrow());
-    }
     ui.set_disp_status_text(slint::SharedString::from(format!(
         "Backend: {} | {} monitor(s)",
         disp_state.borrow().backend.name(),
         disp_state.borrow().monitors.len()
     )));
-
-    // Load window-guard toggle state
-    ui.set_disp_window_guard(window_guard_enabled());
 
     // ── Power tab init ───────────────────────────────────────────────────────
 
@@ -1228,10 +917,9 @@ fn main() -> Result<(), slint::PlatformError> {
 
         // Idle timeouts from hypridle.conf
         let (lock_s, dpms_s, suspend_s) = read_hypridle_timeouts();
-        ui.set_idle_lock_index(timeout_to_index(lock_s, IDLE_PRESETS));
-        ui.set_idle_dpms_index(timeout_to_index(dpms_s, IDLE_PRESETS));
-        ui.set_idle_suspend_index(timeout_to_index(suspend_s, IDLE_PRESETS));
-        ui.set_idle_shutdown_index(4); // Default: Never
+        ui.set_idle_lock_index(timeout_to_index(lock_s, LOCK_PRESETS));
+        ui.set_idle_dpms_index(timeout_to_index(dpms_s, DPMS_PRESETS));
+        ui.set_idle_suspend_index(timeout_to_index(suspend_s, SUSPEND_PRESETS));
     }
 
     // ── About tab init ───────────────────────────────────────────────────────
@@ -1265,31 +953,6 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_tb_ws_position_index(taskbar::ws_position_index());
     ui.set_tb_ws_spacing(taskbar::ws_spacing());
     ui.set_tb_ws_style_index(taskbar::ws_style_index());
-    ui.set_tb_clock_format_index(taskbar::clock_format());
-    ui.set_tb_clock_24h(taskbar::clock_24h());
-    ui.set_tb_clock_date_fmt_index(taskbar::clock_date_fmt());
-
-    // ── Wi-Fi tab init ────────────────────────────────────────────────────────
-    {
-        let networks = wifi::list_networks(false);
-        let entries: Vec<WifiEntry> = networks
-            .iter()
-            .map(|n| WifiEntry {
-                ssid: n.ssid.clone().into(),
-                signal: n.signal,
-                security: n.security.clone().into(),
-                connected: n.connected,
-                saved: n.saved,
-            })
-            .collect();
-        ui.set_wifi_networks(slint::ModelRc::from(Rc::new(slint::VecModel::from(entries))));
-        let current = wifi::get_current_ssid().unwrap_or_default();
-        ui.set_wifi_current_ssid(current.into());
-    }
-
-    // ── Startup tab init ──────────────────────────────────────────────────────
-
-    refresh_startup_items(&ui);
 
     // ══════════════════════════════════════════════════════════════════════════
     // CALLBACKS
@@ -1880,11 +1543,6 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Window guard toggle
-    ui.on_disp_set_window_guard(move |enabled| {
-        set_window_guard(enabled);
-    });
-
     // ── Power callbacks ──────────────────────────────────────────────────────
 
     ui.on_set_power_profile(move |idx| {
@@ -1897,19 +1555,33 @@ fn main() -> Result<(), slint::PlatformError> {
         set_power_profile(profile);
     });
 
+    ui.on_action_power_off(|| {
+        debug_log!("[settings] power off requested");
+        let _ = std::process::Command::new("systemctl").arg("poweroff").spawn();
+    });
+
+    ui.on_action_restart(|| {
+        debug_log!("[settings] restart requested");
+        let _ = std::process::Command::new("systemctl").arg("reboot").spawn();
+    });
+
+    ui.on_action_logout(|| {
+        debug_log!("[settings] logout requested");
+        // Try hyprctl first (Hyprland), fall back to loginctl
+        if std::process::Command::new("hyprctl").args(["dispatch", "exit"]).status().is_err() {
+            let _ = std::process::Command::new("loginctl").arg("terminate-user").arg(std::env::var("USER").unwrap_or_default()).spawn();
+        }
+    });
+
     // Helper: read current indices from UI, resolve to seconds, write config
     let write_idle = |ui: &MainWindow| {
         let lock_idx = ui.get_idle_lock_index() as usize;
         let dpms_idx = ui.get_idle_dpms_index() as usize;
         let susp_idx = ui.get_idle_suspend_index() as usize;
-        let shutdown_idx = ui.get_idle_shutdown_index() as usize;
-        let lock_s = IDLE_PRESETS.get(lock_idx).copied().unwrap_or(300);
-        let dpms_s = IDLE_PRESETS.get(dpms_idx).copied().unwrap_or(300);
-        let susp_s = IDLE_PRESETS.get(susp_idx).copied().unwrap_or(600);
-        let shutdown_s = IDLE_PRESETS.get(shutdown_idx).copied().unwrap_or(0);
+        let lock_s = LOCK_PRESETS.get(lock_idx).copied().unwrap_or(300);
+        let dpms_s = DPMS_PRESETS.get(dpms_idx).copied().unwrap_or(330);
+        let susp_s = SUSPEND_PRESETS.get(susp_idx).copied().unwrap_or(600);
         write_hypridle_config(lock_s, dpms_s, susp_s);
-        // Schedule shutdown timer
-        schedule_shutdown(shutdown_s);
     };
 
     {
@@ -1936,15 +1608,6 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_set_idle_suspend(move |_idx| {
             if let Some(ui) = ui_handle.upgrade() {
                 write_idle3(&ui);
-            }
-        });
-    }
-    let write_idle4 = write_idle;
-    {
-        let ui_handle = ui.as_weak();
-        ui.on_set_idle_shutdown(move |_idx| {
-            if let Some(ui) = ui_handle.upgrade() {
-                write_idle4(&ui);
             }
         });
     }
@@ -2243,559 +1906,76 @@ fn main() -> Result<(), slint::PlatformError> {
         taskbar::set_ws_style(idx);
     });
 
-    ui.on_tb_set_clock_format(|idx| {
-        taskbar::set_clock_format(idx);
-    });
-
-    ui.on_tb_set_clock_24h(|on| {
-        taskbar::set_clock_24h(on);
-    });
-
-    ui.on_tb_set_clock_date_fmt(|idx| {
-        taskbar::set_clock_date_fmt(idx);
-    });
-
-    // ── Wi-Fi callbacks ──────────────────────────────────────────────────────
-
-    /// Set `wifi-status` and derive `wifi-status-is-error` in one call.
-    fn wifi_set_status(ui: &MainWindow, msg: &str) {
-        let is_err = msg.starts_with("Failed")
-            || msg.starts_with("Cannot")
-            || msg.starts_with("Invalid")
-            || msg.starts_with("Scan failed")
-            || msg.starts_with("QR generation")
-            || msg.starts_with("Export failed");
-        ui.set_wifi_status(msg.into());
-        ui.set_wifi_status_is_error(is_err);
-    }
-
-    /// Convert a backend `wifi::WifiNetwork` into the Slint-generated `WifiEntry`.
-    fn to_wifi_entry(n: &wifi::WifiNetwork) -> WifiEntry {
-        WifiEntry {
-            ssid: n.ssid.clone().into(),
-            signal: n.signal,
-            security: n.security.clone().into(),
-            connected: n.connected,
-            saved: n.saved,
-        }
-    }
-
-    // ── Wi-Fi radio init ─────────────────────────────────────────────────
-    // Query the current radio state so the airplane toggle reflects reality.
-    match wifi::nmcli::get_wifi_radio_state() {
-        Ok(Some(enabled)) => {
-            // radio exists: airplane mode is the inverse of "enabled"
-            ui.set_wifi_airplane_mode(!enabled);
-            ui.set_wifi_no_hardware(false);
-        }
-        Ok(None) => {
-            // no wifi hardware or nmcli unavailable
-            ui.set_wifi_no_hardware(true);
-            ui.set_wifi_airplane_mode(false);
-        }
-        Err(e) => {
-            eprintln!("[settings] wifi radio state check failed: {}", e);
-            ui.set_wifi_no_hardware(false);
-        }
-    }
-
-    // List networks (fast, no active re-probe)
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_list(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                let networks = wifi::list_networks(false);
-                let entries: Vec<WifiEntry> = networks.iter().map(to_wifi_entry).collect();
-                ui.set_wifi_networks(slint::ModelRc::from(
-                    Rc::new(slint::VecModel::from(entries)),
-                ));
-                let current = wifi::get_current_ssid().unwrap_or_default();
-                ui.set_wifi_current_ssid(current.into());
-            }
-        });
-    }
-
-    // Active scan (background thread — keeps the UI responsive during the probe)
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_scan(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                if ui.get_wifi_scanning() {
-                    return;
-                }
-                ui.set_wifi_scanning(true);
-                wifi_set_status(&ui, "Scanning…");
-            }
-            let ui_weak2 = ui_weak.clone();
-            std::thread::spawn(move || {
-                let networks = wifi::list_networks(true);
-                let current = wifi::get_current_ssid().unwrap_or_default();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak2.upgrade() {
-                        let entries: Vec<WifiEntry> =
-                            networks.iter().map(to_wifi_entry).collect();
-                        ui.set_wifi_networks(slint::ModelRc::from(
-                            Rc::new(slint::VecModel::from(entries)),
-                        ));
-                        ui.set_wifi_current_ssid(current.into());
-                        ui.set_wifi_scanning(false);
-                        wifi_set_status(&ui, "");
-                    }
-                });
-            });
-        });
-    }
-
-    // Connect to a selected network
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_connect(move |network_idx, password, _security_idx| {
-            if let Some(ui) = ui_weak.upgrade() {
-                let networks_model = ui.get_wifi_networks();
-                let idx = network_idx as usize;
-                if network_idx < 0 || idx >= networks_model.row_count() {
-                    return;
-                }
-                let entry = networks_model.row_data(idx).unwrap();
-                let ssid = entry.ssid.as_str().to_string();
-                let is_open = entry.security.as_str() == "Open";
-                let password = wifi::SecretString::from(password.as_str());
-                ui.set_wifi_password_input("".into()); // clear UI copy immediately
-
-                ui.set_wifi_connecting(true);
-                wifi_set_status(&ui, &format!("Connecting to {}…", ssid));
-
-                let ui_weak2 = ui_weak.clone();
-                std::thread::spawn(move || {
-                    let result = if is_open {
-                        wifi::connect_open(&ssid)
-                    } else {
-                        wifi::connect(&ssid, password.as_str())
-                    };
-                    let status = match &result {
-                        Ok(_) => format!("Connected to {}", ssid),
-                        Err(e) => format!("Failed: {}", e),
-                    };
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_weak2.upgrade() {
-                            ui.set_wifi_connecting(false);
-                            wifi_set_status(&ui, &status);
-                            let nets = wifi::list_networks(false);
-                            let entries: Vec<WifiEntry> =
-                                nets.iter().map(to_wifi_entry).collect();
-                            ui.set_wifi_networks(slint::ModelRc::from(
-                                Rc::new(slint::VecModel::from(entries)),
-                            ));
-                            let curr = wifi::get_current_ssid().unwrap_or_default();
-                            ui.set_wifi_current_ssid(curr.into());
-                        }
-                    });
-                });
-            }
-        });
-    }
-
-    // Airplane mode toggle
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_set_airplane(move |enabled| {
-            let ui_weak2 = ui_weak.clone();
-            std::thread::spawn(move || {
-                let result = wifi::set_airplane_mode(enabled);
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak2.upgrade() {
-                        match result {
-                            Ok(_) => {
-                                let status = if enabled {
-                                    "Airplane mode on — Wi-Fi radio disabled"
-                                } else {
-                                    "Airplane mode off — Wi-Fi radio enabled"
-                                };
-                                wifi_set_status(&ui, status);
-                                if !enabled {
-                                    // Re-scan after radio comes back on
-                                    let nets = wifi::list_networks(false);
-                                    let entries: Vec<WifiEntry> =
-                                        nets.iter().map(to_wifi_entry).collect();
-                                    ui.set_wifi_networks(slint::ModelRc::from(
-                                        Rc::new(slint::VecModel::from(entries)),
-                                    ));
-                                    let curr = wifi::get_current_ssid().unwrap_or_default();
-                                    ui.set_wifi_current_ssid(curr.into());
-                                } else {
-                                    ui.set_wifi_networks(slint::ModelRc::from(
-                                        Rc::new(slint::VecModel::from(vec![])),
-                                    ));
-                                    ui.set_wifi_current_ssid("".into());
-                                }
-                            }
-                            Err(e) => {
-                                wifi_set_status(&ui, &format!("Airplane mode error: {}", e));
-                                // Revert the toggle on error
-                                ui.set_wifi_airplane_mode(!enabled);
-                            }
-                        }
-                    }
-                });
-            });
-        });
-    }
-
-    // Disconnect the Wi-Fi interface
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_disconnect(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                wifi_set_status(&ui, "Disconnecting…");
-                let ui_weak2 = ui_weak.clone();
-                std::thread::spawn(move || {
-                    let result = wifi::disconnect();
-                    let status = match result {
-                        Ok(_) => String::new(),
-                        Err(e) => format!("Failed: {}", e),
-                    };
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_weak2.upgrade() {
-                            wifi_set_status(&ui, &status);
-                            ui.set_wifi_current_ssid("".into());
-                            let nets = wifi::list_networks(false);
-                            let entries: Vec<WifiEntry> =
-                                nets.iter().map(to_wifi_entry).collect();
-                            ui.set_wifi_networks(slint::ModelRc::from(
-                                Rc::new(slint::VecModel::from(entries)),
-                            ));
-                        }
-                    });
-                });
-            }
-        });
-    }
-
-    // Forget a saved network profile
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_forget(move |network_idx| {
-            if let Some(ui) = ui_weak.upgrade() {
-                let networks_model = ui.get_wifi_networks();
-                let idx = network_idx as usize;
-                if network_idx < 0 || idx >= networks_model.row_count() {
-                    return;
-                }
-                let entry = networks_model.row_data(idx).unwrap();
-                let ssid = entry.ssid.as_str().to_string();
-                match wifi::forget_network(&ssid) {
-                    Ok(_) => {
-                        wifi_set_status(&ui, &format!("Forgot {}", ssid));
-                        ui.set_wifi_selected_idx(-1);
-                        let nets = wifi::list_networks(false);
-                        let entries: Vec<WifiEntry> =
-                            nets.iter().map(to_wifi_entry).collect();
-                        ui.set_wifi_networks(slint::ModelRc::from(
-                            Rc::new(slint::VecModel::from(entries)),
-                        ));
-                    }
-                    Err(e) => {
-                        wifi_set_status(&ui, &format!("Failed: {}", e));
-                    }
-                }
-            }
-        });
-    }
-
-    // Generate an in-memory QR code image for the selected network
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_generate_qr(move |network_idx| {
-            if let Some(ui) = ui_weak.upgrade() {
-                let networks_model = ui.get_wifi_networks();
-                let idx = network_idx as usize;
-                if network_idx < 0 || idx >= networks_model.row_count() {
-                    return;
-                }
-                let entry = networks_model.row_data(idx).unwrap();
-                let ssid = entry.ssid.as_str().to_string();
-                let security = entry.security.as_str().to_string();
-
-                // Prefer the user-typed password; fall back to the NM keyring.
-                let typed = ui.get_wifi_password_input();
-                let password_result: Result<wifi::SecretString, String> = if !typed.is_empty() {
-                    Ok(wifi::SecretString::from(typed.as_str()))
-                } else {
-                    wifi::get_saved_password(&ssid)
-                };
-                drop(typed); // drop SharedString ref so the UI copy can be cleared
-                let auth = wifi::WifiAuth::from_nmcli_security(&security);
-
-                match password_result {
-                    Ok(pass) => match wifi::generate_wifi_qr(&ssid, pass.as_str(), &auth) {
-                        Some((width, rgb_bytes)) => {
-                            let mut buf =
-                                slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, width);
-                            buf.make_mut_bytes().copy_from_slice(&rgb_bytes);
-                            ui.set_wifi_qr_image(slint::Image::from_rgb8(buf));
-                            ui.set_wifi_qr_visible(true);
-                            ui.set_wifi_qr_error("".into());
-                        }
-                        None => {
-                            ui.set_wifi_qr_error(
-                                "QR generation failed (data too long?)".into(),
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        ui.set_wifi_qr_error(
-                            format!("Cannot retrieve password: {}", e).into(),
-                        );
-                        // For open networks generate a no-password QR anyway.
-                        if matches!(auth, wifi::WifiAuth::Open) {
-                            if let Some((width, rgb_bytes)) =
-                                wifi::generate_wifi_qr(&ssid, "", &wifi::WifiAuth::Open)
-                            {
-                                let mut buf =
-                                    slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(
-                                        width, width,
-                                    );
-                                buf.make_mut_bytes().copy_from_slice(&rgb_bytes);
-                                ui.set_wifi_qr_image(slint::Image::from_rgb8(buf));
-                                ui.set_wifi_qr_visible(true);
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    // Connect from a pasted or scanned WIFI: URI string
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_apply_uri(move |uri| {
-            if let Some(ui) = ui_weak.upgrade() {
-                match wifi::parse_wifi_uri(uri.as_str()) {
-                    Some((ssid, password, _auth)) => {
-                        ui.set_wifi_connecting(true);
-                        wifi_set_status(&ui, &format!("Connecting to {}…", ssid));
-                        let ui_weak2 = ui_weak.clone();
-                        std::thread::spawn(move || {
-                            let result = if password.is_empty() {
-                                wifi::connect_open(&ssid)
-                            } else {
-                                wifi::connect(&ssid, password.as_str())
-                            };
-                            let status = match &result {
-                                Ok(_) => format!("Connected to {}", ssid),
-                                Err(e) => format!("Failed: {}", e),
-                            };
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = ui_weak2.upgrade() {
-                                    ui.set_wifi_connecting(false);
-                                    wifi_set_status(&ui, &status);
-                                    ui.set_wifi_uri_input("".into());
-                                    let nets = wifi::list_networks(false);
-                                    let entries: Vec<WifiEntry> =
-                                        nets.iter().map(to_wifi_entry).collect();
-                                    ui.set_wifi_networks(slint::ModelRc::from(
-                                        Rc::new(slint::VecModel::from(entries)),
-                                    ));
-                                    let curr = wifi::get_current_ssid().unwrap_or_default();
-                                    ui.set_wifi_current_ssid(curr.into());
-                                }
-                            });
-                        });
-                    }
-                    None => {
-                        wifi_set_status(&ui, "Invalid WIFI: QR code format");
-                    }
-                }
-            }
-        });
-    }
-
-    // Scan screen for QR code with grim + zbarimg
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_scan_screenshot(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                wifi_set_status(&ui, "Scanning screen for QR code…");
-                match wifi::nmcli::scan_screen_qr() {
-                    Ok(uri) if uri.starts_with("WIFI:") => {
-                        ui.set_wifi_uri_input(uri.into());
-                        wifi_set_status(
-                            &ui,
-                            "QR code found — press Connect to proceed.",
-                        );
-                    }
-                    Ok(_) => {
-                        wifi_set_status(
-                            &ui,
-                            "QR code found but it is not a Wi-Fi QR code.",
-                        );
-                    }
-                    Err(e) => {
-                        wifi_set_status(&ui, &format!("Scan failed: {}", e));
-                    }
-                }
-            }
-        });
-    }
-
-    // Export QR code to ~/Downloads/ as an SVG file
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_export_qr(move |network_idx| {
-            if let Some(ui) = ui_weak.upgrade() {
-                let networks_model = ui.get_wifi_networks();
-                let idx = network_idx as usize;
-                if network_idx < 0 || idx >= networks_model.row_count() {
-                    return;
-                }
-                let entry = networks_model.row_data(idx).unwrap();
-                let ssid = entry.ssid.as_str().to_string();
-                let security = entry.security.as_str().to_string();
-
-                let typed = ui.get_wifi_password_input();
-                let password_result: Result<wifi::SecretString, String> = if !typed.is_empty() {
-                    Ok(wifi::SecretString::from(typed.as_str()))
-                } else {
-                    wifi::get_saved_password(&ssid)
-                };
-                drop(typed);
-                let auth = wifi::WifiAuth::from_nmcli_security(&security);
-
-                match password_result {
-                    Ok(pass) => {
-                        let uri = wifi::wifi_uri(&ssid, pass.as_str(), &auth);
-                        let home =
-                            std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                        // Sanitise SSID for use as a filename.
-                        let safe: String = ssid
-                            .chars()
-                            .map(|c| {
-                                if c.is_alphanumeric() || c == '-' || c == '_' {
-                                    c
-                                } else {
-                                    '_'
-                                }
-                            })
-                            .collect();
-                        let _ = std::fs::create_dir_all(format!("{}/Downloads", home));
-                        let path = format!("{}/Downloads/wifi-{}.svg", home, safe);
-                        match wifi::export_qr_svg(uri.as_str(), &path) {
-                            Ok(_) => {
-                                wifi_set_status(
-                                    &ui,
-                                    &format!(
-                                        "Saved to ~/Downloads/wifi-{}.svg",
-                                        safe
-                                    ),
-                                );
-                                let _ = std::process::Command::new("xdg-open")
-                                    .arg(&path)
-                                    .spawn();
-                            }
-                            Err(e) => {
-                                wifi_set_status(
-                                    &ui,
-                                    &format!("Export failed: {}", e),
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        wifi_set_status(
-                            &ui,
-                            &format!("Cannot retrieve password: {}", e),
-                        );
-                    }
-                }
-            }
-        });
-    }
-
-    // ── Startup callbacks ────────────────────────────────────────────────────
-
-    {
-        let ui_handle = ui.as_weak();
-        ui.on_startup_load(move || {
-            let ui = ui_handle.unwrap();
-            refresh_startup_items(&ui);
-        });
-    }
-
-    {
-        let ui_handle = ui.as_weak();
-        ui.on_startup_toggle(move |idx, enable| {
-            let ui = ui_handle.unwrap();
-            let items = startup::list_items();
-            if let Some(item) = items.get(idx as usize) {
-                startup::toggle_item(item, enable);
-                refresh_startup_items(&ui);
-            }
-        });
-    }
-
-    {
-        let ui_handle = ui.as_weak();
-        ui.on_startup_add(move |idx| {
-            let ui = ui_handle.unwrap();
-            let apps = startup::list_available_apps();
-            if let Some(app) = apps.get(idx as usize) {
-                match startup::add_app(app) {
-                    Ok(()) => {
-                        refresh_startup_items(&ui);
-                        ui.set_startup_status_text(
-                            slint::SharedString::from(format!("Added {}", app.name)),
-                        );
-                    }
-                    Err(e) => {
-                        ui.set_startup_status_text(slint::SharedString::from(e));
-                    }
-                }
-            }
-        });
-    }
-
-    {
-        let ui_handle = ui.as_weak();
-        ui.on_startup_remove(move |idx| {
-            let ui = ui_handle.unwrap();
-            let items = startup::list_items();
-            if let Some(item) = items.get(idx as usize) {
-                if item.source == "xdg" {
-                    let _ = startup::remove_xdg_entry(&item.name);
-                    refresh_startup_items(&ui);
-                }
-            }
-        });
-    }
-
-    {
-        let ui_handle = ui.as_weak();
-        ui.on_startup_filter_apps(move |filter| {
-            let ui = ui_handle.unwrap();
-            refresh_available_apps(&ui, filter.as_str());
-        });
-    }
-
     // ── Search callback ──────────────────────────────────────────────────────
 
     {
-        fn tab_display_name(key: &str) -> &str {
-            match key {
-                "about" => "About",
-                "keyboard" => "Keyboard",
-                "dictation" => "Dictation",
-                "display" => "Display",
-                "power" => "Power",
-                "keybindings" => "Keybindings",
-                "taskbar" => "Taskbar",
-                "wifi" => "Wi-Fi",
-                "startup" => "Startup",
-                _ => key,
-            }
-        }
-
-        let search_index = settings_search_index();
+        // Searchable items: (label, tab_name, tab_index)
+        // Tab indices: About=0, Keyboard=1, Dictation=2, Display=3, Power=4, Keybindings=5, Taskbar=6
+        let search_index: Vec<(&str, &str, i32)> = vec![
+            // About
+            ("About smplOS", "About", 0),
+            ("Version", "About", 0),
+            ("Hostname", "About", 0),
+            ("Kernel", "About", 0),
+            ("Uptime", "About", 0),
+            ("Compositor", "About", 0),
+            // Keyboard
+            ("Keyboard Layout", "Keyboard", 1),
+            ("Add Layout", "Keyboard", 1),
+            ("Remove Layout", "Keyboard", 1),
+            ("XKB Layout", "Keyboard", 1),
+            ("Input Language", "Keyboard", 1),
+            ("Keyboard Preview", "Keyboard", 1),
+            // Dictation
+            ("Dictation", "Dictation", 2),
+            ("Speech to Text", "Dictation", 2),
+            ("Whisper", "Dictation", 2),
+            ("Voxtype", "Dictation", 2),
+            ("Voice Input", "Dictation", 2),
+            ("Language Model", "Dictation", 2),
+            ("Microphone", "Dictation", 2),
+            // Display
+            ("Display", "Display", 3),
+            ("Monitor", "Display", 3),
+            ("Resolution", "Display", 3),
+            ("Scale", "Display", 3),
+            ("Primary Monitor", "Display", 3),
+            ("Screen Layout", "Display", 3),
+            ("Refresh Rate", "Display", 3),
+            // Power
+            ("Power Profile", "Power", 4),
+            ("Power Saver", "Power", 4),
+            ("Balanced", "Power", 4),
+            ("Performance", "Power", 4),
+            ("Lock Screen Timeout", "Power", 4),
+            ("Screen Off Timeout", "Power", 4),
+            ("Suspend Timeout", "Power", 4),
+            ("Sleep", "Power", 4),
+            ("Idle", "Power", 4),
+            ("Power Off", "Power", 4),
+            ("Shut Down", "Power", 4),
+            ("Restart", "Power", 4),
+            ("Reboot", "Power", 4),
+            ("Log Out", "Power", 4),
+            // Keybindings
+            ("Keybindings", "Keybindings", 5),
+            ("Keyboard Shortcuts", "Keybindings", 5),
+            ("Hotkeys", "Keybindings", 5),
+            ("Key Binding", "Keybindings", 5),
+            ("Shortcut", "Keybindings", 5),
+            ("Rebind Key", "Keybindings", 5),
+            // Taskbar
+            ("Taskbar", "Taskbar", 6),
+            ("Workspace Count", "Taskbar", 6),
+            ("Workspace Position", "Taskbar", 6),
+            ("Workspace Spacing", "Taskbar", 6),
+            ("Workspace Style", "Taskbar", 6),
+            ("Numbers", "Taskbar", 6),
+            ("Squares", "Taskbar", 6),
+            ("Workspaces", "Taskbar", 6),
+            ("Bar", "Taskbar", 6),
+            ("EWW", "Taskbar", 6),
+        ];
 
         let ui_handle = ui.as_weak();
         ui.on_filter_search(move |query| {
@@ -2811,7 +1991,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 .filter(|(label, _, _)| fuzzy_match(label, &q))
                 .map(|(label, tab, idx)| SearchResult {
                     label: slint::SharedString::from(*label),
-                    tab_name: slint::SharedString::from(tab_display_name(tab)),
+                    tab_name: slint::SharedString::from(*tab),
                     tab_index: *idx,
                 })
                 .collect();
@@ -2820,35 +2000,6 @@ fn main() -> Result<(), slint::PlatformError> {
                 Rc::new(slint::VecModel::from(results)),
             ));
         });
-    }
-
-    // ── Deep-link polling timer ──────────────────────────────────────────────
-
-    {
-        let ui_weak = ui.as_weak();
-        let deeplink_timer = slint::Timer::default();
-        deeplink_timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_millis(500),
-            move || {
-                let run_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-                let path = format!("{}/settings-deeplink", run_dir);
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let _ = std::fs::remove_file(&path);
-                    let lines: Vec<&str> = content.lines().collect();
-                    if lines.len() >= 2 {
-                        if let (Ok(tab), highlight) = (lines[0].parse::<i32>(), lines[1].to_string()) {
-                            if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_active_tab(tab);
-                                ui.set_highlight_setting(slint::SharedString::from(&highlight));
-                                start_highlight_blink(&ui);
-                            }
-                        }
-                    }
-                }
-            },
-        );
-        std::mem::forget(deeplink_timer);
     }
 
     // ── Theme polling timer ──────────────────────────────────────────────────
