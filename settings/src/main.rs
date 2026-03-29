@@ -2,6 +2,7 @@ mod dictation;
 mod display;
 mod keybindings;
 mod layouts;
+mod startup;
 mod taskbar;
 mod theme;
 mod wifi;
@@ -156,6 +157,15 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("QR Code Wi-Fi", "wifi", 7),
         ("Share Wi-Fi", "wifi", 7),
         ("Scan QR", "wifi", 7),
+        // Startup
+        ("Startup Apps", "startup", 8),
+        ("Autostart", "startup", 8),
+        ("Startup", "startup", 8),
+        ("Boot Apps", "startup", 8),
+        ("Login Apps", "startup", 8),
+        ("Daemons", "startup", 8),
+        ("Services", "startup", 8),
+        ("Background Services", "startup", 8),
     ]
 }
 
@@ -826,6 +836,53 @@ fn slint_key_to_hyprland(text: &str) -> String {
     result
 }
 
+// ── Startup helpers ──────────────────────────────────────────────────────────
+
+fn refresh_startup_items(ui: &MainWindow) {
+    let items = startup::list_items();
+    let entries: Vec<StartupEntry> = items
+        .iter()
+        .map(|i| StartupEntry {
+            name: i.name.clone().into(),
+            command: i.command.clone().into(),
+            source: i.source.clone().into(),
+            enabled: i.enabled,
+            toggleable: i.toggleable,
+            description: i.description.clone().into(),
+        })
+        .collect();
+    ui.set_startup_items(slint::ModelRc::from(Rc::new(slint::VecModel::from(entries))));
+    ui.set_startup_status_text(slint::SharedString::from(format!(
+        "{} items",
+        items.len()
+    )));
+}
+
+fn refresh_available_apps(ui: &MainWindow, filter: &str) {
+    let all_apps = startup::list_available_apps();
+    let filtered: Vec<startup::AvailableApp> = if filter.is_empty() {
+        all_apps
+    } else {
+        let q = filter.to_lowercase();
+        all_apps
+            .into_iter()
+            .filter(|a| {
+                a.name.to_lowercase().contains(&q) || a.description.to_lowercase().contains(&q)
+            })
+            .collect()
+    };
+    let entries: Vec<AvailableAppEntry> = filtered
+        .iter()
+        .map(|a| AvailableAppEntry {
+            name: a.name.clone().into(),
+            exec: a.exec.clone().into(),
+            desktop_file: a.desktop_file.clone().into(),
+            description: a.description.clone().into(),
+        })
+        .collect();
+    ui.set_startup_available_apps(slint::ModelRc::from(Rc::new(slint::VecModel::from(entries))));
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -858,6 +915,8 @@ fn main() -> Result<(), slint::PlatformError> {
                         "power" => 4,
                         "keybindings" => 5,
                         "taskbar" => 6,
+                        "wifi" => 7,
+                        "startup" => 8,
                         _ => 0,
                     };
                     i += 1;
@@ -1150,6 +1209,10 @@ fn main() -> Result<(), slint::PlatformError> {
         let current = wifi::get_current_ssid().unwrap_or_default();
         ui.set_wifi_current_ssid(current.into());
     }
+
+    // ── Startup tab init ──────────────────────────────────────────────────────
+
+    refresh_startup_items(&ui);
 
     // ══════════════════════════════════════════════════════════════════════════
     // CALLBACKS
@@ -2567,6 +2630,71 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // ── Startup callbacks ────────────────────────────────────────────────────
+
+    {
+        let ui_handle = ui.as_weak();
+        ui.on_startup_load(move || {
+            let ui = ui_handle.unwrap();
+            refresh_startup_items(&ui);
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        ui.on_startup_toggle(move |idx, enable| {
+            let ui = ui_handle.unwrap();
+            let items = startup::list_items();
+            if let Some(item) = items.get(idx as usize) {
+                startup::toggle_item(item, enable);
+                refresh_startup_items(&ui);
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        ui.on_startup_add(move |idx| {
+            let ui = ui_handle.unwrap();
+            let apps = startup::list_available_apps();
+            if let Some(app) = apps.get(idx as usize) {
+                match startup::add_app(app) {
+                    Ok(()) => {
+                        refresh_startup_items(&ui);
+                        ui.set_startup_status_text(
+                            slint::SharedString::from(format!("Added {}", app.name)),
+                        );
+                    }
+                    Err(e) => {
+                        ui.set_startup_status_text(slint::SharedString::from(e));
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        ui.on_startup_remove(move |idx| {
+            let ui = ui_handle.unwrap();
+            let items = startup::list_items();
+            if let Some(item) = items.get(idx as usize) {
+                if item.source == "xdg" {
+                    let _ = startup::remove_xdg_entry(&item.name);
+                    refresh_startup_items(&ui);
+                }
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        ui.on_startup_filter_apps(move |filter| {
+            let ui = ui_handle.unwrap();
+            refresh_available_apps(&ui, filter.as_str());
+        });
+    }
+
     // ── Search callback ──────────────────────────────────────────────────────
 
     {
@@ -2580,6 +2708,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "keybindings" => "Keybindings",
                 "taskbar" => "Taskbar",
                 "wifi" => "Wi-Fi",
+                "startup" => "Startup",
                 _ => key,
             }
         }

@@ -57,6 +57,24 @@ struct BindingEntry {
     is-exec: bool,
 }
 
+/// A startup app or daemon shown in the Startup tab.
+struct StartupEntry {
+    name: string,
+    command: string,
+    source: string,
+    enabled: bool,
+    toggleable: bool,
+    description: string,
+}
+
+/// An installable app that can be added to autostart.
+struct AvailableAppEntry {
+    name: string,
+    exec: string,
+    desktop-file: string,
+    description: string,
+}
+
 /// A discovered Wi-Fi access point (mirrors wifi::WifiNetwork on the Rust side).
 struct WifiEntry {
     ssid: string,
@@ -620,6 +638,13 @@ export component MainWindow inherits Window {
     in-out property <bool> tb-clock-24h: false;          // true=24h, false=AM/PM
     in-out property <int>  tb-clock-date-fmt-index: 0;  // 0=M/D, 1=D/M, 2=ISO, 3=Mon D
 
+    // ── Startup tab properties ──
+    in property <[StartupEntry]> startup-items: [];
+    in property <[AvailableAppEntry]> startup-available-apps: [];
+    in-out property <bool> startup-show-add-dialog: false;
+    in-out property <string> startup-filter-text: "";
+    in property <string> startup-status-text: "";
+
     // ── Wi-Fi tab properties ──
     in property <[WifiEntry]> wifi-networks: [];
     in-out property <int>    wifi-selected-idx: -1;
@@ -692,6 +717,13 @@ export component MainWindow inherits Window {
     callback tb-set-clock-format(int);     // 0=time, 1=dow, 2=date
     callback tb-set-clock-24h(bool);       // true=24h, false=AM/PM
     callback tb-set-clock-date-fmt(int);   // 0=M/D, 1=D/M, 2=ISO, 3=Mon D
+
+    // Startup
+    callback startup-load();                // refresh startup items list
+    callback startup-toggle(int, bool);     // toggle item at index on/off
+    callback startup-add(int);              // add available app at index
+    callback startup-remove(int);           // remove startup item at index
+    callback startup-filter-apps(string);   // filter available apps list
 
     // Wi-Fi
     callback wifi-list();                  // fast refresh (no active rescan)
@@ -768,6 +800,11 @@ export component MainWindow inherits Window {
                 }
                 if root.kb-adding {
                     root.kb-adding = false;
+                    return accept;
+                }
+                if root.startup-show-add-dialog {
+                    root.startup-show-add-dialog = false;
+                    focus-scope.focus();
                     return accept;
                 }
                 root.close();
@@ -866,6 +903,7 @@ export component MainWindow inherits Window {
                 if e.text == "6" { root.active-tab = 5; root.kb-load(); return accept; }
                 if e.text == "7" { root.active-tab = 6; return accept; }
                 if e.text == "8" { root.active-tab = 7; root.wifi-list(); return accept; }
+                if e.text == "9" { root.active-tab = 8; root.startup-load(); return accept; }
             }
             reject
         }
@@ -1128,6 +1166,18 @@ export component MainWindow inherits Window {
                             root.active-tab = 7;
                             root.dropdown-open = false;
                             root.wifi-list();
+                            focus-scope.focus();
+                        }
+                    }
+
+                    TabButton {
+                        label: "Startup";
+                        icon: "\u{1F680}";
+                        active: root.active-tab == 8;
+                        clicked => {
+                            root.active-tab = 8;
+                            root.dropdown-open = false;
+                            root.startup-load();
                             focus-scope.focus();
                         }
                     }
@@ -5677,6 +5727,400 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // ══════════════════════════════════════════════════════════════
+            // STARTUP TAB
+            // ══════════════════════════════════════════════════════════════
+
+            if root.active-tab == 8: Rectangle {
+                width: parent.width;
+                height: parent.height;
+                clip: true;
+
+                tab8-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
+
+                VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 4px;
+                    spacing: 8px;
+
+                    // ── Header ──
+                    HorizontalLayout {
+                        height: 32px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Startup Apps & Services";
+                            color: Theme.fg;
+                            font-size: 14px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        // Add app button
+                        Rectangle {
+                            width: 80px;
+                            height: 28px;
+                            border-radius: 4px;
+                            background: startup-add-touch.has-hover ? Theme.accent : Theme.accent.transparentize(20%);
+
+                            Text {
+                                text: "+ Add";
+                                color: Theme.bg;
+                                font-size: 12px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+
+                            startup-add-touch := TouchArea {
+                                clicked => {
+                                    root.startup-show-add-dialog = !root.startup-show-add-dialog;
+                                    root.startup-filter-text = "";
+                                    if root.startup-show-add-dialog {
+                                        root.startup-filter-apps("");
+                                    }
+                                }
+                                mouse-cursor: pointer;
+                            }
+                        }
+                    }
+
+                    // ── Status text ──
+                    if root.startup-status-text != "": Text {
+                        text: root.startup-status-text;
+                        color: Theme.fg_dim;
+                        font-size: 11px;
+                    }
+
+                    // ── Add app panel (inline) ──
+                    if root.startup-show-add-dialog: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg.mix(Theme.bg_light, 50%);
+                        height: 320px;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+
+                            // Header
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Add to Startup";
+                                    color: Theme.fg;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+
+                                Rectangle {
+                                    width: 24px;
+                                    height: 24px;
+                                    border-radius: 4px;
+                                    background: startup-close-add-touch.has-hover ? Theme.bg_lighter : transparent;
+
+                                    Text {
+                                        text: "\u{2715}";
+                                        color: Theme.fg_dim;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 100%;
+                                        height: 100%;
+                                    }
+
+                                    startup-close-add-touch := TouchArea {
+                                        clicked => {
+                                            root.startup-show-add-dialog = false;
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            // Search filter
+                            Rectangle {
+                                height: 28px;
+                                border-radius: 4px;
+                                background: Theme.bg_light;
+
+                                startup-filter-input := TextInput {
+                                    x: 8px;
+                                    y: 0;
+                                    width: parent.width - 16px;
+                                    height: parent.height;
+                                    color: Theme.fg;
+                                    font-size: 12px;
+                                    text: root.startup-filter-text;
+                                    edited => {
+                                        root.startup-filter-text = self.text;
+                                        root.startup-filter-apps(self.text);
+                                    }
+                                }
+
+                                if root.startup-filter-text == "": Text {
+                                    x: 8px;
+                                    y: 0;
+                                    height: parent.height;
+                                    text: "Search apps...";
+                                    color: Theme.fg_dim;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Available apps list
+                            Flickable {
+                                vertical-stretch: 1;
+
+                                VerticalLayout {
+                                    spacing: 2px;
+
+                                    for app[idx] in root.startup-available-apps: Rectangle {
+                                        height: 36px;
+                                        border-radius: 4px;
+                                        background: startup-app-touch.has-hover ? Theme.accent.transparentize(70%) : transparent;
+
+                                        startup-app-touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                        }
+
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            spacing: 8px;
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                horizontal-stretch: 1;
+                                                spacing: 1px;
+
+                                                Text {
+                                                    text: app.name;
+                                                    color: Theme.fg;
+                                                    font-size: 12px;
+                                                    overflow: elide;
+                                                }
+
+                                                if app.description != "": Text {
+                                                    text: app.description;
+                                                    color: Theme.fg_dim;
+                                                    font-size: 9px;
+                                                    overflow: elide;
+                                                }
+                                            }
+
+                                            VerticalLayout {
+                                                alignment: center;
+                                                width: 40px;
+
+                                                Rectangle {
+                                                    width: 36px;
+                                                    height: 22px;
+                                                    border-radius: 4px;
+                                                    background: startup-app-add-touch.has-hover ? Theme.accent : Theme.accent.transparentize(30%);
+
+                                                    Text {
+                                                        text: "Add";
+                                                        color: Theme.bg;
+                                                        font-size: 10px;
+                                                        font-weight: 600;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                        width: 100%;
+                                                        height: 100%;
+                                                    }
+
+                                                    startup-app-add-touch := TouchArea {
+                                                        clicked => {
+                                                            root.startup-add(idx);
+                                                            root.startup-show-add-dialog = false;
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if root.startup-available-apps.length == 0: Text {
+                                        text: "No apps found";
+                                        color: Theme.fg_dim;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Startup items list ──
+                    for item[idx] in root.startup-items: Rectangle {
+                        height: 52px;
+                        border-radius: 6px;
+                        background: startup-item-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+
+                        startup-item-touch := TouchArea {
+                            mouse-cursor: default;
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 10px;
+
+                            // Source badge
+                            VerticalLayout {
+                                alignment: center;
+                                width: 18px;
+                                Text {
+                                    text: item.source == "hyprland" ? "\u{2699}" :
+                                          item.source == "systemd"  ? "\u{26A1}" :
+                                          "\u{1F4E6}";
+                                    font-size: 14px;
+                                    horizontal-alignment: center;
+                                    color: Theme.fg_dim;
+                                }
+                            }
+
+                            // Name + description
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+
+                                Text {
+                                    text: item.name;
+                                    color: Theme.fg;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    overflow: elide;
+                                }
+
+                                if item.description != "": Text {
+                                    text: item.description;
+                                    color: Theme.fg_dim;
+                                    font-size: 10px;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // Source label
+                            VerticalLayout {
+                                alignment: center;
+                                width: 60px;
+                                Text {
+                                    text: item.source;
+                                    color: Theme.fg_dim;
+                                    font-size: 9px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+
+                            // Toggle switch
+                            VerticalLayout {
+                                alignment: center;
+                                width: 42px;
+
+                                Rectangle {
+                                    width: 38px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: item.enabled
+                                        ? Theme.accent
+                                        : Theme.bg_lighter;
+                                    opacity: item.toggleable ? 1.0 : 0.4;
+
+                                    // Knob
+                                    Rectangle {
+                                        x: item.enabled ? parent.width - self.width - 2px : 2px;
+                                        y: 2px;
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: item.enabled
+                                            ? Theme.bg
+                                            : Theme.fg_dim;
+                                    }
+
+                                    if item.toggleable: TouchArea {
+                                        clicked => {
+                                            root.startup-toggle(idx, !item.enabled);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            // Remove button (only for xdg entries — user-added)
+                            if item.source == "xdg": VerticalLayout {
+                                alignment: center;
+                                width: 24px;
+
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 4px;
+                                    background: startup-rm-touch.has-hover ? Theme.danger.transparentize(50%) : transparent;
+
+                                    Text {
+                                        text: "\u{2715}";
+                                        color: startup-rm-touch.has-hover ? Theme.danger : Theme.fg_dim;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 100%;
+                                        height: 100%;
+                                    }
+
+                                    startup-rm-touch := TouchArea {
+                                        clicked => {
+                                            root.startup-remove(idx);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Empty state ──
+                    if root.startup-items.length == 0: Rectangle {
+                        height: 80px;
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: "No startup items found";
+                                color: Theme.fg_dim;
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Bottom spacer
+                    Rectangle { height: 20px; }
+
+                } // VerticalLayout
+                } // Flickable
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab8-flick.viewport-height;
+                    viewport-y: tab8-flick.viewport-y;
+                    visible-height: tab8-flick.height;
+                }
+            }
+
             } // ← close tab content wrapper
         }
     }
@@ -5730,7 +6174,7 @@ export component MainWindow inherits Window {
                             font-weight: 600;
                         }
                         Text {
-                            text: "1-8       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Set primary monitor\nEsc      Close overlay / app\n?         Toggle this Help";
+                            text: "1-9       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Set primary monitor\nEsc      Close overlay / app\n?         Toggle this Help";
                             color: Theme.fg;
                             font-size: 12px;
                             wrap: word-wrap;
