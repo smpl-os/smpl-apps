@@ -8,6 +8,7 @@ struct WebAppItem {
     vpn_required: bool,
     icon: string,
     marked: bool,
+    has_hotkey: bool,
 }
 
 export global Theme {
@@ -144,6 +145,25 @@ component ToggleRow inherits FocusScope {
                     }
                 }
             }
+        }
+    }
+}
+
+// Small indicator badge for the app list
+component Badge inherits Rectangle {
+    in property <string> label;
+    in property <color> badge-color;
+    height: 16px;
+    min-width: 16px;
+    border-radius: 3px;
+    background: badge-color.transparentize(0.7);
+    HorizontalLayout {
+        alignment: center;
+        Text {
+            text: root.label;
+            color: root.badge-color;
+            font-size: 9px;
+            vertical-alignment: center;
         }
     }
 }
@@ -771,79 +791,72 @@ export component MainWindow inherits Window {
                                                     }
                                                 }
 
-                                                VerticalLayout {
-                                                    alignment: center;
+                                                HorizontalLayout {
                                                     spacing: 2px;
-                                                    if app.clear_on_exit: Rectangle {
-                                                        height: 16px;
-                                                        min-width: 16px;
-                                                        border-radius: 3px;
-                                                        background: Theme.warning.transparentize(0.7);
-                                                        HorizontalLayout {
-                                                            alignment: center;
-                                                            Text {
-                                                                text: "C";
-                                                                color: Theme.warning;
-                                                                font-size: 9px;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
-                                                    if app.secure: Rectangle {
-                                                        height: 16px;
-                                                        min-width: 16px;
-                                                        border-radius: 3px;
-                                                        background: Theme.success.transparentize(0.7);
-                                                        HorizontalLayout {
-                                                            alignment: center;
-                                                            Text {
-                                                                text: "S";
-                                                                color: Theme.success;
-                                                                font-size: 9px;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
-                                                    if app.vpn_iface != "": Rectangle {
-                                                        height: 16px;
-                                                        min-width: 16px;
-                                                        border-radius: 3px;
-                                                        background: Theme.info.transparentize(0.7);
-                                                        HorizontalLayout {
-                                                            alignment: center;
-                                                            Text {
-                                                                text: "V";
-                                                                color: Theme.info;
-                                                                font-size: 9px;
-                                                                vertical-alignment: center;
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                                                    vertical-stretch: 0;
+                                                    horizontal-stretch: 0;
 
-                                                VerticalLayout {
-                                                    alignment: center;
-                                                    Rectangle {
-                                                        border-radius: Theme.button_radius;
-                                                        background: del_touch.has-hover ? Theme.danger : transparent;
-                                                        width: 24px;
-                                                        height: 24px;
-                                                        opacity: row_touch.has-hover || del_touch.has-hover ? 1.0 : 0.4;
-                                                        Text {
-                                                            text: "x";
-                                                            color: del_touch.has-hover ? Theme.bg : Theme.fg_dim;
-                                                            font-size: 14px;
-                                                            horizontal-alignment: center;
-                                                            vertical-alignment: center;
-                                                        }
-                                                        del_touch := TouchArea {
-                                                            clicked => {
-                                                                key_scope.focus();
-                                                                root.delete-app(index);
+                                                    property <int> cnt-c: app.clear_on_exit ? 1 : 0;
+                                                    property <int> cnt-s: app.secure ? 1 : 0;
+                                                    property <int> cnt-v: app.vpn_iface != "" ? 1 : 0;
+                                                    property <int> cnt-k: app.has_hotkey ? 1 : 0;
+                                                    property <int> cnt-p: app.vpn_required ? 1 : 0;
+                                                    property <int> total: cnt-c + cnt-s + cnt-v + cnt-k + cnt-p;
+                                                    property <int> pos-s: cnt-c;
+                                                    property <int> pos-v: cnt-c + cnt-s;
+                                                    property <int> pos-k: cnt-c + cnt-s + cnt-v;
+                                                    property <int> pos-p: cnt-c + cnt-s + cnt-v + cnt-k;
+
+                                                    if total >= 1: VerticalLayout {
+                                                        spacing: 2px;
+                                                        alignment: center;
+                                                        if app.clear_on_exit: Badge { label: "C"; badge-color: Theme.warning; }
+                                                        if app.secure && pos-s <= 1: Badge { label: "S"; badge-color: Theme.success; }
+                                                        if app.vpn_iface != "" && pos-v <= 1: Badge { label: "V"; badge-color: Theme.info; }
+                                                        if app.has_hotkey && pos-k <= 1: Badge { label: "K"; badge-color: Theme.accent; }
+                                                        if app.vpn_required && pos-p <= 1: Badge { label: "P"; badge-color: Theme.danger; }
+                                                    }
+
+                                                    if total >= 3: VerticalLayout {
+                                                        spacing: 2px;
+                                                        alignment: center;
+                                                        if app.secure && pos-s >= 2 && pos-s <= 3: Badge { label: "S"; badge-color: Theme.success; }
+                                                        if app.vpn_iface != "" && pos-v >= 2 && pos-v <= 3: Badge { label: "V"; badge-color: Theme.info; }
+                                                        if app.has_hotkey && pos-k >= 2 && pos-k <= 3: Badge { label: "K"; badge-color: Theme.accent; }
+                                                        if app.vpn_required && pos-p >= 2 && pos-p <= 3: Badge { label: "P"; badge-color: Theme.danger; }
+                                                    }
+
+                                                    if total >= 5: VerticalLayout {
+                                                        spacing: 2px;
+                                                        alignment: center;
+                                                        if app.vpn_required && pos-p >= 4: Badge { label: "P"; badge-color: Theme.danger; }
+                                                    }
+
+                                                    // Delete button
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        Rectangle {
+                                                            border-radius: Theme.button_radius;
+                                                            background: del_touch.has-hover ? Theme.danger : transparent;
+                                                            width: 24px;
+                                                            height: 24px;
+                                                            opacity: row_touch.has-hover || del_touch.has-hover ? 1.0 : 0.4;
+                                                            Text {
+                                                                text: "x";
+                                                                color: del_touch.has-hover ? Theme.bg : Theme.fg_dim;
+                                                                font-size: 14px;
+                                                                horizontal-alignment: center;
+                                                                vertical-alignment: center;
                                                             }
-                                                            scroll-event(event) => {
-                                                                root.scroll-by(event.delta-y);
-                                                                return accept;
+                                                            del_touch := TouchArea {
+                                                                clicked => {
+                                                                    key_scope.focus();
+                                                                    root.delete-app(index);
+                                                                }
+                                                                scroll-event(event) => {
+                                                                    root.scroll-by(event.delta-y);
+                                                                    return accept;
+                                                                }
                                                             }
                                                         }
                                                     }

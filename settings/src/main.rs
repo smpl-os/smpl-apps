@@ -4,6 +4,7 @@ mod keybindings;
 mod layouts;
 mod taskbar;
 mod theme;
+mod wifi;
 mod xkb_labels;
 
 use display::backend::DisplayBackend;
@@ -145,6 +146,16 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("Date Format", "taskbar", 6),
         ("24-hour", "taskbar", 6),
         ("AM PM", "taskbar", 6),
+        // Wi-Fi
+        ("Wi-Fi", "wifi", 7),
+        ("WiFi", "wifi", 7),
+        ("Wireless", "wifi", 7),
+        ("Connect Wi-Fi", "wifi", 7),
+        ("Wi-Fi Password", "wifi", 7),
+        ("Network", "wifi", 7),
+        ("QR Code Wi-Fi", "wifi", 7),
+        ("Share Wi-Fi", "wifi", 7),
+        ("Scan QR", "wifi", 7),
     ]
 }
 
@@ -1122,6 +1133,24 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_tb_clock_24h(taskbar::clock_24h());
     ui.set_tb_clock_date_fmt_index(taskbar::clock_date_fmt());
 
+    // ── Wi-Fi tab init ────────────────────────────────────────────────────────
+    {
+        let networks = wifi::list_networks(false);
+        let entries: Vec<WifiEntry> = networks
+            .iter()
+            .map(|n| WifiEntry {
+                ssid: n.ssid.clone().into(),
+                signal: n.signal,
+                security: n.security.clone().into(),
+                connected: n.connected,
+                saved: n.saved,
+            })
+            .collect();
+        ui.set_wifi_networks(slint::ModelRc::from(Rc::new(slint::VecModel::from(entries))));
+        let current = wifi::get_current_ssid().unwrap_or_default();
+        ui.set_wifi_current_ssid(current.into());
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     // CALLBACKS
     // ══════════════════════════════════════════════════════════════════════════
@@ -2081,6 +2110,463 @@ fn main() -> Result<(), slint::PlatformError> {
         taskbar::set_clock_date_fmt(idx);
     });
 
+    // ── Wi-Fi callbacks ──────────────────────────────────────────────────────
+
+    /// Set `wifi-status` and derive `wifi-status-is-error` in one call.
+    fn wifi_set_status(ui: &MainWindow, msg: &str) {
+        let is_err = msg.starts_with("Failed")
+            || msg.starts_with("Cannot")
+            || msg.starts_with("Invalid")
+            || msg.starts_with("Scan failed")
+            || msg.starts_with("QR generation")
+            || msg.starts_with("Export failed");
+        ui.set_wifi_status(msg.into());
+        ui.set_wifi_status_is_error(is_err);
+    }
+
+    /// Convert a backend `wifi::WifiNetwork` into the Slint-generated `WifiEntry`.
+    fn to_wifi_entry(n: &wifi::WifiNetwork) -> WifiEntry {
+        WifiEntry {
+            ssid: n.ssid.clone().into(),
+            signal: n.signal,
+            security: n.security.clone().into(),
+            connected: n.connected,
+            saved: n.saved,
+        }
+    }
+
+    // ── Wi-Fi radio init ─────────────────────────────────────────────────
+    // Query the current radio state so the airplane toggle reflects reality.
+    match wifi::nmcli::get_wifi_radio_state() {
+        Ok(Some(enabled)) => {
+            // radio exists: airplane mode is the inverse of "enabled"
+            ui.set_wifi_airplane_mode(!enabled);
+            ui.set_wifi_no_hardware(false);
+        }
+        Ok(None) => {
+            // no wifi hardware or nmcli unavailable
+            ui.set_wifi_no_hardware(true);
+            ui.set_wifi_airplane_mode(false);
+        }
+        Err(e) => {
+            eprintln!("[settings] wifi radio state check failed: {}", e);
+            ui.set_wifi_no_hardware(false);
+        }
+    }
+
+    // List networks (fast, no active re-probe)
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_list(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let networks = wifi::list_networks(false);
+                let entries: Vec<WifiEntry> = networks.iter().map(to_wifi_entry).collect();
+                ui.set_wifi_networks(slint::ModelRc::from(
+                    Rc::new(slint::VecModel::from(entries)),
+                ));
+                let current = wifi::get_current_ssid().unwrap_or_default();
+                ui.set_wifi_current_ssid(current.into());
+            }
+        });
+    }
+
+    // Active scan (background thread — keeps the UI responsive during the probe)
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_scan(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                if ui.get_wifi_scanning() {
+                    return;
+                }
+                ui.set_wifi_scanning(true);
+                wifi_set_status(&ui, "Scanning…");
+            }
+            let ui_weak2 = ui_weak.clone();
+            std::thread::spawn(move || {
+                let networks = wifi::list_networks(true);
+                let current = wifi::get_current_ssid().unwrap_or_default();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak2.upgrade() {
+                        let entries: Vec<WifiEntry> =
+                            networks.iter().map(to_wifi_entry).collect();
+                        ui.set_wifi_networks(slint::ModelRc::from(
+                            Rc::new(slint::VecModel::from(entries)),
+                        ));
+                        ui.set_wifi_current_ssid(current.into());
+                        ui.set_wifi_scanning(false);
+                        wifi_set_status(&ui, "");
+                    }
+                });
+            });
+        });
+    }
+
+    // Connect to a selected network
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_connect(move |network_idx, password, _security_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let networks_model = ui.get_wifi_networks();
+                let idx = network_idx as usize;
+                if network_idx < 0 || idx >= networks_model.row_count() {
+                    return;
+                }
+                let entry = networks_model.row_data(idx).unwrap();
+                let ssid = entry.ssid.as_str().to_string();
+                let is_open = entry.security.as_str() == "Open";
+                let password = wifi::SecretString::from(password.as_str());
+                ui.set_wifi_password_input("".into()); // clear UI copy immediately
+
+                ui.set_wifi_connecting(true);
+                wifi_set_status(&ui, &format!("Connecting to {}…", ssid));
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = if is_open {
+                        wifi::connect_open(&ssid)
+                    } else {
+                        wifi::connect(&ssid, password.as_str())
+                    };
+                    let status = match &result {
+                        Ok(_) => format!("Connected to {}", ssid),
+                        Err(e) => format!("Failed: {}", e),
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            ui.set_wifi_connecting(false);
+                            wifi_set_status(&ui, &status);
+                            let nets = wifi::list_networks(false);
+                            let entries: Vec<WifiEntry> =
+                                nets.iter().map(to_wifi_entry).collect();
+                            ui.set_wifi_networks(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                            let curr = wifi::get_current_ssid().unwrap_or_default();
+                            ui.set_wifi_current_ssid(curr.into());
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // Airplane mode toggle
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_set_airplane(move |enabled| {
+            let ui_weak2 = ui_weak.clone();
+            std::thread::spawn(move || {
+                let result = wifi::set_airplane_mode(enabled);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak2.upgrade() {
+                        match result {
+                            Ok(_) => {
+                                let status = if enabled {
+                                    "Airplane mode on — Wi-Fi radio disabled"
+                                } else {
+                                    "Airplane mode off — Wi-Fi radio enabled"
+                                };
+                                wifi_set_status(&ui, status);
+                                if !enabled {
+                                    // Re-scan after radio comes back on
+                                    let nets = wifi::list_networks(false);
+                                    let entries: Vec<WifiEntry> =
+                                        nets.iter().map(to_wifi_entry).collect();
+                                    ui.set_wifi_networks(slint::ModelRc::from(
+                                        Rc::new(slint::VecModel::from(entries)),
+                                    ));
+                                    let curr = wifi::get_current_ssid().unwrap_or_default();
+                                    ui.set_wifi_current_ssid(curr.into());
+                                } else {
+                                    ui.set_wifi_networks(slint::ModelRc::from(
+                                        Rc::new(slint::VecModel::from(vec![])),
+                                    ));
+                                    ui.set_wifi_current_ssid("".into());
+                                }
+                            }
+                            Err(e) => {
+                                wifi_set_status(&ui, &format!("Airplane mode error: {}", e));
+                                // Revert the toggle on error
+                                ui.set_wifi_airplane_mode(!enabled);
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    // Disconnect the Wi-Fi interface
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_disconnect(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                wifi_set_status(&ui, "Disconnecting…");
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = wifi::disconnect();
+                    let status = match result {
+                        Ok(_) => String::new(),
+                        Err(e) => format!("Failed: {}", e),
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            wifi_set_status(&ui, &status);
+                            ui.set_wifi_current_ssid("".into());
+                            let nets = wifi::list_networks(false);
+                            let entries: Vec<WifiEntry> =
+                                nets.iter().map(to_wifi_entry).collect();
+                            ui.set_wifi_networks(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // Forget a saved network profile
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_forget(move |network_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let networks_model = ui.get_wifi_networks();
+                let idx = network_idx as usize;
+                if network_idx < 0 || idx >= networks_model.row_count() {
+                    return;
+                }
+                let entry = networks_model.row_data(idx).unwrap();
+                let ssid = entry.ssid.as_str().to_string();
+                match wifi::forget_network(&ssid) {
+                    Ok(_) => {
+                        wifi_set_status(&ui, &format!("Forgot {}", ssid));
+                        ui.set_wifi_selected_idx(-1);
+                        let nets = wifi::list_networks(false);
+                        let entries: Vec<WifiEntry> =
+                            nets.iter().map(to_wifi_entry).collect();
+                        ui.set_wifi_networks(slint::ModelRc::from(
+                            Rc::new(slint::VecModel::from(entries)),
+                        ));
+                    }
+                    Err(e) => {
+                        wifi_set_status(&ui, &format!("Failed: {}", e));
+                    }
+                }
+            }
+        });
+    }
+
+    // Generate an in-memory QR code image for the selected network
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_generate_qr(move |network_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let networks_model = ui.get_wifi_networks();
+                let idx = network_idx as usize;
+                if network_idx < 0 || idx >= networks_model.row_count() {
+                    return;
+                }
+                let entry = networks_model.row_data(idx).unwrap();
+                let ssid = entry.ssid.as_str().to_string();
+                let security = entry.security.as_str().to_string();
+
+                // Prefer the user-typed password; fall back to the NM keyring.
+                let typed = ui.get_wifi_password_input();
+                let password_result: Result<wifi::SecretString, String> = if !typed.is_empty() {
+                    Ok(wifi::SecretString::from(typed.as_str()))
+                } else {
+                    wifi::get_saved_password(&ssid)
+                };
+                drop(typed); // drop SharedString ref so the UI copy can be cleared
+                let auth = wifi::WifiAuth::from_nmcli_security(&security);
+
+                match password_result {
+                    Ok(pass) => match wifi::generate_wifi_qr(&ssid, pass.as_str(), &auth) {
+                        Some((width, rgb_bytes)) => {
+                            let mut buf =
+                                slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, width);
+                            buf.make_mut_bytes().copy_from_slice(&rgb_bytes);
+                            ui.set_wifi_qr_image(slint::Image::from_rgb8(buf));
+                            ui.set_wifi_qr_visible(true);
+                            ui.set_wifi_qr_error("".into());
+                        }
+                        None => {
+                            ui.set_wifi_qr_error(
+                                "QR generation failed (data too long?)".into(),
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        ui.set_wifi_qr_error(
+                            format!("Cannot retrieve password: {}", e).into(),
+                        );
+                        // For open networks generate a no-password QR anyway.
+                        if matches!(auth, wifi::WifiAuth::Open) {
+                            if let Some((width, rgb_bytes)) =
+                                wifi::generate_wifi_qr(&ssid, "", &wifi::WifiAuth::Open)
+                            {
+                                let mut buf =
+                                    slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(
+                                        width, width,
+                                    );
+                                buf.make_mut_bytes().copy_from_slice(&rgb_bytes);
+                                ui.set_wifi_qr_image(slint::Image::from_rgb8(buf));
+                                ui.set_wifi_qr_visible(true);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Connect from a pasted or scanned WIFI: URI string
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_apply_uri(move |uri| {
+            if let Some(ui) = ui_weak.upgrade() {
+                match wifi::parse_wifi_uri(uri.as_str()) {
+                    Some((ssid, password, _auth)) => {
+                        ui.set_wifi_connecting(true);
+                        wifi_set_status(&ui, &format!("Connecting to {}…", ssid));
+                        let ui_weak2 = ui_weak.clone();
+                        std::thread::spawn(move || {
+                            let result = if password.is_empty() {
+                                wifi::connect_open(&ssid)
+                            } else {
+                                wifi::connect(&ssid, password.as_str())
+                            };
+                            let status = match &result {
+                                Ok(_) => format!("Connected to {}", ssid),
+                                Err(e) => format!("Failed: {}", e),
+                            };
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak2.upgrade() {
+                                    ui.set_wifi_connecting(false);
+                                    wifi_set_status(&ui, &status);
+                                    ui.set_wifi_uri_input("".into());
+                                    let nets = wifi::list_networks(false);
+                                    let entries: Vec<WifiEntry> =
+                                        nets.iter().map(to_wifi_entry).collect();
+                                    ui.set_wifi_networks(slint::ModelRc::from(
+                                        Rc::new(slint::VecModel::from(entries)),
+                                    ));
+                                    let curr = wifi::get_current_ssid().unwrap_or_default();
+                                    ui.set_wifi_current_ssid(curr.into());
+                                }
+                            });
+                        });
+                    }
+                    None => {
+                        wifi_set_status(&ui, "Invalid WIFI: QR code format");
+                    }
+                }
+            }
+        });
+    }
+
+    // Scan screen for QR code with grim + zbarimg
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_scan_screenshot(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                wifi_set_status(&ui, "Scanning screen for QR code…");
+                match wifi::nmcli::scan_screen_qr() {
+                    Ok(uri) if uri.starts_with("WIFI:") => {
+                        ui.set_wifi_uri_input(uri.into());
+                        wifi_set_status(
+                            &ui,
+                            "QR code found — press Connect to proceed.",
+                        );
+                    }
+                    Ok(_) => {
+                        wifi_set_status(
+                            &ui,
+                            "QR code found but it is not a Wi-Fi QR code.",
+                        );
+                    }
+                    Err(e) => {
+                        wifi_set_status(&ui, &format!("Scan failed: {}", e));
+                    }
+                }
+            }
+        });
+    }
+
+    // Export QR code to ~/Downloads/ as an SVG file
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_export_qr(move |network_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let networks_model = ui.get_wifi_networks();
+                let idx = network_idx as usize;
+                if network_idx < 0 || idx >= networks_model.row_count() {
+                    return;
+                }
+                let entry = networks_model.row_data(idx).unwrap();
+                let ssid = entry.ssid.as_str().to_string();
+                let security = entry.security.as_str().to_string();
+
+                let typed = ui.get_wifi_password_input();
+                let password_result: Result<wifi::SecretString, String> = if !typed.is_empty() {
+                    Ok(wifi::SecretString::from(typed.as_str()))
+                } else {
+                    wifi::get_saved_password(&ssid)
+                };
+                drop(typed);
+                let auth = wifi::WifiAuth::from_nmcli_security(&security);
+
+                match password_result {
+                    Ok(pass) => {
+                        let uri = wifi::wifi_uri(&ssid, pass.as_str(), &auth);
+                        let home =
+                            std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                        // Sanitise SSID for use as a filename.
+                        let safe: String = ssid
+                            .chars()
+                            .map(|c| {
+                                if c.is_alphanumeric() || c == '-' || c == '_' {
+                                    c
+                                } else {
+                                    '_'
+                                }
+                            })
+                            .collect();
+                        let _ = std::fs::create_dir_all(format!("{}/Downloads", home));
+                        let path = format!("{}/Downloads/wifi-{}.svg", home, safe);
+                        match wifi::export_qr_svg(uri.as_str(), &path) {
+                            Ok(_) => {
+                                wifi_set_status(
+                                    &ui,
+                                    &format!(
+                                        "Saved to ~/Downloads/wifi-{}.svg",
+                                        safe
+                                    ),
+                                );
+                                let _ = std::process::Command::new("xdg-open")
+                                    .arg(&path)
+                                    .spawn();
+                            }
+                            Err(e) => {
+                                wifi_set_status(
+                                    &ui,
+                                    &format!("Export failed: {}", e),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        wifi_set_status(
+                            &ui,
+                            &format!("Cannot retrieve password: {}", e),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     // ── Search callback ──────────────────────────────────────────────────────
 
     {
@@ -2093,6 +2579,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "power" => "Power",
                 "keybindings" => "Keybindings",
                 "taskbar" => "Taskbar",
+                "wifi" => "Wi-Fi",
                 _ => key,
             }
         }

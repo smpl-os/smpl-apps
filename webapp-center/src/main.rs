@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 slint::include_modules!();
 
-fn to_ui_item(app: &WebApp) -> WebAppItem {
+fn to_ui_item(app: &WebApp, hotkey_slugs: &std::collections::HashSet<String>) -> WebAppItem {
     WebAppItem {
         name: app.name.clone().into(),
         slug: app.slug.clone().into(),
@@ -21,7 +21,36 @@ fn to_ui_item(app: &WebApp) -> WebAppItem {
         vpn_required: app.vpn_required,
         icon: app.icon.clone().into(),
         marked: false,
+        has_hotkey: hotkey_slugs.contains(&app.slug),
     }
+}
+
+/// Collect the set of webapp slugs that have a keybinding assigned.
+fn hotkey_slugs() -> std::collections::HashSet<String> {
+    let mut slugs = std::collections::HashSet::new();
+    if let Ok(file) = keybindings::BindingsFile::load() {
+        for kb in &file.bindings {
+            if kb.dispatcher == "exec" && kb.args.contains("launch-webapp") {
+                // Extract slug from args like: launch-webapp "--name" "chat" "https://..."
+                // or: launch-webapp --name chat https://...
+                if let Some(pos) = kb.args.find("--name") {
+                    let after = &kb.args[pos + 6..];
+                    // Skip optional closing quote of the flag itself
+                    let after = after.strip_prefix('"').unwrap_or(after).trim_start();
+                    // Parse quoted or unquoted value
+                    let slug = if after.starts_with('"') {
+                        after[1..].split('"').next().unwrap_or_default()
+                    } else {
+                        after.split_whitespace().next().unwrap_or_default()
+                    };
+                    if !slug.is_empty() {
+                        slugs.insert(slug.to_string());
+                    }
+                }
+            }
+        }
+    }
+    slugs
 }
 
 fn apply_theme(ui: &MainWindow) {
@@ -52,7 +81,8 @@ fn refresh_model(
     let apps = scan_webapps();
     *state.borrow_mut() = apps.clone();
 
-    model.set_vec(apps.iter().map(to_ui_item).collect::<Vec<_>>());
+    let hk_slugs = hotkey_slugs();
+    model.set_vec(apps.iter().map(|a| to_ui_item(a, &hk_slugs)).collect::<Vec<_>>());
     ui.set_webapps(ModelRc::from(model.clone()));
 
     let len = model.row_count() as i32;
@@ -242,16 +272,22 @@ fn main() -> Result<(), slint::PlatformError> {
                         // Save hotkey binding if one was captured
                         let hk_mods = ui.get_form_hotkey_mods().to_string();
                         let hk_key = ui.get_form_hotkey_key().to_string();
-                        if !hk_key.is_empty() {
-                            if let Ok(mut file) = keybindings::BindingsFile::load() {
-                                // Remove any old binding for this webapp
-                                let launch_cmd = format!("launch-webapp --name {slug}");
-                                let to_remove: Vec<usize> = file.bindings.iter().enumerate()
-                                    .filter(|(_, b)| b.args.contains(&launch_cmd) || b.args.contains(&format!("\"--name\" \"{slug}\"")))
-                                    .map(|(i, _)| i)
-                                    .collect();
-                                for idx in to_remove.into_iter().rev() {
-                                    file.remove(idx);
+
+                        if let Ok(mut file) = keybindings::BindingsFile::load() {
+                            // Always remove any old binding for this webapp first
+                            let launch_cmd = format!("launch-webapp --name {slug}");
+                            let to_remove: Vec<usize> = file.bindings.iter().enumerate()
+                                .filter(|(_, b)| b.args.contains(&launch_cmd) || b.args.contains(&format!("\"--name\" \"{slug}\"")))
+                                .map(|(i, _)| i)
+                                .collect();
+                            for idx in to_remove.into_iter().rev() {
+                                file.remove(idx);
+                            }
+
+                            if !hk_key.is_empty() {
+                                // Remove any conflicting binding that uses the same key combo
+                                if let Some(conflict) = file.find_conflict(&hk_mods.trim(), &hk_key, "", None) {
+                                    file.remove(conflict.index);
                                 }
 
                                 // Add the new binding
@@ -265,9 +301,9 @@ fn main() -> Result<(), slint::PlatformError> {
                                     section: "Application Launchers".to_string(),
                                     submap: String::new(),
                                 });
-
-                                let _ = file.save_and_reload();
                             }
+
+                            let _ = file.save_and_reload();
                         }
 
                         refresh_model(&ui, &state, &model);
@@ -384,9 +420,11 @@ fn main() -> Result<(), slint::PlatformError> {
             let slug_str = slug.to_string();
             if let Ok(file) = keybindings::BindingsFile::load() {
                 for kb in &file.bindings {
+                    let pat1 = format!("--name {slug_str}");
+                    let pat2 = format!("\"--name\" \"{slug_str}\"");
                     if kb.dispatcher == "exec"
-                        && (kb.args.contains(&format!("--name {slug_str}"))
-                            || kb.args.contains(&format!("\"--name\" \"{slug_str}\"")))
+                        && (kb.args.contains(&pat1)
+                            || kb.args.contains(&pat2))
                     {
                         if let Some(ui) = ui_weak.upgrade() {
                             ui.set_form_hotkey_combo(SharedString::from(kb.combo_display()));
