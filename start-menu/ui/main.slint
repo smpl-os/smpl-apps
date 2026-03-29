@@ -11,6 +11,7 @@ struct AppItem {
     is_web_app: bool,
     source: string,
     is_pinned: bool,
+    has_launch_options: bool,
 }
 
 struct CategoryItem {
@@ -169,6 +170,7 @@ component AppRow inherits Rectangle {
     in property <bool> show_badge: true;
     in property <bool> highlighted: false;
     in property <bool> is_pinned: false;
+    in property <bool> has_launch_options: false;
     callback clicked();
     callback right-clicked();
 
@@ -235,6 +237,15 @@ component AppRow inherits Rectangle {
             overflow: elide;
             vertical-alignment: center;
             horizontal-stretch: 1;
+        }
+
+        // Launch options indicator (wrench)
+        if root.has_launch_options: Text {
+            text: "\u{f0493}";
+            color: Theme.warning;
+            font-size: 11px;
+            vertical-alignment: center;
+            width: 16px;
         }
 
         // Web app globe indicator
@@ -368,8 +379,18 @@ export component MainWindow inherits Window {
     // Context menu
     in-out property <bool> show-context-menu: false;
     in-out property <string> context-menu-exec: "";
+    in-out property <string> context-menu-name: "";
     in-out property <bool> context-menu-is-pinned: false;
+    in-out property <bool> context-menu-has-options: false;
     in-out property <length> context-menu-y: 0;
+    in-out property <int> context-menu-index: 0;
+
+    // Launch options dialog
+    in-out property <bool> show-launch-options: false;
+    in-out property <string> launch-opts-exec: "";
+    in-out property <string> launch-opts-name: "";
+    in-out property <string> launch-opts-env: "";
+    in-out property <string> launch-opts-prefix: "";
 
     // Callbacks
     callback filter-changed();
@@ -382,6 +403,9 @@ export component MainWindow inherits Window {
     callback power-action(string);  // "lock", "restart", "shutdown"
     callback toggle-pin(string);    // exec string of app to pin/unpin
     callback launch-pinned(int);    // index in pinned-apps model
+    callback save-launch-options(string, string, string);  // exec, env_text, prefix
+    callback load-launch-options(string);                  // exec -> sets launch-opts-*
+    callback reset-launch-options(string);                 // exec -> removes config
 
     // Power menu state
     in-out property <bool> show-power-menu: false;
@@ -933,8 +957,11 @@ export component MainWindow inherits Window {
                                             clicked => { root.launch-pinned(i); }
                                             right-clicked => {
                                                 root.context-menu-exec = pin.exec;
+                                                root.context-menu-name = pin.name;
                                                 root.context-menu-is-pinned = true;
+                                                root.context-menu-has-options = pin.has_launch_options;
                                                 root.context-menu-y = 100px + Math.floor(i / 4) * 80px + 40px;
+                                                root.context-menu-index = 0;
                                                 root.show-context-menu = true;
                                             }
                                         }
@@ -953,13 +980,17 @@ export component MainWindow inherits Window {
                                     source: app.source;
                                     show_badge: true;
                                     is_pinned: app.is_pinned;
+                                    has_launch_options: app.has_launch_options;
                                     highlighted: (root.focus-zone == 2 || root.is-searching) && root.selected-app == i;
 
                                     clicked => { root.launch-app(i); }
                                     right-clicked => {
                                         root.context-menu-exec = app.exec;
+                                        root.context-menu-name = app.name;
                                         root.context-menu-is-pinned = app.is_pinned;
+                                        root.context-menu-has-options = app.has_launch_options;
                                         root.context-menu-y = 82px + 5px + i * 38px + app-flick.viewport-y + 19px;
+                                        root.context-menu-index = 0;
                                         root.show-context-menu = true;
                                     }
                                 }
@@ -1136,7 +1167,7 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── Context menu overlay (right-click pin/unpin) ──
+// ── Context menu overlay (right-click) ──
         if root.show-context-menu: ctx-scope := FocusScope {
             width: root.width;
             height: root.height;
@@ -1149,10 +1180,24 @@ export component MainWindow inherits Window {
                     root.focus-search();
                     return accept;
                 }
+                if (event.text == Key.UpArrow) {
+                    if (root.context-menu-index > 0) { root.context-menu-index -= 1; }
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    if (root.context-menu-index < 1) { root.context-menu-index += 1; }
+                    return accept;
+                }
                 if (event.text == Key.Return) {
-                    root.toggle-pin(root.context-menu-exec);
+                    if (root.context-menu-index == 0) {
+                        root.toggle-pin(root.context-menu-exec);
+                    } else {
+                        root.load-launch-options(root.context-menu-exec);
+                        root.launch-opts-exec = root.context-menu-exec;
+                        root.launch-opts-name = root.context-menu-name;
+                        root.show-launch-options = true;
+                    }
                     root.show-context-menu = false;
-                    root.focus-search();
                     return accept;
                 }
                 return reject;
@@ -1166,9 +1211,9 @@ export component MainWindow inherits Window {
             // Context menu card
             Rectangle {
                 x: 240px;
-                y: Math.clamp(root.context-menu-y - 18px, 60px, root.height - 60px);
-                width: 170px;
-                height: 40px;
+                y: Math.clamp(root.context-menu-y - 18px, 60px, root.height - 100px);
+                width: 190px;
+                height: 72px;
                 border-radius: 8px;
                 background: Theme.bg.transparentize(0.05);
                 border-width: 1px;
@@ -1177,18 +1222,21 @@ export component MainWindow inherits Window {
 
                 VerticalLayout {
                     padding: 4px;
+                    spacing: 1px;
 
+                    // Item 0: Pin/Unpin
                     Rectangle {
-                        height: 32px;
+                        height: 30px;
                         border-radius: 6px;
-                        background: ctx-touch.has-hover ? Theme.accent.transparentize(0.8) : transparent;
+                        background: ctx-pin-touch.has-hover || root.context-menu-index == 0 ? Theme.accent.transparentize(0.8) : transparent;
 
-                        ctx-touch := TouchArea {
+                        ctx-pin-touch := TouchArea {
                             clicked => {
                                 root.toggle-pin(root.context-menu-exec);
                                 root.show-context-menu = false;
                                 root.focus-search();
                             }
+                            moved => { root.context-menu-index = 0; }
                             mouse-cursor: pointer;
                         }
 
@@ -1202,6 +1250,239 @@ export component MainWindow inherits Window {
                                 color: Theme.fg;
                                 font-size: 12px;
                                 vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Item 1: Launch Options
+                    Rectangle {
+                        height: 30px;
+                        border-radius: 6px;
+                        background: ctx-opts-touch.has-hover || root.context-menu-index == 1 ? Theme.accent.transparentize(0.8) : transparent;
+
+                        ctx-opts-touch := TouchArea {
+                            clicked => {
+                                root.load-launch-options(root.context-menu-exec);
+                                root.launch-opts-exec = root.context-menu-exec;
+                                root.launch-opts-name = root.context-menu-name;
+                                root.show-launch-options = true;
+                                root.show-context-menu = false;
+                            }
+                            moved => { root.context-menu-index = 1; }
+                            mouse-cursor: pointer;
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 8px;
+
+                            Text {
+                                text: root.context-menu-has-options ? "Launch Options \u{f0493}" : "Launch Options...";
+                                color: root.context-menu-has-options ? Theme.warning : Theme.fg;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Launch Options dialog overlay ──
+        if root.show-launch-options: opts-scope := FocusScope {
+            width: root.width;
+            height: root.height;
+
+            init => { opts-env-input.focus(); }
+
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.show-launch-options = false;
+                    root.focus-search();
+                    return accept;
+                }
+                return reject;
+            }
+
+            // Backdrop
+            TouchArea {
+                clicked => { root.show-launch-options = false; root.focus-search(); }
+            }
+
+            // Dialog card
+            Rectangle {
+                x: (root.width - self.width) / 2;
+                y: (root.height - self.height) / 2 - 20px;
+                width: 380px;
+                height: 310px;
+                border-radius: 10px;
+                background: Theme.bg;
+                border-width: 1px;
+                border-color: Theme.bg_lighter.transparentize(0.3);
+                clip: true;
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+
+                    // Title
+                    Text {
+                        text: "Launch Options";
+                        color: Theme.fg;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+
+                    // App name
+                    Text {
+                        text: root.launch-opts-name;
+                        color: Theme.fg_dim;
+                        font-size: 11px;
+                        overflow: elide;
+                    }
+
+                    // Env vars label + field
+                    Text {
+                        text: "Environment Variables (one per line: KEY=VALUE)";
+                        color: Theme.fg_dim;
+                        font-size: 11px;
+                    }
+
+                    Rectangle {
+                        height: 80px;
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        clip: true;
+
+                        Flickable {
+                            x: 8px;
+                            y: 4px;
+                            width: parent.width - 16px;
+                            height: parent.height - 8px;
+                            viewport-height: opts-env-input.preferred-height;
+
+                            opts-env-input := TextInput {
+                                width: parent.width;
+                                text <=> root.launch-opts-env;
+                                color: Theme.fg;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // Prefix label + field
+                    Text {
+                        text: "Command Prefix (e.g. gamemoderun, mangohud)";
+                        color: Theme.fg_dim;
+                        font-size: 11px;
+                    }
+
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        opts-prefix-input := TextInput {
+                            x: 8px;
+                            y: (parent.height - self.preferred-height) / 2;
+                            width: parent.width - 16px;
+                            text <=> root.launch-opts-prefix;
+                            color: Theme.fg;
+                            font-size: 12px;
+                        }
+                    }
+
+                    // Buttons
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        // Reset
+                        Rectangle {
+                            height: 30px;
+                            border-radius: 6px;
+                            background: reset-touch.has-hover ? Theme.danger.transparentize(0.7) : Theme.bg_light;
+
+                            reset-touch := TouchArea {
+                                clicked => {
+                                    root.reset-launch-options(root.launch-opts-exec);
+                                    root.launch-opts-env = "";
+                                    root.launch-opts-prefix = "";
+                                    root.show-launch-options = false;
+                                    root.focus-search();
+                                }
+                                mouse-cursor: pointer;
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "Reset";
+                                    color: reset-touch.has-hover ? Theme.danger : Theme.fg_dim;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // Cancel
+                        Rectangle {
+                            height: 30px;
+                            min-width: 60px;
+                            border-radius: 6px;
+                            background: cancel-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+
+                            cancel-touch := TouchArea {
+                                clicked => {
+                                    root.show-launch-options = false;
+                                    root.focus-search();
+                                }
+                                mouse-cursor: pointer;
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                Text {
+                                    text: "Cancel";
+                                    color: Theme.fg;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Save
+                        Rectangle {
+                            height: 30px;
+                            min-width: 60px;
+                            border-radius: 6px;
+                            background: save-touch.has-hover ? Theme.accent : Theme.accent.transparentize(0.3);
+
+                            save-touch := TouchArea {
+                                clicked => {
+                                    root.save-launch-options(root.launch-opts-exec, root.launch-opts-env, root.launch-opts-prefix);
+                                    root.show-launch-options = false;
+                                    root.focus-search();
+                                }
+                                mouse-cursor: pointer;
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                Text {
+                                    text: "Save";
+                                    color: Theme.bg;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     }

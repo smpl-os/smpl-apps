@@ -2,6 +2,7 @@ mod theme;
 
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
+use smpl_common::launch_options;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -269,6 +270,7 @@ fn to_ui_item(app: &AppEntry, path_cache: &HashMap<String, String>, img_cache: &
         is_web_app,
         source: SharedString::from(source),
         is_pinned: pinned.contains(&app.exec),
+        has_launch_options: launch_options::has_options(&app.exec),
     }
 }
 
@@ -443,7 +445,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_launch_app(move |index| {
             let idx = index as usize;
             if let Some(item) = model.row_data(idx) {
-                let exec = item.exec.to_string();
+                let exec = launch_options::wrap_exec(&item.exec.to_string());
                 let _ = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&exec)
@@ -459,7 +461,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_launch_pinned(move |index| {
             let idx = index as usize;
             if let Some(item) = pinned_model.row_data(idx) {
-                let exec = item.exec.to_string();
+                let exec = launch_options::wrap_exec(&item.exec.to_string());
                 let _ = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&exec)
@@ -503,6 +505,93 @@ fn main() -> Result<(), slint::PlatformError> {
                     .map(|c| c.key.to_string())
                     .unwrap_or_else(|| "all".to_string());
                 update_view(&ui, &all_apps, &model, &path_cache, &img_cache, &cat_key, &search, &p);
+            }
+        });
+    }
+
+    // ── Save launch options ──
+    {
+        let ui_weak = ui.as_weak();
+        let all_apps = all_apps.clone();
+        let path_cache = path_cache.clone();
+        let img_cache = img_cache.clone();
+        let model = model.clone();
+        let pinned = pinned.clone();
+        let pinned_model = pinned_model.clone();
+        let cat_model = cat_model.clone();
+
+        ui.on_save_launch_options(move |exec, env_text, prefix_text| {
+            let exec = exec.to_string();
+            let env_lines: Vec<String> = env_text
+                .to_string()
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty() && l.contains('='))
+                .collect();
+            let prefix = prefix_text.to_string().trim().to_string();
+
+            let opts = launch_options::LaunchOptions {
+                env_vars: env_lines,
+                prefix,
+            };
+            launch_options::save(&exec, &opts);
+
+            // Refresh views so has_launch_options updates
+            if let Some(ui) = ui_weak.upgrade() {
+                let p = pinned.borrow();
+                update_pinned_model(&ui, &all_apps, &pinned_model, &path_cache, &img_cache, &p);
+                let search = ui.get_search_text().to_string();
+                let cat_idx = ui.get_active_category() as usize;
+                if !search.is_empty() || cat_idx < cat_model.row_count() {
+                    let cat_key = cat_model
+                        .row_data(cat_idx)
+                        .map(|c| c.key.to_string())
+                        .unwrap_or_else(|| "all".to_string());
+                    update_view(&ui, &all_apps, &model, &path_cache, &img_cache, &cat_key, &search, &p);
+                }
+            }
+        });
+    }
+
+    // ── Load launch options ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_load_launch_options(move |exec| {
+            let exec = exec.to_string();
+            let opts = launch_options::load(&exec);
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_launch_opts_env(SharedString::from(opts.env_vars.join("\n")));
+                ui.set_launch_opts_prefix(SharedString::from(&opts.prefix));
+            }
+        });
+    }
+
+    // ── Reset launch options ──
+    {
+        let ui_weak = ui.as_weak();
+        let all_apps = all_apps.clone();
+        let path_cache = path_cache.clone();
+        let img_cache = img_cache.clone();
+        let model = model.clone();
+        let pinned = pinned.clone();
+        let pinned_model = pinned_model.clone();
+        let cat_model = cat_model.clone();
+
+        ui.on_reset_launch_options(move |exec| {
+            launch_options::reset(&exec.to_string());
+
+            if let Some(ui) = ui_weak.upgrade() {
+                let p = pinned.borrow();
+                update_pinned_model(&ui, &all_apps, &pinned_model, &path_cache, &img_cache, &p);
+                let search = ui.get_search_text().to_string();
+                let cat_idx = ui.get_active_category() as usize;
+                if !search.is_empty() || cat_idx < cat_model.row_count() {
+                    let cat_key = cat_model
+                        .row_data(cat_idx)
+                        .map(|c| c.key.to_string())
+                        .unwrap_or_else(|| "all".to_string());
+                    update_view(&ui, &all_apps, &model, &path_cache, &img_cache, &cat_key, &search, &p);
+                }
             }
         });
     }

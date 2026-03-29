@@ -13,6 +13,7 @@
 //! or Hyprland can't target it with windowrulev2. See copilot-instructions.md.
 
 pub mod keybindings;
+pub mod launch_options;
 
 use i_slint_backend_winit::winit::dpi::LogicalSize;
 use i_slint_backend_winit::winit::platform::wayland::WindowAttributesExtWayland;
