@@ -225,7 +225,7 @@ component ProfileCard inherits Rectangle {
                 height: 32px;
                 border-radius: 6px;
                 background: (!root.is_syncing && delete_touch.has-hover) ? Theme.danger : transparent;
-                opacity: root.is_syncing ? 0.2 : (touch.has-hover || delete_touch.has-hover ? 1.0 : 0.4);
+                opacity: root.is_syncing ? 0.4 : 1.0;
 
                 delete_touch := TouchArea {
                     enabled: !root.is_syncing;

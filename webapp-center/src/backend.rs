@@ -101,17 +101,27 @@ pub fn scan_webapps() -> Vec<WebApp> {
 }
 
 /// Parse a flag value from an Exec= line, handling both quoted and unquoted forms.
+///
+/// Handles all variations:
+///   `--name "slug"`        → slug
+///   `"--name" "slug"`      → slug   (closing " of the flag must be skipped)
+///   `--name slug`          → slug
 fn parse_exec_flag(exec: &str, flag: &str) -> Option<String> {
     let idx = exec.find(flag)?;
-    let after = &exec[idx + flag.len()..].trim_start();
-
+    // Skip past the flag text itself, then skip any closing quotes (e.g. the `"` that
+    // closes `"--name"`) and any whitespace before the actual value starts.
+    let after = exec[idx + flag.len()..]
+        .trim_start_matches(|c: char| c == '"' || c.is_whitespace());
+    if after.is_empty() {
+        return None;
+    }
     if after.starts_with('"') {
-        // Quoted value
-        let inner = after.strip_prefix('"').unwrap_or(after);
+        // Value is explicitly quoted: `"slug"`
+        let inner = &after[1..];
         let end = inner.find('"')?;
         Some(inner[..end].to_string())
     } else {
-        // Unquoted — take until next whitespace
+        // Unquoted value: take until next whitespace, strip any stray quotes
         let val = after.split_whitespace().next()?;
         Some(val.trim_matches('"').to_string())
     }
@@ -336,6 +346,46 @@ pub fn list_vpn_interfaces() -> Vec<String> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_exec_flag;
+
+    // The most common case: flag is itself quoted ("--name"), value is quoted
+    #[test]
+    fn parse_exec_flag_quoted_flag_quoted_value() {
+        let exec = r#"launch-webapp "--secure" "--name" "chat" "https://example.com""#;
+        assert_eq!(parse_exec_flag(exec, "--name"), Some("chat".to_string()));
+    }
+
+    // Flag unquoted, value quoted
+    #[test]
+    fn parse_exec_flag_unquoted_flag_quoted_value() {
+        let exec = r#"launch-webapp --name "chat" "https://example.com""#;
+        assert_eq!(parse_exec_flag(exec, "--name"), Some("chat".to_string()));
+    }
+
+    // Flag unquoted, value unquoted (old format)
+    #[test]
+    fn parse_exec_flag_unquoted_flag_unquoted_value() {
+        let exec = "launch-webapp --secure --name chat https://example.com";
+        assert_eq!(parse_exec_flag(exec, "--name"), Some("chat".to_string()));
+    }
+
+    // Flag not present
+    #[test]
+    fn parse_exec_flag_missing_returns_none() {
+        let exec = r#"launch-webapp "--secure" "https://example.com""#;
+        assert_eq!(parse_exec_flag(exec, "--name"), None);
+    }
+
+    // Another flag present
+    #[test]
+    fn parse_exec_flag_other_flag() {
+        let exec = r#"launch-webapp "--secure" "--name" "my-app" "--vpn-interface" "wg0" "https://example.com""#;
+        assert_eq!(parse_exec_flag(exec, "--vpn-interface"), Some("wg0".to_string()));
+    }
 }
 
 fn refresh_cache() {

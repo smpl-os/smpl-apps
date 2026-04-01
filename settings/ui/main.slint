@@ -1456,7 +1456,6 @@ export component MainWindow inherits Window {
                                     : idx == root.dictation-selected-model-idx
                                         ? Theme.accent.transparentize(70%)
                                         : model-item-touch.has-hover ? Theme.bg_lighter : transparent;
-                                opacity: self.disabled ? 0.4 : 1.0;
 
                                 HorizontalLayout {
                                     padding-left: 10px;
@@ -1489,7 +1488,7 @@ export component MainWindow inherits Window {
 
                                     Text {
                                         text: model.label;
-                                        color: Theme.fg;
+                                        color: (model.english-only && !root.dictation-selected-lang-is-english) ? Theme.fg_dim : Theme.fg;
                                         font-size: 12px;
                                         vertical-alignment: center;
                                     }

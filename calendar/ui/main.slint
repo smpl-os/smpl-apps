@@ -310,8 +310,7 @@ component BigDayCell inherits Rectangle {
     background: cell.is-today    ? Theme.accent.transparentize(0.91)
               : cell.is-selected ? Theme.accent.transparentize(0.82)
               : transparent;
-    // Dim adjacent-month cells — they are just context, not the active month
-    opacity: cell.is-other-month ? 0.32 : 1.0;
+    // Other-month cells shown with dimmer text so current month reads clearly
     clip: true;
 
     // Full-cell click target — covers entire day square
@@ -340,8 +339,8 @@ component BigDayCell inherits Rectangle {
                           : transparent;
                 Text {
                     text: cell.day > 0 ? "" + cell.day : "";
-                    color: (!cell.is-other-month && (cell.is-selected || cell.is-today)) ? Theme.bg
-                         : Theme.fg;
+                    color: cell.is-other-month ? Theme.fg-dim
+                         : ((cell.is-selected || cell.is-today) ? Theme.bg : Theme.fg);
                     font-size: 12px; font-weight: 600;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
@@ -424,7 +423,6 @@ component EventCard inherits Rectangle {
     callback edit-clicked(int);
     callback delete-clicked(int);
 
-    opacity: root.ev.is-past ? 0.5 : 1.0;
     border-radius: 8px;
     background: rt.has-hover || edit-ta.has-hover || del-ta.has-hover
                 ? Theme.bg-lighter : Theme.bg-light;
@@ -437,7 +435,7 @@ component EventCard inherits Rectangle {
             horizontal-stretch: 1; alignment: center; spacing: 2px;
             HorizontalLayout {
                 spacing: 6px; alignment: start;
-                Text { text: root.ev.title; color: Theme.fg; font-size: 13px; font-weight: 600;
+                Text { text: root.ev.title; color: root.ev.is-past ? Theme.fg-dim : Theme.fg; font-size: 13px; font-weight: 600;
                        overflow: elide; horizontal-stretch: 1; }
                 if root.ev.has-recurrence: Text {
                     text: "\u{21BA}"; color: Theme.accent; font-size: 12px; vertical-alignment: center; }
@@ -857,7 +855,6 @@ export component MainWindow inherits Window {
                     for ev in root.day-events: Rectangle {
                         border-radius: 6px;
                         background: cev-ta.has-hover ? Theme.bg-lighter : Theme.bg-light;
-                        opacity: ev.is-past ? 0.5 : 1.0;
                         height: cev-col.preferred-height + 10px;
 
                         cev-ta := TouchArea {
@@ -875,7 +872,7 @@ export component MainWindow inherits Window {
                                     y: (parent.height - self.height) / 2;
                                 }
                                 Text {
-                                    text: ev.title; color: Theme.fg;
+                                    text: ev.title; color: ev.is-past ? Theme.fg-dim : Theme.fg;
                                     font-size: 11px; font-weight: 600;
                                     overflow: elide; horizontal-stretch: 1;
                                 }

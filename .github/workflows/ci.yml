@@ -57,6 +57,102 @@ jobs:
           fi
           echo "✓ Transparency guardrails passed"
 
+      # ── Feature inventory guardrails ──────────────────────────────────────
+      # These grep checks catch accidental deletion of important features during
+      # "sync" operations between repos or bulk edits. Each check names the
+      # feature and the exact indicator string so failures are immediately clear.
+      #
+      # When intentionally removing a feature, delete the corresponding check too.
+      - name: Guardrail — webapp keybinding feature must not be deleted
+        run: |
+          FAIL=0
+
+          check() {
+            local label="$1" file="$2" pattern="$3"
+            if ! grep -q "$pattern" "$file" 2>/dev/null; then
+              echo "::error file=$file::REGRESSION: $label"
+              echo "  Expected to find: $pattern"
+              echo "  This feature was deleted — see commit history for last good version."
+              FAIL=1
+            else
+              echo "✓ $label"
+            fi
+          }
+
+          # webapp-center: keybinding backend (main.rs)
+          check "webapp-center imports smpl_common::keybindings" \
+            webapp-center/src/main.rs \
+            "use smpl_common::keybindings"
+
+          check "webapp-center has_hotkey field populated in to_ui_item" \
+            webapp-center/src/main.rs \
+            "has_hotkey:"
+
+          check "webapp-center registers hotkey_start_capture callback" \
+            webapp-center/src/main.rs \
+            "on_hotkey_start_capture"
+
+          check "webapp-center registers hotkey_save_combo callback" \
+            webapp-center/src/main.rs \
+            "on_hotkey_save_combo"
+
+          check "webapp-center saves keybinding on save_app" \
+            webapp-center/src/main.rs \
+            "hk_key"
+
+          # build_launch_args must exist and include all app flags.
+          # Regression: bffa03c omitted --secure/--clear-on-exit from binding args
+          # so launching via hotkey silently ignored those flags.
+          check "webapp-center has build_launch_args function" \
+            webapp-center/src/main.rs \
+            "fn build_launch_args"
+
+          check "webapp-center build_launch_args includes --clear-on-exit" \
+            webapp-center/src/main.rs \
+            "--clear-on-exit"
+
+          check "webapp-center build_launch_args includes --secure" \
+            webapp-center/src/main.rs \
+            "--secure"
+
+          # webapp-center: keybinding UI (main.slint)
+          check "webapp-center Slint struct has has_hotkey field" \
+            webapp-center/ui/main.slint \
+            "has_hotkey"
+
+          check "webapp-center Slint UI has form-hotkey-capturing property" \
+            webapp-center/ui/main.slint \
+            "form-hotkey-capturing"
+
+          check "webapp-center Slint UI has Keyboard Shortcut section" \
+            webapp-center/ui/main.slint \
+            "Keyboard Shortcut"
+
+          check "webapp-center Slint UI has hotkey-save-combo callback" \
+            webapp-center/ui/main.slint \
+            "hotkey-save-combo"
+
+          # smpl-common: keybindings module must be public
+          check "smpl-common exports keybindings module" \
+            smpl-common/src/lib.rs \
+            "pub mod keybindings"
+
+          check "smpl-common keybindings has BindingsFile" \
+            smpl-common/src/keybindings.rs \
+            "pub struct BindingsFile"
+
+          check "smpl-common keybindings has slint_key_to_hyprland" \
+            smpl-common/src/keybindings.rs \
+            "pub fn slint_key_to_hyprland"
+
+          if [ $FAIL -ne 0 ]; then
+            echo ""
+            echo "One or more feature guardrails failed."
+            echo "If the deletion was intentional, remove the corresponding check from ci.yml."
+            echo "If it was accidental, restore the code from git history."
+            exit 1
+          fi
+
       - name: Check (all workspace members)
         run: cargo check --workspace
 
@@ -65,3 +161,9 @@ jobs:
 
       - name: Build (debug, for compile-time errors only — not stripped)
         run: cargo build --workspace
+
+      - name: Test
+        # --lib --bins: skip doctests that reference types from consuming crates
+        # (e.g. MainWindow, which is only in scope after slint::include_modules!()).
+        # Unit tests in #[cfg(test)] modules are fully covered by --lib.
+        run: cargo test --workspace --lib --bins --no-fail-fast 2>&1

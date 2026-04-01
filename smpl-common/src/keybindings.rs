@@ -69,15 +69,15 @@ impl Keybinding {
     pub fn to_config_line(&self) -> String {
         if self.description.is_empty() {
             // Non-description bind types (bind, bindm, etc.)
-            format!(
-                "{} = {}, {}, {}, {}",
-                self.bind_type, self.mods, self.key, self.dispatcher, self.args
-            )
+            if self.args.is_empty() {
+                format!("{} = {}, {}, {}", self.bind_type, self.mods, self.key, self.dispatcher)
+            } else {
+                format!("{} = {}, {}, {}, {}", self.bind_type, self.mods, self.key, self.dispatcher, self.args)
+            }
+        } else if self.args.is_empty() {
+            format!("{} = {}, {}, {}, {}", self.bind_type, self.mods, self.key, self.description, self.dispatcher)
         } else {
-            format!(
-                "{} = {}, {}, {}, {}, {}",
-                self.bind_type, self.mods, self.key, self.description, self.dispatcher, self.args
-            )
+            format!("{} = {}, {}, {}, {}, {}", self.bind_type, self.mods, self.key, self.description, self.dispatcher, self.args)
         }
     }
 }
@@ -219,7 +219,12 @@ impl BindingsFile {
         for line in &self.lines {
             match line {
                 ConfigLine::Blank => out.push('\n'),
-                ConfigLine::Comment(s) | ConfigLine::SectionHeader(s) => {
+                ConfigLine::Comment(s) => {
+                    out.push_str(s);
+                    out.push('\n');
+                }
+                ConfigLine::SectionHeader(s) => {
+                    out.push_str("# ");
                     out.push_str(s);
                     out.push('\n');
                 }
@@ -581,4 +586,101 @@ pub fn unique_sections(bindings: &[Keybinding]) -> Vec<String> {
         }
     }
     sections
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_binding(bind_type: &str, mods: &str, key: &str, desc: &str, dispatcher: &str, args: &str) -> Keybinding {
+        Keybinding {
+            bind_type: bind_type.to_string(),
+            mods: mods.to_string(),
+            key: key.to_string(),
+            description: desc.to_string(),
+            dispatcher: dispatcher.to_string(),
+            args: args.to_string(),
+            section: String::new(),
+            submap: String::new(),
+        }
+    }
+
+    // ── to_config_line regression: empty args must not produce trailing comma ──
+    //
+    // Bug: format!("{} = {}, {}, {}, {}", .., args) when args=="" gives
+    // e.g. `bindmd = SUPER, mouse:272, Move window, movewindow, ` which
+    // Hyprland rejects as "too many args".
+
+    #[test]
+    fn to_config_line_no_trailing_comma_when_args_empty_with_desc() {
+        let kb = make_binding("bindmd", "SUPER", "mouse:272", "Move window", "movewindow", "");
+        let line = kb.to_config_line();
+        assert!(
+            !line.ends_with(", "),
+            "to_config_line must not end with trailing ', ' when args is empty; got: {line:?}"
+        );
+        assert_eq!(line, "bindmd = SUPER, mouse:272, Move window, movewindow");
+    }
+
+    #[test]
+    fn to_config_line_no_trailing_comma_when_args_empty_no_desc() {
+        let kb = make_binding("bindm", "SUPER", "mouse:272", "", "movewindow", "");
+        let line = kb.to_config_line();
+        assert!(
+            !line.ends_with(", "),
+            "to_config_line must not end with trailing ', ' when args is empty; got: {line:?}"
+        );
+        assert_eq!(line, "bindm = SUPER, mouse:272, movewindow");
+    }
+
+    #[test]
+    fn to_config_line_includes_args_when_present() {
+        let kb = make_binding("bindd", "SUPER", "T", "Terminal", "exec", "terminal");
+        assert_eq!(kb.to_config_line(), "bindd = SUPER, T, Terminal, exec, terminal");
+    }
+
+    #[test]
+    fn to_config_line_no_desc_includes_args_when_present() {
+        let kb = make_binding("bind", "SUPER", "W", "", "killactive", "");
+        assert_eq!(kb.to_config_line(), "bind = SUPER, W, killactive");
+    }
+
+    // ── serialize regression: SectionHeader must have '# ' prefix ──────────
+    //
+    // Bug: ConfigLine::SectionHeader was serialized without '# ', producing
+    // bare words like `Application Launchers` which Hyprland rejects as
+    // "Invalid config line".
+
+    #[test]
+    fn serialize_section_header_has_hash_prefix() {
+        let content = "# ============================================================================\n\
+                       # APPLICATION LAUNCHERS\n\
+                       # ============================================================================\n\
+                       bindd = SUPER, T, Terminal, exec, terminal\n";
+        let file = BindingsFile::parse(content, std::path::PathBuf::from("/tmp/test.conf"));
+        let serialized = file.serialize();
+        assert!(
+            !serialized.contains("\nApplication Launchers\n"),
+            "SectionHeader must not be written without '# ' prefix"
+        );
+        assert!(
+            serialized.contains("# Application Launchers"),
+            "SectionHeader must be written with '# ' prefix; got:\n{serialized}"
+        );
+    }
+
+    #[test]
+    fn round_trip_preserves_bindm_lines() {
+        // A complete round-trip must not add trailing commas to bindm lines.
+        let content = "bindmd = SUPER, mouse:272, Move window, movewindow\n\
+                       bindmd = SUPER, mouse:273, Resize window, resizewindow\n";
+        let file = BindingsFile::parse(content, std::path::PathBuf::from("/tmp/test.conf"));
+        let serialized = file.serialize();
+        assert_eq!(
+            serialized,
+            "bindmd = SUPER, mouse:272, Move window, movewindow\n\
+             bindmd = SUPER, mouse:273, Resize window, resizewindow\n",
+            "Round-trip must preserve bindmd lines exactly"
+        );
+    }
 }

@@ -680,10 +680,9 @@ export component MainWindow inherits Window {
                     if root.search-text == "": Text {
                         x: 32px;
                         text: "Search apps across AUR, Flatpak, AppImage...";
-                        color: Theme.fg;
+                        color: Theme.fg_dim;
                         font-size: 13px;
                         vertical-alignment: center;
-                        opacity: 0.4;
                     }
                 }
             }
@@ -781,7 +780,6 @@ export component MainWindow inherits Window {
                         color: Theme.fg_dim;
                         font-size: 11px;
                         horizontal-alignment: center;
-                        opacity: 0.6;
                     }
                 }
             }
@@ -795,10 +793,9 @@ export component MainWindow inherits Window {
 
                     Text {
                         text: "Type a query and press Enter to search";
-                        color: Theme.fg;
+                        color: Theme.fg_dim;
                         font-size: 13px;
                         horizontal-alignment: center;
-                        opacity: 0.7;
                     }
                 }
             }
@@ -1182,10 +1179,9 @@ export component MainWindow inherits Window {
                     text: root.show-detail ? "Esc: back  i: install  u: remove  o: homepage  Ctrl+Tab: switch tab" :
                         root.current-tab == 0 ? "/: search  j/k: navigate  Enter: details  Ctrl+Tab: switch tab  ?: help" :
                         "j/k: navigate  Enter: details  /: search  Ctrl+Tab: switch tab  ?: help";
-                    color: Theme.fg;
+                    color: Theme.fg_dim;
                     font-size: 10px;
                     vertical-alignment: center;
-                    opacity: 0.5;
                 }
             }
         }
@@ -1326,7 +1322,6 @@ export component MainWindow inherits Window {
                 color: Theme.fg_dim;
                 font-size: 11px;
                 horizontal-alignment: center;
-                opacity: 0.5;
             }
 
             Text {
@@ -1334,7 +1329,6 @@ export component MainWindow inherits Window {
                 color: Theme.fg_dim;
                 font-size: 11px;
                 horizontal-alignment: center;
-                opacity: 0.5;
             }
         }
     }
