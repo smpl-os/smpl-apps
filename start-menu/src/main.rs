@@ -18,6 +18,11 @@ struct AppEntry {
     category: String,
     #[allow(dead_code)]
     icon: String,
+    /// True when this entry should appear in search results but NOT in the
+    /// browse (category) view.  Used for settings card-level keywords so users
+    /// can type "resolution" or "power saver" and land on the right tab without
+    /// cluttering the Settings category list.
+    search_only: bool,
 }
 
 // ── Category definitions ──
@@ -70,6 +75,7 @@ fn load_apps() -> Vec<AppEntry> {
         let exec = parts[1].to_string();
         let category = parts[2].to_string();
         let icon = parts.get(3).unwrap_or(&"").to_string();
+        let search_only = parts.get(4).map(|s| s.trim() == "1").unwrap_or(false);
 
         // Deduplicate by lowercase name
         if !seen.insert(name.to_lowercase()) {
@@ -81,6 +87,7 @@ fn load_apps() -> Vec<AppEntry> {
             exec,
             category,
             icon,
+            search_only,
         });
     }
 
@@ -188,19 +195,40 @@ fn build_icon_path_cache(apps: &[AppEntry]) -> HashMap<String, String> {
 
 // ── Filter: global search or category browse ──
 
+/// In Settings browse mode (no query), only smpl-managed entries are shown.
+/// System utilities (Blueman, Kvantum, nm-connection-editor, Qt5, etc.) that
+/// happen to have the "Settings" XDG category are hidden — they clutter the
+/// list and users should access them through the relevant settings tab instead.
+/// The whitelist covers the top-level smpl apps that live in the settings area.
+fn is_settings_browse_visible(app: &AppEntry) -> bool {
+    app.exec.starts_with("smplos-settings")
+        || matches!(
+            app.exec.as_str(),
+            "toggle-app-center" | "webapp-center" | "sync-center-gui"
+        )
+}
+
 fn filter_apps(all: &[AppEntry], category_key: &str, query: &str) -> Vec<AppEntry> {
     let q = query.trim().to_lowercase();
 
     all.iter()
         .filter(|app| {
-            // Non-empty query: search globally across all categories
             if !q.is_empty() {
-                let hay = app.name.to_lowercase();
-                return hay.contains(&q);
+                // Search mode: include ALL entries (including search_only) and
+                // match against name — so card keywords like "resolution" or
+                // "power saver" surface the right settings tab.
+                app.name.to_lowercase().contains(&q)
+            } else {
+                // Browse mode: never show search_only entries.
+                if app.search_only { return false; }
+                if app.category != category_key { return false; }
+                // Settings category: only show smpl-managed entries — hide
+                // system utilities (blueman-manager, kvantummanager, etc.).
+                if category_key == "settings" {
+                    return is_settings_browse_visible(app);
+                }
+                true
             }
-
-            // Empty query: filter by selected category
-            app.category == category_key
         })
         .cloned()
         .collect()
