@@ -66,7 +66,7 @@ fn load_apps() -> Vec<AppEntry> {
             continue;
         }
 
-        let parts: Vec<&str> = line.splitn(4, ';').collect();
+        let parts: Vec<&str> = line.splitn(5, ';').collect();
         if parts.len() < 3 {
             continue;
         }
@@ -584,4 +584,93 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
     ui.invoke_focus_search();
     ui.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_app(name: &str, exec: &str, category: &str, search_only: bool) -> AppEntry {
+        AppEntry {
+            name: name.to_string(),
+            exec: exec.to_string(),
+            category: category.to_string(),
+            icon: String::new(),
+            search_only,
+        }
+    }
+
+    // ── parse_app_line: the splitn(5) bug check ──
+    // If splitn uses fewer than 5, parts.get(4) always returns None and
+    // search_only is always false — all card keywords show in browse.
+    fn parse_app_line(line: &str) -> AppEntry {
+        let parts: Vec<&str> = line.splitn(5, ';').collect();
+        let name = parts[0].to_string();
+        let exec = parts.get(1).unwrap_or(&"").to_string();
+        let category = parts.get(2).unwrap_or(&"").to_string();
+        let icon = parts.get(3).unwrap_or(&"").to_string();
+        let search_only = parts.get(4).map(|s| s.trim() == "1").unwrap_or(false);
+        AppEntry { name, exec, category, icon, search_only }
+    }
+
+    #[test]
+    fn search_only_flag_parsed_from_5th_field() {
+        let entry = parse_app_line("Bar;smplos-settings taskbar;settings;preferences-system;1");
+        assert!(entry.search_only, "5th field '1' must set search_only=true");
+    }
+
+    #[test]
+    fn normal_entry_not_search_only() {
+        let entry = parse_app_line("Taskbar;smplos-settings taskbar;settings;preferences-system");
+        assert!(!entry.search_only, "no 5th field means search_only=false");
+    }
+
+    #[test]
+    fn search_only_hidden_in_browse() {
+        let apps = vec![
+            make_app("Taskbar", "smplos-settings taskbar", "settings", false),
+            make_app("Bar", "smplos-settings taskbar", "settings", true),
+            make_app("Workspaces", "smplos-settings taskbar", "settings", true),
+        ];
+        let visible = filter_apps(&apps, "settings", "");
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "Taskbar");
+    }
+
+    #[test]
+    fn search_only_appears_in_search() {
+        let apps = vec![
+            make_app("Taskbar", "smplos-settings taskbar", "settings", false),
+            make_app("Bar", "smplos-settings taskbar", "settings", true),
+            make_app("Workspaces", "smplos-settings taskbar", "settings", true),
+        ];
+        // "workspac" uniquely matches only "Workspaces" (not "Taskbar" or "Bar")
+        let results = filter_apps(&apps, "settings", "workspac");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Workspaces");
+        // search_only entry must appear
+        assert!(results[0].search_only);
+    }
+
+    #[test]
+    fn system_utilities_hidden_in_settings_browse() {
+        let apps = vec![
+            make_app("Bluetooth", "smplos-settings bluetooth", "settings", false),
+            make_app("Bluetooth Manager", "blueman-manager", "settings", false),
+            make_app("Kvantum Manager", "kvantummanager", "settings", false),
+            make_app("Advanced Network Configuration", "nm-connection-editor", "settings", false),
+            make_app("Qt5 Settings", "qt5ct", "settings", false),
+            make_app("App Center", "toggle-app-center", "settings", false),
+            make_app("Web App Center", "webapp-center", "settings", false),
+        ];
+        let visible = filter_apps(&apps, "settings", "");
+        let names: Vec<&str> = visible.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"Bluetooth"), "smplos-settings entries must show");
+        assert!(names.contains(&"App Center"), "toggle-app-center must show");
+        assert!(names.contains(&"Web App Center"), "webapp-center must show");
+        assert!(!names.contains(&"Bluetooth Manager"), "blueman-manager must be hidden");
+        assert!(!names.contains(&"Kvantum Manager"), "kvantummanager must be hidden");
+        assert!(!names.contains(&"Advanced Network Configuration"), "nm-connection-editor must be hidden");
+        assert!(!names.contains(&"Qt5 Settings"), "qt5ct must be hidden");
+    }
 }
