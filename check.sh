@@ -71,6 +71,39 @@ else
     pass "smpl-common sets Wayland app_id"
 fi
 
+# ── 1b. Feature inventory guardrails ────────────────────────────────────────
+# These catch accidental deletion of features during sync operations between
+# the smpl-apps and smplos repos — the #1 source of regressions.
+
+step "Feature inventory guardrails"
+
+check_feat() {
+    local label="$1" file="$2" pattern="$3"
+    if ! grep -q "$pattern" "$file" 2>/dev/null; then
+        fail "REGRESSION: $label  (expected '$pattern' in $file)"
+    else
+        pass "$label"
+    fi
+}
+
+# webapp-center
+check_feat "webapp-center: keybinding import" webapp-center/src/main.rs "use smpl_common::keybindings"
+check_feat "webapp-center: hotkey callback"    webapp-center/src/main.rs "on_hotkey_start_capture"
+check_feat "webapp-center: build_launch_args"  webapp-center/src/main.rs "fn build_launch_args"
+check_feat "webapp-center: --clear-on-exit"    webapp-center/src/main.rs '"--clear-on-exit"'
+check_feat "webapp-center: --secure flag"      webapp-center/src/main.rs '"--secure"'
+
+# start-menu: keyboard navigation
+check_feat "start-menu: FocusScope owns search focus" start-menu/ui/main.slint "search-scope.focus()"
+check_feat "start-menu: search-pop-char callback"     start-menu/ui/main.slint "callback search-pop-char"
+check_feat "start-menu: DownArrow calls focus-app"     start-menu/ui/main.slint "root.focus-app()"
+check_feat "start-menu: type-to-search forwarding"     start-menu/ui/main.slint "root.search-text = root.search-text + event.text"
+check_feat "start-menu: Rust search-pop-char"          start-menu/src/main.rs   "on_search_pop_char"
+
+# settings: keyboard layout dropdown safety
+check_feat "settings: dropdown bounds check"    settings/ui/main.slint "selected-dropdown-index < root.available-layouts.length"
+check_feat "settings: index reset before model" settings/src/main.rs   "set_selected_dropdown_index(-1)"
+
 # ── 2. YAML lint (CI workflow files) ────────────────────────────────────────
 
 step "YAML lint: CI workflow files"

@@ -145,6 +145,43 @@ jobs:
             smpl-common/src/keybindings.rs \
             "pub fn slint_key_to_hyprland"
 
+          # ── start-menu: keyboard navigation features ──────────────────────
+          # Regression: 6c1b844 synced an older smplos copy that overwrote
+          # the focus-search / DownArrow / type-to-search fix, breaking
+          # arrow-key navigation from the search box.
+
+          check "start-menu focus-search targets FocusScope (not TextInput)" \
+            start-menu/ui/main.slint \
+            "search-scope.focus()"
+
+          check "start-menu has search-pop-char callback" \
+            start-menu/ui/main.slint \
+            "callback search-pop-char"
+
+          check "start-menu DownArrow calls focus-app()" \
+            start-menu/ui/main.slint \
+            "root.focus-app()"
+
+          check "start-menu type-to-search forwarding in search FocusScope" \
+            start-menu/ui/main.slint \
+            "root.search-text = root.search-text + event.text"
+
+          check "start-menu Rust implements search-pop-char" \
+            start-menu/src/main.rs \
+            "on_search_pop_char"
+
+          # ── settings: keyboard layout dropdown bounds safety ──────────────
+          # Regression: stale selected-dropdown-index on a shorter model
+          # caused Slint out-of-bounds runtime error.
+
+          check "settings dropdown has upper bounds check" \
+            settings/ui/main.slint \
+            "selected-dropdown-index < root.available-layouts.length"
+
+          check "settings resets index before shrinking model" \
+            settings/src/main.rs \
+            "set_selected_dropdown_index(-1)"
+
           if [ $FAIL -ne 0 ]; then
             echo ""
             echo "One or more feature guardrails failed."
