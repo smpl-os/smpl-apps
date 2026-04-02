@@ -1451,6 +1451,7 @@ export component MainWindow inherits Window {
                                 property <bool> disabled: model.english-only && !root.dictation-selected-lang-is-english;
                                 height: 32px;
                                 border-radius: 4px;
+                                opacity: self.disabled ? 0.4 : 1.0;
                                 background: self.disabled
                                     ? transparent
                                     : idx == root.dictation-selected-model-idx

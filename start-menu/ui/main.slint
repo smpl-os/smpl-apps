@@ -496,7 +496,7 @@ export component MainWindow inherits Window {
                     // Version label (right-aligned)
                     Text {
                         text: root.version;
-                        color: Theme.fg_dim;
+                        color: Theme.fg_dim.transparentize(0.5);
                         font-size: 9px;
                         vertical-alignment: center;
                         horizontal-alignment: right;
@@ -632,7 +632,7 @@ export component MainWindow inherits Window {
                         x: 12px;
                         y: (parent.height - self.preferred-height) / 2;
                         text: "Search all apps...";
-                        color: Theme.fg_dim;
+                        color: Theme.fg_dim.transparentize(0.3);
                         font-size: 13px;
                     }
                 }
@@ -974,7 +974,7 @@ export component MainWindow inherits Window {
 
                             if !root.is-searching && root.active-category < 0: Text {
                                 text: "Right-click apps to pin them here";
-                                color: Theme.fg_dim;
+                                color: Theme.fg_dim.transparentize(0.3);
                                 font-size: 11px;
                                 horizontal-alignment: center;
                             }
