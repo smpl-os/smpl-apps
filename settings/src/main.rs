@@ -1143,22 +1143,25 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_tb_clock_24h(taskbar::clock_24h());
     ui.set_tb_clock_date_fmt_index(taskbar::clock_date_fmt());
 
-    // ── Wi-Fi tab init ────────────────────────────────────────────────────────
+    // ── Wi-Fi tab init (background) ────────────────────────────────────────────
     {
-        let networks = wifi::list_networks(false);
-        let entries: Vec<WifiEntry> = networks
-            .iter()
-            .map(|n| WifiEntry {
-                ssid: n.ssid.clone().into(),
-                signal: n.signal,
-                security: n.security.clone().into(),
-                connected: n.connected,
-                saved: n.saved,
-            })
-            .collect();
-        ui.set_wifi_networks(slint::ModelRc::from(Rc::new(slint::VecModel::from(entries))));
-        let current = wifi::get_current_ssid().unwrap_or_default();
-        ui.set_wifi_current_ssid(current.into());
+        let ui_weak = ui.as_weak();
+        std::thread::spawn(move || {
+            let networks = wifi::list_networks(false);
+            let current = wifi::get_current_ssid().unwrap_or_default();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    let entries: Vec<WifiEntry> = networks
+                        .iter()
+                        .map(to_wifi_entry)
+                        .collect();
+                    ui.set_wifi_networks(slint::ModelRc::from(
+                        Rc::new(slint::VecModel::from(entries)),
+                    ));
+                    ui.set_wifi_current_ssid(current.into());
+                }
+            });
+        });
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -2145,38 +2148,52 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
 
-    // ── Wi-Fi radio init ─────────────────────────────────────────────────
+    // ── Wi-Fi radio init (background) ──────────────────────────────────────
     // Query the current radio state so the airplane toggle reflects reality.
-    match wifi::nmcli::get_wifi_radio_state() {
-        Ok(Some(enabled)) => {
-            // radio exists: airplane mode is the inverse of "enabled"
-            ui.set_wifi_airplane_mode(!enabled);
-            ui.set_wifi_no_hardware(false);
-        }
-        Ok(None) => {
-            // no wifi hardware or nmcli unavailable
-            ui.set_wifi_no_hardware(true);
-            ui.set_wifi_airplane_mode(false);
-        }
-        Err(e) => {
-            eprintln!("[settings] wifi radio state check failed: {}", e);
-            ui.set_wifi_no_hardware(false);
-        }
+    {
+        let ui_weak = ui.as_weak();
+        std::thread::spawn(move || {
+            let state = wifi::nmcli::get_wifi_radio_state();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    match state {
+                        Ok(Some(enabled)) => {
+                            ui.set_wifi_airplane_mode(!enabled);
+                            ui.set_wifi_no_hardware(false);
+                        }
+                        Ok(None) => {
+                            ui.set_wifi_no_hardware(true);
+                            ui.set_wifi_airplane_mode(false);
+                        }
+                        Err(e) => {
+                            eprintln!("[settings] wifi radio state check failed: {}", e);
+                            ui.set_wifi_no_hardware(false);
+                        }
+                    }
+                }
+            });
+        });
     }
 
-    // List networks (fast, no active re-probe)
+    // List networks (background — no active re-probe but still runs nmcli)
     {
         let ui_weak = ui.as_weak();
         ui.on_wifi_list(move || {
-            if let Some(ui) = ui_weak.upgrade() {
+            let ui_weak2 = ui_weak.clone();
+            std::thread::spawn(move || {
                 let networks = wifi::list_networks(false);
-                let entries: Vec<WifiEntry> = networks.iter().map(to_wifi_entry).collect();
-                ui.set_wifi_networks(slint::ModelRc::from(
-                    Rc::new(slint::VecModel::from(entries)),
-                ));
                 let current = wifi::get_current_ssid().unwrap_or_default();
-                ui.set_wifi_current_ssid(current.into());
-            }
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak2.upgrade() {
+                        let entries: Vec<WifiEntry> =
+                            networks.iter().map(to_wifi_entry).collect();
+                        ui.set_wifi_networks(slint::ModelRc::from(
+                            Rc::new(slint::VecModel::from(entries)),
+                        ));
+                        ui.set_wifi_current_ssid(current.into());
+                    }
+                });
+            });
         });
     }
 
@@ -2241,17 +2258,17 @@ fn main() -> Result<(), slint::PlatformError> {
                         Ok(_) => format!("Connected to {}", ssid),
                         Err(e) => format!("Failed: {}", e),
                     };
+                    let nets = wifi::list_networks(false);
+                    let curr = wifi::get_current_ssid().unwrap_or_default();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             ui.set_wifi_connecting(false);
                             wifi_set_status(&ui, &status);
-                            let nets = wifi::list_networks(false);
                             let entries: Vec<WifiEntry> =
                                 nets.iter().map(to_wifi_entry).collect();
                             ui.set_wifi_networks(slint::ModelRc::from(
                                 Rc::new(slint::VecModel::from(entries)),
                             ));
-                            let curr = wifi::get_current_ssid().unwrap_or_default();
                             ui.set_wifi_current_ssid(curr.into());
                         }
                     });
@@ -2267,6 +2284,14 @@ fn main() -> Result<(), slint::PlatformError> {
             let ui_weak2 = ui_weak.clone();
             std::thread::spawn(move || {
                 let result = wifi::set_airplane_mode(enabled);
+                // Pre-fetch network data on the worker thread
+                let (nets, curr) = if result.is_ok() && !enabled {
+                    let n = wifi::list_networks(false);
+                    let c = wifi::get_current_ssid().unwrap_or_default();
+                    (n, c)
+                } else {
+                    (vec![], String::new())
+                };
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak2.upgrade() {
                         match result {
@@ -2278,22 +2303,12 @@ fn main() -> Result<(), slint::PlatformError> {
                                     "Airplane mode off — Wi-Fi radio enabled"
                                 };
                                 wifi_set_status(&ui, status);
-                                if !enabled {
-                                    // Re-scan after radio comes back on
-                                    let nets = wifi::list_networks(false);
-                                    let entries: Vec<WifiEntry> =
-                                        nets.iter().map(to_wifi_entry).collect();
-                                    ui.set_wifi_networks(slint::ModelRc::from(
-                                        Rc::new(slint::VecModel::from(entries)),
-                                    ));
-                                    let curr = wifi::get_current_ssid().unwrap_or_default();
-                                    ui.set_wifi_current_ssid(curr.into());
-                                } else {
-                                    ui.set_wifi_networks(slint::ModelRc::from(
-                                        Rc::new(slint::VecModel::from(vec![])),
-                                    ));
-                                    ui.set_wifi_current_ssid("".into());
-                                }
+                                let entries: Vec<WifiEntry> =
+                                    nets.iter().map(to_wifi_entry).collect();
+                                ui.set_wifi_networks(slint::ModelRc::from(
+                                    Rc::new(slint::VecModel::from(entries)),
+                                ));
+                                ui.set_wifi_current_ssid(curr.into());
                             }
                             Err(e) => {
                                 wifi_set_status(&ui, &format!("Airplane mode error: {}", e));
@@ -2320,13 +2335,12 @@ fn main() -> Result<(), slint::PlatformError> {
                         Ok(_) => String::new(),
                         Err(e) => format!("Failed: {}", e),
                     };
+                    let nets = wifi::list_networks(false);
+                    let entries: Vec<WifiEntry> = nets.iter().map(to_wifi_entry).collect();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             wifi_set_status(&ui, &status);
                             ui.set_wifi_current_ssid("".into());
-                            let nets = wifi::list_networks(false);
-                            let entries: Vec<WifiEntry> =
-                                nets.iter().map(to_wifi_entry).collect();
                             ui.set_wifi_networks(slint::ModelRc::from(
                                 Rc::new(slint::VecModel::from(entries)),
                             ));
@@ -2349,21 +2363,35 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 let entry = networks_model.row_data(idx).unwrap();
                 let ssid = entry.ssid.as_str().to_string();
-                match wifi::forget_network(&ssid) {
-                    Ok(_) => {
-                        wifi_set_status(&ui, &format!("Forgot {}", ssid));
-                        ui.set_wifi_selected_idx(-1);
-                        let nets = wifi::list_networks(false);
-                        let entries: Vec<WifiEntry> =
-                            nets.iter().map(to_wifi_entry).collect();
-                        ui.set_wifi_networks(slint::ModelRc::from(
-                            Rc::new(slint::VecModel::from(entries)),
-                        ));
-                    }
-                    Err(e) => {
-                        wifi_set_status(&ui, &format!("Failed: {}", e));
-                    }
-                }
+                wifi_set_status(&ui, &format!("Forgetting {}…", ssid));
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = wifi::forget_network(&ssid);
+                    let nets = if result.is_ok() {
+                        wifi::list_networks(false)
+                    } else {
+                        vec![]
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            match result {
+                                Ok(_) => {
+                                    wifi_set_status(&ui, &format!("Forgot {}", ssid));
+                                    ui.set_wifi_selected_idx(-1);
+                                    let entries: Vec<WifiEntry> =
+                                        nets.iter().map(to_wifi_entry).collect();
+                                    ui.set_wifi_networks(slint::ModelRc::from(
+                                        Rc::new(slint::VecModel::from(entries)),
+                                    ));
+                                }
+                                Err(e) => {
+                                    wifi_set_status(&ui, &format!("Failed: {}", e));
+                                }
+                            }
+                        }
+                    });
+                });
             }
         });
     }
@@ -2452,18 +2480,18 @@ fn main() -> Result<(), slint::PlatformError> {
                                 Ok(_) => format!("Connected to {}", ssid),
                                 Err(e) => format!("Failed: {}", e),
                             };
+                            let nets = wifi::list_networks(false);
+                            let curr = wifi::get_current_ssid().unwrap_or_default();
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = ui_weak2.upgrade() {
                                     ui.set_wifi_connecting(false);
                                     wifi_set_status(&ui, &status);
                                     ui.set_wifi_uri_input("".into());
-                                    let nets = wifi::list_networks(false);
                                     let entries: Vec<WifiEntry> =
                                         nets.iter().map(to_wifi_entry).collect();
                                     ui.set_wifi_networks(slint::ModelRc::from(
                                         Rc::new(slint::VecModel::from(entries)),
                                     ));
-                                    let curr = wifi::get_current_ssid().unwrap_or_default();
                                     ui.set_wifi_current_ssid(curr.into());
                                 }
                             });
@@ -2606,35 +2634,49 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
 
-    // ── Bluetooth init ───────────────────────────────────────────────────
-    match bluetooth::is_powered() {
-        Ok(powered) => {
-            ui.set_bt_powered(powered);
-            ui.set_bt_no_hardware(false);
-        }
-        Err(_) => {
-            ui.set_bt_no_hardware(true);
-            ui.set_bt_powered(false);
-        }
-    }
-    // Query discoverable state
-    if let Ok((_name, _addr, _powered, discoverable, _pairable)) =
-        bluetooth::get_adapter_info()
+    // ── Bluetooth init (background) ──────────────────────────────────────
     {
-        ui.set_bt_discoverable(discoverable);
+        let ui_weak = ui.as_weak();
+        std::thread::spawn(move || {
+            let powered = bluetooth::is_powered();
+            let adapter = bluetooth::get_adapter_info();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    match powered {
+                        Ok(p) => {
+                            ui.set_bt_powered(p);
+                            ui.set_bt_no_hardware(false);
+                        }
+                        Err(_) => {
+                            ui.set_bt_no_hardware(true);
+                            ui.set_bt_powered(false);
+                        }
+                    }
+                    if let Ok((_name, _addr, _powered, discoverable, _pairable)) = adapter {
+                        ui.set_bt_discoverable(discoverable);
+                    }
+                }
+            });
+        });
     }
 
-    // bt-list: fast refresh (no scan)
+    // bt-list: fast refresh (background — no scan but still calls bluetoothctl)
     {
         let ui_weak = ui.as_weak();
         ui.on_bt_list(move || {
-            if let Some(ui) = ui_weak.upgrade() {
+            let ui_weak2 = ui_weak.clone();
+            std::thread::spawn(move || {
                 let devices = bluetooth::list_devices().unwrap_or_default();
-                let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
-                ui.set_bt_devices(slint::ModelRc::from(
-                    Rc::new(slint::VecModel::from(entries)),
-                ));
-            }
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak2.upgrade() {
+                        let entries: Vec<BtDevice> =
+                            devices.iter().map(to_bt_device).collect();
+                        ui.set_bt_devices(slint::ModelRc::from(
+                            Rc::new(slint::VecModel::from(entries)),
+                        ));
+                    }
+                });
+            });
         });
     }
 
@@ -2694,13 +2736,12 @@ fn main() -> Result<(), slint::PlatformError> {
                         Ok(_) => format!("Connected to {}", name),
                         Err(e) => format!("Failed: {}", e),
                     };
+                    let devices = bluetooth::list_devices().unwrap_or_default();
+                    let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             ui.set_bt_connecting(false);
                             bt_set_status(&ui, &status);
-                            let devices = bluetooth::list_devices().unwrap_or_default();
-                            let entries: Vec<BtDevice> =
-                                devices.iter().map(to_bt_device).collect();
                             ui.set_bt_devices(slint::ModelRc::from(
                                 Rc::new(slint::VecModel::from(entries)),
                             ));
@@ -2732,12 +2773,11 @@ fn main() -> Result<(), slint::PlatformError> {
                         Ok(_) => format!("Disconnected from {}", name),
                         Err(e) => format!("Failed: {}", e),
                     };
+                    let devices = bluetooth::list_devices().unwrap_or_default();
+                    let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             bt_set_status(&ui, &status);
-                            let devices = bluetooth::list_devices().unwrap_or_default();
-                            let entries: Vec<BtDevice> =
-                                devices.iter().map(to_bt_device).collect();
                             ui.set_bt_devices(slint::ModelRc::from(
                                 Rc::new(slint::VecModel::from(entries)),
                             ));
@@ -2771,12 +2811,11 @@ fn main() -> Result<(), slint::PlatformError> {
                         Ok(_) => format!("Paired with {}", name),
                         Err(e) => format!("Failed: {}", e),
                     };
+                    let devices = bluetooth::list_devices().unwrap_or_default();
+                    let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             bt_set_status(&ui, &status);
-                            let devices = bluetooth::list_devices().unwrap_or_default();
-                            let entries: Vec<BtDevice> =
-                                devices.iter().map(to_bt_device).collect();
                             ui.set_bt_devices(slint::ModelRc::from(
                                 Rc::new(slint::VecModel::from(entries)),
                             ));
@@ -2808,12 +2847,11 @@ fn main() -> Result<(), slint::PlatformError> {
                         Ok(_) => format!("Trusted {}", name),
                         Err(e) => format!("Failed: {}", e),
                     };
+                    let devices = bluetooth::list_devices().unwrap_or_default();
+                    let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             bt_set_status(&ui, &status);
-                            let devices = bluetooth::list_devices().unwrap_or_default();
-                            let entries: Vec<BtDevice> =
-                                devices.iter().map(to_bt_device).collect();
                             ui.set_bt_devices(slint::ModelRc::from(
                                 Rc::new(slint::VecModel::from(entries)),
                             ));
@@ -2845,13 +2883,12 @@ fn main() -> Result<(), slint::PlatformError> {
                         Ok(_) => format!("Removed {}", name),
                         Err(e) => format!("Failed: {}", e),
                     };
+                    let devices = bluetooth::list_devices().unwrap_or_default();
+                    let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             bt_set_status(&ui, &status);
                             ui.set_bt_selected_idx(-1);
-                            let devices = bluetooth::list_devices().unwrap_or_default();
-                            let entries: Vec<BtDevice> =
-                                devices.iter().map(to_bt_device).collect();
                             ui.set_bt_devices(slint::ModelRc::from(
                                 Rc::new(slint::VecModel::from(entries)),
                             ));
@@ -2869,6 +2906,12 @@ fn main() -> Result<(), slint::PlatformError> {
             let ui_weak2 = ui_weak.clone();
             std::thread::spawn(move || {
                 let result = bluetooth::set_powered(on);
+                let devices = if result.is_ok() && on {
+                    bluetooth::list_devices().unwrap_or_default()
+                } else {
+                    vec![]
+                };
+                let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak2.upgrade() {
                         match result {
@@ -2880,20 +2923,9 @@ fn main() -> Result<(), slint::PlatformError> {
                                     "Bluetooth off"
                                 };
                                 bt_set_status(&ui, status);
-                                if on {
-                                    // Refresh device list
-                                    let devices =
-                                        bluetooth::list_devices().unwrap_or_default();
-                                    let entries: Vec<BtDevice> =
-                                        devices.iter().map(to_bt_device).collect();
-                                    ui.set_bt_devices(slint::ModelRc::from(
-                                        Rc::new(slint::VecModel::from(entries)),
-                                    ));
-                                } else {
-                                    ui.set_bt_devices(slint::ModelRc::from(
-                                        Rc::new(slint::VecModel::from(vec![])),
-                                    ));
-                                }
+                                ui.set_bt_devices(slint::ModelRc::from(
+                                    Rc::new(slint::VecModel::from(entries)),
+                                ));
                             }
                             Err(e) => {
                                 bt_set_status(
