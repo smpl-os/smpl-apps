@@ -67,6 +67,21 @@ fn eww_update(var: &str, val: &str) {
         .output();
 }
 
+/// Run clock-top.sh and clock-bot.sh immediately and push their output to
+/// the running eww instance — so the bar updates the instant a setting
+/// changes rather than waiting for the next poll tick.
+fn eww_update_clock() {
+    let scripts = format!("{}/scripts", eww_config_dir());
+    if let Ok(out) = Command::new("sh").arg(format!("{}/clock-top.sh", scripts)).output() {
+        let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !val.is_empty() { eww_update("clock-top", &val); }
+    }
+    if let Ok(out) = Command::new("sh").arg(format!("{}/clock-bot.sh", scripts)).output() {
+        let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        eww_update("clock-bot", &val);
+    }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Read current workspace count from config (default 4).
@@ -148,6 +163,110 @@ pub fn set_ws_style(index: i32) {
     write_conf(&map);
     eww_update("ws-style", val);
 }
+
+// ── Clock settings ───────────────────────────────────────────────────────────
+
+/// Detect whether the system locale prefers 24-hour time.
+/// en_US → false (12 h AM/PM), everything else → true (24 h).
+pub fn detect_clock_24h() -> bool {
+    let lc = std::env::var("LC_TIME")
+        .or_else(|_| std::env::var("LC_ALL"))
+        .or_else(|_| std::env::var("LANG"))
+        .unwrap_or_else(|_| "en_US.UTF-8".into());
+    !lc.starts_with("en_US")
+}
+
+/// Detect the preferred date format index from locale.
+/// en_US → 0 (M/D), others → 1 (D/M).
+pub fn detect_clock_date_fmt() -> i32 {
+    if detect_clock_24h() { 1 } else { 0 }
+}
+
+/// Read clock display format: 0=time only, 1=time+dow, 2=time+date.
+pub fn clock_format() -> i32 {
+    let map = read_conf();
+    match map.get("clock_format").map(|s| s.as_str()) {
+        Some("dow")  => 1,
+        Some("date") => 2,
+        _            => 0,
+    }
+}
+
+/// Set clock display format (0=time, 1=dow, 2=date), persist & apply live.
+pub fn set_clock_format(index: i32) {
+    let val = match index {
+        1 => "dow",
+        2 => "date",
+        _ => "time",
+    };
+    let mut map = read_conf();
+    map.insert("clock_format".into(), val.to_string());
+    write_conf(&map);
+    eww_update_clock();
+}
+
+/// Read whether 24-hour time is active.
+/// If not set in conf, auto-detect from locale and persist.
+pub fn clock_24h() -> bool {
+    let mut map = read_conf();
+    if let Some(v) = map.get("clock_24h") {
+        return v == "true";
+    }
+    // First run: detect and persist
+    let detected = detect_clock_24h();
+    map.insert("clock_24h".into(), detected.to_string());
+    write_conf(&map);
+    detected
+}
+
+/// Set 24-hour toggle, persist & apply live.
+pub fn set_clock_24h(on: bool) {
+    let mut map = read_conf();
+    map.insert("clock_24h".into(), on.to_string());
+    write_conf(&map);
+    eww_update_clock();
+}
+
+/// Read date format index: 0=M/D, 1=D/M, 2=ISO, 3=Mon D.
+/// If not set, auto-detect from locale.
+pub fn clock_date_fmt() -> i32 {
+    let mut map = read_conf();
+    if let Some(v) = map.get("clock_date_fmt") {
+        return match v.as_str() {
+            "D/M"   => 1,
+            "ISO"   => 2,
+            "Mon D" => 3,
+            _       => 0,
+        };
+    }
+    // First run: detect and persist
+    let detected = detect_clock_date_fmt();
+    let val = match detected {
+        1 => "D/M",
+        2 => "ISO",
+        3 => "Mon D",
+        _ => "M/D",
+    };
+    map.insert("clock_date_fmt".into(), val.to_string());
+    write_conf(&map);
+    detected
+}
+
+/// Set date format (0=M/D, 1=D/M, 2=ISO, 3=Mon D), persist.
+pub fn set_clock_date_fmt(index: i32) {
+    let val = match index {
+        1 => "D/M",
+        2 => "ISO",
+        3 => "Mon D",
+        _ => "M/D",
+    };
+    let mut map = read_conf();
+    map.insert("clock_date_fmt".into(), val.to_string());
+    write_conf(&map);
+    eww_update_clock();
+}
+
+// ── Workspace window-migration ────────────────────────────────────────────────
 
 /// Move all windows from workspace groups > `max_group` to group 1.
 ///

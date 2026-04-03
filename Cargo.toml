@@ -43,6 +43,10 @@ xkbcommon = "0.9"
 libc      = "0.2"
 dirs      = "6"
 nix       = { version = "0.27", features = ["fs"] }
+
+# Wi-Fi / QR / Security
+qrcode  = "0.14"
+zeroize = { version = "1", features = ["derive"] }
 rfd       = "0.15"
 
 # GTK / GLib (sync-center volume monitoring)

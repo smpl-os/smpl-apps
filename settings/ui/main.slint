@@ -57,6 +57,19 @@ struct BindingEntry {
     is-exec: bool,
 }
 
+/// A discovered Wi-Fi access point (mirrors wifi::WifiNetwork on the Rust side).
+struct WifiEntry {
+    ssid: string,
+    /// Signal strength 0–100.
+    signal: int,
+    /// Security string: "WPA2", "WPA3", "WPA2 WPA3", "WEP", or "Open".
+    security: string,
+    /// True when this is the currently active connection.
+    connected: bool,
+    /// True when a saved NetworkManager profile exists for this SSID.
+    saved: bool,
+}
+
 // ── Theme ────────────────────────────────────────────────────────────────────
 
 export global Theme {
@@ -388,19 +401,91 @@ component MonitorRect inherits Rectangle {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// SCROLL INDICATOR — thin scrollbar thumb overlay for Flickable
+// ══════════════════════════════════════════════════════════════════════════════
+
+component ScrollIndicator inherits Rectangle {
+    in property <length> viewport-height;
+    in property <length> viewport-y;
+    in property <length> visible-height;
+
+    property <float> ratio: self.visible-height <= 0px ? 1.0 :
+        clamp(self.visible-height / max(self.viewport-height, 1px), 0.0, 1.0);
+    property <float> scroll-frac: self.viewport-height <= self.visible-height ? 0.0 :
+        clamp(-self.viewport-y / (self.viewport-height - self.visible-height), 0.0, 1.0);
+    property <bool> needed: self.viewport-height > self.visible-height + 4px;
+
+    width: 4px;
+    visible: self.needed;
+    opacity: 0.6;
+
+    // Track
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 2px;
+        background: Theme.bg_lighter.transparentize(70%);
+    }
+
+    // Thumb
+    Rectangle {
+        x: 0px;
+        y: parent.scroll-frac * (parent.height - self.height);
+        width: 100%;
+        height: max(20px, parent.height * parent.ratio);
+        border-radius: 2px;
+        background: Theme.fg_dim.transparentize(40%);
+    }
+}
+
+// ── Wi-Fi signal strength bars ────────────────────────────────────────────────
+
+component SignalBars inherits HorizontalLayout {
+    in property <int> signal: 0;  // 0–100
+    spacing: 2px;
+    alignment: center;
+
+    // Bar 1 — always shown (very weak)
+    Rectangle {
+        width: 4px; height: 8px; border-radius: 1px;
+        background: signal >= 1 ? Theme.accent : Theme.bg_lighter;
+    }
+    // Bar 2 — fair
+    Rectangle {
+        width: 4px; height: 12px; border-radius: 1px;
+        background: signal >= 30 ? Theme.accent : Theme.bg_lighter;
+    }
+    // Bar 3 — good
+    Rectangle {
+        width: 4px; height: 17px; border-radius: 1px;
+        background: signal >= 55 ? Theme.accent : Theme.bg_lighter;
+    }
+    // Bar 4 — excellent
+    Rectangle {
+        width: 4px; height: 22px; border-radius: 1px;
+        background: signal >= 75 ? Theme.accent : Theme.bg_lighter;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // MAIN WINDOW
 // ══════════════════════════════════════════════════════════════════════════════
 
 export component MainWindow inherits Window {
     title: "Settings";
-    width: 900px;
-    height: 560px;
+    preferred-width: 900px;
+    preferred-height: 560px;
+    min-width: 500px;
+    min-height: 350px;
     no-frame: true;
     background: Theme.bg.transparentize(1.0 - Theme.opacity);
 
     // ── Tab state ──
-    in property <int> initial-tab: 0;
-    property <int> active-tab: initial-tab;
+    in-out property <int> active-tab: 0;
+
+    // ── Deep-link highlight ──
+    in property <string> highlight-setting: "";
+    in-out property <bool> highlight-blink-on: false;
 
     // ── Keyboard tab properties ──
     in property <[KeyData]> row0;
@@ -456,9 +541,10 @@ export component MainWindow inherits Window {
 
     // ── Power tab properties ──
     in-out property <int> power-profile-index: 1;
-    in-out property <int> idle-lock-index: 2;      // 0=1m 1=2m 2=5m 3=10m 4=15m 5=30m 6=Never
-    in-out property <int> idle-dpms-index: 2;       // 0=1m 1=2m 2=5m 3=10m 4=15m 5=30m 6=Never
-    in-out property <int> idle-suspend-index: 1;    // 0=5m 1=10m 2=15m 3=30m 4=60m 5=Never
+    in-out property <int> idle-lock-index: 2;      // 0=1m 1=5m 2=10m 3=30m 4=Never 5+=custom(1h,2h,3h,5h,8h)
+    in-out property <int> idle-dpms-index: 2;       // same
+    in-out property <int> idle-suspend-index: 2;    // same
+    in-out property <int> idle-shutdown-index: 4;   // same (default Never)
     in property <bool> power-profiles-available: true;
 
     // ── About tab properties ──
@@ -487,10 +573,31 @@ export component MainWindow inherits Window {
     in-out property <string> kb-new-cmd: "";
 
     // ── Taskbar tab properties ──
-    in-out property <int> tb-ws-count: 4;
-    in-out property <int> tb-ws-position-index: 0;   // 0 = center, 1 = left
-    in-out property <int> tb-ws-spacing: 1;            // pixel gap between dots (1-10)
-    in-out property <int> tb-ws-style-index: 0;        // 0 = numbers, 1 = squares
+    in-out property <int>  tb-ws-count: 4;
+    in-out property <int>  tb-ws-position-index: 0;      // 0 = center, 1 = left
+    in-out property <int>  tb-ws-spacing: 1;             // pixel gap between dots (1-10)
+    in-out property <int>  tb-ws-style-index: 0;         // 0 = numbers, 1 = squares
+    // Clock
+    in-out property <int>  tb-clock-format-index: 0;    // 0=time, 1=dow, 2=date
+    in-out property <bool> tb-clock-24h: false;          // true=24h, false=AM/PM
+    in-out property <int>  tb-clock-date-fmt-index: 0;  // 0=M/D, 1=D/M, 2=ISO, 3=Mon D
+
+    // ── Wi-Fi tab properties ──
+    in property <[WifiEntry]> wifi-networks: [];
+    in-out property <int>    wifi-selected-idx: -1;
+    in-out property <string> wifi-password-input: "";
+    in-out property <bool>   wifi-show-password: false;
+    in property <bool>       wifi-scanning: false;
+    in property <bool>       wifi-connecting: false;
+    in property <string>     wifi-status: "";
+    in property <bool>       wifi-status-is-error: false;
+    in property <string>     wifi-current-ssid: "";
+    in property <bool>       wifi-airplane-mode: false;
+    in property <bool>       wifi-no-hardware: false;
+    in property <image>      wifi-qr-image;
+    in-out property <bool>   wifi-qr-visible: false;
+    in property <string>     wifi-qr-error: "";
+    in-out property <string> wifi-uri-input: "";
 
     // ── Callbacks ──
     callback close();
@@ -528,9 +635,7 @@ export component MainWindow inherits Window {
     callback set-idle-lock(int);
     callback set-idle-dpms(int);
     callback set-idle-suspend(int);
-    callback action-power-off();
-    callback action-restart();
-    callback action-logout();
+    callback set-idle-shutdown(int);
 
     // Keybindings
     callback kb-load();
@@ -550,6 +655,21 @@ export component MainWindow inherits Window {
     callback tb-set-ws-position(int);
     callback tb-set-ws-spacing(int);
     callback tb-set-ws-style(int);
+    callback tb-set-clock-format(int);     // 0=time, 1=dow, 2=date
+    callback tb-set-clock-24h(bool);       // true=24h, false=AM/PM
+    callback tb-set-clock-date-fmt(int);   // 0=M/D, 1=D/M, 2=ISO, 3=Mon D
+
+    // Wi-Fi
+    callback wifi-list();                  // fast refresh (no active rescan)
+    callback wifi-scan();                  // active rescan (background thread)
+    callback wifi-connect(int, string, int); // (network_idx, password, security_idx)
+    callback wifi-disconnect();
+    callback wifi-forget(int);             // network_idx
+    callback wifi-generate-qr(int);        // network_idx → renders QR into wifi-qr-image
+    callback wifi-apply-uri(string);       // connect from a WIFI: URI string
+    callback wifi-scan-screenshot();       // grim + zbarimg screen scan
+    callback wifi-export-qr(int);          // save QR SVG to ~/Downloads/
+    callback wifi-set-airplane(bool);       // enable/disable airplane mode
 
     // Search
     callback filter-search(string);
@@ -698,7 +818,7 @@ export component MainWindow inherits Window {
                 focus-scope.focus();
                 return accept;
             }
-            // Tab switching: 1-7
+            // Tab switching: 1-8
             if !root.dropdown-open && !root.dictation-lang-dropdown-open {
                 if e.text == "1" { root.active-tab = 0; return accept; }
                 if e.text == "2" { root.active-tab = 1; return accept; }
@@ -707,6 +827,7 @@ export component MainWindow inherits Window {
                 if e.text == "5" { root.active-tab = 4; return accept; }
                 if e.text == "6" { root.active-tab = 5; root.kb-load(); return accept; }
                 if e.text == "7" { root.active-tab = 6; return accept; }
+                if e.text == "8" { root.active-tab = 7; root.wifi-list(); return accept; }
             }
             reject
         }
@@ -959,6 +1080,18 @@ export component MainWindow inherits Window {
                             focus-scope.focus();
                         }
                     }
+
+                    TabButton {
+                        label: "Wi-Fi";
+                        icon: "\u{1F4F6}";
+                        active: root.active-tab == 7;
+                        clicked => {
+                            root.active-tab = 7;
+                            root.dropdown-open = false;
+                            root.wifi-list();
+                            focus-scope.focus();
+                        }
+                    }
                 }
             }
 
@@ -969,9 +1102,15 @@ export component MainWindow inherits Window {
             // KEYBOARD TAB
             // ══════════════════════════════════════════════════════════════
 
-            if root.active-tab == 1: Flickable {
+            if root.active-tab == 1: Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
+                clip: true;
+
+                tab1-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
 
                 VerticalLayout {
                     padding-left: 10px;
@@ -987,6 +1126,10 @@ export component MainWindow inherits Window {
                         height: 30px;
                         border-radius: 4px;
                         background: dropdown-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+                        border-width: (root.highlight-setting == "Keyboard Layout" || root.highlight-setting == "Add Layout" || root.highlight-setting == "Remove Layout" || root.highlight-setting == "XKB Layout" || root.highlight-setting == "Input Language") && root.highlight-blink-on ? 2px : 0px;
+                        border-color: (root.highlight-setting == "Keyboard Layout" || root.highlight-setting == "Add Layout" || root.highlight-setting == "Remove Layout" || root.highlight-setting == "XKB Layout" || root.highlight-setting == "Input Language") && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
 
                         HorizontalLayout {
                             padding-left: 10px;
@@ -1000,7 +1143,7 @@ export component MainWindow inherits Window {
                                     : root.selected-dropdown-index >= 0 && root.selected-dropdown-index < root.available-layouts.length
                                         ? root.available-layouts[root.selected-dropdown-index]
                                         : "Select a layout... (Alt+C)";
-                                color: root.selected-dropdown-index >= 0 && root.selected-dropdown-index < root.available-layouts.length ? Theme.fg : Theme.fg_dim;
+                                color: root.selected-dropdown-index >= 0 ? Theme.fg : Theme.fg_dim;
                                 font-size: 12px;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -1177,6 +1320,13 @@ export component MainWindow inherits Window {
                 }
 
                 // ── Keyboard rows ──
+                Rectangle {
+                    border-radius: 6px;
+                    border-width: root.highlight-setting == "Keyboard Preview" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Keyboard Preview" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+
                 VerticalLayout {
                     spacing: 3px;
 
@@ -1217,15 +1367,32 @@ export component MainWindow inherits Window {
                     }
                 }
                 }
+                }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab1-flick.viewport-height;
+                    viewport-y: tab1-flick.viewport-y;
+                    visible-height: tab1-flick.height;
+                }
             }
 
             // ══════════════════════════════════════════════════════════════
             // DICTATION TAB
             // ══════════════════════════════════════════════════════════════
 
-            if root.active-tab == 2: Flickable {
+            if root.active-tab == 2: Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
+                clip: true;
+
+                tab2-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
 
                 VerticalLayout {
                     padding-left: 10px;
@@ -1335,6 +1502,10 @@ export component MainWindow inherits Window {
                     Rectangle {
                         border-radius: 6px;
                         background: Theme.bg_light;
+                        border-width: (root.highlight-setting == "Language Model" || root.highlight-setting == "Dictation" || root.highlight-setting == "Speech to Text" || root.highlight-setting == "Microphone") && root.highlight-blink-on ? 2px : 0px;
+                        border-color: (root.highlight-setting == "Language Model" || root.highlight-setting == "Dictation" || root.highlight-setting == "Speech to Text" || root.highlight-setting == "Microphone") && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
 
                         VerticalLayout {
                             padding: 10px;
@@ -1435,6 +1606,10 @@ export component MainWindow inherits Window {
                     Rectangle {
                         border-radius: 6px;
                         background: Theme.bg_light;
+                        border-width: (root.highlight-setting == "Whisper" || root.highlight-setting == "Voice Input") && root.highlight-blink-on ? 2px : 0px;
+                        border-color: (root.highlight-setting == "Whisper" || root.highlight-setting == "Voice Input") && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
 
                         VerticalLayout {
                             padding: 10px;
@@ -1451,12 +1626,12 @@ export component MainWindow inherits Window {
                                 property <bool> disabled: model.english-only && !root.dictation-selected-lang-is-english;
                                 height: 32px;
                                 border-radius: 4px;
-                                opacity: self.disabled ? 0.4 : 1.0;
                                 background: self.disabled
                                     ? transparent
                                     : idx == root.dictation-selected-model-idx
                                         ? Theme.accent.transparentize(70%)
                                         : model-item-touch.has-hover ? Theme.bg_lighter : transparent;
+                                opacity: self.disabled ? 0.4 : 1.0;
 
                                 HorizontalLayout {
                                     padding-left: 10px;
@@ -1489,7 +1664,7 @@ export component MainWindow inherits Window {
 
                                     Text {
                                         text: model.label;
-                                        color: (model.english-only && !root.dictation-selected-lang-is-english) ? Theme.fg_dim : Theme.fg;
+                                        color: Theme.fg;
                                         font-size: 12px;
                                         vertical-alignment: center;
                                     }
@@ -1726,6 +1901,10 @@ export component MainWindow inherits Window {
                     if !root.dictation-config-missing: Rectangle {
                         border-radius: 6px;
                         background: Theme.bg_light;
+                        border-width: (root.highlight-setting == "Dictation" || root.highlight-setting == "Speech to Text" || root.highlight-setting == "Whisper" || root.highlight-setting == "Voice Input" || root.highlight-setting == "Language Model" || root.highlight-setting == "Microphone") && root.highlight-blink-on ? 2px : 0px;
+                        border-color: (root.highlight-setting == "Dictation" || root.highlight-setting == "Speech to Text" || root.highlight-setting == "Whisper" || root.highlight-setting == "Voice Input" || root.highlight-setting == "Language Model" || root.highlight-setting == "Microphone") && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
 
                         VerticalLayout {
                             padding: 12px;
@@ -1865,17 +2044,36 @@ export component MainWindow inherits Window {
                     Rectangle { vertical-stretch: 1; }
                 }
                 }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab2-flick.viewport-height;
+                    viewport-y: tab2-flick.viewport-y;
+                    visible-height: tab2-flick.height;
+                }
             }
 
             // ══════════════════════════════════════════════════════════════
             // DISPLAY TAB
             // ══════════════════════════════════════════════════════════════
 
-            if root.active-tab == 3: VerticalLayout {
+            if root.active-tab == 3: Rectangle {
                 horizontal-stretch: 1;
-                padding-left: 10px;
-                padding-right: 4px;
-                spacing: 8px;
+                vertical-stretch: 1;
+                clip: true;
+
+                tab3-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
+
+                VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 4px;
+                    spacing: 10px;
 
                 // Display header with buttons
                 HorizontalLayout {
@@ -1984,14 +2182,15 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Canvas
+                // ── Monitor Canvas card ──
                 Rectangle {
                     background: Theme.bg.darker(0.3);
                     border-radius: 6px;
-                    border-width: 1px;
-                    border-color: Theme.bg_lighter;
-                    min-height: 200px;
-                    vertical-stretch: 1;
+                    border-width: (root.highlight-setting == "Display" || root.highlight-setting == "Monitor" || root.highlight-setting == "Screen Layout") && root.highlight-blink-on ? 2px : 1px;
+                    border-color: (root.highlight-setting == "Display" || root.highlight-setting == "Monitor" || root.highlight-setting == "Screen Layout") && root.highlight-blink-on ? Theme.accent : Theme.bg_lighter;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+                    height: 200px;
 
                     if disp-monitors.length == 0: Text {
                         text: "No monitors detected";
@@ -2023,64 +2222,118 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Settings panel for selected monitor
-                if disp-selected-index >= 0 && disp-selected-index < disp-monitors.length: Rectangle {
-                    background: Theme.bg_light;
-                    border-radius: 6px;
-                    height: 82px;
+                // ── Monitor settings cards (shown when a monitor is selected) ──
+                if disp-selected-index >= 0 && disp-selected-index < disp-monitors.length: VerticalLayout {
+                    spacing: 10px;
 
-                    VerticalLayout {
-                        padding: 10px;
-                        spacing: 6px;
+                    // Monitor name header
+                    Text {
+                        text: "Monitor: " + disp-monitors[root.disp-selected-index].name + "  \u{2014}  " + disp-monitors[root.disp-selected-index].description;
+                        color: Theme.fg_dim;
+                        font-size: 11px;
+                        overflow: elide;
+                    }
 
-                        Text {
-                            text: "Monitor: " + disp-monitors[root.disp-selected-index].name + "  -  " + disp-monitors[root.disp-selected-index].description;
-                            color: Theme.fg_dim;
-                            font-size: 10px;
-                            overflow: elide;
-                        }
+                    // ── Resolution & Refresh Rate card ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        border-width: (root.highlight-setting == "Resolution" || root.highlight-setting == "Refresh Rate") && root.highlight-blink-on ? 2px : 0px;
+                        border-color: (root.highlight-setting == "Resolution" || root.highlight-setting == "Refresh Rate") && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
 
-                        HorizontalLayout {
-                            spacing: 12px;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
 
-                            VerticalLayout {
-                                spacing: 3px;
-                                min-width: 180px;
-                                Text { text: "Resolution"; color: Theme.fg_dim; font-size: 10px; }
-                                ResDropdown {
-                                    model: root.disp-selected-modes;
-                                    current-index: root.disp-selected-mode-index;
-                                    selected(idx) => {
-                                        root.disp-change-resolution(root.disp-selected-index, idx);
-                                    }
-                                }
+                            Text {
+                                text: "Resolution & Refresh Rate";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                                font-weight: 600;
                             }
 
+                            ResDropdown {
+                                model: root.disp-selected-modes;
+                                current-index: root.disp-selected-mode-index;
+                                selected(idx) => {
+                                    root.disp-change-resolution(root.disp-selected-index, idx);
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Scale card ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        border-width: root.highlight-setting == "Scale" && root.highlight-blink-on ? 2px : 0px;
+                        border-color: root.highlight-setting == "Scale" && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Scale: " + round(root.disp-selected-scale * 100) / 100;
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                                font-weight: 600;
+                            }
+
+                            ThemeSlider {
+                                value: root.disp-selected-scale;
+                                minimum: 0.5;
+                                maximum: 3.0;
+                                changed(v) => {
+                                    root.disp-change-scale(root.disp-selected-index, v);
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Primary Monitor card ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        border-width: root.highlight-setting == "Primary Monitor" && root.highlight-blink-on ? 2px : 0px;
+                        border-color: root.highlight-setting == "Primary Monitor" && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 10px;
+
                             VerticalLayout {
-                                spacing: 3px;
                                 horizontal-stretch: 1;
+                                spacing: 2px;
+                                alignment: center;
+
                                 Text {
-                                    text: "Scale: " + round(root.disp-selected-scale * 100) / 100;
+                                    text: "Primary Monitor";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                }
+
+                                Text {
+                                    text: disp-monitors[root.disp-selected-index].is-primary
+                                        ? "This monitor is primary"
+                                        : "Set this monitor as the main display";
                                     color: Theme.fg_dim;
                                     font-size: 10px;
                                 }
-                                ThemeSlider {
-                                    value: root.disp-selected-scale;
-                                    minimum: 0.5;
-                                    maximum: 3.0;
-                                    changed(v) => {
-                                        root.disp-change-scale(root.disp-selected-index, v);
-                                    }
-                                }
                             }
 
-                            // Set Primary
                             VerticalLayout {
-                                spacing: 3px;
-                                alignment: end;
-                                Text { text: " "; font-size: 10px; }
+                                alignment: center;
+
                                 Rectangle {
-                                    height: 26px;
+                                    height: 28px;
                                     min-width: disp-primary-layout.preferred-width + 20px;
                                     border-radius: 4px;
                                     background: disp-monitors[root.disp-selected-index].is-primary
@@ -2275,15 +2528,32 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
+                }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab3-flick.viewport-height;
+                    viewport-y: tab3-flick.viewport-y;
+                    visible-height: tab3-flick.height;
+                }
             }
 
             // ══════════════════════════════════════════════════════════════
             // POWER TAB
             // ══════════════════════════════════════════════════════════════
 
-            if root.active-tab == 4: Flickable {
+            if root.active-tab == 4: Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
+                clip: true;
+
+                tab4-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
 
                 VerticalLayout {
                     padding-left: 10px;
@@ -2301,6 +2571,10 @@ export component MainWindow inherits Window {
                 if root.power-profiles-available: Rectangle {
                     border-radius: 6px;
                     background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Power Profile" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Power Profile" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
 
                     VerticalLayout {
                         padding: 12px;
@@ -2459,283 +2733,96 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // ── Idle & Sleep card ──
+                // ── Lock Screen Timeout card ──
                 Rectangle {
                     border-radius: 6px;
                     background: Theme.bg_light;
-
-                    VerticalLayout {
-                        padding: 12px;
-                        spacing: 14px;
-
-                        Text {
-                            text: "Idle & Sleep";
-                            color: Theme.fg_dim;
-                            font-size: 11px;
-                            font-weight: 600;
-                        }
-
-                        // Lock screen timeout
-                        VerticalLayout {
-                            spacing: 6px;
-
-                            Text {
-                                text: "Lock screen after";
-                                color: Theme.fg;
-                                font-size: 12px;
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-
-                                for preset[idx] in ["1 min", "2 min", "5 min", "10 min", "15 min", "30 min", "Never"]: Rectangle {
-                                    height: 28px;
-                                    min-width: 46px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.idle-lock-index == idx
-                                        ? Theme.accent
-                                        : lock-chip-touch.has-hover ? Theme.bg_lighter : Theme.bg;
-
-                                    HorizontalLayout {
-                                        alignment: center;
-                                        padding-left: 8px;
-                                        padding-right: 8px;
-
-                                        Text {
-                                            text: preset;
-                                            color: root.idle-lock-index == idx ? Theme.bg : Theme.fg;
-                                            font-size: 10px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-
-                                    lock-chip-touch := TouchArea {
-                                        clicked => {
-                                            root.idle-lock-index = idx;
-                                            root.set-idle-lock(idx);
-                                        }
-                                        mouse-cursor: pointer;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Screen off timeout
-                        VerticalLayout {
-                            spacing: 6px;
-
-                            Text {
-                                text: "Turn off screen after";
-                                color: Theme.fg;
-                                font-size: 12px;
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-
-                                for preset[idx] in ["1 min", "2 min", "5 min", "10 min", "15 min", "30 min", "Never"]: Rectangle {
-                                    height: 28px;
-                                    min-width: 46px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.idle-dpms-index == idx
-                                        ? Theme.accent
-                                        : dpms-chip-touch.has-hover ? Theme.bg_lighter : Theme.bg;
-
-                                    HorizontalLayout {
-                                        alignment: center;
-                                        padding-left: 8px;
-                                        padding-right: 8px;
-
-                                        Text {
-                                            text: preset;
-                                            color: root.idle-dpms-index == idx ? Theme.bg : Theme.fg;
-                                            font-size: 10px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-
-                                    dpms-chip-touch := TouchArea {
-                                        clicked => {
-                                            root.idle-dpms-index = idx;
-                                            root.set-idle-dpms(idx);
-                                        }
-                                        mouse-cursor: pointer;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Suspend timeout
-                        VerticalLayout {
-                            spacing: 6px;
-
-                            Text {
-                                text: "Suspend after";
-                                color: Theme.fg;
-                                font-size: 12px;
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-
-                                for preset[idx] in ["5 min", "10 min", "15 min", "30 min", "60 min", "Never"]: Rectangle {
-                                    height: 28px;
-                                    min-width: 46px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.idle-suspend-index == idx
-                                        ? Theme.accent
-                                        : susp-chip-touch.has-hover ? Theme.bg_lighter : Theme.bg;
-
-                                    HorizontalLayout {
-                                        alignment: center;
-                                        padding-left: 8px;
-                                        padding-right: 8px;
-
-                                        Text {
-                                            text: preset;
-                                            color: root.idle-suspend-index == idx ? Theme.bg : Theme.fg;
-                                            font-size: 10px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-
-                                    susp-chip-touch := TouchArea {
-                                        clicked => {
-                                            root.idle-suspend-index = idx;
-                                            root.set-idle-suspend(idx);
-                                        }
-                                        mouse-cursor: pointer;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Info text
-                        Text {
-                            text: "Changes apply immediately and persist across reboots.";
-                            color: Theme.fg_dim;
-                            font-size: 10px;
-                        }
-                    }
-                }
-
-                // ── Power Actions card ──
-                Rectangle {
-                    border-radius: 6px;
-                    background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Lock Screen Timeout" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Lock Screen Timeout" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
 
                     VerticalLayout {
                         padding: 12px;
                         spacing: 8px;
 
                         Text {
-                            text: "Power Actions";
+                            text: "Lock screen after";
                             color: Theme.fg_dim;
                             font-size: 11px;
                             font-weight: 600;
                         }
 
                         HorizontalLayout {
-                            spacing: 8px;
+                            spacing: 4px;
 
-                            // Power Off
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                height: 60px;
-                                border-radius: 6px;
-                                background: poweroff-touch.has-hover
-                                    ? #e04040 : Theme.bg_lighter;
+                            for preset[idx] in ["1 min", "5 min", "10 min", "30 min", "Never"]: Rectangle {
+                                height: 28px;
+                                min-width: 50px;
+                                horizontal-stretch: 0;
+                                border-radius: 4px;
+                                background: root.idle-lock-index == idx
+                                    ? Theme.accent
+                                    : lock-chip-touch.has-hover ? Theme.bg_lighter : Theme.bg;
 
-                                VerticalLayout {
+                                HorizontalLayout {
                                     alignment: center;
-                                    spacing: 4px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
 
                                     Text {
-                                        text: "⏻";
-                                        color: poweroff-touch.has-hover ? white : Theme.fg;
-                                        font-size: 18px;
-                                        horizontal-alignment: center;
-                                    }
-                                    Text {
-                                        text: "Power Off";
-                                        color: poweroff-touch.has-hover ? white : Theme.fg;
+                                        text: preset;
+                                        color: root.idle-lock-index == idx ? Theme.bg : Theme.fg;
                                         font-size: 10px;
                                         horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
                                 }
 
-                                poweroff-touch := TouchArea {
-                                    clicked => { root.action-power-off(); }
+                                lock-chip-touch := TouchArea {
+                                    clicked => {
+                                        root.idle-lock-index = idx;
+                                        root.set-idle-lock(idx);
+                                    }
                                     mouse-cursor: pointer;
                                 }
                             }
 
-                            // Restart
+                            // Custom dropdown
                             Rectangle {
-                                horizontal-stretch: 1;
-                                height: 60px;
-                                border-radius: 6px;
-                                background: restart-sys-touch.has-hover
-                                    ? Theme.accent.transparentize(30%) : Theme.bg_lighter;
+                                height: 28px;
+                                min-width: 56px;
+                                horizontal-stretch: 0;
+                                border-radius: 4px;
+                                background: root.idle-lock-index >= 5
+                                    ? Theme.accent
+                                    : lock-custom-touch.has-hover ? Theme.bg_lighter : Theme.bg;
 
-                                VerticalLayout {
+                                HorizontalLayout {
                                     alignment: center;
-                                    spacing: 4px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
 
                                     Text {
-                                        text: "⟳";
-                                        color: restart-sys-touch.has-hover ? Theme.bg : Theme.fg;
-                                        font-size: 18px;
-                                        horizontal-alignment: center;
-                                    }
-                                    Text {
-                                        text: "Restart";
-                                        color: restart-sys-touch.has-hover ? Theme.bg : Theme.fg;
+                                        text: root.idle-lock-index == 5 ? "1h"
+                                            : root.idle-lock-index == 6 ? "2h"
+                                            : root.idle-lock-index == 7 ? "3h"
+                                            : root.idle-lock-index == 8 ? "5h"
+                                            : root.idle-lock-index == 9 ? "8h"
+                                            : "Custom";
+                                        color: root.idle-lock-index >= 5 ? Theme.bg : Theme.fg;
                                         font-size: 10px;
                                         horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
                                 }
 
-                                restart-sys-touch := TouchArea {
-                                    clicked => { root.action-restart(); }
-                                    mouse-cursor: pointer;
-                                }
-                            }
-
-                            // Log Out
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                height: 60px;
-                                border-radius: 6px;
-                                background: logout-touch.has-hover
-                                    ? Theme.accent.transparentize(30%) : Theme.bg_lighter;
-
-                                VerticalLayout {
-                                    alignment: center;
-                                    spacing: 4px;
-
-                                    Text {
-                                        text: "󰍃";
-                                        color: logout-touch.has-hover ? Theme.bg : Theme.fg;
-                                        font-size: 18px;
-                                        horizontal-alignment: center;
+                                lock-custom-touch := TouchArea {
+                                    clicked => {
+                                        root.idle-lock-index = root.idle-lock-index >= 5 ?
+                                            (root.idle-lock-index >= 9 ? 5 : root.idle-lock-index + 1) : 5;
+                                        root.set-idle-lock(root.idle-lock-index);
                                     }
-                                    Text {
-                                        text: "Log Out";
-                                        color: logout-touch.has-hover ? Theme.bg : Theme.fg;
-                                        font-size: 10px;
-                                        horizontal-alignment: center;
-                                    }
-                                }
-
-                                logout-touch := TouchArea {
-                                    clicked => { root.action-logout(); }
                                     mouse-cursor: pointer;
                                 }
                             }
@@ -2743,7 +2830,324 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                // ── Screen Off Timeout card ──
+                Rectangle {
+                    border-radius: 6px;
+                    background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Screen Off Timeout" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Screen Off Timeout" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Screen Off Timeout" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Screen Off Timeout" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Turn off screen after";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+
+                            for preset[idx] in ["1 min", "5 min", "10 min", "30 min", "Never"]: Rectangle {
+                                height: 28px;
+                                min-width: 50px;
+                                horizontal-stretch: 0;
+                                border-radius: 4px;
+                                background: root.idle-dpms-index == idx
+                                    ? Theme.accent
+                                    : dpms-chip-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+
+                                    Text {
+                                        text: preset;
+                                        color: root.idle-dpms-index == idx ? Theme.bg : Theme.fg;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                dpms-chip-touch := TouchArea {
+                                    clicked => {
+                                        root.idle-dpms-index = idx;
+                                        root.set-idle-dpms(idx);
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+
+                            // Custom dropdown
+                            Rectangle {
+                                height: 28px;
+                                min-width: 56px;
+                                horizontal-stretch: 0;
+                                border-radius: 4px;
+                                background: root.idle-dpms-index >= 5
+                                    ? Theme.accent
+                                    : dpms-custom-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+
+                                    Text {
+                                        text: root.idle-dpms-index == 5 ? "1h"
+                                            : root.idle-dpms-index == 6 ? "2h"
+                                            : root.idle-dpms-index == 7 ? "3h"
+                                            : root.idle-dpms-index == 8 ? "5h"
+                                            : root.idle-dpms-index == 9 ? "8h"
+                                            : "Custom";
+                                        color: root.idle-dpms-index >= 5 ? Theme.bg : Theme.fg;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                dpms-custom-touch := TouchArea {
+                                    clicked => {
+                                        root.idle-dpms-index = root.idle-dpms-index >= 5 ?
+                                            (root.idle-dpms-index >= 9 ? 5 : root.idle-dpms-index + 1) : 5;
+                                        root.set-idle-dpms(root.idle-dpms-index);
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Suspend Timeout card ──
+                Rectangle {
+                    border-radius: 6px;
+                    background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Suspend Timeout" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Suspend Timeout" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Suspend Timeout" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Suspend Timeout" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Suspend after";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+
+                            for preset[idx] in ["1 min", "5 min", "10 min", "30 min", "Never"]: Rectangle {
+                                height: 28px;
+                                min-width: 50px;
+                                horizontal-stretch: 0;
+                                border-radius: 4px;
+                                background: root.idle-suspend-index == idx
+                                    ? Theme.accent
+                                    : susp-chip-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+
+                                    Text {
+                                        text: preset;
+                                        color: root.idle-suspend-index == idx ? Theme.bg : Theme.fg;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                susp-chip-touch := TouchArea {
+                                    clicked => {
+                                        root.idle-suspend-index = idx;
+                                        root.set-idle-suspend(idx);
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+
+                            // Custom dropdown
+                            Rectangle {
+                                height: 28px;
+                                min-width: 56px;
+                                horizontal-stretch: 0;
+                                border-radius: 4px;
+                                background: root.idle-suspend-index >= 5
+                                    ? Theme.accent
+                                    : susp-custom-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+
+                                    Text {
+                                        text: root.idle-suspend-index == 5 ? "1h"
+                                            : root.idle-suspend-index == 6 ? "2h"
+                                            : root.idle-suspend-index == 7 ? "3h"
+                                            : root.idle-suspend-index == 8 ? "5h"
+                                            : root.idle-suspend-index == 9 ? "8h"
+                                            : "Custom";
+                                        color: root.idle-suspend-index >= 5 ? Theme.bg : Theme.fg;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                susp-custom-touch := TouchArea {
+                                    clicked => {
+                                        root.idle-suspend-index = root.idle-suspend-index >= 5 ?
+                                            (root.idle-suspend-index >= 9 ? 5 : root.idle-suspend-index + 1) : 5;
+                                        root.set-idle-suspend(root.idle-suspend-index);
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Shutdown After card ──
+                Rectangle {
+                    border-radius: 6px;
+                    background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Shutdown After" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Shutdown After" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Shutdown After" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Shutdown After" { tab4-flick.viewport-y = -max(0px, self.y - 20px); } }
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Shutdown after";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+
+                            for preset[idx] in ["1 min", "5 min", "10 min", "30 min", "Never"]: Rectangle {
+                                height: 28px;
+                                min-width: 50px;
+                                horizontal-stretch: 0;
+                                border-radius: 4px;
+                                background: root.idle-shutdown-index == idx
+                                    ? Theme.accent
+                                    : shutdown-chip-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+
+                                    Text {
+                                        text: preset;
+                                        color: root.idle-shutdown-index == idx ? Theme.bg : Theme.fg;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                shutdown-chip-touch := TouchArea {
+                                    clicked => {
+                                        root.idle-shutdown-index = idx;
+                                        root.set-idle-shutdown(idx);
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+
+                            // Custom dropdown
+                            Rectangle {
+                                height: 28px;
+                                min-width: 56px;
+                                horizontal-stretch: 0;
+                                border-radius: 4px;
+                                background: root.idle-shutdown-index >= 5
+                                    ? Theme.accent
+                                    : shutdown-custom-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+
+                                    Text {
+                                        text: root.idle-shutdown-index == 5 ? "1h"
+                                            : root.idle-shutdown-index == 6 ? "2h"
+                                            : root.idle-shutdown-index == 7 ? "3h"
+                                            : root.idle-shutdown-index == 8 ? "5h"
+                                            : root.idle-shutdown-index == 9 ? "8h"
+                                            : "Custom";
+                                        color: root.idle-shutdown-index >= 5 ? Theme.bg : Theme.fg;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                shutdown-custom-touch := TouchArea {
+                                    clicked => {
+                                        root.idle-shutdown-index = root.idle-shutdown-index >= 5 ?
+                                            (root.idle-shutdown-index >= 9 ? 5 : root.idle-shutdown-index + 1) : 5;
+                                        root.set-idle-shutdown(root.idle-shutdown-index);
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Info text
+                Text {
+                    text: "Changes apply immediately and persist across reboots.";
+                    color: Theme.fg_dim;
+                    font-size: 10px;
+                }
+
                 Rectangle { vertical-stretch: 1; }
+                }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab4-flick.viewport-height;
+                    viewport-y: tab4-flick.viewport-y;
+                    visible-height: tab4-flick.height;
                 }
             }
 
@@ -2751,9 +3155,15 @@ export component MainWindow inherits Window {
             // KEYBINDINGS TAB
             // ══════════════════════════════════════════════════════════════
 
-            if root.active-tab == 5: Flickable {
+            if root.active-tab == 5: Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
+                clip: true;
+
+                tab5-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
 
                 VerticalLayout {
                     padding-left: 10px;
@@ -2844,6 +3254,10 @@ export component MainWindow inherits Window {
                     vertical-stretch: 1;
                     border-radius: 6px;
                     background: Theme.bg_light;
+                    border-width: (root.highlight-setting == "Keybindings" || root.highlight-setting == "Keyboard Shortcuts" || root.highlight-setting == "Hotkeys" || root.highlight-setting == "Shortcut") && root.highlight-blink-on ? 2px : 0px;
+                    border-color: (root.highlight-setting == "Keybindings" || root.highlight-setting == "Keyboard Shortcuts" || root.highlight-setting == "Hotkeys" || root.highlight-setting == "Shortcut") && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
                     clip: true;
 
                     Flickable {
@@ -3361,15 +3775,31 @@ export component MainWindow inherits Window {
                     }
                 }
                 }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab5-flick.viewport-height;
+                    viewport-y: tab5-flick.viewport-y;
+                    visible-height: tab5-flick.height;
+                }
             }
 
             // ══════════════════════════════════════════════════════════════
             // TASKBAR TAB
             // ══════════════════════════════════════════════════════════════
 
-            if root.active-tab == 6: Flickable {
+            if root.active-tab == 6: Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
+                clip: true;
+
+                tab6-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
 
                 VerticalLayout {
                     padding-left: 10px;
@@ -3387,6 +3817,10 @@ export component MainWindow inherits Window {
                 Rectangle {
                     border-radius: 6px;
                     background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Workspace Count" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Workspace Count" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
 
                     VerticalLayout {
                         padding: 12px;
@@ -3507,6 +3941,10 @@ export component MainWindow inherits Window {
                 Rectangle {
                     border-radius: 6px;
                     background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Workspace Position" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Workspace Position" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
 
                     VerticalLayout {
                         padding: 12px;
@@ -3628,6 +4066,13 @@ export component MainWindow inherits Window {
                 Rectangle {
                     border-radius: 6px;
                     background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Workspace Spacing" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Workspace Spacing" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Workspace Spacing" { tab6-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Workspace Spacing" { tab6-flick.viewport-y = -max(0px, self.y - 20px); } }
 
                     VerticalLayout {
                         padding: 12px;
@@ -3747,6 +4192,13 @@ export component MainWindow inherits Window {
                 Rectangle {
                     border-radius: 6px;
                     background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Workspace Style" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Workspace Style" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => { if _hl == "Workspace Style" { tab6-flick.viewport-y = -max(0px, self.y - 20px); } }
+                    changed _hl => { if _hl == "Workspace Style" { tab6-flick.viewport-y = -max(0px, self.y - 20px); } }
 
                     VerticalLayout {
                         padding: 12px;
@@ -3857,7 +4309,984 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                // ── Clock Format card ──────────────────────────────────
+                Rectangle {
+                    border-radius: 6px;
+                    background: Theme.bg_light;
+                    border-width: root.highlight-setting == "Clock Format" && root.highlight-blink-on ? 2px : 0px;
+                    border-color: root.highlight-setting == "Clock Format" && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+                    private property <string> _hl: root.highlight-setting;
+                    init => {
+                        if _hl == "Clock Format" || _hl == "Time Format" || _hl == "Date Format"
+                            || _hl == "24-hour" || _hl == "AM PM" {
+                            tab6-flick.viewport-y = -max(0px, self.y - 20px);
+                        }
+                    }
+                    changed _hl => {
+                        if _hl == "Clock Format" || _hl == "Time Format" || _hl == "Date Format"
+                            || _hl == "24-hour" || _hl == "AM PM" {
+                            tab6-flick.viewport-y = -max(0px, self.y - 20px);
+                        }
+                    }
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Clock Format";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "Choose what appears in the taskbar clock. Two-line formats show time larger with a smaller line below.";
+                            color: Theme.fg_dim;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        // ── Display format options ──────────────────────
+
+                        // Time only
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: root.tb-clock-format-index == 0
+                                ? Theme.accent.transparentize(70%)
+                                : clock-fmt-time-touch.has-hover ? Theme.bg_lighter : transparent;
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px; spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; width: 14px;
+                                    Rectangle {
+                                        width: 14px; height: 14px; border-radius: 7px;
+                                        border-width: 1.5px;
+                                        border-color: root.tb-clock-format-index == 0 ? Theme.accent : Theme.fg_dim;
+                                        background: transparent;
+                                        Rectangle {
+                                            visible: root.tb-clock-format-index == 0;
+                                            x: 3px; y: 3px; width: 8px; height: 8px;
+                                            border-radius: 4px; background: Theme.accent;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; spacing: 1px;
+                                    Text { text: "Time only"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "e.g.  3:42 PM"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                            }
+                            clock-fmt-time-touch := TouchArea {
+                                clicked => { root.tb-clock-format-index = 0; root.tb-set-clock-format(0); }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        // Time & day of week
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: root.tb-clock-format-index == 1
+                                ? Theme.accent.transparentize(70%)
+                                : clock-fmt-dow-touch.has-hover ? Theme.bg_lighter : transparent;
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px; spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; width: 14px;
+                                    Rectangle {
+                                        width: 14px; height: 14px; border-radius: 7px;
+                                        border-width: 1.5px;
+                                        border-color: root.tb-clock-format-index == 1 ? Theme.accent : Theme.fg_dim;
+                                        background: transparent;
+                                        Rectangle {
+                                            visible: root.tb-clock-format-index == 1;
+                                            x: 3px; y: 3px; width: 8px; height: 8px;
+                                            border-radius: 4px; background: Theme.accent;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; spacing: 1px;
+                                    Text { text: "Time & day of week"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "e.g.  3:42 PM  /  Wed"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                            }
+                            clock-fmt-dow-touch := TouchArea {
+                                clicked => { root.tb-clock-format-index = 1; root.tb-set-clock-format(1); }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        // Time & date
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: root.tb-clock-format-index == 2
+                                ? Theme.accent.transparentize(70%)
+                                : clock-fmt-date-touch.has-hover ? Theme.bg_lighter : transparent;
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px; spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; width: 14px;
+                                    Rectangle {
+                                        width: 14px; height: 14px; border-radius: 7px;
+                                        border-width: 1.5px;
+                                        border-color: root.tb-clock-format-index == 2 ? Theme.accent : Theme.fg_dim;
+                                        background: transparent;
+                                        Rectangle {
+                                            visible: root.tb-clock-format-index == 2;
+                                            x: 3px; y: 3px; width: 8px; height: 8px;
+                                            border-radius: 4px; background: Theme.accent;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; spacing: 1px;
+                                    Text { text: "Time & date"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "e.g.  3:42 PM  /  3/26"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                            }
+                            clock-fmt-date-touch := TouchArea {
+                                clicked => { root.tb-clock-format-index = 2; root.tb-set-clock-format(2); }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.bg_lighter; }
+
+                        // ── Time format (24h vs AM/PM) ──────────────────
+                        Text {
+                            text: "Time Format";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            // 24-hour
+                            Rectangle {
+                                height: 36px; border-radius: 4px; horizontal-stretch: 1;
+                                background: root.tb-clock-24h
+                                    ? Theme.accent.transparentize(70%)
+                                    : clock-24h-touch.has-hover ? Theme.bg_lighter : transparent;
+                                HorizontalLayout {
+                                    padding-left: 10px; spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center; width: 14px;
+                                        Rectangle {
+                                            width: 14px; height: 14px; border-radius: 7px;
+                                            border-width: 1.5px;
+                                            border-color: root.tb-clock-24h ? Theme.accent : Theme.fg_dim;
+                                            background: transparent;
+                                            Rectangle {
+                                                visible: root.tb-clock-24h;
+                                                x: 3px; y: 3px; width: 8px; height: 8px;
+                                                border-radius: 4px; background: Theme.accent;
+                                            }
+                                        }
+                                    }
+                                    Text { text: "24-hour"; color: Theme.fg; font-size: 12px; vertical-alignment: center; }
+                                }
+                                clock-24h-touch := TouchArea {
+                                    clicked => { root.tb-clock-24h = true; root.tb-set-clock-24h(true); }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+
+                            // AM / PM
+                            Rectangle {
+                                height: 36px; border-radius: 4px; horizontal-stretch: 1;
+                                background: !root.tb-clock-24h
+                                    ? Theme.accent.transparentize(70%)
+                                    : clock-ampm-touch.has-hover ? Theme.bg_lighter : transparent;
+                                HorizontalLayout {
+                                    padding-left: 10px; spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center; width: 14px;
+                                        Rectangle {
+                                            width: 14px; height: 14px; border-radius: 7px;
+                                            border-width: 1.5px;
+                                            border-color: !root.tb-clock-24h ? Theme.accent : Theme.fg_dim;
+                                            background: transparent;
+                                            Rectangle {
+                                                visible: !root.tb-clock-24h;
+                                                x: 3px; y: 3px; width: 8px; height: 8px;
+                                                border-radius: 4px; background: Theme.accent;
+                                            }
+                                        }
+                                    }
+                                    Text { text: "AM / PM"; color: Theme.fg; font-size: 12px; vertical-alignment: center; }
+                                }
+                                clock-ampm-touch := TouchArea {
+                                    clicked => { root.tb-clock-24h = false; root.tb-set-clock-24h(false); }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+
+                        // ── Date format (only when clock_format == date) ─
+                        if root.tb-clock-format-index == 2: Rectangle { height: 1px; background: Theme.bg_lighter; }
+
+                        if root.tb-clock-format-index == 2: Text {
+                            text: "Date Format";
+                            color: Theme.fg_dim;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+
+                        if root.tb-clock-format-index == 2: GridLayout {
+                            spacing: 8px;
+
+                            Row {
+                                // M/D
+                                Rectangle {
+                                    height: 36px; border-radius: 4px;
+                                    background: root.tb-clock-date-fmt-index == 0
+                                        ? Theme.accent.transparentize(70%)
+                                        : clock-date-md-touch.has-hover ? Theme.bg_lighter : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; width: 14px;
+                                            Rectangle {
+                                                width: 14px; height: 14px; border-radius: 7px;
+                                                border-width: 1.5px;
+                                                border-color: root.tb-clock-date-fmt-index == 0 ? Theme.accent : Theme.fg_dim;
+                                                background: transparent;
+                                                Rectangle {
+                                                    visible: root.tb-clock-date-fmt-index == 0;
+                                                    x: 3px; y: 3px; width: 8px; height: 8px;
+                                                    border-radius: 4px; background: Theme.accent;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            Text { text: "M/D"; color: Theme.fg; font-size: 12px; }
+                                            Text { text: "3/26"; color: Theme.fg_dim; font-size: 10px; }
+                                        }
+                                    }
+                                    clock-date-md-touch := TouchArea {
+                                        clicked => { root.tb-clock-date-fmt-index = 0; root.tb-set-clock-date-fmt(0); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                // D/M
+                                Rectangle {
+                                    height: 36px; border-radius: 4px;
+                                    background: root.tb-clock-date-fmt-index == 1
+                                        ? Theme.accent.transparentize(70%)
+                                        : clock-date-dm-touch.has-hover ? Theme.bg_lighter : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; width: 14px;
+                                            Rectangle {
+                                                width: 14px; height: 14px; border-radius: 7px;
+                                                border-width: 1.5px;
+                                                border-color: root.tb-clock-date-fmt-index == 1 ? Theme.accent : Theme.fg_dim;
+                                                background: transparent;
+                                                Rectangle {
+                                                    visible: root.tb-clock-date-fmt-index == 1;
+                                                    x: 3px; y: 3px; width: 8px; height: 8px;
+                                                    border-radius: 4px; background: Theme.accent;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            Text { text: "D/M"; color: Theme.fg; font-size: 12px; }
+                                            Text { text: "26/3"; color: Theme.fg_dim; font-size: 10px; }
+                                        }
+                                    }
+                                    clock-date-dm-touch := TouchArea {
+                                        clicked => { root.tb-clock-date-fmt-index = 1; root.tb-set-clock-date-fmt(1); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            Row {
+                                // YYYY-MM-DD
+                                Rectangle {
+                                    height: 36px; border-radius: 4px;
+                                    background: root.tb-clock-date-fmt-index == 2
+                                        ? Theme.accent.transparentize(70%)
+                                        : clock-date-iso-touch.has-hover ? Theme.bg_lighter : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; width: 14px;
+                                            Rectangle {
+                                                width: 14px; height: 14px; border-radius: 7px;
+                                                border-width: 1.5px;
+                                                border-color: root.tb-clock-date-fmt-index == 2 ? Theme.accent : Theme.fg_dim;
+                                                background: transparent;
+                                                Rectangle {
+                                                    visible: root.tb-clock-date-fmt-index == 2;
+                                                    x: 3px; y: 3px; width: 8px; height: 8px;
+                                                    border-radius: 4px; background: Theme.accent;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            Text { text: "YYYY-MM-DD"; color: Theme.fg; font-size: 12px; }
+                                            Text { text: "2026-03-26"; color: Theme.fg_dim; font-size: 10px; }
+                                        }
+                                    }
+                                    clock-date-iso-touch := TouchArea {
+                                        clicked => { root.tb-clock-date-fmt-index = 2; root.tb-set-clock-date-fmt(2); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                // Mon D
+                                Rectangle {
+                                    height: 36px; border-radius: 4px;
+                                    background: root.tb-clock-date-fmt-index == 3
+                                        ? Theme.accent.transparentize(70%)
+                                        : clock-date-mon-touch.has-hover ? Theme.bg_lighter : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; width: 14px;
+                                            Rectangle {
+                                                width: 14px; height: 14px; border-radius: 7px;
+                                                border-width: 1.5px;
+                                                border-color: root.tb-clock-date-fmt-index == 3 ? Theme.accent : Theme.fg_dim;
+                                                background: transparent;
+                                                Rectangle {
+                                                    visible: root.tb-clock-date-fmt-index == 3;
+                                                    x: 3px; y: 3px; width: 8px; height: 8px;
+                                                    border-radius: 4px; background: Theme.accent;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            Text { text: "Mon D"; color: Theme.fg; font-size: 12px; }
+                                            Text { text: "Mar 26"; color: Theme.fg_dim; font-size: 10px; }
+                                        }
+                                    }
+                                    clock-date-mon-touch := TouchArea {
+                                        clicked => { root.tb-clock-date-fmt-index = 3; root.tb-set-clock-date-fmt(3); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Rectangle { vertical-stretch: 1; }
+                }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab6-flick.viewport-height;
+                    viewport-y: tab6-flick.viewport-y;
+                    visible-height: tab6-flick.height;
+                }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // WI-FI TAB
+            // ══════════════════════════════════════════════════════════════
+
+            if root.active-tab == 7: Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                clip: true;
+
+                tab7-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
+
+                VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 4px;
+                    spacing: 12px;
+
+                    // ── Header: title + scan button ──
+                    HorizontalLayout {
+                        height: 30px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Wi-Fi";
+                            color: Theme.fg;
+                            font-size: 14px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+
+                        // Status text
+                        Text {
+                            text: root.wifi-status;
+                            color: root.wifi-status-is-error ? #f38ba8 : Theme.fg_dim;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+
+                        // Scan / refresh button
+                        Rectangle {
+                            width: 60px;
+                            height: 26px;
+                            border-radius: 4px;
+                            background: wifi-scan-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+                            opacity: root.wifi-scanning ? 0.5 : 1.0;
+
+                            Text {
+                                text: root.wifi-scanning ? "Scanning…" : "Scan";
+                                color: Theme.fg;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            wifi-scan-touch := TouchArea {
+                                clicked => {
+                                    if !root.wifi-scanning {
+                                        root.wifi-scan();
+                                    }
+                                }
+                                mouse-cursor: root.wifi-scanning ? default : pointer;
+                            }
+                        }
+                    }
+
+                    // ── Airplane Mode card ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        border-width: root.highlight-setting == "Airplane Mode" && root.highlight-blink-on ? 2px : 0px;
+                        border-color: root.highlight-setting == "Airplane Mode" && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: "\u{2708}  Airplane Mode";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+
+                                // Toggle pill
+                                Rectangle {
+                                    width: 40px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.wifi-airplane-mode ? Theme.accent : Theme.bg_lighter;
+                                    animate background { duration: 200ms; }
+
+                                    Rectangle {
+                                        x: root.wifi-airplane-mode ? parent.width - self.width - 3px : 3px;
+                                        y: 3px;
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: white;
+                                        animate x { duration: 200ms; easing: ease-in-out; }
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.wifi-set-airplane(!root.wifi-airplane-mode);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            if root.wifi-airplane-mode: Text {
+                                text: "Wi-Fi is disabled. Turn off airplane mode to see networks.";
+                                color: Theme.fg_dim;
+                                font-size: 10px;
+                            }
+                        }
+                    }
+
+                    // ── No hardware warning ──
+                    if root.wifi-no-hardware: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        height: 48px;
+
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "\u{26A0}  No Wi-Fi adapter detected";
+                                color: #f38ba8;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // ── Network list card ──
+                    if !root.wifi-airplane-mode && !root.wifi-no-hardware: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        border-width: root.highlight-setting == "Wi-Fi" && root.highlight-blink-on ? 2px : 0px;
+                        border-color: root.highlight-setting == "Wi-Fi" && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 4px;
+
+                            Text {
+                                text: "Available Networks";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                                font-weight: 600;
+                            }
+
+                            if root.wifi-networks.length == 0 && !root.wifi-scanning: Text {
+                                text: "No networks found. Press Scan to search.";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                            }
+
+                            if root.wifi-scanning && root.wifi-networks.length == 0: Text {
+                                text: "Scanning for networks…";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                            }
+
+                            for net[idx] in root.wifi-networks: Rectangle {
+                                height: root.wifi-selected-idx == idx ? (net.connected ? 50px : (net.security != "Open" && !net.saved ? 90px : 50px)) : 36px;
+                                border-radius: 4px;
+                                background: root.wifi-selected-idx == idx
+                                    ? Theme.bg.transparentize(40%)
+                                    : wifi-net-touch.has-hover ? Theme.bg.transparentize(70%) : transparent;
+                                animate height { duration: 150ms; easing: ease-in-out; }
+
+                                VerticalLayout {
+                                    padding: 6px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 4px;
+
+                                    // ── Row: signal bars, SSID, security badge, connected badge ──
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        alignment: start;
+
+                                        SignalBars {
+                                            signal: net.signal;
+                                        }
+
+                                        Text {
+                                            text: net.ssid;
+                                            color: net.connected ? Theme.accent : Theme.fg;
+                                            font-size: 12px;
+                                            font-weight: net.connected ? 600 : 400;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+
+                                        if net.saved && !net.connected: Text {
+                                            text: "Saved";
+                                            color: Theme.fg_dim;
+                                            font-size: 9px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if net.connected: Text {
+                                            text: "\u{2713} Connected";
+                                            color: Theme.accent;
+                                            font-size: 9px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if net.security != "Open": Rectangle {
+                                            width: sec-label.width + 10px;
+                                            height: 18px;
+                                            border-radius: 3px;
+                                            background: Theme.bg_lighter;
+
+                                            sec-label := Text {
+                                                text: "\u{1F512} " + net.security;
+                                                color: Theme.fg_dim;
+                                                font-size: 9px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // ── Expanded: password field + action buttons ──
+                                    if root.wifi-selected-idx == idx: HorizontalLayout {
+                                        spacing: 6px;
+
+                                        // Password field (only for secured + not-saved networks)
+                                        if net.security != "Open" && !net.saved && !net.connected: Rectangle {
+                                            horizontal-stretch: 1;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: Theme.bg;
+
+                                            wifi-pw-input := TextInput {
+                                                x: 8px;
+                                                y: 5px;
+                                                width: parent.width - 40px;
+                                                height: parent.height;
+                                                color: Theme.fg;
+                                                font-size: 11px;
+                                                input-type: root.wifi-show-password ? text : password;
+                                                text <=> root.wifi-password-input;
+                                            }
+
+                                            // Eye toggle
+                                            TouchArea {
+                                                x: parent.width - 28px;
+                                                y: 2px;
+                                                width: 24px;
+                                                height: 24px;
+                                                clicked => { root.wifi-show-password = !root.wifi-show-password; }
+                                                mouse-cursor: pointer;
+
+                                                Text {
+                                                    text: root.wifi-show-password ? "\u{1F441}" : "\u{25CF}";
+                                                    color: Theme.fg_dim;
+                                                    font-size: 12px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        // Connect / Disconnect button
+                                        if !net.connected: Rectangle {
+                                            width: 66px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: root.wifi-connecting ? Theme.bg_lighter : Theme.accent;
+                                            opacity: root.wifi-connecting ? 0.5 : 1.0;
+
+                                            Text {
+                                                text: root.wifi-connecting ? "…" : "Connect";
+                                                color: Theme.bg;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            TouchArea {
+                                                clicked => {
+                                                    if !root.wifi-connecting {
+                                                        root.wifi-connect(idx, root.wifi-password-input, 0);
+                                                    }
+                                                }
+                                                mouse-cursor: root.wifi-connecting ? default : pointer;
+                                            }
+                                        }
+
+                                        if net.connected: Rectangle {
+                                            width: 80px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: wifi-dc-touch.has-hover ? #f38ba8 : Theme.bg_lighter;
+
+                                            Text {
+                                                text: "Disconnect";
+                                                color: wifi-dc-touch.has-hover ? Theme.bg : Theme.fg;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            wifi-dc-touch := TouchArea {
+                                                clicked => { root.wifi-disconnect(); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+
+                                        // Forget saved
+                                        if net.saved: Rectangle {
+                                            width: 52px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: wifi-forget-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                            Text {
+                                                text: "Forget";
+                                                color: Theme.fg_dim;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            wifi-forget-touch := TouchArea {
+                                                clicked => { root.wifi-forget(idx); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+
+                                        // QR button
+                                        Rectangle {
+                                            width: 28px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: wifi-qr-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                            Text {
+                                                text: "\u{25A3}";
+                                                color: Theme.fg_dim;
+                                                font-size: 14px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            wifi-qr-touch := TouchArea {
+                                                clicked => {
+                                                    root.wifi-generate-qr(idx);
+                                                    root.wifi-qr-visible = true;
+                                                }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                wifi-net-touch := TouchArea {
+                                    clicked => {
+                                        if root.wifi-selected-idx == idx {
+                                            root.wifi-selected-idx = -1;
+                                        } else {
+                                            root.wifi-selected-idx = idx;
+                                            root.wifi-password-input = "";
+                                            root.wifi-show-password = false;
+                                            root.wifi-qr-visible = false;
+                                        }
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── QR Code overlay card ──
+                    if root.wifi-qr-visible: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: "QR Code";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+
+                                // Close QR
+                                Rectangle {
+                                    width: 24px;
+                                    height: 24px;
+                                    border-radius: 4px;
+                                    background: wifi-qr-close-touch.has-hover ? Theme.bg_lighter : transparent;
+
+                                    Text {
+                                        text: "\u{2715}";
+                                        color: Theme.fg_dim;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    wifi-qr-close-touch := TouchArea {
+                                        clicked => { root.wifi-qr-visible = false; }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            if root.wifi-qr-error != "": Text {
+                                text: root.wifi-qr-error;
+                                color: #f38ba8;
+                                font-size: 11px;
+                            }
+
+                            // QR image
+                            if root.wifi-qr-error == "": Rectangle {
+                                width: 180px;
+                                height: 180px;
+                                border-radius: 8px;
+                                background: white;
+
+                                Image {
+                                    width: 160px;
+                                    height: 160px;
+                                    source: root.wifi-qr-image;
+                                    image-fit: contain;
+                                }
+                            }
+
+                            // Export button
+                            if root.wifi-qr-error == "" && root.wifi-selected-idx >= 0: Rectangle {
+                                height: 28px;
+                                min-width: 120px;
+                                border-radius: 4px;
+                                background: wifi-export-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+
+                                    Text {
+                                        text: "Save QR to Downloads";
+                                        color: Theme.fg;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                wifi-export-touch := TouchArea {
+                                    clicked => { root.wifi-export-qr(root.wifi-selected-idx); }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Connect via URI card ──
+                    if !root.wifi-airplane-mode && !root.wifi-no-hardware: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Connect via Wi-Fi URI";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                                font-weight: 600;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: Theme.bg;
+
+                                    wifi-uri-field := TextInput {
+                                        x: 8px;
+                                        y: 5px;
+                                        width: parent.width - 16px;
+                                        height: parent.height;
+                                        color: Theme.fg;
+                                        font-size: 11px;
+                                        text <=> root.wifi-uri-input;
+                                    }
+                                }
+
+                                // Apply URI
+                                Rectangle {
+                                    width: 54px;
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: wifi-uri-apply-touch.has-hover ? Theme.accent : Theme.bg_lighter;
+
+                                    Text {
+                                        text: "Apply";
+                                        color: wifi-uri-apply-touch.has-hover ? Theme.bg : Theme.fg;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    wifi-uri-apply-touch := TouchArea {
+                                        clicked => { root.wifi-apply-uri(root.wifi-uri-input); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                // Scan from screen
+                                Rectangle {
+                                    width: 90px;
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: wifi-screenscan-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                    Text {
+                                        text: "\u{1F4F7} Scan Screen";
+                                        color: Theme.fg;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    wifi-screenscan-touch := TouchArea {
+                                        clicked => { root.wifi-scan-screenshot(); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "Paste a WIFI:T:WPA;S:MyNetwork;P:password;; URI or scan a QR code from the screen.";
+                                color: Theme.fg_dim;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+                }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab7-flick.viewport-height;
+                    viewport-y: tab7-flick.viewport-y;
+                    visible-height: tab7-flick.height;
                 }
             }
 
@@ -3865,9 +5294,15 @@ export component MainWindow inherits Window {
             // ABOUT TAB
             // ══════════════════════════════════════════════════════════════
 
-            if root.active-tab == 0: Flickable {
+            if root.active-tab == 0: Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
+                clip: true;
+
+                tab0-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
 
                 VerticalLayout {
                     padding-left: 10px;
@@ -3908,6 +5343,10 @@ export component MainWindow inherits Window {
                 Rectangle {
                     border-radius: 6px;
                     background: Theme.bg_light;
+                    border-width: (root.highlight-setting == "About smplOS" || root.highlight-setting == "Version" || root.highlight-setting == "Hostname" || root.highlight-setting == "Kernel" || root.highlight-setting == "Uptime" || root.highlight-setting == "Compositor") && root.highlight-blink-on ? 2px : 0px;
+                    border-color: (root.highlight-setting == "About smplOS" || root.highlight-setting == "Version" || root.highlight-setting == "Hostname" || root.highlight-setting == "Kernel" || root.highlight-setting == "Uptime" || root.highlight-setting == "Compositor") && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
 
                     VerticalLayout {
                         padding: 14px;
@@ -3985,6 +5424,16 @@ export component MainWindow inherits Window {
 
                 Rectangle { vertical-stretch: 1; }
                 }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab0-flick.viewport-height;
+                    viewport-y: tab0-flick.viewport-y;
+                    visible-height: tab0-flick.height;
+                }
             }
         }
     }
@@ -4038,7 +5487,7 @@ export component MainWindow inherits Window {
                             font-weight: 600;
                         }
                         Text {
-                            text: "1-7       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Set primary monitor\nEsc      Close overlay / app\n?         Toggle this Help";
+                            text: "1-8       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Set primary monitor\nEsc      Close overlay / app\n?         Toggle this Help";
                             color: Theme.fg;
                             font-size: 12px;
                             wrap: word-wrap;
