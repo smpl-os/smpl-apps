@@ -154,6 +154,7 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("Connect Wi-Fi", "wifi", 7),
         ("Wi-Fi Password", "wifi", 7),
         ("Network", "wifi", 7),
+        ("Airplane Mode", "wifi", 7),
         ("QR Code Wi-Fi", "wifi", 7),
         ("Share Wi-Fi", "wifi", 7),
         ("Scan QR", "wifi", 7),

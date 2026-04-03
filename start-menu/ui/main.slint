@@ -540,6 +540,11 @@ export component MainWindow inherits Window {
                         root.focus-cat();
                         return accept;
                     }
+                    // Return: launch top search result immediately.
+                    if (event.text == Key.Return && root.is-searching && root.app-count > 0) {
+                        root.launch-app(root.selected-app >= 0 ? root.selected-app : 0);
+                        return accept;
+                    }
                     // Down Arrow: jump into the app list (or categories if no results).
                     // Item 0 is already pre-highlighted as you type, so jump to item 1
                     // if it exists — matching Windows/KDE/GNOME launcher behavior.

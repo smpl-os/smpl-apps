@@ -182,6 +182,40 @@ jobs:
             settings/src/main.rs \
             "set_selected_dropdown_index(-1)"
 
+          # ── start-menu: Enter key launches top search result ──────────────
+          # Regression: the search FocusScope intercepted all keys for arrow
+          # navigation but had no Key.Return handler, so pressing Enter in
+          # search mode silently did nothing.
+
+          check "start-menu Enter key launches top result from search FocusScope" \
+            start-menu/ui/main.slint \
+            "event.text == Key.Return && root.is-searching"
+
+          # ── settings: search index completeness ───────────────────────────
+          # Regression: settings_search_index() was missing WiFi card keywords
+          # (including Airplane Mode) so typing them in start-menu found nothing.
+
+          check "settings search index contains Airplane Mode" \
+            settings/src/main.rs \
+            '"Airplane Mode"'
+
+          check "settings search index contains WiFi entries" \
+            settings/src/main.rs \
+            '"Wi-Fi"'
+
+          check "settings search index contains Bluetooth entries" \
+            settings/src/main.rs \
+            '"Bluetooth"'
+
+          # ── deploy-local.sh: rebuild-app-cache must run after export ──────
+          # Regression: deploy-local.sh exported settings --export-index but
+          # never called rebuild-app-cache, so search keywords like WiFi and
+          # Airplane Mode were in settings_index but never merged into app_index.
+
+          check "deploy-local.sh calls rebuild-app-cache" \
+            deploy-local.sh \
+            "rebuild-app-cache"
+
           if [ $FAIL -ne 0 ]; then
             echo ""
             echo "One or more feature guardrails failed."

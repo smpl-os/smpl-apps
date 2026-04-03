@@ -31,11 +31,12 @@ for bin in "${BINS[@]}"; do
     fi
 done
 
-# Re-export settings search index
+# Re-export settings search index and rebuild app cache
 if [[ -f "$RELEASE/settings" ]]; then
     "$RELEASE/settings" --export-index 2>/dev/null && \
         echo ":: Settings search index exported"
 fi
+rebuild-app-cache 2>/dev/null && echo ":: App cache rebuilt" || echo "  (rebuild-app-cache not found, skipping)"
 
 # Kill running instances so the new binaries take effect
 for bin in "${BINS[@]}"; do
