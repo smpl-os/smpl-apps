@@ -1,3 +1,4 @@
+mod bluetooth;
 mod dictation;
 mod display;
 mod keybindings;
@@ -156,6 +157,13 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("QR Code Wi-Fi", "wifi", 7),
         ("Share Wi-Fi", "wifi", 7),
         ("Scan QR", "wifi", 7),
+        // Bluetooth
+        ("Bluetooth", "bluetooth", 8),
+        ("Bluetooth Devices", "bluetooth", 8),
+        ("Pair Bluetooth", "bluetooth", 8),
+        ("Connect Bluetooth", "bluetooth", 8),
+        ("Headphones", "bluetooth", 8),
+        ("Discoverable", "bluetooth", 8),
     ]
 }
 
@@ -858,6 +866,8 @@ fn main() -> Result<(), slint::PlatformError> {
                         "power" => 4,
                         "keybindings" => 5,
                         "taskbar" => 6,
+                        "wifi" => 7,
+                        "bluetooth" => 8,
                         _ => 0,
                     };
                     i += 1;
@@ -2261,6 +2271,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     if let Some(ui) = ui_weak2.upgrade() {
                         match result {
                             Ok(_) => {
+                                ui.set_wifi_airplane_mode(enabled);
                                 let status = if enabled {
                                     "Airplane mode on — Wi-Fi radio disabled"
                                 } else {
@@ -2567,6 +2578,363 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // ── Bluetooth callbacks ─────────────────────────────────────────────────
+
+    /// Set `bt-status` and derive `bt-status-is-error` in one call.
+    fn bt_set_status(ui: &MainWindow, msg: &str) {
+        let is_err = msg.starts_with("Failed")
+            || msg.starts_with("Cannot")
+            || msg.starts_with("No Bluetooth");
+        ui.set_bt_status(msg.into());
+        ui.set_bt_status_is_error(is_err);
+    }
+
+    /// Convert a backend `bluetooth::BluetoothDevice` into the Slint-generated `BtDevice`.
+    fn to_bt_device(d: &bluetooth::BluetoothDevice) -> BtDevice {
+        BtDevice {
+            address: d.address.clone().into(),
+            name: if d.name.is_empty() {
+                d.address.clone().into()
+            } else {
+                d.name.clone().into()
+            },
+            connected: d.connected,
+            paired: d.paired,
+            trusted: d.trusted,
+            icon: bluetooth::ctl::icon_for_device(&d.icon).into(),
+            signal: d.rssi,
+        }
+    }
+
+    // ── Bluetooth init ───────────────────────────────────────────────────
+    match bluetooth::is_powered() {
+        Ok(powered) => {
+            ui.set_bt_powered(powered);
+            ui.set_bt_no_hardware(false);
+        }
+        Err(_) => {
+            ui.set_bt_no_hardware(true);
+            ui.set_bt_powered(false);
+        }
+    }
+    // Query discoverable state
+    if let Ok((_name, _addr, _powered, discoverable, _pairable)) =
+        bluetooth::get_adapter_info()
+    {
+        ui.set_bt_discoverable(discoverable);
+    }
+
+    // bt-list: fast refresh (no scan)
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_list(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let devices = bluetooth::list_devices().unwrap_or_default();
+                let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
+                ui.set_bt_devices(slint::ModelRc::from(
+                    Rc::new(slint::VecModel::from(entries)),
+                ));
+            }
+        });
+    }
+
+    // bt-scan: active discovery (~4s)
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_scan(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                if ui.get_bt_scanning() {
+                    return;
+                }
+                ui.set_bt_scanning(true);
+                bt_set_status(&ui, "Scanning…");
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let devices = bluetooth::scan_devices(4).unwrap_or_default();
+                    let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            ui.set_bt_devices(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                            ui.set_bt_scanning(false);
+                            bt_set_status(&ui, &format!("Found {} devices", ui.get_bt_devices().row_count()));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // bt-connect
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_connect(move |device_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let devices_model = ui.get_bt_devices();
+                let idx = device_idx as usize;
+                if device_idx < 0 || idx >= devices_model.row_count() {
+                    return;
+                }
+                let entry = devices_model.row_data(idx).unwrap();
+                let addr = entry.address.to_string();
+                let name = entry.name.to_string();
+
+                ui.set_bt_connecting(true);
+                bt_set_status(&ui, &format!("Connecting to {}…", name));
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    // Trust + pair first if needed, then connect
+                    let _ = bluetooth::trust_device(&addr);
+                    let _ = bluetooth::pair_device(&addr);
+                    let result = bluetooth::connect(&addr);
+                    let status = match &result {
+                        Ok(_) => format!("Connected to {}", name),
+                        Err(e) => format!("Failed: {}", e),
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            ui.set_bt_connecting(false);
+                            bt_set_status(&ui, &status);
+                            let devices = bluetooth::list_devices().unwrap_or_default();
+                            let entries: Vec<BtDevice> =
+                                devices.iter().map(to_bt_device).collect();
+                            ui.set_bt_devices(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // bt-disconnect
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_disconnect(move |device_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let devices_model = ui.get_bt_devices();
+                let idx = device_idx as usize;
+                if device_idx < 0 || idx >= devices_model.row_count() {
+                    return;
+                }
+                let entry = devices_model.row_data(idx).unwrap();
+                let addr = entry.address.to_string();
+                let name = entry.name.to_string();
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = bluetooth::disconnect(&addr);
+                    let status = match &result {
+                        Ok(_) => format!("Disconnected from {}", name),
+                        Err(e) => format!("Failed: {}", e),
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            bt_set_status(&ui, &status);
+                            let devices = bluetooth::list_devices().unwrap_or_default();
+                            let entries: Vec<BtDevice> =
+                                devices.iter().map(to_bt_device).collect();
+                            ui.set_bt_devices(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // bt-pair
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_pair(move |device_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let devices_model = ui.get_bt_devices();
+                let idx = device_idx as usize;
+                if device_idx < 0 || idx >= devices_model.row_count() {
+                    return;
+                }
+                let entry = devices_model.row_data(idx).unwrap();
+                let addr = entry.address.to_string();
+                let name = entry.name.to_string();
+
+                bt_set_status(&ui, &format!("Pairing with {}…", name));
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = bluetooth::pair_device(&addr);
+                    let status = match &result {
+                        Ok(_) => format!("Paired with {}", name),
+                        Err(e) => format!("Failed: {}", e),
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            bt_set_status(&ui, &status);
+                            let devices = bluetooth::list_devices().unwrap_or_default();
+                            let entries: Vec<BtDevice> =
+                                devices.iter().map(to_bt_device).collect();
+                            ui.set_bt_devices(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // bt-trust
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_trust(move |device_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let devices_model = ui.get_bt_devices();
+                let idx = device_idx as usize;
+                if device_idx < 0 || idx >= devices_model.row_count() {
+                    return;
+                }
+                let entry = devices_model.row_data(idx).unwrap();
+                let addr = entry.address.to_string();
+                let name = entry.name.to_string();
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = bluetooth::trust_device(&addr);
+                    let status = match &result {
+                        Ok(_) => format!("Trusted {}", name),
+                        Err(e) => format!("Failed: {}", e),
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            bt_set_status(&ui, &status);
+                            let devices = bluetooth::list_devices().unwrap_or_default();
+                            let entries: Vec<BtDevice> =
+                                devices.iter().map(to_bt_device).collect();
+                            ui.set_bt_devices(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // bt-forget
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_forget(move |device_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let devices_model = ui.get_bt_devices();
+                let idx = device_idx as usize;
+                if device_idx < 0 || idx >= devices_model.row_count() {
+                    return;
+                }
+                let entry = devices_model.row_data(idx).unwrap();
+                let addr = entry.address.to_string();
+                let name = entry.name.to_string();
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = bluetooth::forget_device(&addr);
+                    let status = match &result {
+                        Ok(_) => format!("Removed {}", name),
+                        Err(e) => format!("Failed: {}", e),
+                    };
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            bt_set_status(&ui, &status);
+                            ui.set_bt_selected_idx(-1);
+                            let devices = bluetooth::list_devices().unwrap_or_default();
+                            let entries: Vec<BtDevice> =
+                                devices.iter().map(to_bt_device).collect();
+                            ui.set_bt_devices(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // bt-set-powered
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_set_powered(move |on| {
+            let ui_weak2 = ui_weak.clone();
+            std::thread::spawn(move || {
+                let result = bluetooth::set_powered(on);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak2.upgrade() {
+                        match result {
+                            Ok(_) => {
+                                ui.set_bt_powered(on);
+                                let status = if on {
+                                    "Bluetooth on"
+                                } else {
+                                    "Bluetooth off"
+                                };
+                                bt_set_status(&ui, status);
+                                if on {
+                                    // Refresh device list
+                                    let devices =
+                                        bluetooth::list_devices().unwrap_or_default();
+                                    let entries: Vec<BtDevice> =
+                                        devices.iter().map(to_bt_device).collect();
+                                    ui.set_bt_devices(slint::ModelRc::from(
+                                        Rc::new(slint::VecModel::from(entries)),
+                                    ));
+                                } else {
+                                    ui.set_bt_devices(slint::ModelRc::from(
+                                        Rc::new(slint::VecModel::from(vec![])),
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                bt_set_status(
+                                    &ui,
+                                    &format!("Failed to change power: {}", e),
+                                );
+                                ui.set_bt_powered(!on); // revert
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    // bt-set-discoverable
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_bt_set_discoverable(move |on| {
+            let ui_weak2 = ui_weak.clone();
+            std::thread::spawn(move || {
+                let result = bluetooth::set_discoverable(on);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak2.upgrade() {
+                        match result {
+                            Ok(_) => {
+                                ui.set_bt_discoverable(on);
+                            }
+                            Err(e) => {
+                                bt_set_status(
+                                    &ui,
+                                    &format!("Failed: {}", e),
+                                );
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    }
+
     // ── Search callback ──────────────────────────────────────────────────────
 
     {
@@ -2580,6 +2948,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "keybindings" => "Keybindings",
                 "taskbar" => "Taskbar",
                 "wifi" => "Wi-Fi",
+                "bluetooth" => "Bluetooth",
                 _ => key,
             }
         }

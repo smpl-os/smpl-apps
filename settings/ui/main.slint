@@ -70,6 +70,17 @@ struct WifiEntry {
     saved: bool,
 }
 
+/// A discovered or paired Bluetooth device.
+struct BtDevice {
+    address: string,
+    name: string,
+    connected: bool,
+    paired: bool,
+    trusted: bool,
+    icon: string,
+    signal: int,
+}
+
 // ── Theme ────────────────────────────────────────────────────────────────────
 
 export global Theme {
@@ -599,6 +610,17 @@ export component MainWindow inherits Window {
     in property <string>     wifi-qr-error: "";
     in-out property <string> wifi-uri-input: "";
 
+    // ── Bluetooth tab properties ──
+    in property <[BtDevice]> bt-devices: [];
+    in-out property <int>    bt-selected-idx: -1;
+    in property <bool>       bt-scanning: false;
+    in property <bool>       bt-connecting: false;
+    in property <string>     bt-status: "";
+    in property <bool>       bt-status-is-error: false;
+    in property <bool>       bt-powered: false;
+    in property <bool>       bt-no-hardware: false;
+    in property <bool>       bt-discoverable: false;
+
     // ── Callbacks ──
     callback close();
     callback move-window(float, float);
@@ -670,6 +692,17 @@ export component MainWindow inherits Window {
     callback wifi-scan-screenshot();       // grim + zbarimg screen scan
     callback wifi-export-qr(int);          // save QR SVG to ~/Downloads/
     callback wifi-set-airplane(bool);       // enable/disable airplane mode
+
+    // Bluetooth
+    callback bt-list();                    // refresh devices list
+    callback bt-scan();                    // active scan (blocking ~4s)
+    callback bt-connect(int);              // device index
+    callback bt-disconnect(int);           // device index
+    callback bt-pair(int);                 // device index
+    callback bt-trust(int);                // device index
+    callback bt-forget(int);               // device index
+    callback bt-set-powered(bool);         // power on/off
+    callback bt-set-discoverable(bool);    // discoverable on/off
 
     // Search
     callback filter-search(string);
@@ -828,6 +861,7 @@ export component MainWindow inherits Window {
                 if e.text == "6" { root.active-tab = 5; root.kb-load(); return accept; }
                 if e.text == "7" { root.active-tab = 6; return accept; }
                 if e.text == "8" { root.active-tab = 7; root.wifi-list(); return accept; }
+                if e.text == "9" { root.active-tab = 8; root.bt-list(); return accept; }
             }
             reject
         }
@@ -1089,6 +1123,18 @@ export component MainWindow inherits Window {
                             root.active-tab = 7;
                             root.dropdown-open = false;
                             root.wifi-list();
+                            focus-scope.focus();
+                        }
+                    }
+
+                    TabButton {
+                        label: "Bluetooth";
+                        icon: "\u{1F4E1}";
+                        active: root.active-tab == 8;
+                        clicked => {
+                            root.active-tab = 8;
+                            root.dropdown-open = false;
+                            root.bt-list();
                             focus-scope.focus();
                         }
                     }
@@ -5287,6 +5333,438 @@ export component MainWindow inherits Window {
                     viewport-height: tab7-flick.viewport-height;
                     viewport-y: tab7-flick.viewport-y;
                     visible-height: tab7-flick.height;
+                }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // BLUETOOTH TAB
+            // ══════════════════════════════════════════════════════════════
+
+            if root.active-tab == 8: Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                clip: true;
+
+                tab8-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
+
+                VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 4px;
+                    spacing: 12px;
+
+                    // ── Header: title + scan button ──
+                    HorizontalLayout {
+                        height: 30px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Bluetooth";
+                            color: Theme.fg;
+                            font-size: 14px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+
+                        // Status text
+                        Text {
+                            text: root.bt-status;
+                            color: root.bt-status-is-error ? #f38ba8 : Theme.fg_dim;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+
+                        // Scan button
+                        Rectangle {
+                            width: 60px;
+                            height: 26px;
+                            border-radius: 4px;
+                            background: bt-scan-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+                            opacity: root.bt-scanning ? 0.5 : 1.0;
+
+                            Text {
+                                text: root.bt-scanning ? "Scanning…" : "Scan";
+                                color: Theme.fg;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            bt-scan-touch := TouchArea {
+                                clicked => {
+                                    if !root.bt-scanning {
+                                        root.bt-scan();
+                                    }
+                                }
+                                mouse-cursor: root.bt-scanning ? default : pointer;
+                            }
+                        }
+                    }
+
+                    // ── Power toggle card ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        border-width: root.highlight-setting == "Bluetooth" && root.highlight-blink-on ? 2px : 0px;
+                        border-color: root.highlight-setting == "Bluetooth" && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: "\u{1F4E1}  Bluetooth Power";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+
+                                // Toggle pill
+                                Rectangle {
+                                    width: 40px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.bt-powered ? Theme.accent : Theme.bg_lighter;
+                                    animate background { duration: 200ms; }
+
+                                    Rectangle {
+                                        x: root.bt-powered ? parent.width - self.width - 3px : 3px;
+                                        y: 3px;
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: white;
+                                        animate x { duration: 200ms; easing: ease-in-out; }
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.bt-set-powered(!root.bt-powered);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            if !root.bt-powered && !root.bt-no-hardware: Text {
+                                text: "Bluetooth is off. Turn it on to discover and connect to devices.";
+                                color: Theme.fg_dim;
+                                font-size: 10px;
+                            }
+                        }
+                    }
+
+                    // ── No hardware warning ──
+                    if root.bt-no-hardware: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        height: 48px;
+
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "\u{26A0}  No Bluetooth adapter detected";
+                                color: #f38ba8;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // ── Discoverable toggle ──
+                    if root.bt-powered && !root.bt-no-hardware: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: "Discoverable";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+
+                                Text {
+                                    text: root.bt-discoverable ? "Visible to other devices" : "Hidden";
+                                    color: Theme.fg_dim;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {
+                                    width: 40px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: root.bt-discoverable ? Theme.accent : Theme.bg_lighter;
+                                    animate background { duration: 200ms; }
+
+                                    Rectangle {
+                                        x: root.bt-discoverable ? parent.width - self.width - 3px : 3px;
+                                        y: 3px;
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: white;
+                                        animate x { duration: 200ms; easing: ease-in-out; }
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.bt-set-discoverable(!root.bt-discoverable);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Device list card ──
+                    if root.bt-powered && !root.bt-no-hardware: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 4px;
+
+                            Text {
+                                text: "Devices";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                                font-weight: 600;
+                            }
+
+                            if root.bt-devices.length == 0 && !root.bt-scanning: Text {
+                                text: "No devices found. Press Scan to search.";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                            }
+
+                            if root.bt-scanning && root.bt-devices.length == 0: Text {
+                                text: "Scanning for devices…";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                            }
+
+                            for dev[idx] in root.bt-devices: Rectangle {
+                                height: root.bt-selected-idx == idx ? 50px : 36px;
+                                border-radius: 4px;
+                                background: root.bt-selected-idx == idx
+                                    ? Theme.bg.transparentize(40%)
+                                    : bt-dev-touch.has-hover ? Theme.bg.transparentize(70%) : transparent;
+                                animate height { duration: 150ms; easing: ease-in-out; }
+
+                                VerticalLayout {
+                                    padding: 6px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 4px;
+
+                                    // ── Row: icon, name, paired/connected badges ──
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        alignment: start;
+
+                                        // Device icon
+                                        Text {
+                                            text: dev.icon;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: dev.name;
+                                            color: dev.connected ? Theme.accent : Theme.fg;
+                                            font-size: 12px;
+                                            font-weight: dev.connected ? 600 : 400;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+
+                                        if dev.paired && !dev.connected: Text {
+                                            text: "Paired";
+                                            color: Theme.fg_dim;
+                                            font-size: 9px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if dev.connected: Text {
+                                            text: "\u{2713} Connected";
+                                            color: Theme.accent;
+                                            font-size: 9px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        // Signal bars (reuse from WiFi)
+                                        if dev.signal > 0: SignalBars {
+                                            signal: dev.signal;
+                                        }
+                                    }
+
+                                    // ── Expanded: action buttons ──
+                                    if root.bt-selected-idx == idx: HorizontalLayout {
+                                        spacing: 6px;
+
+                                        // Connect / Disconnect
+                                        if !dev.connected: Rectangle {
+                                            width: 66px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: root.bt-connecting ? Theme.bg_lighter : Theme.accent;
+                                            opacity: root.bt-connecting ? 0.5 : 1.0;
+
+                                            Text {
+                                                text: root.bt-connecting ? "…" : "Connect";
+                                                color: Theme.bg;
+                                                font-size: 11px;
+                                                font-weight: 600;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            TouchArea {
+                                                clicked => {
+                                                    if !root.bt-connecting {
+                                                        root.bt-connect(idx);
+                                                    }
+                                                }
+                                                mouse-cursor: root.bt-connecting ? default : pointer;
+                                            }
+                                        }
+
+                                        if dev.connected: Rectangle {
+                                            width: 80px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: bt-dc-touch.has-hover ? #f38ba8 : Theme.bg_lighter;
+
+                                            Text {
+                                                text: "Disconnect";
+                                                color: bt-dc-touch.has-hover ? Theme.bg : Theme.fg;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            bt-dc-touch := TouchArea {
+                                                clicked => { root.bt-disconnect(idx); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+
+                                        // Pair (if not paired)
+                                        if !dev.paired: Rectangle {
+                                            width: 46px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: bt-pair-touch.has-hover ? Theme.accent : Theme.bg_lighter;
+
+                                            Text {
+                                                text: "Pair";
+                                                color: bt-pair-touch.has-hover ? Theme.bg : Theme.fg;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            bt-pair-touch := TouchArea {
+                                                clicked => { root.bt-pair(idx); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+
+                                        // Trust (if paired but not trusted)
+                                        if dev.paired && !dev.trusted: Rectangle {
+                                            width: 52px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: bt-trust-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                            Text {
+                                                text: "Trust";
+                                                color: Theme.fg_dim;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            bt-trust-touch := TouchArea {
+                                                clicked => { root.bt-trust(idx); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+
+                                        // Forget (if paired)
+                                        if dev.paired: Rectangle {
+                                            width: 52px;
+                                            height: 28px;
+                                            border-radius: 4px;
+                                            background: bt-forget-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                            Text {
+                                                text: "Forget";
+                                                color: Theme.fg_dim;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            bt-forget-touch := TouchArea {
+                                                clicked => { root.bt-forget(idx); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                bt-dev-touch := TouchArea {
+                                    clicked => {
+                                        if root.bt-selected-idx == idx {
+                                            root.bt-selected-idx = -1;
+                                        } else {
+                                            root.bt-selected-idx = idx;
+                                        }
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+                }
+                }
+
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    y: 0;
+                    height: parent.height;
+                    viewport-height: tab8-flick.viewport-height;
+                    viewport-y: tab8-flick.viewport-y;
+                    visible-height: tab8-flick.height;
                 }
             }
 
