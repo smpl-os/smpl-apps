@@ -79,7 +79,7 @@ step "Feature inventory guardrails"
 
 check_feat() {
     local label="$1" file="$2" pattern="$3"
-    if ! grep -q "$pattern" "$file" 2>/dev/null; then
+    if ! grep -q -- "$pattern" "$file" 2>/dev/null; then
         fail "REGRESSION: $label  (expected '$pattern' in $file)"
     else
         pass "$label"

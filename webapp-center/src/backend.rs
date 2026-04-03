@@ -115,9 +115,8 @@ fn parse_exec_flag(exec: &str, flag: &str) -> Option<String> {
     if after.is_empty() {
         return None;
     }
-    if after.starts_with('"') {
+    if let Some(inner) = after.strip_prefix('"') {
         // Value is explicitly quoted: `"slug"`
-        let inner = &after[1..];
         let end = inner.find('"')?;
         Some(inner[..end].to_string())
     } else {

@@ -69,7 +69,7 @@ jobs:
 
           check() {
             local label="$1" file="$2" pattern="$3"
-            if ! grep -q "$pattern" "$file" 2>/dev/null; then
+            if ! grep -q -- "$pattern" "$file" 2>/dev/null; then
               echo "::error file=$file::REGRESSION: $label"
               echo "  Expected to find: $pattern"
               echo "  This feature was deleted — see commit history for last good version."
