@@ -5,6 +5,7 @@
 
 use std::process::{Command, Stdio};
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -31,6 +32,9 @@ pub struct BluetoothDevice {
 
 /// Run a `bluetoothctl` command by piping it to stdin and collecting stdout.
 /// Returns Ok(stdout) or Err(description).
+/// Timeout for any single bluetoothctl invocation (seconds).
+const CTL_TIMEOUT: Duration = Duration::from_secs(4);
+
 fn run_ctl(commands: &[&str]) -> Result<String, String> {
     let mut child = Command::new("bluetoothctl")
         .stdin(Stdio::piped())
@@ -46,12 +50,30 @@ fn run_ctl(commands: &[&str]) -> Result<String, String> {
         let _ = writeln!(stdin, "exit");
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("bluetoothctl wait failed: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    Ok(stdout)
+    // Poll with timeout to avoid hanging when bluetoothd is not running
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                // Process exited — collect output
+                let output = child.wait_with_output()
+                    .map_err(|e| format!("bluetoothctl output failed: {}", e))?;
+                return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+            }
+            Ok(None) => {
+                // Still running
+                if start.elapsed() > CTL_TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("bluetoothctl timed out (is bluetoothd running?)".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(format!("bluetoothctl wait error: {}", e));
+            }
+        }
+    }
 }
 
 /// Run a single bluetoothctl command.
