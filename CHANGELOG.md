@@ -4,6 +4,30 @@ All notable changes to smpl-apps are documented here.
 
 ---
 
+## v0.7.1 — 2026-04-04
+
+### Fixed
+
+- **settings: idle shutdown now respects user activity.** Previously,
+  `schedule_shutdown()` fired a hard `shutdown -h +N` timer that would kill
+  the session even if the user was actively typing. Shutdown is now handled
+  by hypridle as a fourth listener tier (after lock, DPMS-off, suspend),
+  so any keyboard or mouse activity resets the countdown.
+
+- **settings: keyboard layout variants are validated before writing.**
+  Added `validate_layout_variants()` which checks each layout:variant pair
+  against available XKB layouts and rehomes orphaned variants. Added an XKB
+  compile check via `xkbcli compile-keymap` before writing `input.conf`,
+  preventing invalid configs from being written.
+
+### Added
+
+- **start-menu: Sleep option in power menu.** A new "Sleep" button sits
+  between Lock and Restart, running `systemctl suspend`. Keyboard
+  navigation indices updated accordingly.
+
+---
+
 ## v0.7.0 — 2026-04-03
 
 ### Fixed
