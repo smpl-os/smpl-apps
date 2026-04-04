@@ -470,6 +470,39 @@ fn hypridle_config_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".config/hypr/hypridle.conf")
 }
 
+fn power_conf_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::PathBuf::from(home).join(".config/smplos/power.conf")
+}
+
+/// Read persisted shutdown_after value (seconds) from ~/.config/smplos/power.conf.
+/// Returns 0 (Never) if the file is missing or the key is absent.
+fn read_shutdown_after_secs() -> u32 {
+    let path = power_conf_path();
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for line in content.lines() {
+        if let Some(val) = line.strip_prefix("shutdown_after=") {
+            return val.trim().parse().unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// Persist shutdown_after (seconds) to ~/.config/smplos/power.conf.
+/// Preserves all other keys that may exist in the file.
+fn write_shutdown_after_secs(secs: u32) {
+    let path = power_conf_path();
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| !l.starts_with("shutdown_after="))
+        .map(str::to_owned)
+        .collect();
+    lines.push(format!("shutdown_after={}", secs));
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let _ = std::fs::write(&path, lines.join("\n") + "\n");
+}
+
 /// Parsed idle timeouts from hypridle.conf: (lock_secs, dpms_secs, suspend_secs)
 fn read_hypridle_timeouts() -> (u32, u32, u32) {
     let path = hypridle_config_path();
@@ -1106,7 +1139,8 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.set_idle_lock_index(timeout_to_index(lock_s, IDLE_PRESETS));
         ui.set_idle_dpms_index(timeout_to_index(dpms_s, IDLE_PRESETS));
         ui.set_idle_suspend_index(timeout_to_index(suspend_s, IDLE_PRESETS));
-        ui.set_idle_shutdown_index(4); // Default: Never
+        let saved_shutdown_s = read_shutdown_after_secs();
+        ui.set_idle_shutdown_index(timeout_to_index(saved_shutdown_s, IDLE_PRESETS));
     }
 
     // ── About tab init ───────────────────────────────────────────────────────
@@ -1777,7 +1811,8 @@ fn main() -> Result<(), slint::PlatformError> {
         let susp_s = IDLE_PRESETS.get(susp_idx).copied().unwrap_or(600);
         let shutdown_s = IDLE_PRESETS.get(shutdown_idx).copied().unwrap_or(0);
         write_hypridle_config(lock_s, dpms_s, susp_s);
-        // Schedule shutdown timer
+        // Persist and schedule shutdown timer
+        write_shutdown_after_secs(shutdown_s);
         schedule_shutdown(shutdown_s);
     };
 
