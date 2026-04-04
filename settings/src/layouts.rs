@@ -192,7 +192,7 @@ fn is_valid_variant(available: &[AvailableLayout], code: &str, variant: &str) ->
 ///
 /// If a variant is invalid for its positional layout but valid for another
 /// layout in the list, move it there.  Otherwise drop it.
-fn validate_layout_variants(available: &[AvailableLayout], layouts: &mut Vec<ActiveLayout>) {
+fn validate_layout_variants(available: &[AvailableLayout], layouts: &mut [ActiveLayout]) {
     // Collect indices with invalid variants and their orphaned variant names.
     let mut orphans: Vec<(usize, String)> = Vec::new();
     for (i, l) in layouts.iter().enumerate() {
