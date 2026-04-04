@@ -2,7 +2,7 @@ mod theme;
 
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
@@ -372,10 +372,27 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // ── Load all apps from cache ──
     let all_apps = Rc::new(load_apps());
-    let path_cache = Rc::new(build_icon_path_cache(&all_apps));
+    // Defer full icon path scan to first category/search interaction.
+    // Startup only pre-resolves icons for the pinned row (typically ≤5 entries)
+    // instead of running stat() against 10+ dirs for every app in the index.
+    let pinned = Rc::new(RefCell::new(load_pinned()));
+    let path_cache = Rc::new(RefCell::new({
+        let pinned_initial = pinned.borrow();
+        let pinned_set: std::collections::HashSet<&str> =
+            pinned_initial.iter().map(String::as_str).collect();
+        let mut m = HashMap::new();
+        for app in all_apps.iter().filter(|a| pinned_set.contains(a.exec.as_str())) {
+            if !app.icon.is_empty() && !m.contains_key(&app.icon) {
+                if let Some(p) = resolve_icon_path(&app.icon) {
+                    m.insert(app.icon.clone(), p);
+                }
+            }
+        }
+        m
+    }));
+    let path_cache_primed = Rc::new(Cell::new(false));
     let img_cache = Rc::new(RefCell::new(HashMap::<String, Image>::new()));
     let model = Rc::new(VecModel::<AppItem>::default());
-    let pinned = Rc::new(RefCell::new(load_pinned()));
     let pinned_model = Rc::new(VecModel::<AppItem>::default());
 
     // ── Build category sidebar ──
@@ -404,7 +421,10 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_app_count(0);
 
     // ── Load pinned apps ──
-    update_pinned_model(&ui, &all_apps, &pinned_model, &path_cache, &img_cache, &pinned.borrow());
+    {
+        let cache = path_cache.borrow();
+        update_pinned_model(&ui, &all_apps, &pinned_model, &cache, &img_cache, &pinned.borrow());
+    }
 
     // ── Search pop-char callback (Backspace from FocusScope) ──
     {
@@ -424,6 +444,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_weak = ui.as_weak();
         let all_apps = all_apps.clone();
         let path_cache = path_cache.clone();
+        let path_cache_primed = path_cache_primed.clone();
         let img_cache = img_cache.clone();
         let model = model.clone();
         let cat_model = cat_model.clone();
@@ -452,7 +473,13 @@ fn main() -> Result<(), slint::PlatformError> {
                 .map(|c| c.key.to_string())
                 .unwrap_or_else(|| "all".to_string());
 
-            update_view(&ui, &all_apps, &model, &path_cache, &img_cache, &cat_key, &search, &pinned.borrow());
+            // Prime full icon path cache on first interactive use
+            if !path_cache_primed.get() {
+                *path_cache.borrow_mut() = build_icon_path_cache(&all_apps);
+                path_cache_primed.set(true);
+            }
+            let cache = path_cache.borrow();
+            update_view(&ui, &all_apps, &model, &cache, &img_cache, &cat_key, &search, &pinned.borrow());
         });
     }
 
@@ -493,6 +520,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_weak = ui.as_weak();
         let all_apps = all_apps.clone();
         let path_cache = path_cache.clone();
+        let path_cache_primed = path_cache_primed.clone();
         let img_cache = img_cache.clone();
         let model = model.clone();
         let pinned = pinned.clone();
@@ -512,7 +540,13 @@ fn main() -> Result<(), slint::PlatformError> {
                 save_pinned(&p);
             }
             let p = pinned.borrow();
-            update_pinned_model(&ui, &all_apps, &pinned_model, &path_cache, &img_cache, &p);
+            // Prime full icon cache if not done yet (user may pin before opening any category)
+            if !path_cache_primed.get() {
+                *path_cache.borrow_mut() = build_icon_path_cache(&all_apps);
+                path_cache_primed.set(true);
+            }
+            let cache = path_cache.borrow();
+            update_pinned_model(&ui, &all_apps, &pinned_model, &cache, &img_cache, &p);
             // Refresh current view to update is_pinned flags
             let search = ui.get_search_text().to_string();
             let cat_idx = ui.get_active_category() as usize;
@@ -521,7 +555,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     .row_data(cat_idx)
                     .map(|c| c.key.to_string())
                     .unwrap_or_else(|| "all".to_string());
-                update_view(&ui, &all_apps, &model, &path_cache, &img_cache, &cat_key, &search, &p);
+                update_view(&ui, &all_apps, &model, &cache, &img_cache, &cat_key, &search, &p);
             }
         });
     }
