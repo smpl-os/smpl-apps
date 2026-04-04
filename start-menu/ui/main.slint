@@ -379,7 +379,7 @@ export component MainWindow inherits Window {
     callback start-drag();
     callback open-webapp-center();
     callback open-sync-center();
-    callback power-action(string);  // "lock", "restart", "shutdown"
+    callback power-action(string);  // "lock", "sleep", "restart", "shutdown"
     callback toggle-pin(string);    // exec string of app to pin/unpin
     callback launch-pinned(int);    // index in pinned-apps model
 
@@ -428,7 +428,7 @@ export component MainWindow inherits Window {
     }
     function power-menu-down() {
         root.power-menu-follow-hover = false;
-        if (root.power-menu-index < 2) {
+        if (root.power-menu-index < 3) {
             root.power-menu-index += 1;
         }
     }
@@ -439,9 +439,13 @@ export component MainWindow inherits Window {
         }
         if (root.power-menu-index == 1) {
             root.show-power-menu = false;
-            root.power-action("restart");
+            root.power-action("sleep");
         }
         if (root.power-menu-index == 2) {
+            root.show-power-menu = false;
+            root.power-action("restart");
+        }
+        if (root.power-menu-index == 3) {
             root.show-power-menu = false;
             root.power-action("shutdown");
         }
@@ -1045,8 +1049,9 @@ export component MainWindow inherits Window {
             height: root.height;
             property <int> visual-power-index:
                 root.power-menu-follow-hover && lock-item.hovered ? 0 :
-                root.power-menu-follow-hover && restart-item.hovered ? 1 :
-                root.power-menu-follow-hover && shutdown-item.hovered ? 2 :
+                root.power-menu-follow-hover && sleep-item.hovered ? 1 :
+                root.power-menu-follow-hover && restart-item.hovered ? 2 :
+                root.power-menu-follow-hover && shutdown-item.hovered ? 3 :
                 root.power-menu-index;
 
             init => {
@@ -1071,11 +1076,14 @@ export component MainWindow inherits Window {
                     if (lock-item.hovered) {
                         root.power-menu-index = 0;
                     }
-                    if (restart-item.hovered) {
+                    if (sleep-item.hovered) {
                         root.power-menu-index = 1;
                     }
-                    if (shutdown-item.hovered) {
+                    if (restart-item.hovered) {
                         root.power-menu-index = 2;
+                    }
+                    if (shutdown-item.hovered) {
+                        root.power-menu-index = 3;
                     }
                     root.power-menu-activate();
                     return accept;
@@ -1093,7 +1101,7 @@ export component MainWindow inherits Window {
                 x: root.width - self.width - 14px;
                 y: root.height - self.height - 50px;
                 width: 160px;
-                height: 112px;
+                height: 148px;
                 border-radius: 8px;
                 background: Theme.bg.transparentize(0.05);
                 border-width: 1px;
@@ -1112,19 +1120,27 @@ export component MainWindow inherits Window {
                         clicked => { root.show-power-menu = false; root.power-action("lock"); }
                     }
 
+                    sleep-item := PowerMenuItem {
+                        icon: "\u{f04b2}";  // 󰒲 sleep/moon
+                        label: "Sleep";
+                        active: power-menu-scope.visual-power-index == 1;
+                        pointer-moved => { root.power-menu-follow-hover = true; root.power-menu-index = 1; }
+                        clicked => { root.show-power-menu = false; root.power-action("sleep"); }
+                    }
+
                     restart-item := PowerMenuItem {
                         icon: "\u{f0709}";  // 󰜉 restart
                         label: "Restart";
-                        active: power-menu-scope.visual-power-index == 1;
-                        pointer-moved => { root.power-menu-follow-hover = true; root.power-menu-index = 1; }
+                        active: power-menu-scope.visual-power-index == 2;
+                        pointer-moved => { root.power-menu-follow-hover = true; root.power-menu-index = 2; }
                         clicked => { root.show-power-menu = false; root.power-action("restart"); }
                     }
 
                     shutdown-item := PowerMenuItem {
                         icon: "\u{f0425}";  // 󰐥 power off
                         label: "Shut Down";
-                        active: power-menu-scope.visual-power-index == 2;
-                        pointer-moved => { root.power-menu-follow-hover = true; root.power-menu-index = 2; }
+                        active: power-menu-scope.visual-power-index == 3;
+                        pointer-moved => { root.power-menu-follow-hover = true; root.power-menu-index = 3; }
                         clicked => { root.show-power-menu = false; root.power-action("shutdown"); }
                     }
                 }

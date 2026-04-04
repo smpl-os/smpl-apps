@@ -475,19 +475,6 @@ fn power_conf_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".config/smplos/power.conf")
 }
 
-/// Read persisted shutdown_after value (seconds) from ~/.config/smplos/power.conf.
-/// Returns 0 (Never) if the file is missing or the key is absent.
-fn read_shutdown_after_secs() -> u32 {
-    let path = power_conf_path();
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    for line in content.lines() {
-        if let Some(val) = line.strip_prefix("shutdown_after=") {
-            return val.trim().parse().unwrap_or(0);
-        }
-    }
-    0
-}
-
 /// Persist shutdown_after (seconds) to ~/.config/smplos/power.conf.
 /// Preserves all other keys that may exist in the file.
 fn write_shutdown_after_secs(secs: u32) {
@@ -503,17 +490,18 @@ fn write_shutdown_after_secs(secs: u32) {
     let _ = std::fs::write(&path, lines.join("\n") + "\n");
 }
 
-/// Parsed idle timeouts from hypridle.conf: (lock_secs, dpms_secs, suspend_secs)
-fn read_hypridle_timeouts() -> (u32, u32, u32) {
+/// Parsed idle timeouts from hypridle.conf: (lock_secs, dpms_secs, suspend_secs, shutdown_secs)
+fn read_hypridle_timeouts() -> (u32, u32, u32, u32) {
     let path = hypridle_config_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return (300, 330, 600), // defaults
+        Err(_) => return (300, 330, 600, 0), // defaults
     };
 
     let mut lock = 0u32;
     let mut dpms = 0u32;
     let mut suspend = 0u32;
+    let mut shutdown = 0u32;
 
     // Simple parser: find listener blocks and identify by on-timeout command
     let mut in_listener = false;
@@ -532,6 +520,8 @@ fn read_hypridle_timeouts() -> (u32, u32, u32) {
                 lock = cur_timeout;
             } else if cur_cmd.contains("dpms off") || cur_cmd.contains("dpms 0") {
                 dpms = cur_timeout;
+            } else if cur_cmd.contains("poweroff") {
+                shutdown = cur_timeout;
             } else if cur_cmd.contains("suspend") || cur_cmd.contains("hibernate") {
                 suspend = cur_timeout;
             }
@@ -546,7 +536,7 @@ fn read_hypridle_timeouts() -> (u32, u32, u32) {
         }
     }
 
-    (lock, dpms, suspend)
+    (lock, dpms, suspend, shutdown)
 }
 
 /// Find closest preset index for a given timeout value
@@ -565,7 +555,7 @@ fn timeout_to_index(secs: u32, presets: &[u32]) -> i32 {
 }
 
 /// Write a new hypridle.conf with updated timeouts and restart hypridle
-fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32) {
+fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shutdown_secs: u32) {
     let lock_cmd = if lock_secs > 0 {
         format!(
             "# {:.0} min -- lock screen\nlistener {{\n    timeout = {}\n    on-timeout = loginctl lock-session\n}}\n",
@@ -593,6 +583,15 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32) {
         String::new()
     };
 
+    let shutdown_cmd = if shutdown_secs > 0 {
+        format!(
+            "# {:.0} min -- shutdown (idle)\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || systemctl poweroff\n}}\n",
+            shutdown_secs as f64 / 60.0, shutdown_secs
+        )
+    } else {
+        String::new()
+    };
+
     let config = format!(
         "# smplOS Hypridle Configuration\n\
          # Managed by Settings app -- manual edits will be overwritten\n\
@@ -604,7 +603,8 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32) {
          }}\n\n\
          {lock_cmd}\n\
          {dpms_cmd}\n\
-         {suspend_cmd}"
+         {suspend_cmd}\n\
+         {shutdown_cmd}"
     );
 
     let path = hypridle_config_path();
@@ -612,8 +612,8 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32) {
         eprintln!("[settings] failed to write hypridle.conf: {}", e);
         return;
     }
-    debug_log!("[settings] wrote hypridle.conf: lock={}s dpms={}s suspend={}s",
-        lock_secs, dpms_secs, suspend_secs);
+    debug_log!("[settings] wrote hypridle.conf: lock={}s dpms={}s suspend={}s shutdown={}s",
+        lock_secs, dpms_secs, suspend_secs, shutdown_secs);
 
     // Restart hypridle to pick up changes
     let _ = std::process::Command::new("pkill").arg("hypridle").output();
@@ -624,29 +624,17 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32) {
         .spawn();
 }
 
-/// Schedule a system shutdown after `secs` seconds (0 = cancel any pending shutdown).
-fn schedule_shutdown(secs: u32) {
-    // Cancel any existing scheduled shutdown first (non-blocking, null stdin to avoid sudo hang)
+/// Cancel any pending hard `shutdown` timer (legacy cleanup).
+/// Idle shutdown is now handled entirely via hypridle, which respects user
+/// activity (typing, video, downloads, etc.) and only fires after true idle.
+fn cancel_pending_shutdown() {
     let _ = std::process::Command::new("shutdown")
         .args(["-c"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-
-    if secs == 0 {
-        debug_log!("[settings] shutdown timer cancelled");
-        return;
-    }
-
-    let mins = secs.div_ceil(60); // round up to minutes
-    let _ = std::process::Command::new("shutdown")
-        .args(["-h", &format!("+{}", mins)])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    debug_log!("[settings] shutdown scheduled in {} minutes", mins);
+    debug_log!("[settings] cancelled any pending hard shutdown timer");
 }
 
 fn get_about_info() -> (String, String, String, String, String, String, String) {
@@ -1134,13 +1122,14 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_power_profile_index(idx);
         }
 
-        // Idle timeouts from hypridle.conf
-        let (lock_s, dpms_s, suspend_s) = read_hypridle_timeouts();
+        // Idle timeouts from hypridle.conf (includes shutdown)
+        let (lock_s, dpms_s, suspend_s, shutdown_s) = read_hypridle_timeouts();
         ui.set_idle_lock_index(timeout_to_index(lock_s, IDLE_PRESETS));
         ui.set_idle_dpms_index(timeout_to_index(dpms_s, IDLE_PRESETS));
         ui.set_idle_suspend_index(timeout_to_index(suspend_s, IDLE_PRESETS));
-        let saved_shutdown_s = read_shutdown_after_secs();
-        ui.set_idle_shutdown_index(timeout_to_index(saved_shutdown_s, IDLE_PRESETS));
+        ui.set_idle_shutdown_index(timeout_to_index(shutdown_s, IDLE_PRESETS));
+        // Cancel any stale hard shutdown timers from the old implementation
+        cancel_pending_shutdown();
     }
 
     // ── About tab init ───────────────────────────────────────────────────────
@@ -1810,10 +1799,12 @@ fn main() -> Result<(), slint::PlatformError> {
         let dpms_s = IDLE_PRESETS.get(dpms_idx).copied().unwrap_or(300);
         let susp_s = IDLE_PRESETS.get(susp_idx).copied().unwrap_or(600);
         let shutdown_s = IDLE_PRESETS.get(shutdown_idx).copied().unwrap_or(0);
-        write_hypridle_config(lock_s, dpms_s, susp_s);
-        // Persist and schedule shutdown timer
+        // All idle actions (lock, dpms, suspend, shutdown) go through hypridle
+        // so they only trigger after genuine idle time (respects user activity)
+        write_hypridle_config(lock_s, dpms_s, susp_s, shutdown_s);
         write_shutdown_after_secs(shutdown_s);
-        schedule_shutdown(shutdown_s);
+        // Cancel any stale hard shutdown from legacy implementation
+        cancel_pending_shutdown();
     };
 
     {

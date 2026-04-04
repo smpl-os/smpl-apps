@@ -67,6 +67,7 @@ pub fn load_from_os_config(available: &[AvailableLayout]) -> Option<Vec<ActiveLa
     if result.is_empty() {
         None
     } else {
+        validate_layout_variants(available, &mut result);
         debug_log!("[settings] load_from_os_config: {} layouts", result.len());
         Some(result)
     }
@@ -175,6 +176,54 @@ pub fn describe(available: &[AvailableLayout], code: &str, variant: &str) -> Str
         })
 }
 
+/// Check whether `variant` is a known XKB variant for `code`.
+/// An empty variant is always valid (base layout).
+fn is_valid_variant(available: &[AvailableLayout], code: &str, variant: &str) -> bool {
+    if variant.is_empty() {
+        return true;
+    }
+    available.iter().any(|a| a.code == code && a.variant == variant)
+}
+
+/// Validate and repair layout↔variant assignments parsed from a config file.
+///
+/// Hyprland uses positional CSV: `kb_layout = us,ru` + `kb_variant = ,phonetic`
+/// means "us" with no variant and "ru" with "phonetic".
+///
+/// If a variant is invalid for its positional layout but valid for another
+/// layout in the list, move it there.  Otherwise drop it.
+fn validate_layout_variants(available: &[AvailableLayout], layouts: &mut Vec<ActiveLayout>) {
+    // Collect indices with invalid variants and their orphaned variant names.
+    let mut orphans: Vec<(usize, String)> = Vec::new();
+    for (i, l) in layouts.iter().enumerate() {
+        if !l.variant.is_empty() && !is_valid_variant(available, &l.code, &l.variant) {
+            orphans.push((i, l.variant.clone()));
+        }
+    }
+    if orphans.is_empty() {
+        return;
+    }
+
+    // Try to rehome each orphan variant to a layout that accepts it.
+    for (bad_idx, variant) in &orphans {
+        layouts[*bad_idx].variant.clear();
+        // Find the first layout (without a variant) that accepts this variant.
+        if let Some(target) = layouts.iter_mut().find(|l| {
+            l.variant.is_empty() && is_valid_variant(available, &l.code, variant)
+        }) {
+            debug_log!("[settings] rehomed variant '{}' → layout '{}'", variant, target.code);
+            target.variant = variant.clone();
+        } else {
+            debug_log!("[settings] dropped invalid variant '{}' from layout '{}'", variant, layouts[*bad_idx].code);
+        }
+    }
+
+    // Refresh descriptions after any changes.
+    for l in layouts.iter_mut() {
+        l.description = describe(available, &l.code, &l.variant);
+    }
+}
+
 /// Try to read currently configured layouts from Hyprland.
 /// Returns None if hyprctl is unavailable or fails.
 pub fn load_from_hyprland(available: &[AvailableLayout]) -> Option<Vec<ActiveLayout>> {
@@ -231,7 +280,7 @@ fn parse_layout_variant_csv(
     let codes: Vec<&str> = layout_str.split(',').collect();
     let variants: Vec<&str> = variant_str.split(',').collect();
 
-    let result = codes
+    let mut result: Vec<ActiveLayout> = codes
         .iter()
         .enumerate()
         .map(|(i, code)| {
@@ -242,6 +291,7 @@ fn parse_layout_variant_csv(
         })
         .collect();
 
+    validate_layout_variants(available, &mut result);
     Some(result)
 }
 
@@ -277,6 +327,11 @@ pub fn sync_to_compositor(active: &[ActiveLayout]) {
 }
 
 /// Update ~/.config/hypr/input.conf with the active layouts so they persist.
+///
+/// Guarantees before writing:
+///   1. No empty layout codes (e.g. ",ru" is rejected)
+///   2. Variant count == layout count (padded or truncated)
+///   3. The resulting keymap compiles under XKB
 fn update_input_conf(layouts: &str, variants: &str) {
     let clean_layouts: String = layouts.split(',').filter(|s| !s.trim().is_empty()).collect::<Vec<_>>().join(",");
     if clean_layouts.is_empty() {
@@ -295,6 +350,24 @@ fn update_input_conf(layouts: &str, variants: &str) {
         variant_parts.truncate(layout_count);
     }
     let clean_variants = variant_parts.join(",");
+
+    // Verify the keymap compiles before writing to the config file.
+    // This prevents boot-time XKB errors from bad layout/variant combos.
+    if let Ok(out) = Command::new("xkbcli")
+        .args(["compile-keymap", "--layout", &clean_layouts, "--variant", &clean_variants])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!("[settings] update_input_conf: XKB compile failed for layout={} variant={}: {}",
+                clean_layouts, clean_variants, stderr.lines().next().unwrap_or("unknown error"));
+            debug_log!("[settings] update_input_conf: REFUSED to write invalid keymap");
+            return;
+        }
+    }
 
     let layouts = clean_layouts.as_str();
     let variants = clean_variants.as_str();

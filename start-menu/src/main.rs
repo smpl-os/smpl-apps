@@ -553,6 +553,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_power_action(|action| {
         let cmd = match action.as_str() {
             "lock" => "lock-screen",
+            "sleep" => "systemctl suspend",
             "restart" => "systemctl reboot",
             "shutdown" => "systemctl poweroff",
             _ => return,
