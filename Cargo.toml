@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version    = "0.7.1"
+version    = "0.7.2"
 edition    = "2021"
 authors    = ["smplOS <https://github.com/smpl-os>"]
 license    = "MIT"
@@ -73,6 +73,8 @@ thiserror   = "1.0"
 
 # ── Release profile (applied to all apps) ────────────────────────────────────
 [profile.release]
-lto            = true
-codegen-units  = 1
-strip          = true
+opt-level     = 3       # maximum speed (default, but explicit)
+lto           = true    # cross-crate inlining
+codegen-units = 1       # single CGU for better whole-program optimisation
+strip         = true    # strip debug symbols → smaller binary, faster mmap
+panic         = "abort" # no unwinding tables → smaller binary, faster cold load

@@ -466,10 +466,13 @@ fn main() -> Result<(), slint::PlatformError> {
                 let Some(ui) = weak1.upgrade() else { return };
                 ui.set_is_details(true);
 
-                // Resize via hyprctl (set_size is ignored by Hyprland for floats).
+                let dx = details_w - compact_w;
+                let dy = details_h - compact_h;
+                let resize_cmd = format!("resizewindowpixel exact {details_w} {details_h},class:^(smpl-calendar)$");
+                let move_cmd = format!("movewindowpixel -{dx} -{dy},class:^(smpl-calendar)$");
+
                 let _ = std::process::Command::new("hyprctl")
-                    .args(["dispatch", "resizewindowpixel",
-                           &format!("exact {details_w} {details_h},class:^(smpl-calendar)$")])
+                    .args(["--batch", &format!("dispatch {}; dispatch {}", resize_cmd, move_cmd)])
                     .output();
 
                 // Enable the collapse button after 1200ms — enough for all
@@ -495,9 +498,13 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_show_day_panel(false);
             // Resize back to compact after layout switches (next tick).
             slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                let dx = details_w - compact_w;
+                let dy = details_h - compact_h;
+                let resize_cmd = format!("resizewindowpixel exact {compact_w} {compact_h},class:^(smpl-calendar)$");
+                let move_cmd = format!("movewindowpixel {dx} {dy},class:^(smpl-calendar)$");
+
                 let _ = std::process::Command::new("hyprctl")
-                    .args(["dispatch", "resizewindowpixel",
-                           &format!("exact {compact_w} {compact_h},class:^(smpl-calendar)$")])
+                    .args(["--batch", &format!("dispatch {}; dispatch {}", resize_cmd, move_cmd)])
                     .output();
             });
         });
