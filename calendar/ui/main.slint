@@ -111,7 +111,6 @@ component PillBtn inherits Rectangle {
 
     height: 30px; border-radius: 8px;
     background: ta.has-hover ? root.bg-hover : root.bg-normal;
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
         padding-left: 12px; padding-right: 12px;
         Text {
@@ -120,6 +119,14 @@ component PillBtn inherits Rectangle {
             font-size: 12px; font-weight: 600;
             horizontal-alignment: center; vertical-alignment: center;
             min-width: 40px;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                root.clicked();
+            }
         }
     }
 }
@@ -675,12 +682,18 @@ component EventForm inherits Rectangle {
 export component MainWindow inherits Window {
     title: "Calendar"; no-frame: true;
     background: Theme.bg.transparentize(1.0 - Theme.opacity);
-    // Size set from Rust on mode switch — no binding so user can resize freely.
-    min-width:  root.is-details ? Sizes.details-w * 1px : Sizes.compact-w * 1px;
-    min-height: root.is-details ? Sizes.details-h * 1px : Sizes.compact-h * 1px;
+    // Static min-size: Rust calls set_size() imperatively on mode switch.
+    // Dynamic bindings here cause the compositor to emit a configure event
+    // immediately when is-details flips, which races set_size and makes the
+    // window disappear or refuse to expand on the first click.
+    min-width:  Sizes.compact-w * 1px;
+    min-height: Sizes.compact-h * 1px;
 
     // State
     in-out property <bool>   is-details:          false;
+    // Set to true by Rust after expand transition is fully settled.
+    // Prevents phantom close-details from pointer events during resize.
+    in-out property <bool>   can-collapse:        false;
     in-out property <int>    year:                2026;
     in-out property <int>    month:               3;
     in-out property <string> month-name:          "March 2026";
@@ -740,7 +753,7 @@ export component MainWindow inherits Window {
             height: root.height;
             padding: 0px; spacing: 0px;
 
-            // Toolbar (drag + buttons only)
+            // Toolbar
             Rectangle {
                 height: 36px;
                 background: Theme.bg-light.transparentize(0.5);
@@ -763,24 +776,14 @@ export component MainWindow inherits Window {
                         }
                     }
 
+                    // Details button
                     PillBtn {
-                        label: "\u{2261}";
+                        horizontal-stretch: 1;
+                        label: "Details";
                         bg-normal: Theme.accent.transparentize(0.7);
                         bg-hover: Theme.accent;
                         fg-normal: Theme.accent; fg-hover: Theme.bg;
                         clicked => { root.open-details(); }
-                    }
-
-                    Rectangle {
-                        width: 26px; height: 26px; border-radius: 4px;
-                        background: compact-close.has-hover ? Theme.danger : Theme.bg-lighter;
-                        Text {
-                            width: 100%; height: 100%;
-                            text: "\u{2715}"; font-size: 12px;
-                            color: compact-close.has-hover ? Theme.bg : Theme.fg;
-                            horizontal-alignment: center; vertical-alignment: center;
-                        }
-                        compact-close := TouchArea { mouse-cursor: pointer; clicked => { root.close(); } }
                     }
                 }
             }
@@ -886,8 +889,6 @@ export component MainWindow inherits Window {
                     }
                 }
             }
-
-            Rectangle { height: 4px; background: transparent; }
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -994,7 +995,11 @@ export component MainWindow inherits Window {
                                 color: collapse-ta.has-hover ? Theme.fg : Theme.fg-dim;
                                 horizontal-alignment: center; vertical-alignment: center;
                             }
-                            collapse-ta := TouchArea { mouse-cursor: pointer; clicked => { root.close-details(); } }
+                            collapse-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                enabled: root.can-collapse;
+                                clicked => { root.close-details(); }
+                            }
                         }
 
                         // Close
@@ -1224,52 +1229,63 @@ export component MainWindow inherits Window {
     }
 
     // ── Resize edge handles (sit on top of everything) ─────────────────────
+    // Only active in details mode — in compact mode the window is small and
+    // the 5px grab zones cover too much of the surface, causing accidental
+    // resize events during Super+drag that fight the compositor.
     // Grab zone = 5px on each edge, 10px corners
     // Top
     Rectangle {
         x: 10px; y: 0px; width: root.width - 20px; height: 5px;
+        visible: root.is-details;
         TouchArea { mouse-cursor: n-resize;
             moved => { root.resize-window(0.0, (self.mouse-y - self.pressed-y) / 1px, 0); } }
     }
     // Bottom
     Rectangle {
         x: 10px; y: root.height - 5px; width: root.width - 20px; height: 5px;
+        visible: root.is-details;
         TouchArea { mouse-cursor: s-resize;
             moved => { root.resize-window(0.0, (self.mouse-y - self.pressed-y) / 1px, 2); } }
     }
     // Left
     Rectangle {
         x: 0px; y: 10px; width: 5px; height: root.height - 20px;
+        visible: root.is-details;
         TouchArea { mouse-cursor: w-resize;
             moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, 0.0, 3); } }
     }
     // Right
     Rectangle {
         x: root.width - 5px; y: 10px; width: 5px; height: root.height - 20px;
+        visible: root.is-details;
         TouchArea { mouse-cursor: e-resize;
             moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, 0.0, 1); } }
     }
     // Top-left corner
     Rectangle {
         x: 0px; y: 0px; width: 10px; height: 10px;
+        visible: root.is-details;
         TouchArea { mouse-cursor: nw-resize;
             moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, (self.mouse-y - self.pressed-y) / 1px, 4); } }
     }
     // Top-right corner
     Rectangle {
         x: root.width - 10px; y: 0px; width: 10px; height: 10px;
+        visible: root.is-details;
         TouchArea { mouse-cursor: ne-resize;
             moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, (self.mouse-y - self.pressed-y) / 1px, 5); } }
     }
     // Bottom-left corner
     Rectangle {
         x: 0px; y: root.height - 10px; width: 10px; height: 10px;
+        visible: root.is-details;
         TouchArea { mouse-cursor: sw-resize;
             moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, (self.mouse-y - self.pressed-y) / 1px, 6); } }
     }
     // Bottom-right corner
     Rectangle {
         x: root.width - 10px; y: root.height - 10px; width: 10px; height: 10px;
+        visible: root.is-details;
         TouchArea { mouse-cursor: se-resize;
             moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, (self.mouse-y - self.pressed-y) / 1px, 7); } }
     }

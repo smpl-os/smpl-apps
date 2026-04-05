@@ -445,16 +445,41 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // ── open-details ──────────────────────────────────────────────────────────
+    let launch_time = std::time::Instant::now();
     {
         let ui_weak = ui.as_weak();
         ui.on_open_details(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            ui.set_is_details(true);
-            // Defer so layout switches to details min-width first
-            let weak = ui.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_millis(10), move || {
-                let Some(ui) = weak.upgrade() else { return };
-                ui.window().set_size(slint::LogicalSize::new(details_w, details_h));
+            if ui.get_is_details() { return; }
+            if launch_time.elapsed() < std::time::Duration::from_millis(300) {
+                return; // phantom from window mapping
+            }
+
+            // Disable the collapse button until the transition fully settles.
+            ui.set_can_collapse(false);
+
+            // Step 1 (150ms): switch layout. Delay ensures mouse-up from the
+            // Details button click has fully drained from Wayland's event queue
+            // before the collapse button appears in the new layout.
+            let weak1 = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+                let Some(ui) = weak1.upgrade() else { return };
+                ui.set_is_details(true);
+
+                // Resize via hyprctl (set_size is ignored by Hyprland for floats).
+                let _ = std::process::Command::new("hyprctl")
+                    .args(["dispatch", "resizewindowpixel",
+                           &format!("exact {details_w} {details_h},class:^(smpl-calendar)$")])
+                    .output();
+
+                // Enable the collapse button after 1200ms — enough for all
+                // Wayland pointer events from the resize to be processed.
+                let weak2 = ui.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(1200), move || {
+                    if let Some(ui) = weak2.upgrade() {
+                        ui.set_can_collapse(true);
+                    }
+                });
             });
         });
     }
@@ -464,20 +489,16 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_weak = ui.as_weak();
         ui.on_close_details(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
+            ui.set_can_collapse(false);
             ui.set_is_details(false);
             ui.set_show_form(false);
             ui.set_show_day_panel(false);
-            // Compositor needs ~100ms to process the layout change.
-            // Fire set_size at 50ms and again at 150ms to cover the window.
-            let weak1 = ui.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-                let Some(ui) = weak1.upgrade() else { return };
-                ui.window().set_size(slint::LogicalSize::new(compact_w, compact_h));
-            });
-            let weak2 = ui.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
-                let Some(ui) = weak2.upgrade() else { return };
-                ui.window().set_size(slint::LogicalSize::new(compact_w, compact_h));
+            // Resize back to compact after layout switches (next tick).
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                let _ = std::process::Command::new("hyprctl")
+                    .args(["dispatch", "resizewindowpixel",
+                           &format!("exact {compact_w} {compact_h},class:^(smpl-calendar)$")])
+                    .output();
             });
         });
     }
@@ -675,7 +696,17 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // ── close ─────────────────────────────────────────────────────────────────
-    ui.on_close(|| std::process::exit(0));
+    // Startup guard: ignore close() for the first 1.5s after launch.
+    // Hyprland’s move windowrule slides the window under the cursor on map,
+    // causing phantom wl_pointer.enter events that Slint interprets as clicks.
+    ui.on_close({
+        move || {
+            if launch_time.elapsed() < std::time::Duration::from_millis(1500) {
+                return;
+            }
+            std::process::exit(0);
+        }
+    });
 
     // ── window drag (works on X11 + Wayland, no float rule needed) ───────────────
     // Receives (dx, dy) deltas from Slint's moved event
