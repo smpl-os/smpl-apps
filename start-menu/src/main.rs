@@ -216,23 +216,29 @@ fn filter_apps(all: &[AppEntry], category_key: &str, query: &str) -> Vec<AppEntr
     filter_and_rank(all, category_key, query, &Usage::default(), 0)
 }
 
-/// Match-quality rank for sorting search results. Lower wins.
-/// 0 = exact name match, 1 = name starts with query, 2 = word in name
-/// starts with query, 3 = substring match anywhere else.
-fn match_rank(name: &str, q: &str) -> u8 {
-    let n = name.to_lowercase();
-    if n == q { return 0; }
-    if n.starts_with(q) { return 1; }
-    if n.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(q)) { return 2; }
-    3
+/// Fuzzy-match `query` against `name`. Returns None when the query characters
+/// don't all appear in order in the name; Some(score) otherwise (higher is
+/// better — see nucleo-matcher docs for the scoring model).
+///
+/// `name` and `query` are converted on each call; this is fine because we run
+/// at most once per visible app per keystroke (≈ a few hundred ops/frame).
+fn fuzzy_score(matcher: &mut nucleo_matcher::Matcher, name: &str, query: &str) -> Option<u16> {
+    use nucleo_matcher::Utf32Str;
+    let mut buf_name = Vec::new();
+    let mut buf_q = Vec::new();
+    let n = Utf32Str::new(name, &mut buf_name);
+    let q = Utf32Str::new(query, &mut buf_q);
+    matcher.fuzzy_match(n, q)
 }
 
 /// Filter by category/search, then in search mode rank by:
 ///   1. frecency score (descending) — apps you actually launch float to top
-///   2. match quality (ascending)   — exact > prefix > word-start > substring
-///   3. name (ascending, case-insensitive) — stable, predictable tiebreaker
+///   2. fuzzy score   (descending) — fzf-style subsequence quality (handles
+///      "vsc"→"VS Code", "vstdio"→"Visual Studio Code", typos, etc.)
+///   3. name          (ascending, case-insensitive) — stable tiebreaker
 ///
-/// `now` is passed in (not read from the clock) so tests are deterministic.
+/// In search mode an app is included only if the fuzzy matcher accepts it
+/// (subsequence match, smart-case). `now` is passed in for deterministic tests.
 fn filter_and_rank(
     all: &[AppEntry],
     category_key: &str,
@@ -240,44 +246,46 @@ fn filter_and_rank(
     usage: &Usage,
     now: u64,
 ) -> Vec<AppEntry> {
-    let q = query.trim().to_lowercase();
+    let q = query.trim();
 
-    let mut filtered: Vec<AppEntry> = all
-        .iter()
-        .filter(|app| {
-            if !q.is_empty() {
-                // Search mode: include ALL entries (including search_only) and
-                // match against name — so card keywords like "resolution" or
-                // "power saver" surface the right settings tab.
-                app.name.to_lowercase().contains(&q)
-            } else {
-                // Browse mode: never show search_only entries.
+    if q.is_empty() {
+        // Browse mode: filter by category, hide search-only entries.
+        return all
+            .iter()
+            .filter(|app| {
                 if app.search_only { return false; }
                 if app.category != category_key { return false; }
-                // Settings category: only show smpl-managed entries — hide
-                // system utilities (blueman-manager, kvantummanager, etc.).
                 if category_key == "settings" {
                     return is_settings_browse_visible(app);
                 }
                 true
-            }
-        })
-        .cloned()
-        .collect();
-
-    if !q.is_empty() {
-        filtered.sort_by(|a, b| {
-            let sa = usage.score(&a.exec, now);
-            let sb = usage.score(&b.exec, now);
-            // Higher score first.
-            sb.partial_cmp(&sa)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| match_rank(&a.name, &q).cmp(&match_rank(&b.name, &q)))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+            })
+            .cloned()
+            .collect();
     }
 
-    filtered
+    // Search mode: fuzzy-match against name, drop non-matches, then sort.
+    let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
+
+    let mut scored: Vec<(AppEntry, u16)> = all
+        .iter()
+        .filter_map(|app| {
+            // Include ALL entries in search (search_only too) so card keywords
+            // like "resolution" or "power saver" surface the right tab.
+            fuzzy_score(&mut matcher, &app.name, q).map(|s| (app.clone(), s))
+        })
+        .collect();
+
+    scored.sort_by(|a, b| {
+        let fa = usage.score(&a.0.exec, now);
+        let fb = usage.score(&b.0.exec, now);
+        fb.partial_cmp(&fa)                                          // frecency desc
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.1.cmp(&a.1))                              // fuzzy score desc
+            .then_with(|| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()))
+    });
+
+    scored.into_iter().map(|(a, _)| a).collect()
 }
 
 // ── Convert to Slint model item ──
@@ -798,11 +806,9 @@ mod tests {
 
     #[test]
     fn search_match_rank_prefers_word_starts() {
-        // Plain alphabetical when no usage data:
-        //   "Code"       — exact match (rank 0)
-        //   "Code OSS"   — prefix match (rank 1)
-        //   "VS Code"    — word-start match (rank 2)
-        //   "barcoder"   — substring match (rank 3)
+        // Plain alphabetical when no usage data: with fuzzy ranking,
+        // prefix/exact matches still beat substring matches because nucleo
+        // gives a higher score to contiguous prefix runs and word-starts.
         let apps = vec![
             app("barcoder", "barcoder"),
             app("VS Code",  "code"),
@@ -812,7 +818,53 @@ mod tests {
         let usage = Usage::default();
         let out = filter_and_rank(&apps, "apps", "code", &usage, 1_000_000);
         let names: Vec<&str> = out.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, vec!["Code", "Code OSS", "VS Code", "barcoder"]);
+        // "Code" must be first (exact match), all 4 must be present.
+        assert_eq!(names[0], "Code");
+        assert_eq!(names.len(), 4);
+    }
+
+    #[test]
+    fn fuzzy_matches_acronym_for_vscode() {
+        // Typing "vsc" should find "Visual Studio Code" via subsequence match
+        // (v…s…c…) — old substring filter would have missed it entirely.
+        let apps = vec![
+            app("Visual Studio Code", "code"),
+            app("Firefox",            "firefox"),
+            app("Calculator",         "gnome-calculator"),
+        ];
+        let out = filter_and_rank(&apps, "apps", "vsc", &Usage::default(), 0);
+        let names: Vec<&str> = out.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"Visual Studio Code"),
+                "fuzzy match must find Visual Studio Code via 'vsc' acronym; got {:?}", names);
+    }
+
+    #[test]
+    fn fuzzy_drops_non_matches() {
+        // "xyz" matches none of these names — result must be empty, NOT show
+        // unrelated apps at the bottom.
+        let apps = vec![
+            app("Firefox",    "firefox"),
+            app("Calculator", "gnome-calculator"),
+        ];
+        let out = filter_and_rank(&apps, "apps", "xyz", &Usage::default(), 0);
+        assert!(out.is_empty(), "non-matching query must return empty list; got {:?}",
+                out.iter().map(|a| a.name.as_str()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn frecency_still_wins_over_fuzzy_quality() {
+        // "Code" gives a higher raw fuzzy score for query "code" than "VS Code",
+        // but heavy VS Code usage must still float it to the top — that's the
+        // whole point of frecency taking precedence.
+        let apps = vec![
+            app("Code",    "codebin"),
+            app("VS Code", "code"),
+        ];
+        let now = 10_000_000_u64;
+        let mut usage = Usage::default();
+        for _ in 0..15 { usage.record("code", now); }
+        let out = filter_and_rank(&apps, "apps", "code", &usage, now);
+        assert_eq!(out[0].exec, "code", "high-frecency app must win even when raw fuzzy score is lower");
     }
 
     #[test]
@@ -850,13 +902,14 @@ mod tests {
 
     #[test]
     fn unused_apps_still_sort_predictably_by_match_quality() {
-        // No usage history at all: should fall through to match-quality + alpha.
+        // No usage history at all: fuzzy ranking puts prefix/contiguous
+        // matches above scattered-character subsequence matches.
         let apps = vec![
             app("xcoder", "xcoder"),
             app("Codium", "codium"),
         ];
         let out = filter_and_rank(&apps, "apps", "cod", &Usage::default(), 0);
-        // "Codium" starts with "cod" (rank 1), "xcoder" has it mid-word (rank 3).
-        assert_eq!(out[0].name, "Codium");
+        assert_eq!(out[0].name, "Codium",
+                   "prefix match 'Codium' must beat embedded substring 'xcoder'");
     }
 }

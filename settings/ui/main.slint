@@ -4895,7 +4895,7 @@ export component MainWindow inherits Window {
                     }
 
                     // ── Network list card ──
-                    if !root.wifi-airplane-mode && !root.wifi-no-hardware: Rectangle {
+                    if !root.wifi-airplane-mode && !root.wifi-no-hardware && root.wifi-selected-idx == -1: Rectangle {
                         border-radius: 6px;
                         background: Theme.bg_light;
                         border-width: root.highlight-setting == "Wi-Fi" && root.highlight-blink-on ? 2px : 0px;
@@ -4927,12 +4927,9 @@ export component MainWindow inherits Window {
                             }
 
                             for net[idx] in root.wifi-networks: Rectangle {
-                                height: root.wifi-selected-idx == idx ? (net.connected ? 50px : (net.security != "Open" && !net.saved ? 90px : 50px)) : 36px;
+                                height: 36px;
                                 border-radius: 4px;
-                                background: root.wifi-selected-idx == idx
-                                    ? Theme.bg.transparentize(40%)
-                                    : wifi-net-touch.has-hover ? Theme.bg.transparentize(70%) : transparent;
-                                animate height { duration: 150ms; easing: ease-in-out; }
+                                background: wifi-net-touch.has-hover ? Theme.bg.transparentize(70%) : transparent;
 
                                 VerticalLayout {
                                     padding: 6px;
@@ -4987,155 +4984,321 @@ export component MainWindow inherits Window {
                                                 vertical-alignment: center;
                                             }
                                         }
-                                    }
 
-                                    // ── Expanded: password field + action buttons ──
-                                    if root.wifi-selected-idx == idx: HorizontalLayout {
-                                        spacing: 6px;
-
-                                        // Password field (only for secured + not-saved networks)
-                                        if net.security != "Open" && !net.saved && !net.connected: Rectangle {
-                                            horizontal-stretch: 1;
-                                            height: 28px;
-                                            border-radius: 4px;
-                                            background: Theme.bg;
-
-                                            wifi-pw-input := TextInput {
-                                                x: 8px;
-                                                y: 5px;
-                                                width: parent.width - 40px;
-                                                height: parent.height;
-                                                color: Theme.fg;
-                                                font-size: 11px;
-                                                input-type: root.wifi-show-password ? text : password;
-                                                text <=> root.wifi-password-input;
-                                            }
-
-                                            // Eye toggle
-                                            TouchArea {
-                                                x: parent.width - 28px;
-                                                y: 2px;
-                                                width: 24px;
-                                                height: 24px;
-                                                clicked => { root.wifi-show-password = !root.wifi-show-password; }
-                                                mouse-cursor: pointer;
-
-                                                Text {
-                                                    text: root.wifi-show-password ? "\u{1F441}" : "\u{25CF}";
-                                                    color: Theme.fg_dim;
-                                                    font-size: 12px;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-
-                                        // Connect / Disconnect button
-                                        if !net.connected: Rectangle {
-                                            width: 66px;
-                                            height: 28px;
-                                            border-radius: 4px;
-                                            background: root.wifi-connecting ? Theme.bg_lighter : Theme.accent;
-                                            opacity: root.wifi-connecting ? 0.5 : 1.0;
-
-                                            Text {
-                                                text: root.wifi-connecting ? "…" : "Connect";
-                                                color: Theme.bg;
-                                                font-size: 11px;
-                                                font-weight: 600;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-
-                                            TouchArea {
-                                                clicked => {
-                                                    if !root.wifi-connecting {
-                                                        root.wifi-connect(idx, root.wifi-password-input, 0);
-                                                    }
-                                                }
-                                                mouse-cursor: root.wifi-connecting ? default : pointer;
-                                            }
-                                        }
-
-                                        if net.connected: Rectangle {
-                                            width: 80px;
-                                            height: 28px;
-                                            border-radius: 4px;
-                                            background: wifi-dc-touch.has-hover ? #f38ba8 : Theme.bg_lighter;
-
-                                            Text {
-                                                text: "Disconnect";
-                                                color: wifi-dc-touch.has-hover ? Theme.bg : Theme.fg;
-                                                font-size: 11px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-
-                                            wifi-dc-touch := TouchArea {
-                                                clicked => { root.wifi-disconnect(); }
-                                                mouse-cursor: pointer;
-                                            }
-                                        }
-
-                                        // Forget saved
-                                        if net.saved: Rectangle {
-                                            width: 52px;
-                                            height: 28px;
-                                            border-radius: 4px;
-                                            background: wifi-forget-touch.has-hover ? Theme.bg_lighter : Theme.bg;
-
-                                            Text {
-                                                text: "Forget";
-                                                color: Theme.fg_dim;
-                                                font-size: 11px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-
-                                            wifi-forget-touch := TouchArea {
-                                                clicked => { root.wifi-forget(idx); }
-                                                mouse-cursor: pointer;
-                                            }
-                                        }
-
-                                        // QR button
-                                        Rectangle {
-                                            width: 28px;
-                                            height: 28px;
-                                            border-radius: 4px;
-                                            background: wifi-qr-touch.has-hover ? Theme.bg_lighter : Theme.bg;
-
-                                            Text {
-                                                text: "\u{25A3}";
-                                                color: Theme.fg_dim;
-                                                font-size: 14px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-
-                                            wifi-qr-touch := TouchArea {
-                                                clicked => {
-                                                    root.wifi-generate-qr(idx);
-                                                    root.wifi-qr-visible = true;
-                                                }
-                                                mouse-cursor: pointer;
-                                            }
+                                        // Chevron indicating navigation to detail page
+                                        Text {
+                                            text: "\u{203A}";
+                                            color: Theme.fg_dim;
+                                            font-size: 16px;
+                                            vertical-alignment: center;
                                         }
                                     }
                                 }
 
                                 wifi-net-touch := TouchArea {
                                     clicked => {
-                                        if root.wifi-selected-idx == idx {
+                                        root.wifi-selected-idx = idx;
+                                        root.wifi-password-input = "";
+                                        root.wifi-show-password = false;
+                                        root.wifi-qr-visible = false;
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Network detail page (replaces list when a network is selected) ──
+                    if root.wifi-selected-idx != -1
+                       && root.wifi-selected-idx < root.wifi-networks.length: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+
+                            // ── Header: back button + SSID ──
+                            HorizontalLayout {
+                                spacing: 10px;
+                                height: 32px;
+
+                                Rectangle {
+                                    width: 60px;
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: wifi-back-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                    Text {
+                                        text: "\u{2039} Back";
+                                        color: Theme.fg;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    wifi-back-touch := TouchArea {
+                                        clicked => {
                                             root.wifi-selected-idx = -1;
-                                        } else {
-                                            root.wifi-selected-idx = idx;
                                             root.wifi-password-input = "";
                                             root.wifi-show-password = false;
                                             root.wifi-qr-visible = false;
                                         }
+                                        mouse-cursor: pointer;
                                     }
-                                    mouse-cursor: pointer;
+                                }
+
+                                Text {
+                                    text: root.wifi-networks[root.wifi-selected-idx].ssid;
+                                    color: Theme.fg;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+
+                                SignalBars {
+                                    signal: root.wifi-networks[root.wifi-selected-idx].signal;
+                                }
+                            }
+
+                            // ── Status row: badges ──
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                if root.wifi-networks[root.wifi-selected-idx].connected: Rectangle {
+                                    width: cb-label.width + 14px;
+                                    height: 20px;
+                                    border-radius: 3px;
+                                    background: Theme.accent.transparentize(70%);
+
+                                    cb-label := Text {
+                                        text: "\u{2713} Connected";
+                                        color: Theme.accent;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                if root.wifi-networks[root.wifi-selected-idx].saved
+                                   && !root.wifi-networks[root.wifi-selected-idx].connected: Rectangle {
+                                    width: sv-label.width + 14px;
+                                    height: 20px;
+                                    border-radius: 3px;
+                                    background: Theme.bg_lighter;
+
+                                    sv-label := Text {
+                                        text: "Saved";
+                                        color: Theme.fg_dim;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: sec-d-label.width + 14px;
+                                    height: 20px;
+                                    border-radius: 3px;
+                                    background: Theme.bg_lighter;
+
+                                    sec-d-label := Text {
+                                        text: root.wifi-networks[root.wifi-selected-idx].security == "Open"
+                                              ? "Open"
+                                              : "\u{1F512} " + root.wifi-networks[root.wifi-selected-idx].security;
+                                        color: Theme.fg_dim;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // ── Password field (for secured networks) ──
+                            if root.wifi-networks[root.wifi-selected-idx].security != "Open": VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: root.wifi-networks[root.wifi-selected-idx].saved
+                                          ? "Update password"
+                                          : "Password";
+                                    color: Theme.fg_dim;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                }
+
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: Theme.bg;
+
+                                    wifi-pw-input-d := TextInput {
+                                        x: 10px;
+                                        y: 0px;
+                                        width: parent.width - 44px;
+                                        height: parent.height;
+                                        color: Theme.fg;
+                                        font-size: 12px;
+                                        input-type: root.wifi-show-password ? text : password;
+                                        text <=> root.wifi-password-input;
+                                        single-line: true;
+                                        accepted => {
+                                            if !root.wifi-connecting {
+                                                root.wifi-connect(root.wifi-selected-idx,
+                                                                  root.wifi-password-input, 0);
+                                            }
+                                        }
+                                    }
+
+                                    // Focus grabber (everything except the eye-toggle area)
+                                    pw-focus-d := TouchArea {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width - 32px;
+                                        height: parent.height;
+                                        clicked => { wifi-pw-input-d.focus(); }
+                                        mouse-cursor: text;
+                                    }
+
+                                    // Eye toggle
+                                    TouchArea {
+                                        x: parent.width - 32px;
+                                        y: 2px;
+                                        width: 28px;
+                                        height: 28px;
+                                        clicked => { root.wifi-show-password = !root.wifi-show-password; }
+                                        mouse-cursor: pointer;
+
+                                        Text {
+                                            text: root.wifi-show-password ? "\u{1F441}" : "\u{25CF}";
+                                            color: Theme.fg_dim;
+                                            font-size: 13px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                if root.wifi-networks[root.wifi-selected-idx].saved
+                                   && root.wifi-password-input == "": Text {
+                                    text: "Leave blank to use saved password.";
+                                    color: Theme.fg_dim;
+                                    font-size: 9px;
+                                }
+                            }
+
+                            // ── Action buttons ──
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                // Connect (or Update Password when saved/connected with new pw)
+                                Rectangle {
+                                    width: 110px;
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: root.wifi-connecting ? Theme.bg_lighter : Theme.accent;
+                                    opacity: root.wifi-connecting ? 0.5 : 1.0;
+
+                                    Text {
+                                        text: root.wifi-connecting
+                                              ? "Connecting…"
+                                              : (root.wifi-networks[root.wifi-selected-idx].saved
+                                                 && root.wifi-password-input != ""
+                                                 ? "Update & Connect"
+                                                 : (root.wifi-networks[root.wifi-selected-idx].connected
+                                                    ? "Reconnect"
+                                                    : "Connect"));
+                                        color: Theme.bg;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            if !root.wifi-connecting {
+                                                root.wifi-connect(root.wifi-selected-idx,
+                                                                  root.wifi-password-input, 0);
+                                            }
+                                        }
+                                        mouse-cursor: root.wifi-connecting ? default : pointer;
+                                    }
+                                }
+
+                                // Disconnect (if currently connected)
+                                if root.wifi-networks[root.wifi-selected-idx].connected: Rectangle {
+                                    width: 90px;
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: wifi-dc-touch-d.has-hover ? #f38ba8 : Theme.bg_lighter;
+
+                                    Text {
+                                        text: "Disconnect";
+                                        color: wifi-dc-touch-d.has-hover ? Theme.bg : Theme.fg;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    wifi-dc-touch-d := TouchArea {
+                                        clicked => { root.wifi-disconnect(); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                // Forget (if saved)
+                                if root.wifi-networks[root.wifi-selected-idx].saved: Rectangle {
+                                    width: 70px;
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: wifi-forget-touch-d.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                    Text {
+                                        text: "Forget";
+                                        color: Theme.fg_dim;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    wifi-forget-touch-d := TouchArea {
+                                        clicked => {
+                                            root.wifi-forget(root.wifi-selected-idx);
+                                            root.wifi-selected-idx = -1;
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                // Share via QR (only for saved/connected networks — needs stored password)
+                                if root.wifi-networks[root.wifi-selected-idx].saved
+                                   || root.wifi-networks[root.wifi-selected-idx].connected
+                                   || root.wifi-networks[root.wifi-selected-idx].security == "Open": Rectangle {
+                                    width: 110px;
+                                    height: 32px;
+                                    border-radius: 4px;
+                                    background: wifi-qr-touch-d.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                    Text {
+                                        text: "\u{25A3}  Share QR";
+                                        color: Theme.fg;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    wifi-qr-touch-d := TouchArea {
+                                        clicked => {
+                                            root.wifi-generate-qr(root.wifi-selected-idx);
+                                            root.wifi-qr-visible = true;
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
                                 }
                             }
                         }

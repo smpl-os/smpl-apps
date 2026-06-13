@@ -71,6 +71,9 @@ uuid        = { version = "1.0", features = ["serde", "v4"] }
 anyhow      = "1.0"
 thiserror   = "1.0"
 
+# Fuzzy matching (start-menu)
+nucleo-matcher = "0.3"
+
 # ── Release profile (applied to all apps) ────────────────────────────────────
 [profile.release]
 opt-level     = 3       # maximum speed (default, but explicit)

@@ -8,13 +8,37 @@ All notable changes to smpl-apps are documented here.
 
 ### Added
 
-- **start-menu: frecency-ranked search results.** The menu now tracks how
-  often and how recently you launch each app, and search results are sorted
-  by a frecency score (`count × 0.5^(days_since_last_use / 14)`) before
-  match-quality and alphabetical tiebreakers. The top-ranked match is
-  selected by default, so typing `code` and pressing Enter launches your
-  most-used "code" app — typically VS Code after a few launches. State is
-  persisted as TSV at `$XDG_STATE_HOME/smplos/app-usage.tsv` (defaults to
+- **start-menu: fuzzy search matching.** Search now uses a Smith–Waterman
+  fuzzy matcher (`nucleo-matcher`, the engine behind Helix and Zellij) on
+  top of the existing frecency ranking. Typos and acronyms like `vs` →
+  `Visual Studio Code`, `firfox` → `Firefox`, `dol` → `Dolphin` now find
+  their target. Results are still sorted by frecency first, then fuzzy
+  match quality, then name — so your most-used app stays on top even when
+  the query also matches other things.
+
+- **settings: Wi-Fi network detail page.** Tapping a network now opens a
+  dedicated detail page with the Connect/Forget/Share-QR controls, replacing
+  the inline-expand row. The list view stays clean; the detail view has
+  room for richer per-network status (signal, security, saved-state).
+
+### Fixed
+
+- **settings: Wi-Fi connect now reports real errors.** `nmcli connect` now
+  runs with `-w 45` (matching nmcli's own internal timeout) and a closed
+  stdin so it can never hang waiting for terminal input. Failures now
+  surface the actual stderr message (e.g. "Secrets were required, but not
+  provided", "No network with SSID 'foo' found") instead of just an opaque
+  exit code. Applied to both WPA/WPA2 (`connect`) and open networks
+  (`connect_open`).
+
+### Earlier in v0.7.3
+
+- **start-menu: frecency-ranked search results.** The menu tracks how often
+  and how recently you launch each app; search results are sorted by a
+  frecency score (`count × 0.5^(days_since_last_use / 14)`) before match
+  quality and alphabetical tiebreakers. Typing `code` and pressing Enter
+  launches your most-used "code" app. State is persisted as TSV at
+  `$XDG_STATE_HOME/smplos/app-usage.tsv` (defaults to
   `~/.local/state/smplos/app-usage.tsv`); delete the file to reset.
 
 ---

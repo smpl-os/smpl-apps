@@ -12,7 +12,7 @@
 //! * The returned password is wrapped in [`SecretString`] which zeroes its heap
 //!   allocation when dropped.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 use zeroize::Zeroize;
 
 use super::secure::SecretString;
@@ -273,35 +273,47 @@ pub fn connect(ssid: &str, password: &str) -> Result<(), String> {
     // Password is passed as a separate argv element — the kernel never writes
     // it to any file; it's visible in /proc/<pid>/cmdline only while the child
     // is alive, and only to root on Linux.
-    let status = Command::new("nmcli")
-        .args(["device", "wifi", "connect", ssid, "password", password])
-        .status()
+    //
+    // `-w 45` bounds the wait to 45s so a stalled NetworkManager call never
+    // leaves the UI stuck on "Connecting…".
+    // stdin → /dev/null so nmcli can never block reading from a terminal.
+    let out = Command::new("nmcli")
+        .args(["-w", "45", "device", "wifi", "connect", ssid, "password", password])
+        .stdin(Stdio::null())
+        .output()
         .map_err(|e| format!("Failed to launch nmcli: {}", e))?;
 
-    if status.success() {
+    if out.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "nmcli exited with code {}",
-            status.code().unwrap_or(-1)
-        ))
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let msg = stderr.lines().next().unwrap_or("").trim();
+        if msg.is_empty() {
+            Err(format!("nmcli exited with code {}", out.status.code().unwrap_or(-1)))
+        } else {
+            Err(msg.to_string())
+        }
     }
 }
 
 /// Connect to an open (unsecured) Wi-Fi network.
 pub fn connect_open(ssid: &str) -> Result<(), String> {
-    let status = Command::new("nmcli")
-        .args(["device", "wifi", "connect", ssid])
-        .status()
+    let out = Command::new("nmcli")
+        .args(["-w", "45", "device", "wifi", "connect", ssid])
+        .stdin(Stdio::null())
+        .output()
         .map_err(|e| format!("Failed to launch nmcli: {}", e))?;
 
-    if status.success() {
+    if out.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "nmcli exited with code {}",
-            status.code().unwrap_or(-1)
-        ))
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let msg = stderr.lines().next().unwrap_or("").trim();
+        if msg.is_empty() {
+            Err(format!("nmcli exited with code {}", out.status.code().unwrap_or(-1)))
+        } else {
+            Err(msg.to_string())
+        }
     }
 }
 
