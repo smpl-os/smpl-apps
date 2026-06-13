@@ -4,6 +4,21 @@ All notable changes to smpl-apps are documented here.
 
 ---
 
+## Unreleased
+
+### Added
+
+- **start-menu: frecency-ranked search results.** The menu now tracks how
+  often and how recently you launch each app, and search results are sorted
+  by a frecency score (`count × 0.5^(days_since_last_use / 14)`) before
+  match-quality and alphabetical tiebreakers. The top-ranked match is
+  selected by default, so typing `code` and pressing Enter launches your
+  most-used "code" app — typically VS Code after a few launches. State is
+  persisted as TSV at `$XDG_STATE_HOME/smplos/app-usage.tsv` (defaults to
+  `~/.local/state/smplos/app-usage.tsv`); delete the file to reset.
+
+---
+
 ## v0.7.1 — 2026-04-04
 
 ### Fixed

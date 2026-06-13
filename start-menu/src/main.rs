@@ -1,4 +1,5 @@
 mod theme;
+mod usage;
 
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
@@ -6,6 +7,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
+
+use crate::usage::Usage;
 
 slint::include_modules!();
 
@@ -208,10 +211,39 @@ fn is_settings_browse_visible(app: &AppEntry) -> bool {
         )
 }
 
+#[cfg(test)]
 fn filter_apps(all: &[AppEntry], category_key: &str, query: &str) -> Vec<AppEntry> {
+    filter_and_rank(all, category_key, query, &Usage::default(), 0)
+}
+
+/// Match-quality rank for sorting search results. Lower wins.
+/// 0 = exact name match, 1 = name starts with query, 2 = word in name
+/// starts with query, 3 = substring match anywhere else.
+fn match_rank(name: &str, q: &str) -> u8 {
+    let n = name.to_lowercase();
+    if n == q { return 0; }
+    if n.starts_with(q) { return 1; }
+    if n.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(q)) { return 2; }
+    3
+}
+
+/// Filter by category/search, then in search mode rank by:
+///   1. frecency score (descending) — apps you actually launch float to top
+///   2. match quality (ascending)   — exact > prefix > word-start > substring
+///   3. name (ascending, case-insensitive) — stable, predictable tiebreaker
+///
+/// `now` is passed in (not read from the clock) so tests are deterministic.
+fn filter_and_rank(
+    all: &[AppEntry],
+    category_key: &str,
+    query: &str,
+    usage: &Usage,
+    now: u64,
+) -> Vec<AppEntry> {
     let q = query.trim().to_lowercase();
 
-    all.iter()
+    let mut filtered: Vec<AppEntry> = all
+        .iter()
         .filter(|app| {
             if !q.is_empty() {
                 // Search mode: include ALL entries (including search_only) and
@@ -231,7 +263,21 @@ fn filter_apps(all: &[AppEntry], category_key: &str, query: &str) -> Vec<AppEntr
             }
         })
         .cloned()
-        .collect()
+        .collect();
+
+    if !q.is_empty() {
+        filtered.sort_by(|a, b| {
+            let sa = usage.score(&a.exec, now);
+            let sb = usage.score(&b.exec, now);
+            // Higher score first.
+            sb.partial_cmp(&sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| match_rank(&a.name, &q).cmp(&match_rank(&b.name, &q)))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+    }
+
+    filtered
 }
 
 // ── Convert to Slint model item ──
@@ -304,8 +350,9 @@ fn update_view(
     category_key: &str,
     query: &str,
     pinned: &[String],
+    usage: &Usage,
 ) {
-    let filtered = filter_apps(all_apps, category_key, query);
+    let filtered = filter_and_rank(all_apps, category_key, query, usage, usage::now_unix());
     model.set_vec(filtered.iter().map(|a| to_ui_item(a, path_cache, img_cache, pinned)).collect::<Vec<_>>());
     ui.set_apps(ModelRc::from(model.clone()));
     ui.set_app_count(model.row_count() as i32);
@@ -394,6 +441,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let img_cache = Rc::new(RefCell::new(HashMap::<String, Image>::new()));
     let model = Rc::new(VecModel::<AppItem>::default());
     let pinned_model = Rc::new(VecModel::<AppItem>::default());
+    let usage = Rc::new(RefCell::new(Usage::load()));
 
     // ── Build category sidebar ──
     let cat_model = Rc::new(VecModel::<CategoryItem>::default());
@@ -449,6 +497,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let model = model.clone();
         let cat_model = cat_model.clone();
         let pinned = pinned.clone();
+        let usage = usage.clone();
 
         ui.on_filter_changed(move || {
             let Some(ui) = ui_weak.upgrade() else {
@@ -479,17 +528,23 @@ fn main() -> Result<(), slint::PlatformError> {
                 path_cache_primed.set(true);
             }
             let cache = path_cache.borrow();
-            update_view(&ui, &all_apps, &model, &cache, &img_cache, &cat_key, &search, &pinned.borrow());
+            update_view(&ui, &all_apps, &model, &cache, &img_cache, &cat_key, &search, &pinned.borrow(), &usage.borrow());
         });
     }
 
     // ── Launch app ──
     {
         let model = model.clone();
+        let usage = usage.clone();
         ui.on_launch_app(move |index| {
             let idx = index as usize;
             if let Some(item) = model.row_data(idx) {
                 let exec = item.exec.to_string();
+                {
+                    let mut u = usage.borrow_mut();
+                    u.record(&exec, usage::now_unix());
+                    u.save();
+                }
                 let _ = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&exec)
@@ -502,10 +557,16 @@ fn main() -> Result<(), slint::PlatformError> {
     // ── Launch pinned app ──
     {
         let pinned_model = pinned_model.clone();
+        let usage = usage.clone();
         ui.on_launch_pinned(move |index| {
             let idx = index as usize;
             if let Some(item) = pinned_model.row_data(idx) {
                 let exec = item.exec.to_string();
+                {
+                    let mut u = usage.borrow_mut();
+                    u.record(&exec, usage::now_unix());
+                    u.save();
+                }
                 let _ = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&exec)
@@ -526,6 +587,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let pinned = pinned.clone();
         let pinned_model = pinned_model.clone();
         let cat_model = cat_model.clone();
+        let usage = usage.clone();
 
         ui.on_toggle_pin(move |exec| {
             let Some(ui) = ui_weak.upgrade() else { return; };
@@ -555,7 +617,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     .row_data(cat_idx)
                     .map(|c| c.key.to_string())
                     .unwrap_or_else(|| "all".to_string());
-                update_view(&ui, &all_apps, &model, &cache, &img_cache, &cat_key, &search, &p);
+                update_view(&ui, &all_apps, &model, &cache, &img_cache, &cat_key, &search, &p, &usage.borrow());
             }
         });
     }
@@ -720,5 +782,81 @@ mod tests {
         assert!(!names.contains(&"Kvantum Manager"), "kvantummanager must be hidden");
         assert!(!names.contains(&"Advanced Network Configuration"), "nm-connection-editor must be hidden");
         assert!(!names.contains(&"Qt5 Settings"), "qt5ct must be hidden");
+    }
+
+    // ── Frecency-based search ranking ──
+
+    fn app(name: &str, exec: &str) -> AppEntry {
+        AppEntry {
+            name: name.to_string(),
+            exec: exec.to_string(),
+            category: "apps".to_string(),
+            icon: String::new(),
+            search_only: false,
+        }
+    }
+
+    #[test]
+    fn search_match_rank_prefers_word_starts() {
+        // Plain alphabetical when no usage data:
+        //   "Code"       — exact match (rank 0)
+        //   "Code OSS"   — prefix match (rank 1)
+        //   "VS Code"    — word-start match (rank 2)
+        //   "barcoder"   — substring match (rank 3)
+        let apps = vec![
+            app("barcoder", "barcoder"),
+            app("VS Code",  "code"),
+            app("Code OSS", "code-oss"),
+            app("Code",     "codebin"),
+        ];
+        let usage = Usage::default();
+        let out = filter_and_rank(&apps, "apps", "code", &usage, 1_000_000);
+        let names: Vec<&str> = out.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["Code", "Code OSS", "VS Code", "barcoder"]);
+    }
+
+    #[test]
+    fn most_used_app_floats_to_top_in_search() {
+        // User keeps picking VS Code when they type "code" — it should win
+        // over the alphabetically-better "Code" entry once usage diverges.
+        let apps = vec![
+            app("Code",    "codebin"),
+            app("VS Code", "code"),
+            app("xcode",   "xcode"),
+        ];
+        let now = 10_000_000_u64;
+        let mut usage = Usage::default();
+        for _ in 0..8 { usage.record("code", now); }      // launched 8 times today
+        usage.record("codebin", now);                      // once
+        let out = filter_and_rank(&apps, "apps", "code", &usage, now);
+        assert_eq!(out[0].exec, "code", "high-frecency match must win");
+    }
+
+    #[test]
+    fn frecency_decays_over_time() {
+        // App launched 5 times a year ago must lose to one launched twice today.
+        let apps = vec![
+            app("Old App", "old"),
+            app("New App", "new"),
+        ];
+        let now = 100_000_000_u64;
+        let year_ago = now - (365 * 86_400);
+        let mut usage = Usage::default();
+        for _ in 0..5 { usage.record("old", year_ago); }
+        for _ in 0..2 { usage.record("new", now); }
+        let out = filter_and_rank(&apps, "apps", "app", &usage, now);
+        assert_eq!(out[0].exec, "new");
+    }
+
+    #[test]
+    fn unused_apps_still_sort_predictably_by_match_quality() {
+        // No usage history at all: should fall through to match-quality + alpha.
+        let apps = vec![
+            app("xcoder", "xcoder"),
+            app("Codium", "codium"),
+        ];
+        let out = filter_and_rank(&apps, "apps", "cod", &Usage::default(), 0);
+        // "Codium" starts with "cod" (rank 1), "xcoder" has it mid-word (rank 3).
+        assert_eq!(out[0].name, "Codium");
     }
 }
