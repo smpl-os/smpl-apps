@@ -23,6 +23,18 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **app-center: prevent partial-upgrade breakage on install.** Both repo
+  (`pacman`) and AUR install paths now run `-Syu --noconfirm <pkg>` instead
+  of `-S --noconfirm <pkg>`. Installing a single package against an
+  out-of-date system can pull in a binary that links a newer shared-library
+  soname than what's installed (e.g. Blender 5.1 needs `libopenjph.so.0.28`
+  but the frozen ISO offline mirror still has `0.27`); the install reports
+  success, the app appears in the start menu, but clicking it silently does
+  nothing because the binary aborts on a missing library. `-Syu` keeps the
+  whole system consistent so this can't happen. First install of a session
+  is now slower (because the full system syncs first) but subsequent
+  installs are normal speed.
+
 - **settings: Wi-Fi connect now reports real errors.** `nmcli connect` now
   runs with `-w 45` (matching nmcli's own internal timeout) and a closed
   stdin so it can never hang waiting for terminal input. Failures now

@@ -412,6 +412,44 @@ pub fn forget_network(ssid: &str) -> Result<(), String> {
     }
 }
 
+/// Return the SSIDs of every saved 802-11-wireless NetworkManager profile,
+/// sorted alphabetically (case-insensitive).
+///
+/// Unlike [`list_networks`], this does NOT require the saved network to be
+/// currently in range — it surfaces every Wi-Fi profile NetworkManager knows
+/// about, so the user can audit and forget networks they no longer use.
+pub fn list_saved_networks() -> Vec<String> {
+    let mut names = saved_ssids();
+    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.dedup();
+    names
+}
+
+/// Delete every saved 802-11-wireless profile.
+///
+/// Returns `Ok(n)` with the number of profiles successfully deleted, or
+/// `Err(msg)` if at least one delete failed (the message names the first
+/// offending profile). Profiles that succeed are still removed even if a
+/// later one fails — this matches what users expect from "Forget all".
+pub fn forget_all_networks() -> Result<usize, String> {
+    let names = list_saved_networks();
+    let mut ok_count = 0usize;
+    let mut first_err: Option<String> = None;
+    for ssid in &names {
+        match forget_network(ssid) {
+            Ok(_) => ok_count += 1,
+            Err(e) if first_err.is_none() => {
+                first_err = Some(format!("{}: {}", ssid, e));
+            }
+            Err(_) => {}
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(ok_count),
+    }
+}
+
 /// Attempt to read a WIFI: URI from an on-screen QR code by taking a Wayland
 /// screenshot (via `grim`) and scanning it with `zbarimg`.
 ///

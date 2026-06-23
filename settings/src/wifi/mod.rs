@@ -21,8 +21,8 @@ pub mod secure;
 // ── Re-export the most commonly used items ────────────────────────────────────
 
 pub use nmcli::{
-    connect, connect_open, disconnect, forget_network, get_current_ssid, get_saved_password,
-    list_networks, set_airplane_mode, WifiNetwork,
+    connect, connect_open, disconnect, forget_all_networks, forget_network, get_current_ssid,
+    get_saved_password, list_networks, list_saved_networks, set_airplane_mode, WifiNetwork,
 };
 pub use qr::{export_qr_svg, generate_wifi_qr, parse_wifi_uri, wifi_uri, WifiAuth};
 pub use secure::SecretString;

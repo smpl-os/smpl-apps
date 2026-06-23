@@ -118,11 +118,19 @@ fn spawn_process(cmd: &str, args: &[&str]) -> Result<StreamingProcess, String> {
 }
 
 /// Install an official-repo package. Falls back to pkexec pacman if paru is broken.
+///
+/// Uses `-Syu` (full system sync + upgrade) rather than `-S` so the install
+/// can never be a partial upgrade. On Arch, installing a package against an
+/// out-of-date system can pull in a binary that links a newer soname than the
+/// installed libraries (e.g. blender 5.1 needs libopenjph.so.0.28 but the
+/// frozen offline mirror shipped libopenjph.so.0.27) -- the package installs
+/// "successfully" but the binary aborts on startup with a missing-library
+/// error. `-Syu` keeps the whole system consistent so this can't happen.
 fn spawn_pacman_install(id: &str) -> SpawnResult {
     let (cmd, args): (&str, Vec<&str>) = if paru_works() {
-        ("paru", vec!["-S", "--noconfirm", id])
+        ("paru", vec!["-Syu", "--noconfirm", id])
     } else {
-        ("pkexec", vec!["pacman", "-S", "--noconfirm", id])
+        ("pkexec", vec!["pacman", "-Syu", "--noconfirm", id])
     };
     match spawn_process(cmd, &args) {
         Ok(p) => SpawnResult::Streaming(p),
@@ -131,6 +139,12 @@ fn spawn_pacman_install(id: &str) -> SpawnResult {
 }
 
 /// Install an AUR package. Auto-heals paru if libalpm bumped it, then installs.
+///
+/// Uses `-Syu` for the same reason as `spawn_pacman_install`: AUR packages
+/// are compiled locally against currently-installed system libraries, so
+/// installing on top of a stale system can produce a binary that breaks the
+/// moment a dependency soname changes. Syncing first keeps the install
+/// reproducible.
 fn spawn_aur_install(id: &str) -> SpawnResult {
     // Inline heal + install so the user sees a single streaming log
     let script = format!(
@@ -139,7 +153,7 @@ fn spawn_aur_install(id: &str) -> SpawnResult {
            echo '── Healing paru (system update changed libalpm) ──'\n\
            heal-paru || {{ echo 'ERROR: paru heal failed'; exit 1; }}\n\
          fi\n\
-         paru -S --noconfirm '{}'\n",
+         paru -Syu --noconfirm '{}'\n",
         id.replace('\'', "'\\''")
     );
     match spawn_process("bash", &["-c", &script]) {

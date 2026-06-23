@@ -1173,6 +1173,7 @@ fn main() -> Result<(), slint::PlatformError> {
         std::thread::spawn(move || {
             let networks = wifi::list_networks(false);
             let current = wifi::get_current_ssid().unwrap_or_default();
+            let saved = wifi::list_saved_networks();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_weak.upgrade() {
                     let entries: Vec<WifiEntry> = networks
@@ -1183,6 +1184,11 @@ fn main() -> Result<(), slint::PlatformError> {
                         Rc::new(slint::VecModel::from(entries)),
                     ));
                     ui.set_wifi_current_ssid(current.into());
+                    let saved_strs: Vec<slint::SharedString> =
+                        saved.into_iter().map(slint::SharedString::from).collect();
+                    ui.set_wifi_saved_networks(slint::ModelRc::from(
+                        Rc::new(slint::VecModel::from(saved_strs)),
+                    ));
                 }
             });
         });
@@ -2268,35 +2274,77 @@ fn main() -> Result<(), slint::PlatformError> {
                 let entry = networks_model.row_data(idx).unwrap();
                 let ssid = entry.ssid.as_str().to_string();
                 let is_open = entry.security.as_str() == "Open";
+                let is_saved = entry.saved;
                 let password = wifi::SecretString::from(password.as_str());
-                ui.set_wifi_password_input("".into()); // clear UI copy immediately
+                // NB: do NOT clear wifi-password-input here. The Slint TextInput
+                // already masks the field as bullets (input-type: password), and
+                // keeping it populated during "Connecting…" gives the user visual
+                // confirmation that their input was captured. We clear it below
+                // only after a successful connect (security: drop the duplicate
+                // copy from UI memory). On failure we keep it so the user can
+                // edit a typo and retry without retyping the whole passphrase.
 
                 ui.set_wifi_connecting(true);
                 wifi_set_status(&ui, &format!("Connecting to {}…", ssid));
 
                 let ui_weak2 = ui_weak.clone();
                 std::thread::spawn(move || {
-                    let result = if is_open {
+                    let nmcli_result = if is_open {
+                        wifi::connect_open(&ssid)
+                    } else if password.is_empty() && is_saved {
+                        // "Leave blank to use saved password" — invoke nmcli
+                        // without `password <pw>` so it falls back to the saved
+                        // profile credential instead of trying to auth with "".
                         wifi::connect_open(&ssid)
                     } else {
                         wifi::connect(&ssid, password.as_str())
                     };
-                    let status = match &result {
+                    // Cross-check what NetworkManager actually attached to.
+                    // nmcli sometimes exits 0 after handing off the activation
+                    // request, even though the AP later rejected the passphrase
+                    // (the profile gets saved with the wrong password and we
+                    // would otherwise report "Connected" misleadingly).
+                    let nets = wifi::list_networks(false);
+                    let curr = wifi::get_current_ssid().unwrap_or_default();
+                    let saved = wifi::list_saved_networks();
+                    let attached = curr == ssid;
+                    let final_result: Result<(), String> = match nmcli_result {
+                        Ok(_) if attached => Ok(()),
+                        Ok(_) => Err(if is_open {
+                            "Could not associate with network.".to_string()
+                        } else {
+                            "Authentication failed — check the password and try again.".to_string()
+                        }),
+                        Err(e) => Err(e),
+                    };
+                    let status = match &final_result {
                         Ok(_) => format!("Connected to {}", ssid),
                         Err(e) => format!("Failed: {}", e),
                     };
-                    let nets = wifi::list_networks(false);
-                    let curr = wifi::get_current_ssid().unwrap_or_default();
+                    let connected_ok = final_result.is_ok();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             ui.set_wifi_connecting(false);
                             wifi_set_status(&ui, &status);
+                            if connected_ok {
+                                // Drop the duplicate copy from UI memory now
+                                // that we no longer need it (the saved profile
+                                // owns the canonical credential).
+                                ui.set_wifi_password_input("".into());
+                            }
                             let entries: Vec<WifiEntry> =
                                 nets.iter().map(to_wifi_entry).collect();
                             ui.set_wifi_networks(slint::ModelRc::from(
                                 Rc::new(slint::VecModel::from(entries)),
                             ));
                             ui.set_wifi_current_ssid(curr.into());
+                            let saved_strs: Vec<slint::SharedString> = saved
+                                .into_iter()
+                                .map(slint::SharedString::from)
+                                .collect();
+                            ui.set_wifi_saved_networks(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(saved_strs)),
+                            ));
                         }
                     });
                 });
@@ -2400,6 +2448,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     } else {
                         vec![]
                     };
+                    let saved = wifi::list_saved_networks();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak2.upgrade() {
                             match result {
@@ -2416,6 +2465,127 @@ fn main() -> Result<(), slint::PlatformError> {
                                     wifi_set_status(&ui, &format!("Failed: {}", e));
                                 }
                             }
+                            let saved_strs: Vec<slint::SharedString> = saved
+                                .into_iter()
+                                .map(slint::SharedString::from)
+                                .collect();
+                            ui.set_wifi_saved_networks(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(saved_strs)),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // Refresh the "Saved Networks" list (every 802-11-wireless profile
+    // NetworkManager remembers, even those not currently in range).
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_list_saved(move || {
+            let ui_weak2 = ui_weak.clone();
+            std::thread::spawn(move || {
+                let saved = wifi::list_saved_networks();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak2.upgrade() {
+                        let saved_strs: Vec<slint::SharedString> = saved
+                            .into_iter()
+                            .map(slint::SharedString::from)
+                            .collect();
+                        ui.set_wifi_saved_networks(slint::ModelRc::from(
+                            Rc::new(slint::VecModel::from(saved_strs)),
+                        ));
+                    }
+                });
+            });
+        });
+    }
+
+    // Forget a specific saved profile by SSID (used by the Saved Networks card,
+    // where rows are not aligned with the discovered-networks model).
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_forget_by_ssid(move |ssid| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let ssid = ssid.as_str().to_string();
+                if ssid.is_empty() {
+                    return;
+                }
+                wifi_set_status(&ui, &format!("Forgetting {}…", ssid));
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = wifi::forget_network(&ssid);
+                    let nets = wifi::list_networks(false);
+                    let saved = wifi::list_saved_networks();
+                    let curr = wifi::get_current_ssid().unwrap_or_default();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            match &result {
+                                Ok(_) => wifi_set_status(&ui, &format!("Forgot {}", ssid)),
+                                Err(e) => wifi_set_status(&ui, &format!("Failed: {}", e)),
+                            }
+                            let entries: Vec<WifiEntry> =
+                                nets.iter().map(to_wifi_entry).collect();
+                            ui.set_wifi_networks(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                            ui.set_wifi_current_ssid(curr.into());
+                            let saved_strs: Vec<slint::SharedString> = saved
+                                .into_iter()
+                                .map(slint::SharedString::from)
+                                .collect();
+                            ui.set_wifi_saved_networks(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(saved_strs)),
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // Forget EVERY saved 802-11-wireless profile.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_forget_all(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                wifi_set_status(&ui, "Forgetting all saved networks…");
+
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let result = wifi::forget_all_networks();
+                    let nets = wifi::list_networks(false);
+                    let saved = wifi::list_saved_networks();
+                    let curr = wifi::get_current_ssid().unwrap_or_default();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            match &result {
+                                Ok(n) => wifi_set_status(
+                                    &ui,
+                                    &format!(
+                                        "Forgot {} saved network{}",
+                                        n,
+                                        if *n == 1 { "" } else { "s" }
+                                    ),
+                                ),
+                                Err(e) => wifi_set_status(&ui, &format!("Failed: {}", e)),
+                            }
+                            ui.set_wifi_selected_idx(-1);
+                            let entries: Vec<WifiEntry> =
+                                nets.iter().map(to_wifi_entry).collect();
+                            ui.set_wifi_networks(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(entries)),
+                            ));
+                            ui.set_wifi_current_ssid(curr.into());
+                            let saved_strs: Vec<slint::SharedString> = saved
+                                .into_iter()
+                                .map(slint::SharedString::from)
+                                .collect();
+                            ui.set_wifi_saved_networks(slint::ModelRc::from(
+                                Rc::new(slint::VecModel::from(saved_strs)),
+                            ));
                         }
                     });
                 });
@@ -2498,17 +2668,30 @@ fn main() -> Result<(), slint::PlatformError> {
                         wifi_set_status(&ui, &format!("Connecting to {}…", ssid));
                         let ui_weak2 = ui_weak.clone();
                         std::thread::spawn(move || {
-                            let result = if password.is_empty() {
+                            let nmcli_result = if password.is_empty() {
                                 wifi::connect_open(&ssid)
                             } else {
                                 wifi::connect(&ssid, password.as_str())
                             };
-                            let status = match &result {
+                            // Verify NetworkManager actually attached — nmcli
+                            // may exit 0 even when the AP later rejects auth.
+                            let nets = wifi::list_networks(false);
+                            let curr = wifi::get_current_ssid().unwrap_or_default();
+                            let saved = wifi::list_saved_networks();
+                            let attached = curr == ssid;
+                            let final_result: Result<(), String> = match nmcli_result {
+                                Ok(_) if attached => Ok(()),
+                                Ok(_) => Err(if password.is_empty() {
+                                    "Could not associate with network.".to_string()
+                                } else {
+                                    "Authentication failed — check the password and try again.".to_string()
+                                }),
+                                Err(e) => Err(e),
+                            };
+                            let status = match &final_result {
                                 Ok(_) => format!("Connected to {}", ssid),
                                 Err(e) => format!("Failed: {}", e),
                             };
-                            let nets = wifi::list_networks(false);
-                            let curr = wifi::get_current_ssid().unwrap_or_default();
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = ui_weak2.upgrade() {
                                     ui.set_wifi_connecting(false);
@@ -2520,6 +2703,13 @@ fn main() -> Result<(), slint::PlatformError> {
                                         Rc::new(slint::VecModel::from(entries)),
                                     ));
                                     ui.set_wifi_current_ssid(curr.into());
+                                    let saved_strs: Vec<slint::SharedString> = saved
+                                        .into_iter()
+                                        .map(slint::SharedString::from)
+                                        .collect();
+                                    ui.set_wifi_saved_networks(slint::ModelRc::from(
+                                        Rc::new(slint::VecModel::from(saved_strs)),
+                                    ));
                                 }
                             });
                         });

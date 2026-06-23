@@ -609,6 +609,9 @@ export component MainWindow inherits Window {
     in-out property <bool>   wifi-qr-visible: false;
     in property <string>     wifi-qr-error: "";
     in-out property <string> wifi-uri-input: "";
+    // All saved 802-11-wireless profiles known to NetworkManager,
+    // regardless of whether they are currently in range.
+    in property <[string]>   wifi-saved-networks: [];
 
     // ── Bluetooth tab properties ──
     in property <[BtDevice]> bt-devices: [];
@@ -692,6 +695,9 @@ export component MainWindow inherits Window {
     callback wifi-scan-screenshot();       // grim + zbarimg screen scan
     callback wifi-export-qr(int);          // save QR SVG to ~/Downloads/
     callback wifi-set-airplane(bool);       // enable/disable airplane mode
+    callback wifi-list-saved();            // refresh wifi-saved-networks
+    callback wifi-forget-by-ssid(string);  // delete saved profile by SSID
+    callback wifi-forget-all();            // delete every saved 802-11-wireless profile
 
     // Bluetooth
     callback bt-list();                    // refresh devices list
@@ -5481,6 +5487,131 @@ export component MainWindow inherits Window {
                                 color: Theme.fg_dim;
                                 font-size: 10px;
                                 wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // ── Saved Networks card ──
+                    // Every 802-11-wireless profile NetworkManager remembers,
+                    // even those not currently in range. Lets the user audit
+                    // and prune stale credentials.
+                    if !root.wifi-no-hardware: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: space-between;
+
+                                Text {
+                                    text: "Saved Networks";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+
+                                    // Refresh button
+                                    Rectangle {
+                                        width: 70px;
+                                        height: 26px;
+                                        border-radius: 4px;
+                                        background: wifi-saved-refresh-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+
+                                        Text {
+                                            text: "Refresh";
+                                            color: Theme.fg;
+                                            font-size: 11px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        wifi-saved-refresh-touch := TouchArea {
+                                            clicked => { root.wifi-list-saved(); }
+                                            mouse-cursor: pointer;
+                                        }
+                                    }
+
+                                    // Forget all button (only when there is something to forget)
+                                    if root.wifi-saved-networks.length > 0: Rectangle {
+                                        width: 90px;
+                                        height: 26px;
+                                        border-radius: 4px;
+                                        background: wifi-forget-all-touch.has-hover ? Theme.danger : Theme.bg_lighter;
+
+                                        Text {
+                                            text: "Forget All";
+                                            color: wifi-forget-all-touch.has-hover ? Theme.bg : Theme.fg;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        wifi-forget-all-touch := TouchArea {
+                                            clicked => { root.wifi-forget-all(); }
+                                            mouse-cursor: pointer;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.wifi-saved-networks.length == 0: Text {
+                                text: "No saved networks.";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                            }
+
+                            for ssid[idx] in root.wifi-saved-networks: Rectangle {
+                                height: 32px;
+                                border-radius: 4px;
+                                background: Theme.bg;
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 6px;
+                                    spacing: 8px;
+                                    alignment: space-between;
+
+                                    Text {
+                                        text: ssid;
+                                        color: Theme.fg;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        // Mark the currently active one
+                                        font-weight: ssid == root.wifi-current-ssid ? 600 : 400;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+
+                                    Rectangle {
+                                        width: 70px;
+                                        height: 24px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 4px;
+                                        background: wifi-saved-forget-touch.has-hover ? Theme.danger : Theme.bg_lighter;
+
+                                        Text {
+                                            text: "Forget";
+                                            color: wifi-saved-forget-touch.has-hover ? Theme.bg : Theme.fg;
+                                            font-size: 11px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        wifi-saved-forget-touch := TouchArea {
+                                            clicked => { root.wifi-forget-by-ssid(ssid); }
+                                            mouse-cursor: pointer;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
