@@ -157,7 +157,7 @@ pub fn list_available_layouts() -> Vec<AvailableLayout> {
         }
     }
 
-    layouts.sort_by(|a, b| a.description.to_lowercase().cmp(&b.description.to_lowercase()));
+    layouts.sort_by_key(|a| a.description.to_lowercase());
     layouts
 }
 

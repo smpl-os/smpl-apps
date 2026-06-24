@@ -175,7 +175,7 @@ pub fn list_networks(rescan: bool) -> Vec<WifiNetwork> {
         .collect();
 
     // Deduplicate by SSID (keep the entry with the strongest signal).
-    networks.sort_by(|a, b| b.signal.cmp(&a.signal));
+    networks.sort_by_key(|n| std::cmp::Reverse(n.signal));
     networks.dedup_by(|a, b| {
         if a.ssid == b.ssid {
             // `b` is the higher-signal entry (comes first after sort).
@@ -420,7 +420,7 @@ pub fn forget_network(ssid: &str) -> Result<(), String> {
 /// about, so the user can audit and forget networks they no longer use.
 pub fn list_saved_networks() -> Vec<String> {
     let mut names = saved_ssids();
-    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.sort_by_key(|a| a.to_lowercase());
     names.dedup();
     names
 }
