@@ -75,8 +75,10 @@ pub fn canvas_scale_factor(monitors: &[Monitor], canvas_w: f64, canvas_h: f64) -
 
     for m in monitors {
         // Positions are logical pixels; width/height are physical — divide by scale.
-        let logical_w = m.width as f64 / m.scale;
-        let logical_h = m.height as f64 / m.scale;
+        // Portrait transforms (1,3,5,7) swap effective width/height.
+        let (pw, ph) = if m.transform % 2 == 1 { (m.height, m.width) } else { (m.width, m.height) };
+        let logical_w = pw as f64 / m.scale;
+        let logical_h = ph as f64 / m.scale;
         min_x = min_x.min(m.x as f64);
         min_y = min_y.min(m.y as f64);
         max_x = max_x.max(m.x as f64 + logical_w);

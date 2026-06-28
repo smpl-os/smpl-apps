@@ -221,50 +221,53 @@ component ResDropdown inherits Rectangle {
     }
 
     drop-touch := TouchArea {
-        clicked => { root.open = !root.open; }
+        clicked => { popup.show(); }
     }
 
-    if root.open: Rectangle {
+    popup := PopupWindow {
         x: 0;
         y: parent.height + 2px;
-        width: parent.width;
+        width: root.width;
         height: min(200px, root.model.length * 26px + 4px);
-        border-radius: 4px;
-        background: Theme.bg_light;
-        border-width: 1px;
-        border-color: Theme.bg_lighter;
-        drop-shadow-blur: 8px;
-        drop-shadow-color: #00000066;
+        close-policy: close-on-click-outside;
 
-        Flickable {
-            x: 2px;
-            y: 2px;
-            width: parent.width - 4px;
-            height: parent.height - 4px;
-            viewport-width: self.width;
+        Rectangle {
+            border-radius: 4px;
+            background: Theme.bg_light;
+            border-width: 1px;
+            border-color: Theme.bg_lighter;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000066;
 
-            VerticalLayout {
-                spacing: 0;
-                for item[idx] in root.model: Rectangle {
-                    height: 26px;
-                    border-radius: 3px;
-                    background: idx == root.current-index ? Theme.accent
-                              : opt-touch.has-hover ? Theme.bg_lighter
-                              : transparent;
+            Flickable {
+                x: 2px;
+                y: 2px;
+                width: parent.width - 4px;
+                height: parent.height - 4px;
+                viewport-width: self.width;
 
-                    Text {
-                        text: item;
-                        color: idx == root.current-index ? Theme.bg : Theme.fg;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        x: 6px;
-                    }
+                VerticalLayout {
+                    spacing: 0;
+                    for item[idx] in root.model: Rectangle {
+                        height: 26px;
+                        border-radius: 3px;
+                        background: idx == root.current-index ? Theme.accent
+                                  : opt-touch.has-hover ? Theme.bg_lighter
+                                  : transparent;
 
-                    opt-touch := TouchArea {
-                        clicked => {
-                            root.current-index = idx;
-                            root.open = false;
-                            root.selected(idx);
+                        Text {
+                            text: item;
+                            color: idx == root.current-index ? Theme.bg : Theme.fg;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            x: 6px;
+                        }
+
+                        opt-touch := TouchArea {
+                            clicked => {
+                                root.current-index = idx;
+                                root.selected(idx);
+                            }
                         }
                     }
                 }

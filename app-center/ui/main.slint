@@ -1575,6 +1575,86 @@ export component MainWindow inherits Window {
         }
     }
 
+    // == Global install/update progress overlay (any tab) ==
+    if root.installing || (root.process-finished && root.current-tab == 0): Rectangle {
+        background: Theme.bg.transparentize(0.15);
+
+        TouchArea {
+            clicked => {
+                if (root.process-finished) {
+                    root.process-finished = false;
+                }
+            }
+        }
+
+        Rectangle {
+            width: 420px;
+            height: root.installing ? 150px : 110px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: 8px;
+            background: Theme.bg.darker(0.12);
+            border-width: 1px;
+            border-color: Theme.accent.transparentize(0.6);
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                if root.installing: Text {
+                    text: "Updating selected apps...";
+                    color: Theme.accent;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+                if root.installing: Text {
+                    text: root.console-last-line;
+                    color: Theme.fg_dim;
+                    font-size: 11px;
+                    font-family: "JetBrainsMono Nerd Font";
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if root.installing: HorizontalLayout {
+                    alignment: end;
+                    ActionButton {
+                        label: "Cancel";
+                        btn-color: Theme.danger;
+                        clicked => { root.cancel-install(); }
+                    }
+                }
+
+                if !root.installing && root.process-finished && root.process-success: Text {
+                    text: "\u{2713} Update complete";
+                    color: Theme.success;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+                if !root.installing && root.process-finished && !root.process-success: Text {
+                    text: "\u{2717} Update failed";
+                    color: Theme.danger;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+                if !root.installing && root.process-finished && !root.process-success: Text {
+                    text: root.console-output;
+                    color: Theme.fg_dim;
+                    font-size: 10px;
+                    font-family: "JetBrainsMono Nerd Font";
+                    wrap: word-wrap;
+                }
+                if !root.installing && root.process-finished: HorizontalLayout {
+                    alignment: end;
+                    ActionButton {
+                        label: "Close";
+                        btn-color: Theme.bg_lighter;
+                        clicked => { root.process-finished = false; }
+                    }
+                }
+            }
+        }
+    }
+
     // == Update OS confirmation dialog ==
     if root.show-update-os-confirm: Rectangle {
         background: Theme.bg.transparentize(0.15);

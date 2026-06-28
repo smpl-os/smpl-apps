@@ -353,8 +353,11 @@ impl DisplayState {
                     canvas_x: ((m.x as f64 + self.offset_x) * self.scale + margin) as f32,
                     canvas_y: ((m.y as f64 + self.offset_y) * self.scale + margin) as f32,
                     // Positions are logical; width/height are physical — use logical size.
-                    canvas_w: (m.width as f64 / m.scale * self.scale) as f32,
-                    canvas_h: (m.height as f64 / m.scale * self.scale) as f32,
+                    // Portrait transforms (odd) swap effective width/height.
+                    canvas_w: (if m.transform % 2 == 1 { m.height } else { m.width } as f64
+                        / m.scale * self.scale) as f32,
+                    canvas_h: (if m.transform % 2 == 1 { m.width } else { m.height } as f64
+                        / m.scale * self.scale) as f32,
                     available_modes: slint::ModelRc::new(slint::VecModel::from(modes)),
                     current_mode_index: cur_mode_idx,
                     current_orientation_index: m.transform.rem_euclid(4),
@@ -1608,13 +1611,15 @@ fn main() -> Result<(), slint::PlatformError> {
             // X-only glue snap: always force the dragged monitor to touch the
             // nearest adjacent edge of another monitor horizontally.
             // Y is never snapped so the user can freely align monitors vertically.
-            let logical_w = (st.monitors[idx].width as f64 / st.monitors[idx].scale) as i32;
+            // Portrait transforms (odd) swap effective width/height.
+            let eff_w = |m: &Monitor| if m.transform % 2 == 1 { m.height } else { m.width };
+            let logical_w = (eff_w(&st.monitors[idx]) as f64 / st.monitors[idx].scale) as i32;
             let snapped_x = {
                 let mut best_x = real_x;
                 let mut best_dist = i32::MAX;
                 for (i, m) in st.monitors.iter().enumerate() {
                     if i == idx { continue; }
-                    let ow = (m.width as f64 / m.scale) as i32;
+                    let ow = (eff_w(m) as f64 / m.scale) as i32;
                     // Candidate: place dragged immediately right of this monitor
                     let right_of = m.x + ow;
                     // Candidate: place dragged immediately left of this monitor
