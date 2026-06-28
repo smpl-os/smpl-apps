@@ -13,6 +13,16 @@ use std::sync::{Arc, Mutex};
 
 slint::include_modules!();
 
+/// Load an icon path into a Slint image; returns (image, has_icon).
+fn load_icon(path: &str) -> (slint::Image, bool) {
+    if !path.is_empty() {
+        if let Ok(img) = slint::Image::load_from_path(std::path::Path::new(path)) {
+            return (img, true);
+        }
+    }
+    (slint::Image::default(), false)
+}
+
 fn to_ui_item(app: &AppEntry) -> AppItem {
     AppItem {
         name: app.name.clone().into(),
@@ -28,6 +38,8 @@ fn to_ui_item(app: &AppEntry) -> AppItem {
         has_update: false,  // Will be set when checking for updates
         selected: false,    // User can select apps for batch update
         update_progress: 0.0,  // Progress tracking for individual updates
+        icon_image: slint::Image::default(),
+        has_icon: false,
     }
 }
 
@@ -102,17 +114,56 @@ fn update_results(
     ui.set_searching(false);
 }
 
+/// Plain installed-package info (no Slint image, so it is Send across threads).
+#[derive(Clone)]
+struct PkgInfo {
+    name: String,
+    id: String,
+    version: String,
+    description: String,
+    source: String,
+    icon_path: String,
+    has_update: bool,
+}
+
+/// Convert thread-safe PkgInfo into UI AppItems, loading icons on the UI thread.
+fn pkginfos_to_items(pkgs: Vec<PkgInfo>) -> Vec<AppItem> {
+    pkgs.into_iter()
+        .map(|p| {
+            let (icon_image, has_icon) = load_icon(&p.icon_path);
+            AppItem {
+                name: p.name.into(),
+                id: p.id.into(),
+                version: p.version.into(),
+                description: p.description.into(),
+                source: p.source.into(),
+                icon_path: p.icon_path.into(),
+                homepage: String::new().into(),
+                votes: 0,
+                popularity: 0.0,
+                installed: true,
+                has_update: p.has_update,
+                selected: p.has_update,
+                update_progress: 0.0,
+                icon_image,
+                has_icon,
+            }
+        })
+        .collect()
+}
+
 /// Get list of user-installed GUI applications and check for updates.
 ///
 /// Only apps with a desktop launcher are listed (like the start menu): a
 /// package is included only if it owns a `.desktop` file. This hides CLI tools,
 /// libraries and system/dependency packages — leaving real apps like Blender,
 /// VSCode, GIMP, etc. All Flatpak apps are GUI apps and are always included.
-fn get_installed_packages() -> Vec<AppItem> {
+fn get_installed_packages() -> Vec<PkgInfo> {
     let mut apps = Vec::new();
 
     // Build the set of explicitly-installed packages that own a .desktop file.
-    let gui_packages = gui_desktop_packages();
+    let gui_icons = gui_desktop_icons();
+    let gui_packages: HashSet<String> = gui_icons.keys().cloned().collect();
     // Packages that are part of the smplOS suite (handled by OS updates) — hidden.
     let suite = os_suite_packages();
 
@@ -142,21 +193,16 @@ fn get_installed_packages() -> Vec<AppItem> {
                 }
                 let version = parts[1].to_string();
                 let has_update = pacman_updates.contains(&name);
+                let icon = gui_icons.get(&name).cloned().unwrap_or_default();
 
-                apps.push(AppItem {
-                    name: name.clone().into(),
-                    id: name.into(),
-                    version: version.into(),
+                apps.push(PkgInfo {
+                    name: name.clone(),
+                    id: name,
+                    version,
                     description: "Pacman package".into(),
                     source: "Pacman".into(),
-                    icon_path: "P".into(),
-                    homepage: String::new().into(),
-                    votes: 0,
-                    popularity: 0.0,
-                    installed: true,
+                    icon_path: icon,
                     has_update,
-                    selected: has_update,
-                    update_progress: 0.0,
                 });
             }
         }
@@ -188,21 +234,16 @@ fn get_installed_packages() -> Vec<AppItem> {
                 }
                 let version = parts[1].to_string();
                 let has_update = aur_updates.contains(&name);
+                let icon = gui_icons.get(&name).cloned().unwrap_or_default();
 
-                apps.push(AppItem {
-                    name: name.clone().into(),
-                    id: name.into(),
-                    version: version.into(),
+                apps.push(PkgInfo {
+                    name: name.clone(),
+                    id: name,
+                    version,
                     description: "AUR package".into(),
                     source: "AUR".into(),
-                    icon_path: "A".into(),
-                    homepage: String::new().into(),
-                    votes: 0,
-                    popularity: 0.0,
-                    installed: true,
+                    icon_path: icon,
                     has_update,
-                    selected: has_update,
-                    update_progress: 0.0,
                 });
             }
         }
@@ -222,21 +263,16 @@ fn get_installed_packages() -> Vec<AppItem> {
 
                 // TODO: Check flatpak remotes for updates
                 let has_update = false;
+                let icon_path = resolve_icon_path(&app_id).unwrap_or_default();
 
-                apps.push(AppItem {
-                    name: app_id.split('.').next_back().unwrap_or(&app_id).to_string().into(),
-                    id: app_id.into(),
-                    version: version.into(),
+                apps.push(PkgInfo {
+                    name: app_id.split('.').next_back().unwrap_or(&app_id).to_string(),
+                    id: app_id,
+                    version,
                     description: "Flatpak application".into(),
                     source: "Flatpak".into(),
-                    icon_path: "F".into(),
-                    homepage: String::new().into(),
-                    votes: 0,
-                    popularity: 0.0,
-                    installed: true,
+                    icon_path,
                     has_update,
-                    selected: false,
-                    update_progress: 0.0,
                 });
             }
         }
@@ -245,22 +281,23 @@ fn get_installed_packages() -> Vec<AppItem> {
     apps
 }
 
-/// Set of explicitly-installed packages that own at least one .desktop launcher.
-fn gui_desktop_packages() -> HashSet<String> {
-    let mut set = HashSet::new();
+/// Map explicitly-installed GUI packages -> resolved icon path (may be empty).
+fn gui_desktop_icons() -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    let mut map: HashMap<String, String> = HashMap::new();
 
     // Names of explicitly-installed packages.
     let explicit = std::process::Command::new("pacman")
         .args(["-Qeq"])
         .output();
-    let Ok(explicit) = explicit else { return set };
+    let Ok(explicit) = explicit else { return map };
     let names: Vec<String> = String::from_utf8_lossy(&explicit.stdout)
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
     if names.is_empty() {
-        return set;
+        return map;
     }
 
     // List the files each owns; keep packages with a .desktop in applications/.
@@ -269,14 +306,68 @@ fn gui_desktop_packages() -> HashSet<String> {
     if let Ok(output) = std::process::Command::new("pacman").args(&args).output() {
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             if line.contains("/usr/share/applications/") && line.ends_with(".desktop") {
-                if let Some(pkg) = line.split_whitespace().next() {
-                    set.insert(pkg.to_string());
+                let mut parts = line.split_whitespace();
+                if let (Some(pkg), Some(path)) = (parts.next(), parts.next()) {
+                    let icon = read_desktop_icon(path)
+                        .and_then(|n| resolve_icon_path(&n))
+                        .unwrap_or_default();
+                    // Prefer the first package that yields a real icon.
+                    map.entry(pkg.to_string()).or_insert(icon);
                 }
             }
         }
     }
 
-    set
+    map
+}
+
+/// Read the `Icon=` value from a .desktop file.
+fn read_desktop_icon(path: &str) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        if let Some(v) = line.strip_prefix("Icon=") {
+            let v = v.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Resolve an icon name (or absolute path) to a real file on disk.
+fn resolve_icon_path(icon_name: &str) -> Option<String> {
+    if icon_name.is_empty() {
+        return None;
+    }
+    if icon_name.starts_with('/') {
+        return std::path::Path::new(icon_name).exists().then(|| icon_name.to_string());
+    }
+    let mut dirs: Vec<String> = vec![
+        "/usr/share/icons/hicolor/scalable/apps".into(),
+        "/usr/share/icons/hicolor/128x128/apps".into(),
+        "/usr/share/icons/hicolor/64x64/apps".into(),
+        "/usr/share/icons/hicolor/48x48/apps".into(),
+        "/usr/share/icons/hicolor/32x32/apps".into(),
+        "/var/lib/flatpak/exports/share/icons/hicolor/scalable/apps".into(),
+        "/var/lib/flatpak/exports/share/icons/hicolor/128x128/apps".into(),
+        "/usr/share/pixmaps".into(),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(format!("{home}/.local/share/icons/hicolor/scalable/apps"));
+        dirs.push(format!("{home}/.local/share/icons/hicolor/128x128/apps"));
+        dirs.push(format!("{home}/.local/share/flatpak/exports/share/icons/hicolor/scalable/apps"));
+        dirs.push(format!("{home}/.local/share/flatpak/exports/share/icons/hicolor/128x128/apps"));
+    }
+    for dir in &dirs {
+        for ext in &["svg", "png"] {
+            let path = format!("{dir}/{icon_name}.{ext}");
+            if std::path::Path::new(&path).exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// Set of smplOS suite packages, read from the OS suite manifest. These are
@@ -323,7 +414,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let state: Rc<RefCell<Vec<AppEntry>>> = Rc::new(RefCell::new(Vec::new()));
     let model = Rc::new(VecModel::<AppItem>::default());
     // Master, unfiltered list of installed apps for the Installed-tab filter box.
-    let installed_master: Arc<Mutex<Vec<AppItem>>> = Arc::new(Mutex::new(Vec::new()));
+    let installed_master: Arc<Mutex<Vec<PkgInfo>>> = Arc::new(Mutex::new(Vec::new()));
 
     // -- Search callback --
     {
@@ -395,7 +486,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             apps.iter().filter(|a| a.has_update).count() as i32;
                         let _ = ui_weak_clone.upgrade_in_event_loop(move |ui| {
                             *installed_master.lock().unwrap() = apps.clone();
-                            let model = Rc::new(VecModel::<AppItem>::from(apps));
+                            let model = Rc::new(VecModel::<AppItem>::from(pkginfos_to_items(apps)));
                             ui.set_installed_apps(ModelRc::from(model));
                             ui.set_apps_with_updates(apps_with_updates);
                             ui.set_checking_for_updates(false);
@@ -495,13 +586,13 @@ fn main() -> Result<(), slint::PlatformError> {
     // Helper: drop an uninstalled app from the master + visible installed list
     fn remove_installed_app(
         ui: &MainWindow,
-        master: &Arc<Mutex<Vec<AppItem>>>,
+        master: &Arc<Mutex<Vec<PkgInfo>>>,
         id: &str,
     ) {
         master.lock().unwrap().retain(|a| a.id != id);
         let q = ui.get_installed_search_text().to_lowercase();
         let master = master.lock().unwrap();
-        let visible: Vec<AppItem> = master
+        let visible: Vec<PkgInfo> = master
             .iter()
             .filter(|a| {
                 q.is_empty()
@@ -510,7 +601,9 @@ fn main() -> Result<(), slint::PlatformError> {
             })
             .cloned()
             .collect();
-        ui.set_installed_apps(ModelRc::from(Rc::new(VecModel::<AppItem>::from(visible))));
+        ui.set_installed_apps(ModelRc::from(Rc::new(VecModel::<AppItem>::from(
+            pkginfos_to_items(visible),
+        ))));
         let _ = std::process::Command::new("rebuild-app-cache").spawn();
     }
 
@@ -740,7 +833,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                     new.iter().filter(|a| a.has_update).count() as i32,
                                 );
                                 ui.set_installed_apps(ModelRc::from(Rc::new(
-                                    VecModel::<AppItem>::from(new),
+                                    VecModel::<AppItem>::from(pkginfos_to_items(new)),
                                 )));
                                 let _ = std::process::Command::new("rebuild-app-cache").spawn();
                             } else {
@@ -823,7 +916,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
                 let _ = ui_weak_clone.upgrade_in_event_loop(move |ui| {
                     *installed_master.lock().unwrap() = apps.clone();
-                    let model = Rc::new(VecModel::<AppItem>::from(apps));
+                    let model = Rc::new(VecModel::<AppItem>::from(pkginfos_to_items(apps)));
                     ui.set_installed_apps(ModelRc::from(model));
                     ui.set_apps_with_updates(apps_with_updates);
                     ui.set_checking_for_updates(false);
@@ -832,28 +925,44 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // -- Filter installed apps (Installed tab search box) --
+    // -- Filter installed apps (search box + source pills + updates-only) --
     {
         let ui_weak = ui.as_weak();
         let installed_master = installed_master.clone();
-        ui.on_filter_installed(move |query| {
+        let apply = move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let q = query.to_lowercase();
+            let q = ui.get_installed_search_text().to_lowercase();
+            let updates_only = ui.get_installed_updates_only();
+            let f_pacman = ui.get_inst_filter_pacman();
+            let f_aur = ui.get_inst_filter_aur();
+            let f_flatpak = ui.get_inst_filter_flatpak();
             let master = installed_master.lock().unwrap();
-            let filtered: Vec<AppItem> = if q.is_empty() {
-                master.clone()
-            } else {
-                master
-                    .iter()
-                    .filter(|a| {
-                        a.name.to_lowercase().contains(&q)
-                            || a.description.to_lowercase().contains(&q)
-                    })
-                    .cloned()
-                    .collect()
-            };
-            ui.set_installed_apps(ModelRc::from(Rc::new(VecModel::<AppItem>::from(filtered))));
+            let filtered: Vec<PkgInfo> = master
+                .iter()
+                .filter(|a| {
+                    let src_ok = match a.source.as_str() {
+                        "Pacman" => f_pacman,
+                        "AUR" => f_aur,
+                        "Flatpak" => f_flatpak,
+                        _ => true,
+                    };
+                    let txt_ok = q.is_empty()
+                        || a.name.to_lowercase().contains(&q)
+                        || a.description.to_lowercase().contains(&q);
+                    let upd_ok = !updates_only || a.has_update;
+                    src_ok && txt_ok && upd_ok
+                })
+                .cloned()
+                .collect();
+            ui.set_installed_apps(ModelRc::from(Rc::new(VecModel::<AppItem>::from(
+                pkginfos_to_items(filtered),
+            ))));
+        };
+        ui.on_filter_installed_changed({
+            let apply = apply.clone();
+            move || apply()
         });
+        ui.on_filter_installed(move |_| apply());
     }
 
     // -- Toggle App Selection --
@@ -974,7 +1083,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let apps_with_updates = apps.iter().filter(|a| a.has_update).count() as i32;
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                 *installed_master.lock().unwrap() = apps.clone();
-                let model = Rc::new(VecModel::<AppItem>::from(apps));
+                let model = Rc::new(VecModel::<AppItem>::from(pkginfos_to_items(apps)));
                 ui.set_installed_apps(ModelRc::from(model));
                 ui.set_apps_with_updates(apps_with_updates);
                 ui.set_checking_for_updates(false);

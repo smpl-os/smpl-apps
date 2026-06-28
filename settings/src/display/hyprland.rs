@@ -100,8 +100,8 @@ impl DisplayBackend for HyprlandBackend {
                     format!("keyword monitor {},disable", c.name)
                 } else {
                     format!(
-                        "keyword monitor {},{}x{}@{:.2},{}x{},{:.2}",
-                        c.name, c.width, c.height, c.refresh_rate, c.x, c.y, c.scale,
+                        "keyword monitor {},{}x{}@{:.2},{}x{},{:.2},transform,{}",
+                        c.name, c.width, c.height, c.refresh_rate, c.x, c.y, c.scale, c.transform,
                     )
                 }
             })

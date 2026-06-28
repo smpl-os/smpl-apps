@@ -12,6 +12,8 @@ struct AppItem {
     has-update: bool,
     selected: bool,
     update-progress: float,  // 0.0 to 1.0
+    icon-image: image,
+    has-icon: bool,
 }
 
 export global Theme {
@@ -309,6 +311,10 @@ export component MainWindow inherits Window {
     in-out property <bool> checking-for-updates: false;
     in-out property <int> apps-with-updates: 0;
     in-out property <string> installed-search-text: "";
+    in-out property <bool> installed-updates-only: false;
+    in-out property <bool> inst-filter-pacman: true;
+    in-out property <bool> inst-filter-aur: true;
+    in-out property <bool> inst-filter-flatpak: true;
 
     // Filter states
     in-out property <bool> filter-aur: true;
@@ -338,6 +344,7 @@ export component MainWindow inherits Window {
     callback update-selected-apps();
     callback filter-installed(string);
     callback uninstall-installed(int);
+    callback filter-installed-changed();
 
     // -- Public functions --
     public function focus-search() {
@@ -607,7 +614,7 @@ export component MainWindow inherits Window {
 
         // == Installed tab controls (Check Updates) ==
         Rectangle {
-            height: root.current-tab == 0 ? 38px : 0px;
+            height: root.current-tab == 0 ? 34px : 0px;
             clip: true;
             visible: root.current-tab == 0;
             background: transparent;
@@ -620,16 +627,67 @@ export component MainWindow inherits Window {
                 spacing: 6px;
                 alignment: start;
 
-                ActionButton {
-                    label: root.checking-for-updates ? "Checking..." : (root.apps-with-updates > 0 ? "Update " + root.apps-with-updates + " Apps" : "Check Updates");
-                    btn-color: Theme.accent;
-                    clicked => {
-                        if (root.apps-with-updates > 0) {
-                            root.update-selected-apps();
-                        } else {
-                            root.check-for-updates();
-                        }
+                Rectangle {
+                    width: ctrl-text.preferred-width + 24px;
+                    height: 24px;
+                    border-radius: Theme.button_radius;
+                    background: ctrl-touch.has-hover ? Theme.accent.brighter(0.2) : Theme.accent;
+
+                    ctrl-text := Text {
+                        text: root.checking-for-updates ? "Checking..." : (root.apps-with-updates > 0 ? "Update Selected" : "Check Updates");
+                        color: Theme.bg;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
                     }
+
+                    ctrl-touch := TouchArea {
+                        clicked => {
+                            if (root.apps-with-updates > 0) {
+                                root.update-selected-apps();
+                            } else {
+                                root.check-for-updates();
+                            }
+                        }
+                        mouse-cursor: pointer;
+                    }
+                }
+            }
+        }
+
+        // == Installed filter pills ==
+        Rectangle {
+            height: root.current-tab == 0 ? 34px : 0px;
+            clip: true;
+            visible: root.current-tab == 0;
+            background: transparent;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 6px;
+                alignment: start;
+
+                FilterPill {
+                    label: "Updates only";
+                    active <=> root.installed-updates-only;
+                    clicked => { root.filter-installed-changed(); }
+                }
+                FilterPill {
+                    label: "Pacman";
+                    active <=> root.inst-filter-pacman;
+                    clicked => { root.filter-installed-changed(); }
+                }
+                FilterPill {
+                    label: "AUR";
+                    active <=> root.inst-filter-aur;
+                    clicked => { root.filter-installed-changed(); }
+                }
+                FilterPill {
+                    label: "Flatpak";
+                    active <=> root.inst-filter-flatpak;
+                    clicked => { root.filter-installed-changed(); }
                 }
             }
         }
@@ -672,7 +730,7 @@ export component MainWindow inherits Window {
                             color: Theme.fg;
                             text <=> root.installed-search-text;
                             horizontal-stretch: 1;
-                            edited => { root.filter-installed(self.text); }
+                            edited => { root.filter-installed-changed(); }
                         }
 
                         if root.installed-search-text != "": VerticalLayout {
@@ -694,7 +752,7 @@ export component MainWindow inherits Window {
                                 installed-clear-touch := TouchArea {
                                     clicked => {
                                         root.installed-search-text = "";
-                                        root.filter-installed("");
+                                        root.filter-installed-changed();
                                     }
                                     mouse-cursor: pointer;
                                 }
@@ -1030,9 +1088,14 @@ export component MainWindow inherits Window {
                                     Theme.warning.transparentize(0.8);
                                 vertical-stretch: 0;
 
-                                Text {
-                                    text: item.icon_path != "" ? item.icon_path :
-                                        item.source == "Pacman" ? "P" :
+                                if item.has-icon: Image {
+                                    source: item.icon-image;
+                                    width: 32px;
+                                    height: 32px;
+                                    image-fit: contain;
+                                }
+                                if !item.has-icon: Text {
+                                    text: item.source == "Pacman" ? "P" :
                                         item.source == "AUR" ? "A" :
                                         item.source == "Flatpak" ? "F" :
                                         item.source == "AppImage" ? "I" : "S";
@@ -1041,7 +1104,7 @@ export component MainWindow inherits Window {
                                         item.source == "Flatpak" ? Theme.fg_dim :
                                         item.source == "AppImage" ? Theme.success :
                                         Theme.warning;
-                                    font-size: item.icon_path != "" ? 22px : 18px;
+                                    font-size: 18px;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;

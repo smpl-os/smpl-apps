@@ -45,6 +45,7 @@ pub struct MonitorConfig {
     pub x: i32,
     pub y: i32,
     pub scale: f64,
+    pub transform: i32,
     pub enabled: bool,
 }
 
@@ -54,8 +55,9 @@ impl MonitorConfig {
             return format!("monitor = {}, disable", self.name);
         }
         format!(
-            "monitor = {}, {}x{}@{:.2}, {}x{}, {:.2}",
+            "monitor = {}, {}x{}@{:.2}, {}x{}, {:.2}, transform, {}",
             self.name, self.width, self.height, self.refresh_rate, self.x, self.y, self.scale,
+            self.transform,
         )
     }
 }

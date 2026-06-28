@@ -357,6 +357,7 @@ impl DisplayState {
                     canvas_h: (m.height as f64 / m.scale * self.scale) as f32,
                     available_modes: slint::ModelRc::new(slint::VecModel::from(modes)),
                     current_mode_index: cur_mode_idx,
+                    current_orientation_index: m.transform.rem_euclid(4),
                 }
             })
             .collect()
@@ -373,6 +374,7 @@ impl DisplayState {
                 x: m.x,
                 y: m.y,
                 scale: m.scale,
+                transform: m.transform,
                 enabled: m.enabled,
             })
             .collect()
@@ -389,6 +391,7 @@ impl DisplayState {
                 || m.height != o.height
                 || (m.refresh_rate - o.refresh_rate).abs() > 0.1
                 || (m.scale - o.scale).abs() > 0.01
+                || m.transform != o.transform
                 || m.enabled != o.enabled
             {
                 return true;
@@ -425,6 +428,7 @@ fn push_display_state_to_ui(ui: &MainWindow, state: &DisplayState) {
             .unwrap_or(0);
         ui.set_disp_selected_mode_index(mode_idx as i32);
         ui.set_disp_selected_scale(m.scale as f32);
+        ui.set_disp_selected_orientation(m.transform.rem_euclid(4));
     }
 }
 
@@ -1663,6 +1667,22 @@ fn main() -> Result<(), slint::PlatformError> {
             let mi = mon_idx as usize;
             if mi < st.monitors.len() {
                 st.monitors[mi].scale = scale as f64;
+                st.recalc_canvas();
+            }
+            let ui = ui_handle.unwrap();
+            push_display_state_to_ui(&ui, &st);
+        });
+    }
+
+    // Change orientation (0=landscape, 1=portrait, 2=landscape flipped, 3=portrait flipped)
+    {
+        let state = disp_state.clone();
+        let ui_handle = ui.as_weak();
+        ui.on_disp_change_orientation(move |mon_idx, orient| {
+            let mut st = state.borrow_mut();
+            let mi = mon_idx as usize;
+            if mi < st.monitors.len() {
+                st.monitors[mi].transform = orient.rem_euclid(4);
                 st.recalc_canvas();
             }
             let ui = ui_handle.unwrap();

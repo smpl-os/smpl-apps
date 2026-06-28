@@ -38,6 +38,7 @@ struct MonitorInfo {
     canvas-h: float,
     available-modes: [string],
     current-mode-index: int,
+    current-orientation-index: int,
 }
 
 struct SearchResult {
@@ -547,6 +548,7 @@ export component MainWindow inherits Window {
     in property <[string]> disp-selected-modes: [];
     in-out property <int> disp-selected-mode-index: 0;
     in-out property <float> disp-selected-scale: 1.0;
+    in-out property <int> disp-selected-orientation: 0;
     in property <string> disp-status-text: "Ready";
     in property <bool> disp-has-changes: false;
 
@@ -649,6 +651,7 @@ export component MainWindow inherits Window {
     callback disp-drag-finished(int, float, float);
     callback disp-change-resolution(int, int);
     callback disp-change-scale(int, float);
+    callback disp-change-orientation(int, int);
     callback disp-set-primary(int);
     callback disp-apply-changes();
     callback disp-revert-changes();
@@ -2342,6 +2345,36 @@ export component MainWindow inherits Window {
                                 maximum: 3.0;
                                 changed(v) => {
                                     root.disp-change-scale(root.disp-selected-index, v);
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Orientation card ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        border-width: root.highlight-setting == "Orientation" && root.highlight-blink-on ? 2px : 0px;
+                        border-color: root.highlight-setting == "Orientation" && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Orientation";
+                                color: Theme.fg_dim;
+                                font-size: 11px;
+                                font-weight: 600;
+                            }
+
+                            ResDropdown {
+                                model: ["Landscape", "Portrait", "Landscape (flipped)", "Portrait (flipped)"];
+                                current-index: root.disp-selected-orientation;
+                                selected(idx) => {
+                                    root.disp-change-orientation(root.disp-selected-index, idx);
                                 }
                             }
                         }
