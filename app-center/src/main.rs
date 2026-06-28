@@ -9,6 +9,7 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 slint::include_modules!();
 
@@ -321,6 +322,8 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let state: Rc<RefCell<Vec<AppEntry>>> = Rc::new(RefCell::new(Vec::new()));
     let model = Rc::new(VecModel::<AppItem>::default());
+    // Master, unfiltered list of installed apps for the Installed-tab filter box.
+    let installed_master: Arc<Mutex<Vec<AppItem>>> = Arc::new(Mutex::new(Vec::new()));
 
     // -- Search callback --
     {
@@ -376,6 +379,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         let model = model.clone();
+        let installed_master = installed_master.clone();
         ui.on_switch_tab(move |tab_index| {
             let Some(ui) = ui_weak.upgrade() else { return };
 
@@ -384,11 +388,13 @@ fn main() -> Result<(), slint::PlatformError> {
                 if ui.get_installed_apps().row_count() == 0 && !ui.get_checking_for_updates() {
                     ui.set_checking_for_updates(true);
                     let ui_weak_clone = ui_weak.clone();
+                    let installed_master = installed_master.clone();
                     std::thread::spawn(move || {
                         let apps = get_installed_packages();
                         let apps_with_updates =
                             apps.iter().filter(|a| a.has_update).count() as i32;
                         let _ = ui_weak_clone.upgrade_in_event_loop(move |ui| {
+                            *installed_master.lock().unwrap() = apps.clone();
                             let model = Rc::new(VecModel::<AppItem>::from(apps));
                             ui.set_installed_apps(ModelRc::from(model));
                             ui.set_apps_with_updates(apps_with_updates);
@@ -703,6 +709,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // -- Check for Updates (Installed tab) --
     {
         let ui_weak = ui.as_weak();
+        let installed_master = installed_master.clone();
         ui.on_check_for_updates(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             ui.set_checking_for_updates(true);
@@ -710,17 +717,43 @@ fn main() -> Result<(), slint::PlatformError> {
             // Query installed packages in a background thread, then push results
             // back to the UI on the event-loop thread (Slint is single-threaded).
             let ui_weak_clone = ui_weak.clone();
+            let installed_master = installed_master.clone();
             std::thread::spawn(move || {
                 let apps = get_installed_packages();
                 let apps_with_updates = apps.iter().filter(|a| a.has_update).count() as i32;
 
                 let _ = ui_weak_clone.upgrade_in_event_loop(move |ui| {
+                    *installed_master.lock().unwrap() = apps.clone();
                     let model = Rc::new(VecModel::<AppItem>::from(apps));
                     ui.set_installed_apps(ModelRc::from(model));
                     ui.set_apps_with_updates(apps_with_updates);
                     ui.set_checking_for_updates(false);
                 });
             });
+        });
+    }
+
+    // -- Filter installed apps (Installed tab search box) --
+    {
+        let ui_weak = ui.as_weak();
+        let installed_master = installed_master.clone();
+        ui.on_filter_installed(move |query| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let q = query.to_lowercase();
+            let master = installed_master.lock().unwrap();
+            let filtered: Vec<AppItem> = if q.is_empty() {
+                master.clone()
+            } else {
+                master
+                    .iter()
+                    .filter(|a| {
+                        a.name.to_lowercase().contains(&q)
+                            || a.description.to_lowercase().contains(&q)
+                    })
+                    .cloned()
+                    .collect()
+            };
+            ui.set_installed_apps(ModelRc::from(Rc::new(VecModel::<AppItem>::from(filtered))));
         });
     }
 
@@ -791,11 +824,13 @@ fn main() -> Result<(), slint::PlatformError> {
     // Load installed apps on startup (Installed is the default tab).
     {
         let ui_weak = ui.as_weak();
+        let installed_master = installed_master.clone();
         ui.set_checking_for_updates(true);
         std::thread::spawn(move || {
             let apps = get_installed_packages();
             let apps_with_updates = apps.iter().filter(|a| a.has_update).count() as i32;
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                *installed_master.lock().unwrap() = apps.clone();
                 let model = Rc::new(VecModel::<AppItem>::from(apps));
                 ui.set_installed_apps(ModelRc::from(model));
                 ui.set_apps_with_updates(apps_with_updates);

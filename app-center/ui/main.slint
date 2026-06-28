@@ -308,6 +308,7 @@ export component MainWindow inherits Window {
     in-out property <[AppItem]> installed-apps;
     in-out property <bool> checking-for-updates: false;
     in-out property <int> apps-with-updates: 0;
+    in-out property <string> installed-search-text: "";
 
     // Filter states
     in-out property <bool> filter-aur: true;
@@ -335,6 +336,7 @@ export component MainWindow inherits Window {
     callback check-for-updates();
     callback toggle-app-select(int);
     callback update-selected-apps();
+    callback filter-installed(string);
 
     // -- Public functions --
     public function focus-search() {
@@ -589,25 +591,112 @@ export component MainWindow inherits Window {
 
                 // Spacer
                 Rectangle { horizontal-stretch: 1; }
+            }
+        }
 
-                // Check Updates button (on Installed tab)
-                VerticalLayout {
-                    alignment: center;
-                    visible: root.current-tab == 0;
-                    ActionButton {
-                        label: root.checking-for-updates ? "Checking..." : (root.apps-with-updates > 0 ? root.apps-with-updates + " Updates" : "Check Updates");
-                        btn-color: Theme.accent;
-                        clicked => { root.check-for-updates(); }
-                    }
+        // == Installed tab controls (Update OS / Check Updates) ==
+        Rectangle {
+            height: root.current-tab == 0 ? 44px : 0px;
+            clip: true;
+            visible: root.current-tab == 0;
+            background: transparent;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                spacing: 6px;
+                alignment: end;
+
+                ActionButton {
+                    label: root.checking-for-updates ? "Checking..." : (root.apps-with-updates > 0 ? root.apps-with-updates + " Updates" : "Check Updates");
+                    btn-color: Theme.accent;
+                    clicked => { root.check-for-updates(); }
                 }
 
-                // Update OS button (shows confirm dialog)
-                VerticalLayout {
-                    alignment: center;
-                    ActionButton {
-                        label: "Update OS";
-                        btn-color: Theme.danger;
-                        clicked => { root.show-update-os-confirm = true; }
+                ActionButton {
+                    label: "Update OS";
+                    btn-color: Theme.danger;
+                    clicked => { root.show-update-os-confirm = true; }
+                }
+            }
+        }
+
+        // == Installed search filter (installed tab only) ==
+        Rectangle {
+            height: root.current-tab == 0 ? 44px : 0px;
+            clip: true;
+            visible: root.current-tab == 0;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-top: 6px;
+                padding-bottom: 6px;
+
+                Rectangle {
+                    border-radius: Theme.button_radius;
+                    background: Theme.bg_light;
+                    border-width: installed-search-input.has-focus ? 1px : 0px;
+                    border-color: Theme.accent;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 6px;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: "\u{1F50D}";
+                                font-size: 12px;
+                                color: Theme.fg_dim;
+                            }
+                        }
+
+                        installed-search-input := TextInput {
+                            vertical-alignment: center;
+                            font-size: 13px;
+                            color: Theme.fg;
+                            text <=> root.installed-search-text;
+                            horizontal-stretch: 1;
+                            edited => { root.filter-installed(self.text); }
+                        }
+
+                        if root.installed-search-text != "": VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 18px;
+                                height: 18px;
+                                border-radius: 9px;
+                                background: installed-clear-touch.has-hover ? Theme.bg_lighter : transparent;
+
+                                Text {
+                                    text: "\u{2715}";
+                                    color: Theme.fg_dim;
+                                    font-size: 10px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                installed-clear-touch := TouchArea {
+                                    clicked => {
+                                        root.installed-search-text = "";
+                                        root.filter-installed("");
+                                    }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+
+                    if root.installed-search-text == "": Text {
+                        x: 32px;
+                        text: "Filter installed apps...";
+                        color: Theme.fg_dim;
+                        font-size: 13px;
+                        vertical-alignment: center;
                     }
                 }
             }
