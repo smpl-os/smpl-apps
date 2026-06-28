@@ -591,12 +591,22 @@ export component MainWindow inherits Window {
 
                 // Spacer
                 Rectangle { horizontal-stretch: 1; }
+
+                // Update OS button (global, always available)
+                VerticalLayout {
+                    alignment: center;
+                    ActionButton {
+                        label: "Update OS";
+                        btn-color: Theme.danger;
+                        clicked => { root.show-update-os-confirm = true; }
+                    }
+                }
             }
         }
 
-        // == Installed tab controls (Update OS / Check Updates) ==
+        // == Installed tab controls (Check Updates) ==
         Rectangle {
-            height: root.current-tab == 0 ? 44px : 0px;
+            height: root.current-tab == 0 ? 38px : 0px;
             clip: true;
             visible: root.current-tab == 0;
             background: transparent;
@@ -604,21 +614,15 @@ export component MainWindow inherits Window {
             HorizontalLayout {
                 padding-left: 14px;
                 padding-right: 14px;
-                padding-top: 6px;
-                padding-bottom: 6px;
+                padding-top: 4px;
+                padding-bottom: 4px;
                 spacing: 6px;
-                alignment: end;
+                alignment: start;
 
                 ActionButton {
                     label: root.checking-for-updates ? "Checking..." : (root.apps-with-updates > 0 ? root.apps-with-updates + " Updates" : "Check Updates");
                     btn-color: Theme.accent;
                     clicked => { root.check-for-updates(); }
-                }
-
-                ActionButton {
-                    label: "Update OS";
-                    btn-color: Theme.danger;
-                    clicked => { root.show-update-os-confirm = true; }
                 }
             }
         }
