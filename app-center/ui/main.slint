@@ -309,6 +309,8 @@ export component MainWindow inherits Window {
 
     // Update confirm dialog
     in-out property <bool> show-update-os-confirm: false;
+    in-out property <bool> show-password-dialog: false;
+    in-out property <string> password-input: "";
 
     // -- Callbacks --
     callback search(string);
@@ -324,7 +326,7 @@ export component MainWindow inherits Window {
     callback cancel-install();
     callback switch-tab(int);
     callback update-apps();
-    callback update-os();
+    callback update-os(string);  // Now accepts password parameter
 
     // -- Public functions --
     public function focus-search() {
@@ -1248,7 +1250,8 @@ export component MainWindow inherits Window {
                         btn-color: Theme.warning;
                         clicked => {
                             root.show-update-os-confirm = false;
-                            root.update-os();
+                            root.show-password-dialog = true;
+                            root.password-input = "";
                         }
                     }
                 }
@@ -1256,7 +1259,93 @@ export component MainWindow inherits Window {
         }
     }
 
-    // == Help overlay ==
+    // == Password input dialog ==
+    if root.show-password-dialog: Rectangle {
+        background: Theme.bg.transparentize(0.15);
+
+        TouchArea {
+            // Don't close on background click for password dialog (security)
+        }
+
+        Rectangle {
+            width: 380px;
+            height: 200px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: 8px;
+            background: Theme.bg.darker(0.12);
+            border-width: 1px;
+            border-color: Theme.info.transparentize(0.6);
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: "\u{1F512}";
+                        color: Theme.info;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Administrator Password Required";
+                        color: Theme.info;
+                        font-size: 14px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: "Enter your password to start the system update.";
+                    color: Theme.fg;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+
+                Rectangle {
+                    height: 32px;
+                    border-radius: Theme.button_radius;
+                    background: Theme.bg_light;
+                    border-width: 1px;
+                    border-color: pwd-input.has-focus ? Theme.accent : Theme.bg_lighter;
+
+                    pwd-input := TextInput {
+                        text <=> root.password-input;
+                        input-type: password;
+                        font-size: 12px;
+                        padding-left: 10px;
+                        padding-right: 10px;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    ActionButton {
+                        label: "Cancel";
+                        btn-color: Theme.bg_lighter;
+                        clicked => {
+                            root.show-password-dialog = false;
+                            root.password-input = "";
+                        }
+                    }
+                    ActionButton {
+                        label: "Update";
+                        btn-color: Theme.info;
+                        clicked => {
+                            root.show-password-dialog = false;
+                            root.update-os(root.password-input);
+                        }
+                    }
+                }
+            }
+        }
+    }
     if root.show-help: Rectangle {
         background: Theme.bg.transparentize(0.1);
         border-radius: Theme.card_radius;
