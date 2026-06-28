@@ -457,6 +457,8 @@ fn main() -> Result<(), slint::PlatformError> {
     struct ActiveInstall {
         idx: usize,
         is_install: bool,
+        is_installed_tab: bool,
+        installed_id: String,
         process: installer::StreamingProcess,
     }
     let active_install: Rc<RefCell<Option<ActiveInstall>>> = Rc::new(RefCell::new(None));
@@ -490,6 +492,28 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
 
+    // Helper: drop an uninstalled app from the master + visible installed list
+    fn remove_installed_app(
+        ui: &MainWindow,
+        master: &Arc<Mutex<Vec<AppItem>>>,
+        id: &str,
+    ) {
+        master.lock().unwrap().retain(|a| a.id != id);
+        let q = ui.get_installed_search_text().to_lowercase();
+        let master = master.lock().unwrap();
+        let visible: Vec<AppItem> = master
+            .iter()
+            .filter(|a| {
+                q.is_empty()
+                    || a.name.to_lowercase().contains(&q)
+                    || a.description.to_lowercase().contains(&q)
+            })
+            .cloned()
+            .collect();
+        ui.set_installed_apps(ModelRc::from(Rc::new(VecModel::<AppItem>::from(visible))));
+        let _ = std::process::Command::new("rebuild-app-cache").spawn();
+    }
+
     // -- Install app --
     {
         let ui_weak = ui.as_weak();
@@ -517,6 +541,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     *active.borrow_mut() = Some(ActiveInstall {
                         idx,
                         is_install: true,
+                        is_installed_tab: false,
+                        installed_id: String::new(),
                         process,
                     });
                 }
@@ -554,11 +580,63 @@ fn main() -> Result<(), slint::PlatformError> {
                     *active.borrow_mut() = Some(ActiveInstall {
                         idx,
                         is_install: false,
+                        is_installed_tab: false,
+                        installed_id: String::new(),
                         process,
                     });
                 }
                 installer::SpawnResult::Immediate(result) => {
                     handle_immediate(&ui, &state, &model, idx, false, &result);
+                }
+            }
+        });
+    }
+
+    // -- Uninstall app from the Installed tab list --
+    {
+        let ui_weak = ui.as_weak();
+        let active = active_install.clone();
+        let installed_master_uninstall = installed_master.clone();
+        ui.on_uninstall_installed(move |index| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if ui.get_installing() { return; }
+            let idx = index as usize;
+            let Some(item) = ui.get_installed_apps().row_data(idx) else { return };
+
+            let source = match item.source.as_str() {
+                "AUR" => Source::Aur,
+                "Flatpak" => Source::Flatpak,
+                "AppImage" => Source::AppImage,
+                "Pacman" => Source::Pacman,
+                _ => Source::Script,
+            };
+            let id = item.id.to_string();
+            let name = item.name.to_string();
+
+            ui.set_installing(true);
+            ui.set_console_output(SharedString::default());
+            ui.set_console_last_line(SharedString::default());
+            ui.set_process_finished(false);
+            ui.set_process_success(false);
+
+            match installer::spawn_uninstall(&source, &id, &name) {
+                installer::SpawnResult::Streaming(process) => {
+                    *active.borrow_mut() = Some(ActiveInstall {
+                        idx,
+                        is_install: false,
+                        is_installed_tab: true,
+                        installed_id: id,
+                        process,
+                    });
+                }
+                installer::SpawnResult::Immediate(result) => {
+                    ui.set_installing(false);
+                    ui.set_process_finished(true);
+                    ui.set_process_success(result.success);
+                    ui.set_console_output(SharedString::from(&result.message));
+                    if result.success {
+                        remove_installed_app(&ui, &installed_master_uninstall, &id);
+                    }
                 }
             }
         });
@@ -601,6 +679,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let state = state.clone();
         let model = model.clone();
         let active = active_install.clone();
+        let installed_master_poll = installed_master.clone();
         // Accumulate full output in Rust (not on the UI during install)
         let full_output: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
         let poll_timer = slint::Timer::default();
@@ -636,6 +715,8 @@ fn main() -> Result<(), slint::PlatformError> {
                 if let Some(success) = ai.process.try_wait() {
                     let idx = ai.idx;
                     let is_install = ai.is_install;
+                    let is_installed_tab = ai.is_installed_tab;
+                    let installed_id = ai.installed_id.clone();
                     drop(guard);
 
                     ui.set_installing(false);
@@ -649,18 +730,22 @@ fn main() -> Result<(), slint::PlatformError> {
                     full_output.borrow_mut().clear();
 
                     if success {
-                        let new_state = is_install;
-                        let mut borrowed = state.borrow_mut();
-                        if let Some(entry) = borrowed.get_mut(idx) {
-                            entry.installed = new_state;
+                        if is_installed_tab {
+                            remove_installed_app(&ui, &installed_master_poll, &installed_id);
+                        } else {
+                            let new_state = is_install;
+                            let mut borrowed = state.borrow_mut();
+                            if let Some(entry) = borrowed.get_mut(idx) {
+                                entry.installed = new_state;
+                            }
+                            drop(borrowed);
+                            if let Some(mut item) = model.row_data(idx) {
+                                item.installed = new_state;
+                                model.set_row_data(idx, item);
+                            }
+                            // Refresh start-menu app cache so newly installed apps appear immediately
+                            let _ = std::process::Command::new("rebuild-app-cache").spawn();
                         }
-                        drop(borrowed);
-                        if let Some(mut item) = model.row_data(idx) {
-                            item.installed = new_state;
-                            model.set_row_data(idx, item);
-                        }
-                        // Refresh start-menu app cache so newly installed apps appear immediately
-                        let _ = std::process::Command::new("rebuild-app-cache").spawn();
                     }
 
                     *active.borrow_mut() = None;

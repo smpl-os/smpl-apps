@@ -337,6 +337,7 @@ export component MainWindow inherits Window {
     callback toggle-app-select(int);
     callback update-selected-apps();
     callback filter-installed(string);
+    callback uninstall-installed(int);
 
     // -- Public functions --
     public function focus-search() {
@@ -1118,12 +1119,35 @@ export component MainWindow inherits Window {
                                     font-size: 14px;
                                 }
                             }
+
+                            // Uninstall button
+                            if item.update-progress == 0.0: VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 80px;
+                                    height: 26px;
+                                    border-radius: Theme.button_radius;
+                                    background: uninstall-touch.has-hover ? Theme.danger : Theme.danger.transparentize(0.8);
+
+                                    Text {
+                                        text: "Uninstall";
+                                        color: uninstall-touch.has-hover ? Theme.bg : Theme.danger;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    uninstall-touch := TouchArea {
+                                        clicked => { root.uninstall-installed(idx); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
-
-            // -- Detail view --
             if root.show-detail && root.selected-index >= 0 && root.selected-index < root.results.length: Rectangle {
                 width: parent.width;
                 height: parent.height;
