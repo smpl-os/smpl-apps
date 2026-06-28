@@ -774,8 +774,8 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // -- No results --
-            if !root.show-detail && !root.searching && root.results.length == 0 && root.search-text != "" && root.current-tab == 0: Rectangle {
+            // -- No results (Search tab) --
+            if !root.show-detail && !root.searching && root.results.length == 0 && root.search-text != "" && root.current-tab == 1: Rectangle {
                 vertical-stretch: 1;
                 VerticalLayout {
                     alignment: center;
@@ -795,8 +795,8 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // -- Welcome screen --
-            if !root.show-detail && !root.searching && root.results.length == 0 && root.search-text == "" && root.current-tab == 0: Rectangle {
+            // -- Welcome screen (Search tab) --
+            if !root.show-detail && !root.searching && root.results.length == 0 && root.search-text == "" && root.current-tab == 1: Rectangle {
                 vertical-stretch: 1;
                 VerticalLayout {
                     alignment: center;
@@ -811,9 +811,9 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // -- Results list (always present, visibility-controlled) --
+            // -- Results list (Search tab) --
             list_flick := Flickable {
-                visible: !root.show-detail && !root.searching && root.results.length > 0;
+                visible: !root.show-detail && !root.searching && root.results.length > 0 && root.current-tab == 1;
                 vertical-stretch: 1;
                 width: parent.width;
                 height: parent.height;
@@ -834,6 +834,197 @@ export component MainWindow inherits Window {
                         clicked => {
                             root.selected-index = idx;
                             root.select-app(idx);
+                        }
+                    }
+                }
+            }
+
+            // -- Checking for updates indicator (Installed tab) --
+            if !root.show-detail && root.checking-for-updates: Rectangle {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: "Checking for updates...";
+                        color: Theme.fg_dim;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            // -- Installed apps list (Installed tab) --
+            installed_flick := Flickable {
+                visible: !root.show-detail && !root.checking-for-updates && root.installed-apps.length > 0 && root.current-tab == 0;
+                vertical-stretch: 1;
+                width: parent.width;
+                height: parent.height;
+                viewport-height: root.installed-apps.length * root.row-step;
+
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: root.row-spacing;
+
+                    for item[idx] in root.installed-apps: Rectangle {
+                        height: root.row-height;
+                        clip: true;
+                        border-radius: Theme.card_radius;
+                        background: root.selected-index == idx ? Theme.bg_light : (item.has-update ? Theme.bg_light.transparentize(0.5) : transparent);
+                        border-width: root.selected-index == idx ? 1px : 0px;
+                        border-color: Theme.accent.transparentize(0.5);
+
+                        card-touch := TouchArea {
+                            clicked => {
+                                root.selected-index = idx;
+                                root.select-app(idx);
+                            }
+                            mouse-cursor: pointer;
+                        }
+
+                        HorizontalLayout {
+                            padding: 10px;
+                            spacing: 10px;
+
+                            // Checkbox for apps with updates
+                            if item.has-update: Rectangle {
+                                width: 20px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 20px;
+                                        height: 20px;
+                                        border-radius: 3px;
+                                        background: item.selected ? Theme.accent : Theme.bg_lighter;
+                                        border-width: 1px;
+                                        border-color: item.selected ? Theme.accent : Theme.fg_dim;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            if item.selected: Text {
+                                                text: "✓";
+                                                color: Theme.bg;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                        }
+
+                                        check-touch := TouchArea {
+                                            clicked => {
+                                                root.toggle-app-select(idx);
+                                            }
+                                            mouse-cursor: pointer;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Icon placeholder
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 8px;
+                                background: item.source == "Pacman" ? Theme.accent.transparentize(0.8) :
+                                    item.source == "AUR" ? Theme.info.transparentize(0.8) :
+                                    item.source == "Flatpak" ? Theme.fg_dim.transparentize(0.8) :
+                                    item.source == "AppImage" ? Theme.success.transparentize(0.8) :
+                                    Theme.warning.transparentize(0.8);
+                                vertical-stretch: 0;
+
+                                Text {
+                                    text: item.icon_path != "" ? item.icon_path :
+                                        item.source == "Pacman" ? "P" :
+                                        item.source == "AUR" ? "A" :
+                                        item.source == "Flatpak" ? "F" :
+                                        item.source == "AppImage" ? "I" : "S";
+                                    color: item.source == "Pacman" ? Theme.accent :
+                                        item.source == "AUR" ? Theme.info :
+                                        item.source == "Flatpak" ? Theme.fg_dim :
+                                        item.source == "AppImage" ? Theme.success :
+                                        Theme.warning;
+                                    font-size: item.icon_path != "" ? 22px : 18px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Info column
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                alignment: center;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: item.name;
+                                        color: Theme.fg;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    if item.version != "": Text {
+                                        text: item.version;
+                                        color: Theme.fg_dim;
+                                        font-size: 10px;
+                                        vertical-alignment: center;
+                                    }
+                                    SourceBadge {
+                                        label: item.source;
+                                        badge-color: item.source == "Pacman" ? Theme.accent :
+                                            item.source == "AUR" ? Theme.info :
+                                            item.source == "Flatpak" ? Theme.fg_dim :
+                                            item.source == "AppImage" ? Theme.success :
+                                            Theme.warning;
+                                    }
+                                }
+
+                                Text {
+                                    text: item.description;
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // Update indicator
+                            if item.has-update && item.update-progress == 0.0: Rectangle {
+                                width: 12px;
+                                height: 12px;
+                                border-radius: 6px;
+                                background: Theme.warning;
+                                vertical-stretch: 0;
+                            }
+
+                            // Progress bar during update
+                            if item.update-progress > 0.0 && item.update-progress < 1.0: VerticalLayout {
+                                alignment: center;
+                                width: 60px;
+                                Rectangle {
+                                    height: 4px;
+                                    background: Theme.bg_lighter;
+                                    border-radius: 2px;
+                                    vertical-stretch: 0;
+
+                                    Rectangle {
+                                        width: parent.width * item.update-progress;
+                                        height: parent.height;
+                                        background: Theme.accent;
+                                        border-radius: 2px;
+                                    }
+                                }
+                            }
+
+                            // Completion indicator
+                            if item.update-progress == 1.0: VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "✓";
+                                    color: Theme.success;
+                                    font-size: 14px;
+                                }
+                            }
                         }
                     }
                 }

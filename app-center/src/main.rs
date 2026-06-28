@@ -7,6 +7,7 @@ use catalog::{merge_results, AppEntry, Source};
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 slint::include_modules!();
@@ -98,6 +99,170 @@ fn update_results(
         },
     );
     ui.set_searching(false);
+}
+
+/// Get list of installed packages and check for updates
+fn get_installed_packages() -> Vec<AppItem> {
+    let mut apps = Vec::new();
+
+    // Query pacman for installed packages with updates
+    if let Ok(output) = std::process::Command::new("pacman")
+        .args(["-Qu"])
+        .output()
+    {
+        let updates_text = String::from_utf8_lossy(&output.stdout);
+        let mut has_update_set = HashSet::new();
+        for line in updates_text.lines() {
+            if let Some(name) = line.split_whitespace().next() {
+                has_update_set.insert(name.to_string());
+            }
+        }
+
+        // Get all pacman packages
+        if let Ok(output) = std::process::Command::new("pacman")
+            .args(["-Q"])
+            .output()
+        {
+            let packages_text = String::from_utf8_lossy(&output.stdout);
+            for line in packages_text.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let name = parts[0].to_string();
+                    let version = parts[1].to_string();
+                    let has_update = has_update_set.contains(&name);
+
+                    apps.push(AppItem {
+                        name: name.clone().into(),
+                        id: name.into(),
+                        version: version.into(),
+                        description: "Pacman package".into(),
+                        source: "Pacman".into(),
+                        icon_path: "P".into(),
+                        homepage: String::new().into(),
+                        votes: 0,
+                        popularity: 0.0,
+                        installed: true,
+                        has_update,
+                        selected: false,
+                        update_progress: 0.0,
+                    });
+                }
+            }
+        }
+    }
+
+    // Query paru for AUR packages
+    if let Ok(output) = std::process::Command::new("paru")
+        .args(["-Q"])
+        .output()
+    {
+        let packages_text = String::from_utf8_lossy(&output.stdout);
+        let mut paru_packages = HashSet::new();
+        
+        for line in packages_text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                paru_packages.insert(parts[0].to_string());
+            }
+        }
+
+        // Check which ones are AUR vs pacman
+        if let Ok(output) = std::process::Command::new("pacman")
+            .args(["-Sg", "base", "base-devel"])
+            .output()
+        {
+            let base_text = String::from_utf8_lossy(&output.stdout);
+            for line in base_text.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    paru_packages.remove(parts[1]);
+                }
+            }
+        }
+
+        // Check for AUR updates
+        if let Ok(output) = std::process::Command::new("paru")
+            .args(["-Qu"])
+            .output()
+        {
+            let updates_text = String::from_utf8_lossy(&output.stdout);
+            let mut aur_updates = HashSet::new();
+            for line in updates_text.lines() {
+                if let Some(name) = line.split_whitespace().next() {
+                    aur_updates.insert(name.to_string());
+                }
+            }
+
+            // Add AUR packages that aren't already in our list
+            for name in paru_packages {
+                if !apps.iter().any(|a| a.id == name) {
+                    if let Ok(output) = std::process::Command::new("pacman")
+                        .args(["-Q", &name])
+                        .output()
+                    {
+                        let query_text = String::from_utf8_lossy(&output.stdout);
+                        if let Some(line) = query_text.lines().next() {
+                            let parts: Vec<&str> = line.split_whitespace().collect();
+                            if parts.len() >= 2 {
+                                let has_update = aur_updates.contains(&name);
+                                apps.push(AppItem {
+                                    name: name.clone().into(),
+                                    id: name.clone().into(),
+                                    version: parts[1].to_string().into(),
+                                    description: "AUR package".into(),
+                                    source: "AUR".into(),
+                                    icon_path: "A".into(),
+                                    homepage: String::new().into(),
+                                    votes: 0,
+                                    popularity: 0.0,
+                                    installed: true,
+                                    has_update,
+                                    selected: false,
+                                    update_progress: 0.0,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Query flatpak for installed apps
+    if let Ok(output) = std::process::Command::new("flatpak")
+        .args(["list", "--app", "--columns=application,version"])
+        .output()
+    {
+        let flatpak_text = String::from_utf8_lossy(&output.stdout);
+        for line in flatpak_text.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let app_id = parts[0].to_string();
+                let version = parts[parts.len() - 1].to_string();
+                
+                // TODO: Check flatpak remotes for updates
+                let has_update = false;
+
+                apps.push(AppItem {
+                    name: app_id.split('.').next_back().unwrap_or(&app_id).to_string().into(),
+                    id: app_id.into(),
+                    version: version.into(),
+                    description: "Flatpak application".into(),
+                    source: "Flatpak".into(),
+                    icon_path: "F".into(),
+                    homepage: String::new().into(),
+                    votes: 0,
+                    popularity: 0.0,
+                    installed: true,
+                    has_update,
+                    selected: false,
+                    update_progress: 0.0,
+                });
+            }
+        }
+    }
+
+    apps
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -482,26 +647,47 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // -- Check for Updates (Installed tab) --
     {
+        let ui_weak = ui.as_weak();
         ui.on_check_for_updates(move || {
-            // TODO: Query installed packages, check for updates in repos
-            // Set checking-for-updates = true, apps-with-updates count, has-update on each app
-            eprintln!("check_for_updates called");
+            let Some(ui) = ui_weak.upgrade() else { return };
+            ui.set_checking_for_updates(true);
+
+            // Query installed packages in background
+            let ui_weak_clone = ui_weak.clone();
+            std::thread::spawn(move || {
+                let apps = get_installed_packages();
+                let apps_with_updates = apps.iter().filter(|a| a.has_update).count() as i32;
+
+                if let Some(ui) = ui_weak_clone.upgrade() {
+                    let model = Rc::new(VecModel::<AppItem>::from(apps));
+                    ui.set_installed_apps(ModelRc::from(model));
+                    ui.set_apps_with_updates(apps_with_updates);
+                    ui.set_checking_for_updates(false);
+                }
+            });
         });
     }
 
     // -- Toggle App Selection --
     {
-        ui.on_toggle_app_select(move |_idx| {
-            // TODO: Toggle selected flag on app at index
-            eprintln!("toggle_app_select called");
+        let ui_weak = ui.as_weak();
+        ui.on_toggle_app_select(move |idx| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let index = idx as usize;
+            
+            // Get current installed apps model
+            if let Some(mut item) = ui.get_installed_apps().row_data(index) {
+                item.selected = !item.selected;
+                ui.get_installed_apps().set_row_data(index, item);
+            }
         });
     }
 
     // -- Update Selected Apps --
     {
         ui.on_update_selected_apps(move || {
-            // TODO: Run updates only for apps where selected=true
-            eprintln!("update_selected_apps called");
+            // TODO: Run updates for selected apps
+            eprintln!("update_selected_apps: would update selected apps");
         });
     }
 
