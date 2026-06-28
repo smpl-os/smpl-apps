@@ -112,6 +112,8 @@ fn get_installed_packages() -> Vec<AppItem> {
 
     // Build the set of explicitly-installed packages that own a .desktop file.
     let gui_packages = gui_desktop_packages();
+    // Packages that are part of the smplOS suite (handled by OS updates) — hidden.
+    let suite = os_suite_packages();
 
     // --- Pacman repo apps (explicitly installed, native, with launcher) ---
     let mut pacman_updates = HashSet::new();
@@ -134,7 +136,7 @@ fn get_installed_packages() -> Vec<AppItem> {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 let name = parts[0].to_string();
-                if !gui_packages.contains(&name) {
+                if !gui_packages.contains(&name) || suite.contains(&name) {
                     continue;
                 }
                 let version = parts[1].to_string();
@@ -180,7 +182,7 @@ fn get_installed_packages() -> Vec<AppItem> {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 let name = parts[0].to_string();
-                if !gui_packages.contains(&name) {
+                if !gui_packages.contains(&name) || suite.contains(&name) {
                     continue;
                 }
                 let version = parts[1].to_string();
@@ -273,6 +275,33 @@ fn gui_desktop_packages() -> HashSet<String> {
         }
     }
 
+    set
+}
+
+/// Set of smplOS suite packages, read from the OS suite manifest. These are
+/// maintained by the OS update process, so they're hidden from the Installed
+/// tab. The list is data-driven — adding a package to the manifest excludes it
+/// automatically, no code change needed.
+fn os_suite_packages() -> HashSet<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = [
+        format!("{home}/.local/share/smplos/repo/src/shared/update-policy/os-suite-packages.txt"),
+        format!("{home}/Documents/source/smpl-os/smplos/src/shared/update-policy/os-suite-packages.txt"),
+        "/usr/local/share/smplos/update-policy/os-suite-packages.txt".to_string(),
+    ];
+    let mut set = HashSet::new();
+    for path in candidates {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                set.insert(line.to_string());
+            }
+            break;
+        }
+    }
     set
 }
 
