@@ -480,47 +480,22 @@ fn main() -> Result<(), slint::PlatformError> {
     // -- Update Apps (kernel/driver packages excluded) --
     {
         ui.on_update_apps(move || {
-            use std::io::Write;
-            use std::process::Stdio;
-
-            let mut child = match std::process::Command::new("smplos-update")
-                .args(["--mode", "apps"])
-                .stdin(Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-
-            // Pass empty line via stdin for app updates (still needs sudo for flatpak/pacman)
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = writeln!(stdin);
-                // stdin is dropped here
-            }
+            let mut cmd = std::process::Command::new("smplos-update");
+            cmd.args(["--mode", "apps"]);
+            // Empty password for app-only updates (still needs sudo for flatpak/pacman)
+            cmd.env("SMPLOS_PASSWORD", "");
+            let _ = cmd.spawn();
         });
     }
 
     // -- Update OS (full system update, kernel + drivers) --
     {
         ui.on_update_os(move |password: SharedString| {
-            use std::io::Write;
-            use std::process::Stdio;
-
-            let mut child = match std::process::Command::new("smplos-update")
-                .args(["--mode", "full"])
-                .stdin(Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-
-            // Pass password via stdin (first line)
-            if let Some(mut stdin) = child.stdin.take() {
-                let pwd = password.to_string();
-                let _ = writeln!(stdin, "{}", pwd);
-                // stdin is dropped here, signaling EOF to the child process
-            }
+            let mut cmd = std::process::Command::new("smplos-update");
+            cmd.args(["--mode", "full"]);
+            // Pass password as environment variable (not on command line to hide from ps)
+            cmd.env("SMPLOS_PASSWORD", &password);
+            let _ = cmd.spawn();
         });
     }
 
