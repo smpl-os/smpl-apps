@@ -101,16 +101,19 @@ fn update_results(
     ui.set_searching(false);
 }
 
-/// Get list of user-installed packages and check for updates.
+/// Get list of user-installed GUI applications and check for updates.
 ///
-/// Only *explicitly installed* packages are listed (`pacman -Qe`), i.e. the
-/// apps the user actually chose to install — not the hundreds of dependency
-/// packages pulled in automatically, and not base/system packages.
+/// Only apps with a desktop launcher are listed (like the start menu): a
+/// package is included only if it owns a `.desktop` file. This hides CLI tools,
+/// libraries and system/dependency packages — leaving real apps like Blender,
+/// VSCode, GIMP, etc. All Flatpak apps are GUI apps and are always included.
 fn get_installed_packages() -> Vec<AppItem> {
     let mut apps = Vec::new();
 
-    // --- Pacman repo apps (explicitly installed, native) ---
-    // Available repo updates first, so we can flag each package.
+    // Build the set of explicitly-installed packages that own a .desktop file.
+    let gui_packages = gui_desktop_packages();
+
+    // --- Pacman repo apps (explicitly installed, native, with launcher) ---
     let mut pacman_updates = HashSet::new();
     if let Ok(output) = std::process::Command::new("pacman")
         .args(["-Qu"])
@@ -123,7 +126,6 @@ fn get_installed_packages() -> Vec<AppItem> {
         }
     }
 
-    // `-Qen` = explicitly installed AND native (from official repos).
     if let Ok(output) = std::process::Command::new("pacman")
         .args(["-Qen"])
         .output()
@@ -132,6 +134,9 @@ fn get_installed_packages() -> Vec<AppItem> {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 let name = parts[0].to_string();
+                if !gui_packages.contains(&name) {
+                    continue;
+                }
                 let version = parts[1].to_string();
                 let has_update = pacman_updates.contains(&name);
 
@@ -154,8 +159,7 @@ fn get_installed_packages() -> Vec<AppItem> {
         }
     }
 
-    // --- AUR / manually-installed apps (explicitly installed, foreign) ---
-    // AUR-only updates.
+    // --- AUR / manually-installed apps (explicit, foreign, with launcher) ---
     let mut aur_updates = HashSet::new();
     if let Ok(output) = std::process::Command::new("paru")
         .args(["-Qua"])
@@ -168,7 +172,6 @@ fn get_installed_packages() -> Vec<AppItem> {
         }
     }
 
-    // `-Qem` = explicitly installed AND foreign (AUR or manually installed).
     if let Ok(output) = std::process::Command::new("pacman")
         .args(["-Qem"])
         .output()
@@ -177,6 +180,9 @@ fn get_installed_packages() -> Vec<AppItem> {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 let name = parts[0].to_string();
+                if !gui_packages.contains(&name) {
+                    continue;
+                }
                 let version = parts[1].to_string();
                 let has_update = aur_updates.contains(&name);
 
@@ -234,6 +240,40 @@ fn get_installed_packages() -> Vec<AppItem> {
     }
 
     apps
+}
+
+/// Set of explicitly-installed packages that own at least one .desktop launcher.
+fn gui_desktop_packages() -> HashSet<String> {
+    let mut set = HashSet::new();
+
+    // Names of explicitly-installed packages.
+    let explicit = std::process::Command::new("pacman")
+        .args(["-Qeq"])
+        .output();
+    let Ok(explicit) = explicit else { return set };
+    let names: Vec<String> = String::from_utf8_lossy(&explicit.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if names.is_empty() {
+        return set;
+    }
+
+    // List the files each owns; keep packages with a .desktop in applications/.
+    let mut args = vec!["-Ql".to_string()];
+    args.extend(names);
+    if let Ok(output) = std::process::Command::new("pacman").args(&args).output() {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.contains("/usr/share/applications/") && line.ends_with(".desktop") {
+                if let Some(pkg) = line.split_whitespace().next() {
+                    set.insert(pkg.to_string());
+                }
+            }
+        }
+    }
+
+    set
 }
 
 fn main() -> Result<(), slint::PlatformError> {
