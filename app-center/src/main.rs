@@ -339,10 +339,25 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_switch_tab(move |tab_index| {
             let Some(ui) = ui_weak.upgrade() else { return };
 
-            if tab_index == 1 {
-                let recommended = sources::recommended::get_recommended();
-                update_results(&ui, &state, &model, recommended);
+            if tab_index == 0 {
+                // Installed tab: load installed packages if not already loaded.
+                if ui.get_installed_apps().row_count() == 0 && !ui.get_checking_for_updates() {
+                    ui.set_checking_for_updates(true);
+                    let ui_weak_clone = ui_weak.clone();
+                    std::thread::spawn(move || {
+                        let apps = get_installed_packages();
+                        let apps_with_updates =
+                            apps.iter().filter(|a| a.has_update).count() as i32;
+                        let _ = ui_weak_clone.upgrade_in_event_loop(move |ui| {
+                            let model = Rc::new(VecModel::<AppItem>::from(apps));
+                            ui.set_installed_apps(ModelRc::from(model));
+                            ui.set_apps_with_updates(apps_with_updates);
+                            ui.set_checking_for_updates(false);
+                        });
+                    });
+                }
             } else {
+                // Search tab: restore current search results (or empty state).
                 let q = ui.get_search_text().to_string();
                 if q.is_empty() {
                     update_results(&ui, &state, &model, Vec::new());
@@ -652,18 +667,19 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(ui) = ui_weak.upgrade() else { return };
             ui.set_checking_for_updates(true);
 
-            // Query installed packages in background
+            // Query installed packages in a background thread, then push results
+            // back to the UI on the event-loop thread (Slint is single-threaded).
             let ui_weak_clone = ui_weak.clone();
             std::thread::spawn(move || {
                 let apps = get_installed_packages();
                 let apps_with_updates = apps.iter().filter(|a| a.has_update).count() as i32;
 
-                if let Some(ui) = ui_weak_clone.upgrade() {
+                let _ = ui_weak_clone.upgrade_in_event_loop(move |ui| {
                     let model = Rc::new(VecModel::<AppItem>::from(apps));
                     ui.set_installed_apps(ModelRc::from(model));
                     ui.set_apps_with_updates(apps_with_updates);
                     ui.set_checking_for_updates(false);
-                }
+                });
             });
         });
     }
@@ -731,5 +747,22 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     ui.invoke_focus_search();
+
+    // Load installed apps on startup (Installed is the default tab).
+    {
+        let ui_weak = ui.as_weak();
+        ui.set_checking_for_updates(true);
+        std::thread::spawn(move || {
+            let apps = get_installed_packages();
+            let apps_with_updates = apps.iter().filter(|a| a.has_update).count() as i32;
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                let model = Rc::new(VecModel::<AppItem>::from(apps));
+                ui.set_installed_apps(ModelRc::from(model));
+                ui.set_apps_with_updates(apps_with_updates);
+                ui.set_checking_for_updates(false);
+            });
+        });
+    }
+
     ui.run()
 }

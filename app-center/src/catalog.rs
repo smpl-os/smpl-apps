@@ -135,6 +135,7 @@ pub fn is_appimage_installed(name: &str) -> bool {
 }
 
 /// Check if a script-based app is installed by running `<script_id> check`.
+#[allow(dead_code)]
 pub fn is_script_installed(script_id: &str) -> bool {
     std::process::Command::new(script_id)
         .arg("check")

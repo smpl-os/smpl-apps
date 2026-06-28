@@ -1,6 +1,8 @@
 use crate::catalog::{is_script_installed, AppEntry, Source};
 
 /// Curated list of recommended apps with guided setup scripts.
+/// Retained for potential future use (Recommended tab was removed).
+#[allow(dead_code)]
 pub fn get_recommended() -> Vec<AppEntry> {
     let mut entries = vec![
         AppEntry {
