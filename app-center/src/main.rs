@@ -480,22 +480,18 @@ fn main() -> Result<(), slint::PlatformError> {
     // -- Update Apps (kernel/driver packages excluded) --
     {
         ui.on_update_apps(move || {
-            let mut cmd = std::process::Command::new("smplos-update");
-            cmd.args(["--mode", "apps"]);
-            // Empty password for app-only updates (still needs sudo for flatpak/pacman)
-            cmd.env("SMPLOS_PASSWORD", "");
-            let _ = cmd.spawn();
+            let _ = std::process::Command::new("smplos-update")
+                .args(["--mode", "apps"])
+                .spawn();
         });
     }
 
     // -- Update OS (full system update, kernel + drivers) --
     {
-        ui.on_update_os(move |password: SharedString| {
-            let mut cmd = std::process::Command::new("smplos-update");
-            cmd.args(["--mode", "full"]);
-            // Pass password as environment variable (not on command line to hide from ps)
-            cmd.env("SMPLOS_PASSWORD", &password);
-            let _ = cmd.spawn();
+        ui.on_update_os(move || {
+            let _ = std::process::Command::new("smplos-update")
+                .args(["--mode", "full"])
+                .spawn();
         });
     }
 
