@@ -218,6 +218,44 @@ pub fn spawn_install(source: &Source, id: &str) -> SpawnResult {
     }
 }
 
+/// Spawn an update for a specific set of pacman/AUR and flatpak packages.
+/// Repo + AUR packages are upgraded together via paru -Syu, flatpak apps
+/// via flatpak update. Empty lists are skipped.
+pub fn spawn_update(pacman_ids: &[String], flatpak_ids: &[String]) -> SpawnResult {
+    let mut steps: Vec<String> = Vec::new();
+    if !pacman_ids.is_empty() {
+        let list = pacman_ids
+            .iter()
+            .map(|p| format!("'{}'", p.replace('\'', "'\\''")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if paru_works() {
+            steps.push(format!("paru -Syu --noconfirm {}", list));
+        } else {
+            steps.push(format!("pkexec pacman -Syu --noconfirm {}", list));
+        }
+    }
+    if !flatpak_ids.is_empty() && which_exists("flatpak") {
+        let list = flatpak_ids
+            .iter()
+            .map(|p| format!("'{}'", p.replace('\'', "'\\''")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        steps.push(format!("flatpak update -y --user {}", list));
+    }
+    if steps.is_empty() {
+        return SpawnResult::Immediate(ImmediateResult {
+            success: true,
+            message: "Nothing selected to update".into(),
+        });
+    }
+    let script = format!("set -e\n{}\n", steps.join("\n"));
+    match spawn_process("bash", &["-c", &script]) {
+        Ok(p) => SpawnResult::Streaming(p),
+        Err(e) => SpawnResult::Immediate(ImmediateResult { success: false, message: e }),
+    }
+}
+
 /// Spawn an uninstall process with streaming output.
 pub fn spawn_uninstall(source: &Source, id: &str, name: &str) -> SpawnResult {
     match source {

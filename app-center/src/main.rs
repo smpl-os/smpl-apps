@@ -155,7 +155,7 @@ fn get_installed_packages() -> Vec<AppItem> {
                     popularity: 0.0,
                     installed: true,
                     has_update,
-                    selected: false,
+                    selected: has_update,
                     update_progress: 0.0,
                 });
             }
@@ -201,7 +201,7 @@ fn get_installed_packages() -> Vec<AppItem> {
                     popularity: 0.0,
                     installed: true,
                     has_update,
-                    selected: false,
+                    selected: has_update,
                     update_progress: 0.0,
                 });
             }
@@ -731,7 +731,21 @@ fn main() -> Result<(), slint::PlatformError> {
 
                     if success {
                         if is_installed_tab {
-                            remove_installed_app(&ui, &installed_master_poll, &installed_id);
+                            if installed_id.is_empty() {
+                                // Batch update finished: re-query installed apps.
+                                let master = installed_master_poll.clone();
+                                let new = get_installed_packages();
+                                *master.lock().unwrap() = new.clone();
+                                ui.set_apps_with_updates(
+                                    new.iter().filter(|a| a.has_update).count() as i32,
+                                );
+                                ui.set_installed_apps(ModelRc::from(Rc::new(
+                                    VecModel::<AppItem>::from(new),
+                                )));
+                                let _ = std::process::Command::new("rebuild-app-cache").spawn();
+                            } else {
+                                remove_installed_app(&ui, &installed_master_poll, &installed_id);
+                            }
                         } else {
                             let new_state = is_install;
                             let mut borrowed = state.borrow_mut();
@@ -859,9 +873,53 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // -- Update Selected Apps --
     {
+        let ui_weak = ui.as_weak();
+        let active = active_install.clone();
         ui.on_update_selected_apps(move || {
-            // TODO: Run updates for selected apps
-            eprintln!("update_selected_apps: would update selected apps");
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if ui.get_installing() { return; }
+
+            let mut pacman_ids: Vec<String> = Vec::new();
+            let mut flatpak_ids: Vec<String> = Vec::new();
+            let apps = ui.get_installed_apps();
+            for i in 0..apps.row_count() {
+                if let Some(item) = apps.row_data(i) {
+                    if item.has_update && item.selected {
+                        match item.source.as_str() {
+                            "Flatpak" => flatpak_ids.push(item.id.to_string()),
+                            "Pacman" | "AUR" => pacman_ids.push(item.id.to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if pacman_ids.is_empty() && flatpak_ids.is_empty() {
+                return;
+            }
+
+            ui.set_installing(true);
+            ui.set_console_output(SharedString::default());
+            ui.set_console_last_line(SharedString::default());
+            ui.set_process_finished(false);
+            ui.set_process_success(false);
+
+            match installer::spawn_update(&pacman_ids, &flatpak_ids) {
+                installer::SpawnResult::Streaming(process) => {
+                    *active.borrow_mut() = Some(ActiveInstall {
+                        idx: 0,
+                        is_install: false,
+                        is_installed_tab: true,
+                        installed_id: String::new(),
+                        process,
+                    });
+                }
+                installer::SpawnResult::Immediate(result) => {
+                    ui.set_installing(false);
+                    ui.set_process_finished(true);
+                    ui.set_process_success(result.success);
+                    ui.set_console_output(SharedString::from(&result.message));
+                }
+            }
         });
     }
 

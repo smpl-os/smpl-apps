@@ -621,9 +621,15 @@ export component MainWindow inherits Window {
                 alignment: start;
 
                 ActionButton {
-                    label: root.checking-for-updates ? "Checking..." : (root.apps-with-updates > 0 ? root.apps-with-updates + " Updates" : "Check Updates");
+                    label: root.checking-for-updates ? "Checking..." : (root.apps-with-updates > 0 ? "Update " + root.apps-with-updates + " Apps" : "Check Updates");
                     btn-color: Theme.accent;
-                    clicked => { root.check-for-updates(); }
+                    clicked => {
+                        if (root.apps-with-updates > 0) {
+                            root.update-selected-apps();
+                        } else {
+                            root.check-for-updates();
+                        }
+                    }
                 }
             }
         }
