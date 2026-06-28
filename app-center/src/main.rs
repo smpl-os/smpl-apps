@@ -23,6 +23,9 @@ fn to_ui_item(app: &AppEntry) -> AppItem {
         votes: app.votes as i32,
         popularity: app.popularity as f32,
         installed: app.installed,
+        has_update: false,  // Will be set when checking for updates
+        selected: false,    // User can select apps for batch update
+        update_progress: 0.0,  // Progress tracking for individual updates
     }
 }
 
@@ -477,12 +480,28 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // -- Update Apps (kernel/driver packages excluded) --
+    // -- Check for Updates (Installed tab) --
     {
-        ui.on_update_apps(move || {
-            let _ = std::process::Command::new("smplos-update")
-                .args(["--mode", "apps"])
-                .spawn();
+        ui.on_check_for_updates(move || {
+            // TODO: Query installed packages, check for updates in repos
+            // Set checking-for-updates = true, apps-with-updates count, has-update on each app
+            eprintln!("check_for_updates called");
+        });
+    }
+
+    // -- Toggle App Selection --
+    {
+        ui.on_toggle_app_select(move |_idx| {
+            // TODO: Toggle selected flag on app at index
+            eprintln!("toggle_app_select called");
+        });
+    }
+
+    // -- Update Selected Apps --
+    {
+        ui.on_update_selected_apps(move || {
+            // TODO: Run updates only for apps where selected=true
+            eprintln!("update_selected_apps called");
         });
     }
 
