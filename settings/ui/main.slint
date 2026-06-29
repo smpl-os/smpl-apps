@@ -652,6 +652,24 @@ export component MainWindow inherits Window {
     in property <bool>       bt-no-hardware: false;
     in property <bool>       bt-discoverable: false;
 
+    // ── Glasses (XR) tab properties ──
+    in property <bool>       xr-glasses-connected: false;  // VITURE USB device present
+    in property <bool>       xr-running: false;            // renderer process alive
+    in property <bool>       xr-live: false;               // control socket reachable
+    in property <string>     xr-status: "";
+    in property <bool>       xr-status-is-error: false;
+    in-out property <bool>   xr-enabled: false;            // auto-launch service enabled
+    in-out property <int>    xr-monitor-count: 3;          // 1 or 3
+    in-out property <int>    xr-layout-index: 0;           // 0=arc, 1=flat
+    in-out property <float>  xr-radius: 2.0;
+    in-out property <float>  xr-fov: 46.0;
+    in-out property <float>  xr-curvature: 0.0;
+    in-out property <float>  xr-smoothing: 0.0;
+    in-out property <bool>   xr-stereo: false;
+    in-out property <int>    xr-capture-index: 0;          // 0=auto, 1=ext, 2=wlr
+    in-out property <bool>   xr-prefer-dmabuf: true;
+    in-out property <bool>   xr-headtracking: false;
+
     // ── Callbacks ──
     callback close();
     callback move-window(float, float);
@@ -738,6 +756,21 @@ export component MainWindow inherits Window {
     callback bt-forget(int);               // device index
     callback bt-set-powered(bool);         // power on/off
     callback bt-set-discoverable(bool);    // discoverable on/off
+
+    // Glasses (XR)
+    callback xr-refresh();                  // detect glasses + load config/state
+    callback xr-set-enabled(bool);          // enable/disable auto-launch + start/stop now
+    callback xr-set-monitors(int);          // 1 or 3 virtual monitors
+    callback xr-set-layout(int);            // 0=arc, 1=flat
+    callback xr-set-radius(float);          // arc radius
+    callback xr-set-fov(float);             // horizontal FOV degrees
+    callback xr-set-curvature(float);       // 0=flat..1=curved
+    callback xr-set-smoothing(float);       // 0=raw..1=heavy slerp
+    callback xr-set-stereo(bool);           // side-by-side 3D
+    callback xr-set-capture(int);           // 0=auto, 1=ext, 2=wlr
+    callback xr-set-prefer-dmabuf(bool);    // zero-copy capture
+    callback xr-set-headtracking(bool);     // mode B head-look output
+    callback xr-recenter();                 // snap origin to current head dir
 
     // Search
     callback filter-search(string);
@@ -1170,6 +1203,18 @@ export component MainWindow inherits Window {
                             root.active-tab = 8;
                             root.dropdown-open = false;
                             root.bt-list();
+                            focus-scope.focus();
+                        }
+                    }
+
+                    TabButton {
+                        label: "Glasses";
+                        icon: "\u{1F576}";
+                        active: root.active-tab == 9;
+                        clicked => {
+                            root.active-tab = 9;
+                            root.dropdown-open = false;
+                            root.xr-refresh();
                             focus-scope.focus();
                         }
                     }
@@ -6143,6 +6188,365 @@ export component MainWindow inherits Window {
                     viewport-height: tab8-flick.viewport-height;
                     viewport-y: tab8-flick.viewport-y;
                     visible-height: tab8-flick.height;
+                }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // GLASSES (XR) TAB
+            // ══════════════════════════════════════════════════════════════
+
+            if root.active-tab == 9: Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                clip: true;
+
+                tab9-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: self.width;
+                    viewport-height: tab9-content.preferred-height;
+
+                tab9-content := VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 4px;
+                    spacing: 12px;
+
+                    Text {
+                        text: "XR Glasses";
+                        color: Theme.fg;
+                        font-size: 14px;
+                        font-weight: 600;
+                    }
+
+                    // ── Status card ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Rectangle {
+                                    width: 10px; height: 10px; border-radius: 5px;
+                                    y: 4px;
+                                    background: root.xr-glasses-connected ? Theme.success : Theme.fg_dim;
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: root.xr-glasses-connected
+                                        ? (root.xr-running ? "VITURE glasses connected — virtual monitors active"
+                                                           : "VITURE glasses connected — renderer idle")
+                                        : "No VITURE glasses detected";
+                                    color: Theme.fg;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                Rectangle {
+                                    width: 64px; height: 24px; border-radius: 4px;
+                                    background: xr-refresh-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                    Text { text: "Refresh"; color: Theme.fg; font-size: 11px;
+                                        horizontal-alignment: center; vertical-alignment: center;
+                                        width: parent.width; height: parent.height; }
+                                    xr-refresh-touch := TouchArea { clicked => { root.xr-refresh(); } mouse-cursor: pointer; }
+                                }
+                            }
+
+                            if root.xr-status != "": Text {
+                                text: root.xr-status;
+                                color: root.xr-status-is-error ? #f38ba8 : Theme.fg_dim;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // ── Enable card (auto-launch + start now) ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+                                    Text { text: "Virtual monitors"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "Auto-launch when glasses connect"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                                // Toggle pill
+                                Rectangle {
+                                    width: 40px; height: 22px; border-radius: 11px;
+                                    background: root.xr-enabled ? Theme.accent : Theme.bg_lighter;
+                                    animate background { duration: 200ms; }
+                                    Rectangle {
+                                        x: root.xr-enabled ? parent.width - self.width - 3px : 3px;
+                                        y: 3px; width: 16px; height: 16px; border-radius: 8px; background: white;
+                                        animate x { duration: 200ms; easing: ease-in-out; }
+                                    }
+                                    TouchArea {
+                                        clicked => { root.xr-enabled = !root.xr-enabled; root.xr-set-enabled(root.xr-enabled); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Recenter button ──
+                    Rectangle {
+                        height: 40px;
+                        border-radius: 6px;
+                        background: xr-recenter-touch.has-hover ? Theme.accent : Theme.bg_light;
+                        HorizontalLayout {
+                            alignment: center; spacing: 8px;
+                            Text { text: "\u{1F3AF}"; font-size: 14px; vertical-alignment: center; }
+                            Text { text: "Recenter view"; color: xr-recenter-touch.has-hover ? Theme.bg : Theme.fg;
+                                font-size: 12px; vertical-alignment: center; }
+                        }
+                        xr-recenter-touch := TouchArea {
+                            clicked => { root.xr-recenter(); }
+                            mouse-cursor: root.xr-running ? pointer : default;
+                        }
+                    }
+
+                    // ── Monitor count ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        VerticalLayout {
+                            padding: 12px; spacing: 8px;
+                            Text { text: "Number of screens"; color: Theme.fg_dim; font-size: 11px; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                for opt[idx] in [{ l: "Single", v: 1 }, { l: "Triple (arc)", v: 3 }]: Rectangle {
+                                    height: 30px; horizontal-stretch: 1; border-radius: 4px;
+                                    background: root.xr-monitor-count == opt.v ? Theme.accent
+                                        : mc-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                    Text { text: opt.l; color: root.xr-monitor-count == opt.v ? Theme.bg : Theme.fg;
+                                        font-size: 11px; horizontal-alignment: center; vertical-alignment: center;
+                                        width: parent.width; height: parent.height; }
+                                    mc-touch := TouchArea {
+                                        clicked => { root.xr-monitor-count = opt.v; root.xr-set-monitors(opt.v); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Layout + radius ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        VerticalLayout {
+                            padding: 12px; spacing: 8px;
+                            Text { text: "Layout"; color: Theme.fg_dim; font-size: 11px; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                for opt[idx] in ["Arc", "Flat"]: Rectangle {
+                                    height: 30px; horizontal-stretch: 1; border-radius: 4px;
+                                    background: root.xr-layout-index == idx ? Theme.accent
+                                        : lay-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                    Text { text: opt; color: root.xr-layout-index == idx ? Theme.bg : Theme.fg;
+                                        font-size: 11px; horizontal-alignment: center; vertical-alignment: center;
+                                        width: parent.width; height: parent.height; }
+                                    lay-touch := TouchArea {
+                                        clicked => { root.xr-layout-index = idx; root.xr-set-layout(idx); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                            if root.xr-layout-index == 0: HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "Curve radius"; color: Theme.fg_dim; font-size: 11px;
+                                    vertical-alignment: center; width: 90px; }
+                                ThemeSlider {
+                                    horizontal-stretch: 1;
+                                    minimum: 1.0; maximum: 4.0; value: root.xr-radius;
+                                    changed(v) => { root.xr-radius = v; root.xr-set-radius(v); }
+                                }
+                                Text { text: round(root.xr-radius * 10) / 10 + "m"; color: Theme.fg;
+                                    font-size: 11px; vertical-alignment: center; width: 36px; }
+                            }
+                        }
+                    }
+
+                    // ── Display tuning: FOV / curvature / smoothing ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        VerticalLayout {
+                            padding: 12px; spacing: 10px;
+                            Text { text: "Display"; color: Theme.fg_dim; font-size: 11px; font-weight: 600; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "Field of view"; color: Theme.fg; font-size: 11px;
+                                    vertical-alignment: center; width: 90px; }
+                                ThemeSlider {
+                                    horizontal-stretch: 1;
+                                    minimum: 30.0; maximum: 70.0; value: root.xr-fov;
+                                    changed(v) => { root.xr-fov = v; root.xr-set-fov(v); }
+                                }
+                                Text { text: round(root.xr-fov) + "\u{00B0}"; color: Theme.fg;
+                                    font-size: 11px; vertical-alignment: center; width: 36px; }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "Screen curve"; color: Theme.fg; font-size: 11px;
+                                    vertical-alignment: center; width: 90px; }
+                                ThemeSlider {
+                                    horizontal-stretch: 1;
+                                    minimum: 0.0; maximum: 1.0; value: root.xr-curvature;
+                                    changed(v) => { root.xr-curvature = v; root.xr-set-curvature(v); }
+                                }
+                                Text { text: round(root.xr-curvature * 100) + "%"; color: Theme.fg;
+                                    font-size: 11px; vertical-alignment: center; width: 36px; }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "Smoothing"; color: Theme.fg; font-size: 11px;
+                                    vertical-alignment: center; width: 90px; }
+                                ThemeSlider {
+                                    horizontal-stretch: 1;
+                                    minimum: 0.0; maximum: 1.0; value: root.xr-smoothing;
+                                    changed(v) => { root.xr-smoothing = v; root.xr-set-smoothing(v); }
+                                }
+                                Text { text: round(root.xr-smoothing * 100) + "%"; color: Theme.fg;
+                                    font-size: 11px; vertical-alignment: center; width: 36px; }
+                            }
+                        }
+                    }
+
+                    // ── 3D / Stereo toggle ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        VerticalLayout {
+                            padding: 12px; spacing: 4px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1; spacing: 2px;
+                                    Text { text: "Side-by-side 3D"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "Stereoscopic output for 3D content"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                                Rectangle {
+                                    width: 40px; height: 22px; border-radius: 11px;
+                                    background: root.xr-stereo ? Theme.accent : Theme.bg_lighter;
+                                    animate background { duration: 200ms; }
+                                    Rectangle {
+                                        x: root.xr-stereo ? parent.width - self.width - 3px : 3px;
+                                        y: 3px; width: 16px; height: 16px; border-radius: 8px; background: white;
+                                        animate x { duration: 200ms; easing: ease-in-out; }
+                                    }
+                                    TouchArea {
+                                        clicked => { root.xr-stereo = !root.xr-stereo; root.xr-set-stereo(root.xr-stereo); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Head-tracking (mode B) toggle ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        VerticalLayout {
+                            padding: 12px; spacing: 4px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1; spacing: 2px;
+                                    Text { text: "Head-tracking output"; color: Theme.fg; font-size: 12px; }
+                                    Text { text: "Send head-look to flight/space sims (OpenTrack)"; color: Theme.fg_dim; font-size: 10px; }
+                                }
+                                Rectangle {
+                                    width: 40px; height: 22px; border-radius: 11px;
+                                    background: root.xr-headtracking ? Theme.accent : Theme.bg_lighter;
+                                    animate background { duration: 200ms; }
+                                    Rectangle {
+                                        x: root.xr-headtracking ? parent.width - self.width - 3px : 3px;
+                                        y: 3px; width: 16px; height: 16px; border-radius: 8px; background: white;
+                                        animate x { duration: 200ms; easing: ease-in-out; }
+                                    }
+                                    TouchArea {
+                                        clicked => { root.xr-headtracking = !root.xr-headtracking; root.xr-set-headtracking(root.xr-headtracking); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Advanced: capture backend ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.bg_light;
+                        VerticalLayout {
+                            padding: 12px; spacing: 8px;
+                            Text { text: "Advanced — capture backend"; color: Theme.fg_dim; font-size: 11px; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                for opt[idx] in ["Auto", "Modern", "wlroots"]: Rectangle {
+                                    height: 28px; horizontal-stretch: 1; border-radius: 4px;
+                                    background: root.xr-capture-index == idx ? Theme.accent
+                                        : cap-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                    Text { text: opt; color: root.xr-capture-index == idx ? Theme.bg : Theme.fg;
+                                        font-size: 10px; horizontal-alignment: center; vertical-alignment: center;
+                                        width: parent.width; height: parent.height; }
+                                    cap-touch := TouchArea {
+                                        clicked => { root.xr-capture-index = idx; root.xr-set-capture(idx); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "Zero-copy (dmabuf)"; color: Theme.fg; font-size: 11px;
+                                    horizontal-stretch: 1; vertical-alignment: center; }
+                                Rectangle {
+                                    width: 40px; height: 22px; border-radius: 11px;
+                                    background: root.xr-prefer-dmabuf ? Theme.accent : Theme.bg_lighter;
+                                    animate background { duration: 200ms; }
+                                    Rectangle {
+                                        x: root.xr-prefer-dmabuf ? parent.width - self.width - 3px : 3px;
+                                        y: 3px; width: 16px; height: 16px; border-radius: 8px; background: white;
+                                        animate x { duration: 200ms; easing: ease-in-out; }
+                                    }
+                                    TouchArea {
+                                        clicked => { root.xr-prefer-dmabuf = !root.xr-prefer-dmabuf; root.xr-set-prefer-dmabuf(root.xr-prefer-dmabuf); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                }
+
+                xr-scroll := Rectangle {
+                    width: 3px;
+                    x: parent.width - 3px;
+                    background: Theme.bg_lighter;
+                    visible: tab9-flick.viewport-height > tab9-flick.height;
+                    Rectangle {
+                        width: parent.width;
+                        background: Theme.fg_dim;
+                        height: parent.height * (tab9-flick.height / max(tab9-flick.viewport-height, 1px));
+                        y: -tab9-flick.viewport-y * (parent.height / max(tab9-flick.viewport-height, 1px));
+                    }
                 }
             }
 

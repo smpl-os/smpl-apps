@@ -7,6 +7,7 @@ mod taskbar;
 mod theme;
 mod wifi;
 mod xkb_labels;
+mod xr;
 
 use display::backend::DisplayBackend;
 use display::monitor::{canvas_scale_factor, Monitor, MonitorConfig};
@@ -165,6 +166,17 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("Connect Bluetooth", "bluetooth", 8),
         ("Headphones", "bluetooth", 8),
         ("Discoverable", "bluetooth", 8),
+        // Glasses (XR)
+        ("Glasses", "glasses", 9),
+        ("XR Glasses", "glasses", 9),
+        ("VITURE", "glasses", 9),
+        ("Virtual Monitors", "glasses", 9),
+        ("Virtual Desktop", "glasses", 9),
+        ("Head Tracking", "glasses", 9),
+        ("Field of View", "glasses", 9),
+        ("Recenter", "glasses", 9),
+        ("Side-by-side 3D", "glasses", 9),
+        ("AR Glasses", "glasses", 9),
     ]
 }
 
@@ -3241,6 +3253,74 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // ── Glasses (XR) callbacks ───────────────────────────────────────────────
+
+    {
+        // Push a freshly-detected state snapshot into the UI.
+        fn apply_xr_state(ui: &MainWindow, s: &xr::XrState) {
+            ui.set_xr_glasses_connected(s.glasses_connected);
+            ui.set_xr_running(s.running);
+            ui.set_xr_live(s.live);
+            ui.set_xr_enabled(s.enabled);
+            ui.set_xr_monitor_count(s.monitor_count);
+            ui.set_xr_layout_index(s.layout_index);
+            ui.set_xr_radius(s.radius);
+            ui.set_xr_fov(s.fov);
+            ui.set_xr_curvature(s.curvature);
+            ui.set_xr_smoothing(s.smoothing);
+            ui.set_xr_stereo(s.stereo);
+            ui.set_xr_capture_index(s.capture_index);
+            ui.set_xr_prefer_dmabuf(s.prefer_dmabuf);
+            ui.set_xr_headtracking(s.headtracking);
+        }
+
+        // Initial load so the tab is populated before first open.
+        apply_xr_state(&ui, &xr::load_state());
+
+        {
+            let ui_weak = ui.as_weak();
+            ui.on_xr_refresh(move || {
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let state = xr::load_state();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            apply_xr_state(&ui, &state);
+                        }
+                    });
+                });
+            });
+        }
+
+        {
+            let ui_weak = ui.as_weak();
+            ui.on_xr_set_enabled(move |on| {
+                let ui_weak2 = ui_weak.clone();
+                std::thread::spawn(move || {
+                    xr::set_enabled(on);
+                    let state = xr::load_state();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            apply_xr_state(&ui, &state);
+                        }
+                    });
+                });
+            });
+        }
+
+        ui.on_xr_set_monitors(xr::set_monitors);
+        ui.on_xr_set_layout(xr::set_layout);
+        ui.on_xr_set_radius(xr::set_radius);
+        ui.on_xr_set_fov(xr::set_fov);
+        ui.on_xr_set_curvature(xr::set_curvature);
+        ui.on_xr_set_smoothing(xr::set_smoothing);
+        ui.on_xr_set_stereo(xr::set_stereo);
+        ui.on_xr_set_capture(xr::set_capture);
+        ui.on_xr_set_prefer_dmabuf(xr::set_prefer_dmabuf);
+        ui.on_xr_set_headtracking(xr::set_headtracking);
+        ui.on_xr_recenter(xr::recenter);
+    }
+
     // ── Search callback ──────────────────────────────────────────────────────
 
     {
@@ -3255,6 +3335,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "taskbar" => "Taskbar",
                 "wifi" => "Wi-Fi",
                 "bluetooth" => "Bluetooth",
+                "glasses" => "Glasses",
                 _ => key,
             }
         }
