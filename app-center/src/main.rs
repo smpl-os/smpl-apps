@@ -802,6 +802,9 @@ fn main() -> Result<(), slint::PlatformError> {
                             ui.set_console_last_line(SharedString::from(trimmed));
                         }
                     }
+                    // Keep the copy-pastable log box live so it can be copied
+                    // even before the process finishes.
+                    ui.set_console_output(SharedString::from(buf.as_str()));
                 }
 
                 // Check if process finished
@@ -820,6 +823,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     ui.set_console_output(SharedString::from(
                         full_output.borrow().as_str(),
                     ));
+                    // Persist log so it can always be retrieved/copied later.
+                    let _ = std::fs::write("/tmp/app-center-update.log", full_output.borrow().as_str());
                     full_output.borrow_mut().clear();
 
                     if success {

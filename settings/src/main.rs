@@ -367,20 +367,32 @@ impl DisplayState {
     }
 
     fn configs_from_current(&self) -> Vec<MonitorConfig> {
-        // Normalize the layout origin to (0,0): drag operations can leave a
-        // large x/y offset, which pushes the whole desktop (and windows)
-        // off-screen after monitors are re-arranged. Subtract the minimum
-        // x/y from every monitor so the top-left monitor sits at 0,0.
-        let min_x = self.monitors.iter().map(|m| m.x).min().unwrap_or(0);
+        // Pack monitors edge-to-edge left-to-right so there is never a gap
+        // (a gap traps the cursor between screens) and origin starts at 0,0
+        // (a large offset pushes windows off-screen after re-arrangement).
+        // Vertical position is preserved so monitors can still be aligned
+        // top/bottom; only horizontal gaps are removed.
+        let eff_w = |m: &Monitor| {
+            ((if m.transform % 2 == 1 { m.height } else { m.width }) as f64 / m.scale) as i32
+        };
         let min_y = self.monitors.iter().map(|m| m.y).min().unwrap_or(0);
+        let mut order: Vec<usize> = (0..self.monitors.len()).collect();
+        order.sort_by_key(|&i| self.monitors[i].x);
+        let mut cursor_x = 0;
+        let mut packed_x = vec![0; self.monitors.len()];
+        for &i in &order {
+            packed_x[i] = cursor_x;
+            cursor_x += eff_w(&self.monitors[i]);
+        }
         self.monitors
             .iter()
-            .map(|m| MonitorConfig {
+            .enumerate()
+            .map(|(i, m)| MonitorConfig {
                 name: m.name.clone(),
                 width: m.width,
                 height: m.height,
                 refresh_rate: m.refresh_rate,
-                x: m.x - min_x,
+                x: packed_x[i],
                 y: m.y - min_y,
                 scale: m.scale,
                 transform: m.transform,
@@ -1619,29 +1631,43 @@ fn main() -> Result<(), slint::PlatformError> {
             // Y is never snapped so the user can freely align monitors vertically.
             // Portrait transforms (odd) swap effective width/height.
             let eff_w = |m: &Monitor| if m.transform % 2 == 1 { m.height } else { m.width };
+            let eff_h = |m: &Monitor| if m.transform % 2 == 1 { m.width } else { m.height };
             let logical_w = (eff_w(&st.monitors[idx]) as f64 / st.monitors[idx].scale) as i32;
-            let snapped_x = {
-                let mut best_x = real_x;
-                let mut best_dist = i32::MAX;
-                for (i, m) in st.monitors.iter().enumerate() {
-                    if i == idx { continue; }
-                    let ow = (eff_w(m) as f64 / m.scale) as i32;
-                    // Candidate: place dragged immediately right of this monitor
-                    let right_of = m.x + ow;
-                    // Candidate: place dragged immediately left of this monitor
-                    let left_of = m.x - logical_w;
-                    for cx in [right_of, left_of] {
-                        let dist = (cx - real_x).abs();
-                        if dist < best_dist {
-                            best_dist = dist;
-                            best_x = cx;
-                        }
+            let logical_h = (eff_h(&st.monitors[idx]) as f64 / st.monitors[idx].scale) as i32;
+            // Pick the dominant adjacency: if the dragged monitor overlaps a
+            // neighbor more vertically, it's side-by-side -> snap left/right
+            // edges; if it overlaps more horizontally, it's stacked -> snap
+            // top/bottom edges. Whichever shared edge is largest wins.
+            let thresh = 80;
+            let mut snapped_x = real_x;
+            let mut snapped_y = real_y;
+            let mut best_dx = thresh;
+            let mut best_dy = thresh;
+            for (i, m) in st.monitors.iter().enumerate() {
+                if i == idx { continue; }
+                let ow = (eff_w(m) as f64 / m.scale) as i32;
+                let oh = (eff_h(m) as f64 / m.scale) as i32;
+                // Overlap extents if placed at the dropped position.
+                let v_overlap =
+                    (real_y + logical_h).min(m.y + oh) - real_y.max(m.y);
+                let h_overlap =
+                    (real_x + logical_w).min(m.x + ow) - real_x.max(m.x);
+                if v_overlap >= h_overlap {
+                    // Side-by-side: snap the horizontal edge, align tops.
+                    for cx in [m.x + ow, m.x - logical_w] {
+                        let d = (cx - real_x).abs();
+                        if d < best_dx { best_dx = d; snapped_x = cx; snapped_y = m.y; }
+                    }
+                } else {
+                    // Stacked: snap the vertical edge, align left sides.
+                    for cy in [m.y + oh, m.y - logical_h] {
+                        let d = (cy - real_y).abs();
+                        if d < best_dy { best_dy = d; snapped_y = cy; snapped_x = m.x; }
                     }
                 }
-                best_x
-            };
+            }
             st.monitors[idx].x = snapped_x;
-            // Y stays exactly where the user dropped it — no vertical snapping.
+            st.monitors[idx].y = snapped_y;
 
             st.recalc_canvas();
             let ui = ui_handle.unwrap();

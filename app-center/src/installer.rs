@@ -237,10 +237,11 @@ pub fn spawn_update(pacman_ids: &[String], flatpak_ids: &[String]) -> SpawnResul
             .join(" ");
         // pkexec shows a graphical polkit password dialog (same as smplos-update).
         // Refresh mirrors first (skip if reflector is missing) to dodge expired/dead
-        // mirrors, then upgrade. Ignore the hypr critical stack so partial upgrades
-        // don't break ignored hyprland deps (aquamarine/hyprutils/etc).
+        // mirrors, then upgrade ONLY the selected packages. We deliberately do not
+        // run a full -Syu: the hypr stack is pinned, so a system upgrade can't be
+        // satisfied. Targeted -Sy upgrades just the chosen apps + their deps.
         steps.push(format!(
-            "pkexec sh -c \"command -v reflector >/dev/null 2>&1 && reflector --latest 20 --sort rate --protocol https --save /etc/pacman.d/mirrorlist; pacman -Syu --noconfirm --ignore hyprland --ignore aquamarine --ignore hyprutils --ignore hyprlang --ignore hyprcursor --ignore hyprgraphics --ignore hyprwayland-scanner {}\"",
+            "pkexec sh -c \"command -v reflector >/dev/null 2>&1 && timeout 12 reflector --latest 20 --sort rate --protocol https --connection-timeout 2 --download-timeout 2 --save /etc/pacman.d/mirrorlist; pacman -Sy --needed --noconfirm {}\"",
             list
         ));
     }

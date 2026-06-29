@@ -340,12 +340,16 @@ component MonitorRect inherits Rectangle {
 
     in property <float> base-x;
     in property <float> base-y;
+    in property <float> canvas-max-x;
+    in property <float> canvas-max-y;
     in-out property <float> offset-x: 0;
     in-out property <float> offset-y: 0;
     private property <bool> dragging: false;
 
     callback clicked();
     callback drag-finished(float, float);
+    callback dragging-changed(bool);
+    callback press-changed(bool);
 
     x: (base-x + offset-x) * 1px;
     y: (base-y + offset-y) * 1px;
@@ -396,15 +400,32 @@ component MonitorRect inherits Rectangle {
 
         moved => {
             if (self.pressed) {
-                root.dragging = true;
+                if (!root.dragging) {
+                    root.dragging = true;
+                    root.dragging-changed(true);
+                }
                 root.offset-x += (self.mouse-x - self.pressed-x) / 1px;
                 root.offset-y += (self.mouse-y - self.pressed-y) / 1px;
+                // Clamp inside the canvas so the rect can't cover the cards below.
+                if (root.base-x + root.offset-x < 0) { root.offset-x = -root.base-x; }
+                if (root.base-x + root.offset-x > root.canvas-max-x) {
+                    root.offset-x = root.canvas-max-x - root.base-x;
+                }
+                if (root.base-y + root.offset-y < 0) { root.offset-y = -root.base-y; }
+                if (root.base-y + root.offset-y > root.canvas-max-y) {
+                    root.offset-y = root.canvas-max-y - root.base-y;
+                }
             }
         }
 
         pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.press-changed(true);
+            }
             if (event.kind == PointerEventKind.up) {
+                root.press-changed(false);
                 if (root.dragging) {
+                    root.dragging = false;
                     root.drag-finished(root.base-x + root.offset-x,
                                        root.base-y + root.offset-y);
                 }
@@ -549,6 +570,7 @@ export component MainWindow inherits Window {
     // ── Display tab properties ──
     in property <[MonitorInfo]> disp-monitors: [];
     in-out property <int> disp-selected-index: -1;
+    in-out property <bool> disp-dragging: false;
     in property <[string]> disp-selected-modes: [];
     in-out property <int> disp-selected-mode-index: 0;
     in-out property <float> disp-selected-scale: 1.0;
@@ -2124,12 +2146,8 @@ export component MainWindow inherits Window {
                 vertical-stretch: 1;
                 clip: true;
 
-                tab3-flick := Flickable {
-                    width: parent.width - 6px;
-                    height: parent.height;
-                    viewport-width: self.width;
-
                 VerticalLayout {
+                    width: parent.width - 6px;
                     padding-left: 10px;
                     padding-right: 4px;
                     spacing: 10px;
@@ -2264,6 +2282,8 @@ export component MainWindow inherits Window {
                         height: mon.canvas-h * 1px;
                         base-x: mon.canvas-x;
                         base-y: mon.canvas-y;
+                        canvas-max-x: parent.width / 1px - mon.canvas-w;
+                        canvas-max-y: parent.height / 1px - mon.canvas-h;
                         label: mon.name;
                         sublabel: "\{mon.width}x\{mon.height}";
                         selected: i == disp-selected-index;
@@ -2274,6 +2294,14 @@ export component MainWindow inherits Window {
                             root.disp-select-monitor(i);
                         }
 
+                        dragging-changed(d) => {
+                            root.disp-dragging = d;
+                        }
+
+                        press-changed(p) => {
+                            root.disp-dragging = p;
+                        }
+
                         drag-finished(cx, cy) => {
                             root.disp-selected-index = i;
                             root.disp-drag-finished(i, cx, cy);
@@ -2281,6 +2309,12 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                tab3-flick := Flickable {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+
+                VerticalLayout {
+                    spacing: 10px;
                 // ── Monitor settings cards (shown when a monitor is selected) ──
                 if disp-selected-index >= 0 && disp-selected-index < disp-monitors.length: VerticalLayout {
                     spacing: 10px;
@@ -2303,21 +2337,25 @@ export component MainWindow inherits Window {
                         animate border-color { duration: 400ms; easing: ease-in-out; }
 
                         VerticalLayout {
-                            padding: 12px;
-                            spacing: 8px;
+                            padding: 10px;
 
-                            Text {
-                                text: "Resolution & Refresh Rate";
-                                color: Theme.fg_dim;
-                                font-size: 11px;
-                                font-weight: 600;
-                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: "Resolution";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    width: 90px;
+                                }
 
-                            ResDropdown {
-                                model: root.disp-selected-modes;
-                                current-index: root.disp-selected-mode-index;
-                                selected(idx) => {
-                                    root.disp-change-resolution(root.disp-selected-index, idx);
+                                ResDropdown {
+                                    model: root.disp-selected-modes;
+                                    current-index: root.disp-selected-mode-index;
+                                    selected(idx) => {
+                                        root.disp-change-resolution(root.disp-selected-index, idx);
+                                    }
                                 }
                             }
                         }
@@ -2333,22 +2371,26 @@ export component MainWindow inherits Window {
                         animate border-color { duration: 400ms; easing: ease-in-out; }
 
                         VerticalLayout {
-                            padding: 12px;
-                            spacing: 8px;
+                            padding: 10px;
 
-                            Text {
-                                text: "Scale: " + round(root.disp-selected-scale * 100) / 100;
-                                color: Theme.fg_dim;
-                                font-size: 11px;
-                                font-weight: 600;
-                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: "Scale: " + round(root.disp-selected-scale * 100) / 100;
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    width: 90px;
+                                }
 
-                            ThemeSlider {
-                                value: root.disp-selected-scale;
-                                minimum: 0.5;
-                                maximum: 3.0;
-                                changed(v) => {
-                                    root.disp-change-scale(root.disp-selected-index, v);
+                                ThemeSlider {
+                                    value: root.disp-selected-scale;
+                                    minimum: 0.5;
+                                    maximum: 3.0;
+                                    changed(v) => {
+                                        root.disp-change-scale(root.disp-selected-index, v);
+                                    }
                                 }
                             }
                         }
@@ -2364,21 +2406,25 @@ export component MainWindow inherits Window {
                         animate border-color { duration: 400ms; easing: ease-in-out; }
 
                         VerticalLayout {
-                            padding: 12px;
-                            spacing: 8px;
+                            padding: 10px;
 
-                            Text {
-                                text: "Orientation";
-                                color: Theme.fg_dim;
-                                font-size: 11px;
-                                font-weight: 600;
-                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: "Orientation";
+                                    color: Theme.fg_dim;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    width: 90px;
+                                }
 
-                            ResDropdown {
-                                model: ["Landscape", "Portrait", "Landscape (flipped)", "Portrait (flipped)"];
-                                current-index: root.disp-selected-orientation;
-                                selected(idx) => {
-                                    root.disp-change-orientation(root.disp-selected-index, idx);
+                                ResDropdown {
+                                    model: ["Landscape", "Portrait", "Landscape (flipped)", "Portrait (flipped)"];
+                                    current-index: root.disp-selected-orientation;
+                                    selected(idx) => {
+                                        root.disp-change-orientation(root.disp-selected-index, idx);
+                                    }
                                 }
                             }
                         }
@@ -2616,6 +2662,7 @@ export component MainWindow inherits Window {
                             clicked => { root.disp-apply-changes(); }
                         }
                     }
+                }
                 }
                 }
                 }

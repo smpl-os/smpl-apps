@@ -11,6 +11,47 @@ impl HyprlandBackend {
         Self
     }
 
+    /// After a monitor re-arrangement, pull windows that ended up outside the
+    /// combined desktop bounds back into view. Floating windows are centered;
+    /// tiled windows reflow automatically when re-added to their workspace.
+    fn recover_offscreen_windows(&self, configs: &[MonitorConfig]) {
+        let mut max_x = 0i32;
+        let mut max_y = 0i32;
+        for c in configs.iter().filter(|c| c.enabled) {
+            let w = (if c.transform % 2 == 1 { c.height } else { c.width } as f64 / c.scale) as i32;
+            let h = (if c.transform % 2 == 1 { c.width } else { c.height } as f64 / c.scale) as i32;
+            max_x = max_x.max(c.x + w);
+            max_y = max_y.max(c.y + h);
+        }
+        if max_x == 0 || max_y == 0 {
+            return;
+        }
+        let clients_json = match self.hyprctl(&["clients", "-j"]) {
+            Ok(j) => j,
+            Err(_) => return,
+        };
+        let clients: Vec<serde_json::Value> =
+            serde_json::from_str(&clients_json).unwrap_or_default();
+        for c in clients {
+            let addr = c.get("address").and_then(|v| v.as_str()).unwrap_or("");
+            let floating = c.get("floating").and_then(|v| v.as_bool()).unwrap_or(false);
+            if addr.is_empty() {
+                continue;
+            }
+            if let Some(at) = c.get("at").and_then(|v| v.as_array()) {
+                let x = at.first().and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let y = at.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                if x < 0 || y < 0 || x >= max_x || y >= max_y {
+                    if floating {
+                        let _ = self.hyprctl(&["dispatch", "centerwindow", &format!("address:{addr}")]);
+                    } else {
+                        let _ = self.hyprctl(&["dispatch", "movetoworkspace", &format!("+0,address:{addr}")]);
+                    }
+                }
+            }
+        }
+    }
+
     fn hyprctl(&self, args: &[&str]) -> Result<String, String> {
         let output = Command::new("hyprctl")
             .args(args)
@@ -124,6 +165,11 @@ impl DisplayBackend for HyprlandBackend {
         let _ = Command::new("bash")
             .args(["-c", "bar-ctl start 2>/dev/null"])
             .output();
+
+        // Recover any window left off-screen by the re-arrangement: bind every
+        // workspace to a live monitor and re-center floating windows whose
+        // top-left now sits outside the combined desktop bounds.
+        self.recover_offscreen_windows(configs);
 
         Ok(())
     }

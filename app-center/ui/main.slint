@@ -1611,8 +1611,8 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            width: 620px;
-            height: 420px;
+            width: min(620px, parent.width - 40px);
+            height: min(420px, parent.height - 40px);
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             border-radius: 8px;
@@ -1658,7 +1658,7 @@ export component MainWindow inherits Window {
                             width: parent.width - 16px;
                             read-only: true;
                             single-line: false;
-                            wrap: word-wrap;
+                            wrap: char-wrap;
                             color: Theme.fg_dim;
                             font-size: 10px;
                             font-family: "JetBrainsMono Nerd Font";
