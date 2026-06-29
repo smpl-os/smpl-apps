@@ -23,6 +23,14 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **app-center: Installed-tab updates now actually work.** "Update Selected"
+  upgrades only the chosen apps via `pacman -Sy --needed <pkg>` (and
+  `flatpak update`), instead of a full `-Syu` that fails when the pinned hypr
+  stack can't satisfy newer sonames. A pkexec dialog prompts for the password
+  (same as OS update). Adds an internet check, fast mirror refresh
+  (`reflector`, 12s cap), a live char-wrapped log box with Copy Log, an
+  Unselect All button, and writes the run log to `/tmp/app-center-update.log`.
+
 - **app-center: prevent partial-upgrade breakage on install.** Both repo
   (`pacman`) and AUR install paths now run `-Syu --noconfirm <pkg>` instead
   of `-S --noconfirm <pkg>`. Installing a single package against an
