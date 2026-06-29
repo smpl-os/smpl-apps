@@ -97,6 +97,67 @@ jobs:
           done
           ls -lh dist/
 
+      - name: Bundle XR glasses module
+        # The XR renderer lives in a separate (private) repo. We pull its latest
+        # release tarball here, in CI, using a cross-repo token that NEVER leaves
+        # the build environment — customer machines only ever fetch the public
+        # smpl-apps release, so no secret is shipped to devices.
+        #
+        # Configure the XR_WORKSPACE_TOKEN secret (a fine-grained PAT with
+        # read access to contents on the xr-workspace repo). If it is absent the
+        # release still succeeds without XR rather than failing the whole build.
+        env:
+          XR_WORKSPACE_REPO: ${{ vars.XR_WORKSPACE_REPO || 'smpl-os/xr-workspace' }}
+          XR_TOKEN: ${{ secrets.XR_WORKSPACE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${XR_TOKEN:-}" ]]; then
+            echo "::warning::XR_WORKSPACE_TOKEN not set — releasing without the XR module"
+            exit 0
+          fi
+          pacman -S --noconfirm --needed jq curl tar
+
+          api="https://api.github.com/repos/${XR_WORKSPACE_REPO}/releases/latest"
+          rel=$(curl -fsSL -H "Authorization: Bearer ${XR_TOKEN}" \
+                     -H "Accept: application/vnd.github+json" "$api") || {
+            echo "::warning::Could not reach ${XR_WORKSPACE_REPO} releases — skipping XR"
+            exit 0
+          }
+
+          # The release asset is a private artifact, so fetch it via the asset
+          # API endpoint (id + Accept: octet-stream), not browser_download_url.
+          asset_id=$(echo "$rel" | jq -r \
+            '.assets[] | select(.name | test("xr-workspace-.*x86_64\\.tar\\.gz$")) | .id' \
+            | head -1)
+          if [[ -z "$asset_id" || "$asset_id" == "null" ]]; then
+            echo "::warning::No xr-workspace tarball asset found — skipping XR"
+            exit 0
+          fi
+
+          xr_tag=$(echo "$rel" | jq -r '.tag_name')
+          echo "Bundling xr-workspace ${xr_tag} into smpl-apps release"
+
+          mkdir -p xr-tmp
+          curl -fSL -H "Authorization: Bearer ${XR_TOKEN}" \
+               -H "Accept: application/octet-stream" \
+               "https://api.github.com/repos/${XR_WORKSPACE_REPO}/releases/assets/${asset_id}" \
+               -o xr-tmp/xr.tar.gz
+          tar -xzf xr-tmp/xr.tar.gz -C xr-tmp
+
+          # Copy the four binaries (wherever they live in the tarball) into dist/
+          # so the bundle tarball step picks them up automatically.
+          for bin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
+            src=$(find xr-tmp -type f -name "$bin" | head -1 || true)
+            if [[ -n "$src" ]]; then
+              strip "$src" 2>/dev/null || true
+              cp "$src" dist/
+            else
+              echo "::warning::xr binary '$bin' not present in xr-workspace tarball"
+            fi
+          done
+          echo "$xr_tag" > dist/.xr-version
+          ls -lh dist/
+
       - name: Create bundle tarball
         run: |
           VERSION="${{ steps.version.outputs.new }}"
