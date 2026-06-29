@@ -222,6 +222,12 @@ pub fn spawn_install(source: &Source, id: &str) -> SpawnResult {
 /// Repo + AUR packages are upgraded together via paru -Syu, flatpak apps
 /// via flatpak update. Empty lists are skipped.
 pub fn spawn_update(pacman_ids: &[String], flatpak_ids: &[String]) -> SpawnResult {
+    if !has_internet() {
+        return SpawnResult::Immediate(ImmediateResult {
+            success: false,
+            message: "No internet connection. Updates require an internet connection — please connect and try again.".into(),
+        });
+    }
     let mut steps: Vec<String> = Vec::new();
     if !pacman_ids.is_empty() {
         let list = pacman_ids
@@ -229,11 +235,14 @@ pub fn spawn_update(pacman_ids: &[String], flatpak_ids: &[String]) -> SpawnResul
             .map(|p| format!("'{}'", p.replace('\'', "'\\''")))
             .collect::<Vec<_>>()
             .join(" ");
-        if paru_works() {
-            steps.push(format!("paru -Syu --noconfirm {}", list));
-        } else {
-            steps.push(format!("pkexec pacman -Syu --noconfirm {}", list));
-        }
+        // pkexec shows a graphical polkit password dialog (same as smplos-update).
+        // Refresh mirrors first (skip if reflector is missing) to dodge expired/dead
+        // mirrors, then upgrade. Ignore the hypr critical stack so partial upgrades
+        // don't break ignored hyprland deps (aquamarine/hyprutils/etc).
+        steps.push(format!(
+            "pkexec sh -c \"command -v reflector >/dev/null 2>&1 && reflector --latest 20 --sort rate --protocol https --save /etc/pacman.d/mirrorlist; pacman -Syu --noconfirm --ignore hyprland --ignore aquamarine --ignore hyprutils --ignore hyprlang --ignore hyprcursor --ignore hyprgraphics --ignore hyprwayland-scanner {}\"",
+            list
+        ));
     }
     if !flatpak_ids.is_empty() && which_exists("flatpak") {
         let list = flatpak_ids
@@ -301,6 +310,18 @@ pub fn spawn_uninstall(source: &Source, id: &str, name: &str) -> SpawnResult {
 fn which_exists(name: &str) -> bool {
     Command::new("which")
         .arg(name)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Quick connectivity check so we can fail with a clear message instead of
+/// cryptic mirror errors. Short-timeout HTTPS request to a reliable host.
+fn has_internet() -> bool {
+    Command::new("curl")
+        .args(["-sS", "--max-time", "5", "-I", "https://archlinux.org"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

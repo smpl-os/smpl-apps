@@ -267,6 +267,7 @@ component ResDropdown inherits Rectangle {
                             clicked => {
                                 root.current-index = idx;
                                 root.selected(idx);
+                                popup.close();
                             }
                         }
                     }

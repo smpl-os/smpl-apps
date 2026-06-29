@@ -367,6 +367,12 @@ impl DisplayState {
     }
 
     fn configs_from_current(&self) -> Vec<MonitorConfig> {
+        // Normalize the layout origin to (0,0): drag operations can leave a
+        // large x/y offset, which pushes the whole desktop (and windows)
+        // off-screen after monitors are re-arranged. Subtract the minimum
+        // x/y from every monitor so the top-left monitor sits at 0,0.
+        let min_x = self.monitors.iter().map(|m| m.x).min().unwrap_or(0);
+        let min_y = self.monitors.iter().map(|m| m.y).min().unwrap_or(0);
         self.monitors
             .iter()
             .map(|m| MonitorConfig {
@@ -374,8 +380,8 @@ impl DisplayState {
                 width: m.width,
                 height: m.height,
                 refresh_rate: m.refresh_rate,
-                x: m.x,
-                y: m.y,
+                x: m.x - min_x,
+                y: m.y - min_y,
                 scale: m.scale,
                 transform: m.transform,
                 enabled: m.enabled,

@@ -342,6 +342,8 @@ export component MainWindow inherits Window {
     callback check-for-updates();
     callback toggle-app-select(int);
     callback update-selected-apps();
+    callback unselect-all-apps();
+    callback copy-log();
     callback filter-installed(string);
     callback uninstall-installed(int);
     callback filter-installed-changed();
@@ -650,6 +652,27 @@ export component MainWindow inherits Window {
                                 root.check-for-updates();
                             }
                         }
+                        mouse-cursor: pointer;
+                    }
+                }
+
+                Rectangle {
+                    width: unsel-text.preferred-width + 24px;
+                    height: 24px;
+                    border-radius: Theme.button_radius;
+                    background: unsel-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+
+                    unsel-text := Text {
+                        text: "Unselect All";
+                        color: Theme.fg;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    unsel-touch := TouchArea {
+                        clicked => { root.unselect-all-apps(); }
                         mouse-cursor: pointer;
                     }
                 }
@@ -1588,8 +1611,8 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            width: 420px;
-            height: root.installing ? 150px : 110px;
+            width: 620px;
+            height: 420px;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             border-radius: 8px;
@@ -1607,23 +1630,6 @@ export component MainWindow inherits Window {
                     font-size: 13px;
                     font-weight: 700;
                 }
-                if root.installing: Text {
-                    text: root.console-last-line;
-                    color: Theme.fg_dim;
-                    font-size: 11px;
-                    font-family: "JetBrainsMono Nerd Font";
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                }
-                if root.installing: HorizontalLayout {
-                    alignment: end;
-                    ActionButton {
-                        label: "Cancel";
-                        btn-color: Theme.danger;
-                        clicked => { root.cancel-install(); }
-                    }
-                }
-
                 if !root.installing && root.process-finished && root.process-success: Text {
                     text: "\u{2713} Update complete";
                     color: Theme.success;
@@ -1636,16 +1642,51 @@ export component MainWindow inherits Window {
                     font-size: 13px;
                     font-weight: 700;
                 }
-                if !root.installing && root.process-finished && !root.process-success: Text {
-                    text: root.console-output;
-                    color: Theme.fg_dim;
-                    font-size: 10px;
-                    font-family: "JetBrainsMono Nerd Font";
-                    wrap: word-wrap;
+
+                // Scrollable, copy-pastable log output
+                Rectangle {
+                    border-radius: 4px;
+                    background: Theme.bg.darker(0.1);
+                    vertical-stretch: 1;
+                    clip: true;
+
+                    log-flick := Flickable {
+                        viewport-width: self.width;
+                        viewport-height: log-text.preferred-height;
+                        log-text := TextInput {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            read-only: true;
+                            single-line: false;
+                            wrap: word-wrap;
+                            color: Theme.fg_dim;
+                            font-size: 10px;
+                            font-family: "JetBrainsMono Nerd Font";
+                            text: root.console-output != "" ? root.console-output : root.console-last-line;
+                            // keep view scrolled to the bottom as output grows
+                            changed preferred-height => {
+                                if (log-flick.viewport-height > log-flick.height) {
+                                    log-flick.viewport-y = log-flick.height - log-flick.viewport-height;
+                                }
+                            }
+                        }
+                    }
                 }
-                if !root.installing && root.process-finished: HorizontalLayout {
+
+                HorizontalLayout {
                     alignment: end;
+                    spacing: 8px;
                     ActionButton {
+                        label: "Copy Log";
+                        btn-color: Theme.bg_lighter;
+                        clicked => { root.copy-log(); }
+                    }
+                    if root.installing: ActionButton {
+                        label: "Cancel";
+                        btn-color: Theme.danger;
+                        clicked => { root.cancel-install(); }
+                    }
+                    if !root.installing && root.process-finished: ActionButton {
                         label: "Close";
                         btn-color: Theme.bg_lighter;
                         clicked => { root.process-finished = false; }

@@ -980,6 +980,23 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // -- Unselect All --
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_unselect_all_apps(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let apps = ui.get_installed_apps();
+            for i in 0..apps.row_count() {
+                if let Some(mut item) = apps.row_data(i) {
+                    if item.selected {
+                        item.selected = false;
+                        apps.set_row_data(i, item);
+                    }
+                }
+            }
+        });
+    }
+
     // -- Update Selected Apps --
     {
         let ui_weak = ui.as_weak();
@@ -998,6 +1015,20 @@ fn main() -> Result<(), slint::PlatformError> {
                             "Flatpak" => flatpak_ids.push(item.id.to_string()),
                             "Pacman" | "AUR" => pacman_ids.push(item.id.to_string()),
                             _ => {}
+                        }
+                    }
+                }
+            }
+            // If nothing is explicitly selected, update everything that has an update.
+            if pacman_ids.is_empty() && flatpak_ids.is_empty() {
+                for i in 0..apps.row_count() {
+                    if let Some(item) = apps.row_data(i) {
+                        if item.has_update {
+                            match item.source.as_str() {
+                                "Flatpak" => flatpak_ids.push(item.id.to_string()),
+                                "Pacman" | "AUR" => pacman_ids.push(item.id.to_string()),
+                                _ => {}
+                            }
                         }
                     }
                 }
@@ -1038,6 +1069,30 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = std::process::Command::new("smplos-update")
                 .args(["--mode", "full"])
                 .spawn();
+        });
+    }
+
+    // -- Copy log to clipboard --
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_copy_log(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let text = ui.get_console_output().to_string();
+            use std::io::Write;
+            for cmd in ["wl-copy", "xclip"] {
+                let args: &[&str] = if cmd == "xclip" { &["-selection", "clipboard"] } else { &[] };
+                if let Ok(mut child) = std::process::Command::new(cmd)
+                    .args(args)
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()
+                {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(text.as_bytes());
+                    }
+                    // Do not wait: wl-copy daemonizes to keep serving the selection.
+                    break;
+                }
+            }
         });
     }
 
