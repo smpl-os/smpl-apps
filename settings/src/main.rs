@@ -636,7 +636,7 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
          general {{\n    \
              lock_cmd = pidof hyprlock || hyprlock\n    \
              before_sleep_cmd = loginctl lock-session\n    \
-             after_sleep_cmd = hyprctl dispatch dpms on\n\
+             after_sleep_cmd = loginctl lock-session; sleep 0.5; hyprctl dispatch dpms on\n\
          }}\n\n\
          {lock_cmd}\n\
          {dpms_cmd}\n\
