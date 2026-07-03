@@ -595,7 +595,7 @@ fn timeout_to_index(secs: u32, presets: &[u32]) -> i32 {
 fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shutdown_secs: u32) {
     let lock_cmd = if lock_secs > 0 {
         format!(
-            "# {:.0} min -- lock screen\nlistener {{\n    timeout = {}\n    on-timeout = loginctl lock-session\n}}\n",
+            "# {:.0} min -- lock screen\nlistener {{\n    timeout = {}\n    on-timeout = loginctl lock-session\n    ignore_inhibit = true\n}}\n",
             lock_secs as f64 / 60.0, lock_secs
         )
     } else {
@@ -604,7 +604,7 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
 
     let dpms_cmd = if dpms_secs > 0 {
         format!(
-            "# {:.0} min -- screen off\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || hyprctl dispatch dpms off\n    on-resume = hyprctl dispatch dpms on\n}}\n",
+            "# {:.0} min -- screen off\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || hyprctl dispatch dpms off\n    on-resume = hyprctl dispatch dpms on\n    ignore_inhibit = true\n}}\n",
             dpms_secs as f64 / 60.0, dpms_secs
         )
     } else {
@@ -613,7 +613,7 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
 
     let suspend_cmd = if suspend_secs > 0 {
         format!(
-            "# {:.0} min -- suspend\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || systemctl suspend\n}}\n",
+            "# {:.0} min -- suspend\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || systemctl suspend\n    ignore_inhibit = true\n}}\n",
             suspend_secs as f64 / 60.0, suspend_secs
         )
     } else {
@@ -622,7 +622,7 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
 
     let shutdown_cmd = if shutdown_secs > 0 {
         format!(
-            "# {:.0} min -- shutdown (idle)\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || systemctl poweroff\n}}\n",
+            "# {:.0} min -- shutdown (idle)\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || systemctl poweroff\n    ignore_inhibit = true\n}}\n",
             shutdown_secs as f64 / 60.0, shutdown_secs
         )
     } else {
