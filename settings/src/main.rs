@@ -629,15 +629,28 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
         String::new()
     };
 
+    // The general block locks around suspend ONLY when idle-lock is enabled.
+    // When lock is set to "Never" (lock_secs == 0) we must NOT lock on
+    // suspend/resume -- the desktop should wake unlocked. lock_cmd stays either
+    // way so manual lock (Super+L / loginctl lock-session) still works.
+    let general = if lock_secs > 0 {
+        "general {\n    \
+             lock_cmd = pidof hyprlock || hyprlock\n    \
+             before_sleep_cmd = loginctl lock-session\n    \
+             after_sleep_cmd = loginctl lock-session; sleep 0.5; hyprctl dispatch dpms on\n\
+         }\n"
+    } else {
+        "general {\n    \
+             lock_cmd = pidof hyprlock || hyprlock\n    \
+             after_sleep_cmd = hyprctl dispatch dpms on\n\
+         }\n"
+    };
+
     let config = format!(
         "# smplOS Hypridle Configuration\n\
          # Managed by Settings app -- manual edits will be overwritten\n\
          \n\
-         general {{\n    \
-             lock_cmd = pidof hyprlock || hyprlock\n    \
-             before_sleep_cmd = loginctl lock-session\n    \
-             after_sleep_cmd = loginctl lock-session; sleep 0.5; hyprctl dispatch dpms on\n\
-         }}\n\n\
+         {general}\n\
          {lock_cmd}\n\
          {dpms_cmd}\n\
          {suspend_cmd}\n\
