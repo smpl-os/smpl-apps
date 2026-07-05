@@ -23,6 +23,20 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **settings: display rotation/scale now sticks.** Applying a monitor change in
+  Settings → Display previously used a live `hyprctl keyword monitor` batch,
+  which Hyprland can silently drop when a rotation is bundled with a
+  repositioning — so portrait mode "applied" but never took effect. Apply now
+  writes `monitors.conf` first, then re-sources it via `hyprctl reload` (the
+  same mechanism keybindings/layout/idle already use), so the persisted
+  transform/scale is authoritative and survives.
+
+- **settings: idle DPMS (sleep) uses the current dispatch syntax.** The idle
+  settings writer emitted the legacy `hyprctl dispatch dpms off/on`, which the
+  pinned Hyprland no longer honors, so changing idle timeouts broke
+  screen-off/resume. It now writes `hyprctl dispatch "hl.dsp.dpms({state=...})"`,
+  matching the shipped `hypridle.conf` and `lock-screen`.
+
 - **app-center: Installed-tab updates now actually work.** "Update Selected"
   upgrades only the chosen apps via `pacman -Sy --needed <pkg>` (and
   `flatpak update`), instead of a full `-Syu` that fails when the pinned hypr

@@ -604,7 +604,7 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
 
     let dpms_cmd = if dpms_secs > 0 {
         format!(
-            "# {:.0} min -- screen off\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || hyprctl dispatch dpms off\n    on-resume = hyprctl dispatch dpms on\n    ignore_inhibit = true\n}}\n",
+            "# {:.0} min -- screen off\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || hyprctl dispatch \"hl.dsp.dpms({{state='off'}})\"\n    on-resume = hyprctl dispatch \"hl.dsp.dpms({{state='on'}})\"\n    ignore_inhibit = true\n}}\n",
             dpms_secs as f64 / 60.0, dpms_secs
         )
     } else {
@@ -637,12 +637,12 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
         "general {\n    \
              lock_cmd = pidof hyprlock || hyprlock\n    \
              before_sleep_cmd = loginctl lock-session\n    \
-             after_sleep_cmd = loginctl lock-session; sleep 0.5; hyprctl dispatch dpms on\n\
+             after_sleep_cmd = loginctl lock-session; sleep 0.5; hyprctl dispatch \"hl.dsp.dpms({state='on'})\"\n\
          }\n"
     } else {
         "general {\n    \
              lock_cmd = pidof hyprlock || hyprlock\n    \
-             after_sleep_cmd = hyprctl dispatch dpms on\n\
+             after_sleep_cmd = hyprctl dispatch \"hl.dsp.dpms({state='on'})\"\n\
          }\n"
     };
 
@@ -1786,24 +1786,27 @@ fn main() -> Result<(), slint::PlatformError> {
 
             let configs = st.configs_from_current();
 
-            match st.backend.apply(&configs) {
-                Ok(()) => {
-                    match st.backend.persist(&configs) {
-                        Ok(path) => {
+            // Persist FIRST so monitors.conf is written before apply() re-sources
+            // it via `hyprctl reload`. If we applied before writing, the reload
+            // would re-read the OLD file and undo the change.
+            match st.backend.persist(&configs) {
+                Ok(path) => {
+                    match st.backend.apply(&configs) {
+                        Ok(()) => {
                             ui.set_disp_status_text(slint::SharedString::from(format!(
                                 "Applied and saved to {path}"
                             )));
                         }
                         Err(e) => {
                             ui.set_disp_status_text(slint::SharedString::from(format!(
-                                "Applied live but failed to save: {e}"
+                                "Saved to {path} but failed to apply live: {e}"
                             )));
                         }
                     }
                     st.original = st.monitors.clone();
                 }
                 Err(e) => {
-                    ui.set_disp_status_text(slint::SharedString::from(format!("Apply failed: {e}")));
+                    ui.set_disp_status_text(slint::SharedString::from(format!("Save failed: {e}")));
                 }
             }
             push_display_state_to_ui(&ui, &st);

@@ -134,34 +134,26 @@ impl DisplayBackend for HyprlandBackend {
     }
 
     fn apply(&self, configs: &[MonitorConfig]) -> Result<(), String> {
-        let batch: String = configs
-            .iter()
-            .map(|c| {
-                if !c.enabled {
-                    format!("keyword monitor {},disable", c.name)
-                } else {
-                    format!(
-                        "keyword monitor {},{}x{}@{:.2},{}x{},{:.2},transform,{}",
-                        c.name, c.width, c.height, c.refresh_rate, c.x, c.y, c.scale, c.transform,
-                    )
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(";");
-
         // Stop Eww BEFORE applying monitor changes to avoid windows appearing
         // on wrong monitors during the transition
         let _ = Command::new("bash")
             .args(["-c", "bar-ctl stop 2>/dev/null"])
             .output();
 
-        // Apply monitor changes
-        self.hyprctl(&["--batch", &batch])?;
+        // Re-source the persisted monitors.conf (written by persist() *before*
+        // this call). Going through `hyprctl reload` — the same mechanism the
+        // keybindings/layout/idle settings use — is authoritative: a live
+        // `keyword monitor` batch that bundles a rotation with a repositioning
+        // can be silently dropped by Hyprland, so the transform/scale would not
+        // stick. Reload re-runs the Lua config that parses monitors.conf, which
+        // applies the exact layout that was just written to disk.
+        self.hyprctl(&["reload"])?;
 
         // Wait a moment for Hyprland to stabilize the new layout
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // Restart Eww AFTER monitor changes are applied and stabilized
+        // Restart Eww AFTER monitor changes are applied and stabilized so the
+        // bars anchor to the final (rotated/scaled) monitor geometry.
         let _ = Command::new("bash")
             .args(["-c", "bar-ctl start 2>/dev/null"])
             .output();
