@@ -2579,8 +2579,10 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
+                }
+                }
 
-                // Footer: status + action buttons
+                // Footer: status + action buttons (docked — stays pinned below the scroll area)
                 HorizontalLayout {
                     height: 28px;
                     spacing: 8px;
@@ -2707,8 +2709,6 @@ export component MainWindow inherits Window {
                             clicked => { root.disp-apply-changes(); }
                         }
                     }
-                }
-                }
                 }
                 }
 
