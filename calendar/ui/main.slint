@@ -131,34 +131,8 @@ component PillBtn inherits Rectangle {
     }
 }
 
-// ── TimeInput (click-to-type, digits only, validated on Enter / Save) ────────
-
-component TimeInput inherits Rectangle {
-    in-out property <int> value: 0;
-    in property <int> min-val: 0;
-    in property <int> max-val: 59;
-    callback changed(int);
-
-    public function commit() {
-        root.value = clamp(round(txt.text.to-float()), root.min-val, root.max-val);
-        root.changed(root.value);
-    }
-
-    width: 40px; height: 32px; border-radius: 6px;
-    background: Theme.bg-lighter;
-    border-width: txt.has-focus ? 1px : 0px;
-    border-color: txt.has-focus ? Theme.accent : transparent;
-
-    txt := TextInput {
-        x: 4px; width: parent.width - 8px; height: parent.height;
-        text: root.value < 10 ? "0" + root.value : "" + root.value;
-        color: Theme.fg; font-size: 14px; font-weight: 600;
-        horizontal-alignment: center; vertical-alignment: center;
-        single-line: true;
-        input-type: InputType.number;
-        accepted => { root.commit(); }
-    }
-}
+// ── TimeInput removed — TimePicker replaced it. Kept the section header so
+//    grep history stays useful.
 
 // ── RecurrencePicker ──────────────────────────────────────────────────────────
 
@@ -230,6 +204,300 @@ component ReminderPicker inherits Rectangle {
                 Text { x: 10px; text: opt;
                        color: root.selected-idx == i ? Theme.accent : Theme.fg;
                        font-size: 12px; vertical-alignment: center; }
+            }
+        }
+    }
+}
+
+// ── TimePicker ────────────────────────────────────────────────────────────────
+// Dropdown of 15-minute slots (96 entries: 00:00, 00:15, …, 23:45). Bound to
+// two ints so the existing Rust wiring (form-start-h/m, form-end-h/m) stays
+// intact — no Rust changes required for the picker upgrade.
+//
+// Design notes:
+//   * We keep the two int props (hour, minute) as the source of truth. On any
+//     selection we split the 15-min slot index back into H and M so callers
+//     receive whole numbers, matching how chrono::NaiveTime is constructed in
+//     save_event().
+//   * The list shows the CURRENT slot highlighted regardless of whether the
+//     underlying minute value snaps to 15. If the model has 09:07 (from an
+//     import), we round to the nearest slot for the highlight but leave the
+//     underlying value alone until the user picks something.
+//   * `commit()` is a no-op so EventForm's existing sh.commit()/sm.commit()
+//     chain keeps compiling without special-casing.
+component TimePicker inherits Rectangle {
+    in-out property <int> hour: 9;
+    in-out property <int> minute: 0;
+    out property <bool> open: false;
+
+    // Nearest 15-min slot for the current (h,m) — used to scroll+highlight.
+    private property <int> current-slot: (root.hour * 60 + root.minute + 7) / 15;
+
+    public function commit() { /* no-op: dropdown selections write immediately */ }
+
+    height: 32px; width: 92px; border-radius: 6px;
+    background: Theme.bg-lighter; clip: false;
+
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 8px;
+        Text {
+            horizontal-stretch: 1;
+            text: (root.hour < 10 ? "0" : "") + root.hour
+                + ":"
+                + (root.minute < 10 ? "0" : "") + root.minute;
+            color: Theme.fg; font-size: 13px; font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text { text: root.open ? "\u{25B2}" : "\u{25BC}";
+               color: Theme.fg-dim; font-size: 9px; vertical-alignment: center; }
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { root.open = !root.open; } }
+
+    if root.open: Rectangle {
+        // 96 slots × 26px = 2496px total. Cap the popup at 240px and let the
+        // Flickable scroll. Position it below the field with a tiny gap.
+        x: 0px; y: 34px; width: parent.width; height: 240px;
+        border-radius: 6px; background: Theme.bg-lighter;
+        drop-shadow-blur: 8px; drop-shadow-color: #00000055; z: 100;
+        clip: true;
+
+        fl := Flickable {
+            // Auto-scroll so the current slot is roughly centered.
+            viewport-y: -1phx * max(0, root.current-slot * 26 - 100);
+            VerticalLayout {
+                for slot-i in 96: Rectangle {
+                    height: 26px; border-radius: 4px;
+                    background: sr.has-hover ? Theme.bg-light
+                              : (root.current-slot == slot-i
+                                  ? Theme.accent.transparentize(0.7)
+                                  : transparent);
+                    sr := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.hour = floor(slot-i / 4);
+                            root.minute = mod(slot-i, 4) * 15;
+                            root.open = false;
+                        }
+                    }
+                    Text {
+                        x: 10px;
+                        text: (floor(slot-i / 4) < 10 ? "0" : "") + floor(slot-i / 4)
+                            + ":"
+                            + (mod(slot-i, 4) * 15 < 10 ? "0" : "") + (mod(slot-i, 4) * 15);
+                        color: root.current-slot == slot-i ? Theme.accent : Theme.fg;
+                        font-size: 12px; font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── DatePicker ────────────────────────────────────────────────────────────────
+// Bound to three separate int props (year / month / day). Slint has no string
+// slicing so the YYYY-MM-DD ↔ (y,m,d) split lives in Rust — save_event() and
+// the form-open path already touch chrono::NaiveDate anyway. The wrapper
+// property `date-str` is derived here purely for the field's display label
+// (and for the invalid-date banner in the outer form).
+//
+// The popup shows a mini month grid with prev/next-month arrows in the header.
+// Local nav state (`view-year`, `view-month`) is initialized from (year, month)
+// each time the popup opens so the calendar always lands on the currently
+// selected month even after the user cancels and reopens the form.
+component DatePicker inherits Rectangle {
+    in-out property <int> year:  2026;
+    in-out property <int> month: 1;
+    in-out property <int> day:   1;
+    in-out property <bool> invalid: false;
+    out property <bool> open: false;
+
+    private property <[string]> month-names: [
+        "January","February","March","April","May","June",
+        "July","August","September","October","November","December",
+    ];
+
+    // Local view state — only used while popup is open. Initialized on open.
+    in-out property <int> view-year:  year;
+    in-out property <int> view-month: month;
+
+    pure function is-leap(y: int) -> bool {
+        (mod(y, 4) == 0 && mod(y, 100) != 0) || mod(y, 400) == 0
+    }
+    pure function days-in-month(y: int, m: int) -> int {
+        m == 1  ? 31
+      : m == 2  ? (is-leap(y) ? 29 : 28)
+      : m == 3  ? 31
+      : m == 4  ? 30
+      : m == 5  ? 31
+      : m == 6  ? 30
+      : m == 7  ? 31
+      : m == 8  ? 31
+      : m == 9  ? 30
+      : m == 10 ? 31
+      : m == 11 ? 30
+      : 31
+    }
+    // Zeller's congruence — returns weekday index Mon=0..Sun=6 for the 1st of
+    // the given month. Used to pad the grid so Mon is column 0.
+    pure function first-weekday(y: int, m: int) -> int {
+        // Zeller treats Jan/Feb as months 13/14 of the previous year
+        mod(mod(1 + floor((13 * (m <= 2 ? m + 12 : m) + 1) / 5)
+                + (m <= 2 ? y - 1 : y)
+                + floor((m <= 2 ? y - 1 : y) / 4)
+                - floor((m <= 2 ? y - 1 : y) / 100)
+                + floor((m <= 2 ? y - 1 : y) / 400)
+                + 5, 7) + 7, 7)
+    }
+    pure function pad2(n: int) -> string {
+        (n < 10 ? "0" : "") + n
+    }
+
+    height: 32px; border-radius: 6px;
+    background: Theme.bg-lighter; clip: false;
+    border-width: root.invalid ? 1px : 0px;
+    border-color: root.invalid ? Theme.danger : transparent;
+
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 8px;
+        Text {
+            horizontal-stretch: 1;
+            text: root.year + "-" + pad2(root.month) + "-" + pad2(root.day);
+            color: root.invalid ? Theme.danger : Theme.fg;
+            font-size: 13px; font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "\u{1F4C5}";  // 📅
+            color: Theme.fg-dim; font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            // Snap the popup's view to whatever the ints currently say.
+            root.view-year  = root.year;
+            root.view-month = root.month;
+            root.open = !root.open;
+        }
+    }
+
+    if root.open: Rectangle {
+        x: 0px; y: 34px; width: 240px; height: 260px;
+        border-radius: 8px; background: Theme.bg-lighter;
+        drop-shadow-blur: 12px; drop-shadow-color: #00000077; z: 100;
+        clip: true;
+
+        VerticalLayout {
+            padding: 8px; spacing: 4px;
+
+            // Header: ◀  Month YYYY  ▶
+            HorizontalLayout {
+                height: 26px; spacing: 4px;
+                Rectangle {
+                    width: 26px; height: 26px; border-radius: 13px;
+                    background: pv.has-hover ? Theme.bg-light : transparent;
+                    Text { text: "\u{25C0}"; color: Theme.fg;
+                           font-size: 11px;
+                           horizontal-alignment: center; vertical-alignment: center; }
+                    pv := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            if (root.view-month <= 1) {
+                                root.view-month = 12;
+                                root.view-year = root.view-year - 1;
+                            } else {
+                                root.view-month = root.view-month - 1;
+                            }
+                        }
+                    }
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.month-names[root.view-month - 1] + " " + root.view-year;
+                    color: Theme.fg; font-size: 13px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 26px; height: 26px; border-radius: 13px;
+                    background: nx.has-hover ? Theme.bg-light : transparent;
+                    Text { text: "\u{25B6}"; color: Theme.fg;
+                           font-size: 11px;
+                           horizontal-alignment: center; vertical-alignment: center; }
+                    nx := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            if (root.view-month >= 12) {
+                                root.view-month = 1;
+                                root.view-year = root.view-year + 1;
+                            } else {
+                                root.view-month = root.view-month + 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Day-of-week header row
+            HorizontalLayout {
+                height: 20px;
+                for hdr in ["M","T","W","T","F","S","S"]: Rectangle {
+                    horizontal-stretch: 1;
+                    Text {
+                        text: hdr; color: Theme.fg-dim;
+                        font-size: 10px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                }
+            }
+
+            // 6-row × 7-col day grid
+            for row-i in 6: HorizontalLayout {
+                height: 28px;
+                for col-i in 7: Rectangle {
+                    horizontal-stretch: 1;
+                    // Day number for this cell, or 0 for pad cells.
+                    private property <int> cell-day:
+                        (row-i * 7 + col-i) < first-weekday(view-year, view-month)
+                            ? 0
+                            : ((row-i * 7 + col-i) - first-weekday(view-year, view-month) + 1
+                                > days-in-month(view-year, view-month)
+                                    ? 0
+                                    : (row-i * 7 + col-i)
+                                        - first-weekday(view-year, view-month) + 1);
+                    private property <bool> is-selected:
+                        cell-day > 0
+                        && view-year  == root.year
+                        && view-month == root.month
+                        && cell-day   == root.day;
+
+                    Rectangle {
+                        x: (parent.width - 24px)/2; y: (parent.height - 24px)/2;
+                        width: 24px; height: 24px; border-radius: 12px;
+                        background: parent.cell-day == 0    ? transparent
+                                  : parent.is-selected      ? Theme.accent
+                                  : dta.has-hover           ? Theme.bg-light
+                                  : transparent;
+                    }
+                    Text {
+                        text: parent.cell-day > 0 ? "" + parent.cell-day : "";
+                        color: parent.is-selected ? Theme.bg : Theme.fg;
+                        font-size: 11px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    dta := TouchArea {
+                        visible: parent.cell-day > 0;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.year  = root.view-year;
+                            root.month = root.view-month;
+                            root.day   = parent.cell-day;
+                            root.invalid = false;
+                            root.open = false;
+                        }
+                    }
+                }
             }
         }
     }
@@ -495,6 +763,12 @@ component EventForm inherits Rectangle {
     in-out property <int>    form-alert-idx: 0;
     in-out property <string> form-date-str: "";
     in-out property <bool>   form-date-invalid: false;
+    // Split date used by DatePicker. Rust is the single writer on form-open
+    // (fills all four from the parsed NaiveDate) and reads (form-year/month/day)
+    // on save. form-date-str is kept in sync for the invalid-fallback banner.
+    in-out property <int>    form-year:   2026;
+    in-out property <int>    form-month:     1;
+    in-out property <int>    form-day:       1;
     callback save();
     callback cancel();
 
@@ -585,20 +859,11 @@ component EventForm inherits Rectangle {
             VerticalLayout {
                 spacing: 2px;
                 Text { text: "Date"; color: Theme.fg-dim; font-size: 11px; font-weight: 600; }
-                Rectangle {
-                    height: 30px; border-radius: 6px; background: Theme.bg-lighter;
-                    border-width: dti.has-focus ? 1px : 0px;
-                    border-color: root.form-date-invalid ? Theme.danger : Theme.accent;
-                    HorizontalLayout {
-                        padding-left: 10px; padding-right: 10px;
-                        dti := TextInput {
-                            height: parent.height;
-                            text <=> root.form-date-str;
-                            color: root.form-date-invalid ? Theme.danger : Theme.fg;
-                            font-size: 13px; font-weight: 600;
-                            vertical-alignment: center; single-line: true;
-                        }
-                    }
+                DatePicker {
+                    year   <=> root.form-year;
+                    month  <=> root.form-month;
+                    day    <=> root.form-day;
+                    invalid <=> root.form-date-invalid;
                 }
                 if root.form-date-invalid: Text {
                     text: "Invalid date (use YYYY-MM-DD)";
@@ -619,9 +884,10 @@ component EventForm inherits Rectangle {
                         text: "Start:"; color: Theme.fg-dim; font-size: 12px; font-weight: 600;
                         vertical-alignment: center;
                     }
-                    sh := TimeInput { value <=> root.form-start-h; max-val: 23; }
-                    Text { text: ":"; color: Theme.fg; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                    sm := TimeInput { value <=> root.form-start-m; max-val: 59; }
+                    sh := TimePicker {
+                        hour   <=> root.form-start-h;
+                        minute <=> root.form-start-m;
+                    }
                 }
 
                 // End row
@@ -632,9 +898,10 @@ component EventForm inherits Rectangle {
                         text: "End:"; color: Theme.fg-dim; font-size: 12px; font-weight: 600;
                         vertical-alignment: center;
                     }
-                    eh := TimeInput { value <=> root.form-end-h; max-val: 23; }
-                    Text { text: ":"; color: Theme.fg; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                    em := TimeInput { value <=> root.form-end-m; max-val: 59; }
+                    eh := TimePicker {
+                        hour   <=> root.form-end-h;
+                        minute <=> root.form-end-m;
+                    }
                 }
             }
 
@@ -666,9 +933,9 @@ component EventForm inherits Rectangle {
                     bg-normal: Theme.accent; fg-normal: Theme.bg;
                     bg-hover: Theme.accent.darker(0.1); fg-hover: Theme.bg;
                     clicked => {
-                        if (!root.form-all-day) {
-                            sh.commit(); sm.commit(); eh.commit(); em.commit();
-                        }
+                        // TimePicker commits inline on selection, so nothing
+                        // to flush here — the closed-over save() will read the
+                        // authoritative int props directly.
                         root.save();
                     }
                 }
@@ -726,6 +993,11 @@ export component MainWindow inherits Window {
     in-out property <int>    form-alert-idx:    0;
     in-out property <string> form-date-str:     "";
     in-out property <bool>   form-date-invalid: false;
+    // Split date fed to the DatePicker widget. Rust sets these on form-open;
+    // reads them back on save.
+    in-out property <int>    form-year:      2026;
+    in-out property <int>    form-month:        1;
+    in-out property <int>    form-day:          1;
 
     // Callbacks
     callback prev-month();
@@ -1228,6 +1500,9 @@ export component MainWindow inherits Window {
             form-alert-idx   <=> root.form-alert-idx;
             form-date-str    <=> root.form-date-str;
             form-date-invalid <=> root.form-date-invalid;
+            form-year        <=> root.form-year;
+            form-month       <=> root.form-month;
+            form-day         <=> root.form-day;
             save()   => { root.save-event(); }
             cancel() => { root.cancel-form(); }
         }

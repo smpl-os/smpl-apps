@@ -543,7 +543,8 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_new_event(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let s = state.borrow();
-            let date_str = format!("{:04}-{:02}-{:02}", s.year, s.month, s.selected_day);
+            let (s_year, s_month, s_day) = (s.year, s.month, s.selected_day);
+            let date_str = format!("{:04}-{:02}-{:02}", s_year, s_month, s_day);
             drop(s);
             ui.set_form_editing_id(-1);
             ui.set_form_title("".into());
@@ -557,6 +558,12 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_form_alert_idx(0);
             ui.set_form_date_str(date_str.into());
             ui.set_form_date_invalid(false);
+            // Mirror into the split ints the DatePicker widget is bound to.
+            // form-date-str is kept in sync as a safety net for the invalid
+            // banner and any legacy read path.
+            ui.set_form_year(s_year);
+            ui.set_form_month(s_month as i32);
+            ui.set_form_day(s_day as i32);
             ui.set_show_form(true);
         });
     }
@@ -584,6 +591,10 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_form_alert_idx(alert_idx_from_minutes(ev.alert_minutes));
                 ui.set_form_date_str(ev.start.format("%Y-%m-%d").to_string().into());
                 ui.set_form_date_invalid(false);
+                // Split-int mirror for the DatePicker widget.
+                ui.set_form_year(ev.start.year());
+                ui.set_form_month(ev.start.month() as i32);
+                ui.set_form_day(ev.start.day() as i32);
                 ui.set_show_form(true);
             }
         });
@@ -625,15 +636,28 @@ fn main() -> Result<(), slint::PlatformError> {
 
             // Parse and validate the date string
             let date_str = ui.get_form_date_str().to_string();
-            let date = match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                Ok(d) => {
+            // Prefer the DatePicker widget's split ints — those are the
+            // authoritative source of truth after the picker replaced the
+            // freeform text input. We still fall back to form-date-str so
+            // any code path that only writes the string keeps working.
+            let picker_y = ui.get_form_year();
+            let picker_m = ui.get_form_month() as u32;
+            let picker_d = ui.get_form_day() as u32;
+            let date = match NaiveDate::from_ymd_opt(picker_y, picker_m, picker_d) {
+                Some(d) => {
                     ui.set_form_date_invalid(false);
                     d
                 }
-                Err(_) => {
-                    ui.set_form_date_invalid(true);
-                    return; // don't save with invalid date
-                }
+                None => match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                    Ok(d) => {
+                        ui.set_form_date_invalid(false);
+                        d
+                    }
+                    Err(_) => {
+                        ui.set_form_date_invalid(true);
+                        return; // don't save with invalid date
+                    }
+                },
             };
 
             let mut s = state.borrow_mut();
