@@ -355,12 +355,26 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
 
-    // Start in details mode if --details flag given
+    // Start in details mode if --details flag given.
+    //
+    // Two distinct modes with two distinct Wayland app_ids:
+    //   • `smpl-calendar`         — compact popup (bottom-right, floating,
+    //                               click-outside dismiss, non-resizable).
+    //   • `smpl-calendar-details` — standalone Teams-style full calendar
+    //                               (centered, floating, resizable, no
+    //                               click-outside dismiss). Spawned as a
+    //                               separate process when the "Details"
+    //                               button is clicked in the compact popup.
+    //
+    // Splitting the modes across two windows avoids the in-place resize
+    // dance (which was fragile on Wayland / Hyprland 0.55 — the Lua parser
+    // rejects `hyprctl dispatch resizewindowpixel/movewindowpixel …,class:…`).
     let start_details = std::env::args().any(|a| a == "--details");
-    // Create UI first to read sizes from the Slint global, then init backend.
-    // smpl_common::init must be called before MainWindow::new(), so we use
-    // the Slint defaults as initial hint and set_size immediately after.
-    smpl_common::init("smpl-calendar", 230.0, 500.0)?;
+    let app_id: &'static str = if start_details { "smpl-calendar-details" } else { "smpl-calendar" };
+    // Init the backend at the right initial size so Hyprland's windowrule
+    // for the correct app_id can size and place the window on first map.
+    let (init_w, init_h) = if start_details { (1100.0, 700.0) } else { (230.0, 500.0) };
+    smpl_common::init(app_id, init_w, init_h)?;
 
     // Start the reminder daemon (stays alive for the session)
     ensure_alertd();
@@ -383,10 +397,18 @@ fn main() -> Result<(), slint::PlatformError> {
 
     if start_details {
         ui.set_is_details(true);
+        ui.set_is_standalone(true);
         ui.window().set_size(slint::LogicalSize::new(details_w, details_h));
     }
 
     refresh_ui(&ui, &state.borrow());
+
+    // Launch time is captured up-front so both the on_close startup guard
+    // (below) and the on_open_details spawn timing can reason about it.
+    // The 1500ms close-guard still applies to both compact and standalone
+    // details windows: Hyprland's map animations produce phantom
+    // wl_pointer.enter → click events on some setups.
+    let launch_time = std::time::Instant::now();
 
     // ── prev-month ────────────────────────────────────────────────────────────
     {
@@ -445,70 +467,47 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // ── open-details ──────────────────────────────────────────────────────────
-    let launch_time = std::time::Instant::now();
+    // Compact-mode only. Spawns a second instance of ourselves with `--details`
+    // — that instance uses the `smpl-calendar-details` app_id and gets its own
+    // Hyprland windowrule (float + center + resizable). The compact popup is
+    // closed so we don't leave two calendar windows on screen. If we're already
+    // the details instance, this callback is a no-op (button isn't visible).
     {
         let ui_weak = ui.as_weak();
         ui.on_open_details(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             if ui.get_is_details() { return; }
-            if launch_time.elapsed() < std::time::Duration::from_millis(300) {
-                return; // phantom from window mapping
+
+            // Spawn the standalone details window. Use the current-exe path
+            // rather than PATH lookup so a locally-installed dev build launches
+            // the same binary the user actually clicked from.
+            let exe = std::env::current_exe()
+                .unwrap_or_else(|_| std::path::PathBuf::from("smpl-calendar"));
+            match std::process::Command::new(&exe).arg("--details").spawn() {
+                Ok(_) => {
+                    // Dismiss the compact popup after a short delay so the mouse-up
+                    // from the Details click has drained and the new window has
+                    // begun mapping. Using Timer keeps the caller (Slint tick)
+                    // clean; the actual exit happens on the main loop.
+                    slint::Timer::single_shot(std::time::Duration::from_millis(120), || {
+                        std::process::exit(0);
+                    });
+                }
+                Err(e) => {
+                    eprintln!("[calendar] failed to spawn '{}' --details: {e}", exe.display());
+                }
             }
-
-            // Disable the collapse button until the transition fully settles.
-            ui.set_can_collapse(false);
-
-            // Step 1 (150ms): switch layout. Delay ensures mouse-up from the
-            // Details button click has fully drained from Wayland's event queue
-            // before the collapse button appears in the new layout.
-            let weak1 = ui.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
-                let Some(ui) = weak1.upgrade() else { return };
-                ui.set_is_details(true);
-
-                let dx = details_w - compact_w;
-                let dy = details_h - compact_h;
-                let resize_cmd = format!("resizewindowpixel exact {details_w} {details_h},class:^(smpl-calendar)$");
-                let move_cmd = format!("movewindowpixel -{dx} -{dy},class:^(smpl-calendar)$");
-
-                let _ = std::process::Command::new("hyprctl")
-                    .args(["--batch", &format!("dispatch {}; dispatch {}", resize_cmd, move_cmd)])
-                    .output();
-
-                // Enable the collapse button after 1200ms — enough for all
-                // Wayland pointer events from the resize to be processed.
-                let weak2 = ui.as_weak();
-                slint::Timer::single_shot(std::time::Duration::from_millis(1200), move || {
-                    if let Some(ui) = weak2.upgrade() {
-                        ui.set_can_collapse(true);
-                    }
-                });
-            });
         });
     }
 
     // ── close-details ─────────────────────────────────────────────────────────
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_close_details(move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            ui.set_can_collapse(false);
-            ui.set_is_details(false);
-            ui.set_show_form(false);
-            ui.set_show_day_panel(false);
-            // Resize back to compact after layout switches (next tick).
-            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-                let dx = details_w - compact_w;
-                let dy = details_h - compact_h;
-                let resize_cmd = format!("resizewindowpixel exact {compact_w} {compact_h},class:^(smpl-calendar)$");
-                let move_cmd = format!("movewindowpixel {dx} {dy},class:^(smpl-calendar)$");
-
-                let _ = std::process::Command::new("hyprctl")
-                    .args(["--batch", &format!("dispatch {}; dispatch {}", resize_cmd, move_cmd)])
-                    .output();
-            });
-        });
-    }
+    // Fired by the collapse button (top-right of the details view). In the
+    // standalone details window this simply closes the window (there is no
+    // compact popup to "collapse back to"). In compact mode is-details never
+    // flips to true, so the button never appears and this is a no-op.
+    ui.on_close_details(move || {
+        std::process::exit(0);
+    });
 
     // ── navigate-to-month-day (click other-month cell) ────────────────────────
     {

@@ -1069,11 +1069,64 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // -- Update OS (full system update, kernel + drivers) --
+    //
+    // We used to `let _ = Command::new(...).spawn()` here, which swallowed every
+    // possible failure (binary missing, exec denied, ENOENT, etc.). When users
+    // reported "I pressed Update OS but nothing happened" there was no trail
+    // whatsoever. Now we:
+    //   1. Log every invocation to ~/.local/share/smplos/logs/update-*.log so a
+    //      button-triggered update is always auditable after the fact.
+    //   2. Surface spawn failures via stderr AND the log file so the tester can
+    //      grep and diagnose without needing a debug script on Ventoy.
     {
         ui.on_update_os(move || {
-            let _ = std::process::Command::new("smplos-update")
+            use std::io::Write;
+
+            let home  = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            let logdir = std::path::PathBuf::from(&home).join(".local/share/smplos/logs");
+            let _ = std::fs::create_dir_all(&logdir);
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let logpath = logdir.join(format!("update-{stamp}.log"));
+
+            let mut log = std::fs::OpenOptions::new()
+                .create(true).append(true)
+                .open(&logpath)
+                .ok();
+
+            if let Some(f) = log.as_mut() {
+                let _ = writeln!(
+                    f,
+                    "[app-center] Update OS button pressed at unix={stamp}\n\
+                     [app-center] spawning: smplos-update --mode full",
+                );
+            }
+
+            match std::process::Command::new("smplos-update")
                 .args(["--mode", "full"])
-                .spawn();
+                .spawn()
+            {
+                Ok(child) => {
+                    let pid = child.id();
+                    let msg = format!("[app-center] smplos-update spawned OK, pid={pid}");
+                    eprintln!("{msg}");
+                    if let Some(f) = log.as_mut() {
+                        let _ = writeln!(f, "{msg}");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "[app-center] FAILED to spawn smplos-update: {e} (log at {})",
+                        logpath.display(),
+                    );
+                    eprintln!("{msg}");
+                    if let Some(f) = log.as_mut() {
+                        let _ = writeln!(f, "{msg}");
+                    }
+                }
+            }
         });
     }
 

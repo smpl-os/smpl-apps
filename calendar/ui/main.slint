@@ -691,6 +691,10 @@ export component MainWindow inherits Window {
 
     // State
     in-out property <bool>   is-details:          false;
+    // True when this process is the standalone details window (spawned via
+    // `smpl-calendar --details`). Hides the "collapse to compact" button in
+    // the details header — there's no compact popup to return to.
+    in-out property <bool>   is-standalone:       false;
     // Set to true by Rust after expand transition is fully settled.
     // Prevents phantom close-details from pointer events during resize.
     in-out property <bool>   can-collapse:        false;
@@ -985,8 +989,9 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // Collapse to compact
-                        Rectangle {
+                        // Collapse to compact — hidden in standalone-details
+                        // mode where there's no compact popup to return to.
+                        if !root.is-standalone: Rectangle {
                             width: 26px; height: 26px; border-radius: 4px;
                             background: collapse-ta.has-hover ? Theme.bg-lighter : Theme.bg-light;
                             Text {

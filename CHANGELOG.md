@@ -6,7 +6,31 @@ All notable changes to smpl-apps are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **calendar: "Details" button now actually opens the full calendar view.**
+  The previous implementation flipped the layout to details mode and then
+  resized the compact popup in place via
+  `hyprctl dispatch resizewindowpixel/movewindowpixel …,class:…`. Hyprland
+  0.55's Lua-config parser routes `hyprctl dispatch <legacy args>` through
+  the Lua parser too, and rejects the positional `exact W H,class:…` syntax
+  with `')' expected near 'exact'`. Result: `is-details` flipped but the
+  window stayed at 250×390 → the 1100×680 details view had no room and
+  looked broken/invisible. The Details button now spawns a **separate**
+  window (`smpl-calendar --details`, Wayland app_id
+  `smpl-calendar-details`) that Hyprland places centered, floating and
+  freely resizable via a dedicated windowrule. No in-place resize, no
+  dispatcher fragility. The compact popup dismisses itself after spawning.
+  Requires the matching smplOS windowrule (`smpl-calendar-details`) which
+  ships in smplos v0.8.34.
+
 ### Added
+
+- **app-center: Update OS button now logs every invocation.** Presses used
+  to `let _ = Command::spawn()` — every possible failure (binary missing,
+  exec denied, ENOENT) was swallowed with no trail. Now writes
+  `~/.local/share/smplos/logs/update-<unix>.log` on every press with spawn
+  status, pid or error message. Makes "did the button work?" auditable.
 
 - **start-menu: fuzzy search matching.** Search now uses a Smith–Waterman
   fuzzy matcher (`nucleo-matcher`, the engine behind Helix and Zellij) on
