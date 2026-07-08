@@ -71,3 +71,18 @@ echo ":: Deployed versions:"
 for bin in "${BINS[@]}"; do
     [[ -f "/usr/local/bin/$bin" ]] && echo "  $(/usr/local/bin/$bin --version 2>/dev/null || /usr/local/bin/$bin -v 2>/dev/null || echo "$bin (no --version)")"
 done
+
+# Final single-copy audit — fails the deploy loudly if anything slipped past
+# the shadow scrub above. Never optional: a silent duplicate is exactly what
+# this whole rewrite was meant to prevent.
+if command -v smplos-check-shadows &>/dev/null; then
+    echo ":: Auditing PATH for shadow duplicates..."
+    if ! smplos-check-shadows --audit; then
+        echo "  !! Shadow duplicates detected — cleaning."
+        smplos-check-shadows --clean
+        # Second audit MUST pass; if it doesn't, cleanup failed and we exit
+        # non-zero so CI/user sees the failure instead of a silent shadow.
+        smplos-check-shadows --audit \
+            || { echo "  !! Shadow duplicates persist after clean — aborting"; exit 1; }
+    fi
+fi
