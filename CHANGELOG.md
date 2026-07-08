@@ -8,6 +8,25 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **settings: Search now tolerates typos and adjacent-letter transpositions.**
+  The previous `fuzzy_match` was a pure left-to-right subsequence check, so
+  `pwoer` failed against `Power` (the `o` has to come *after* the `w` in the
+  target, but the query had them swapped). The matcher now runs three
+  strategies in order: (1) case-insensitive substring, (2) subsequence (the
+  old behavior — kept so abbreviations like `ppr` still hit `Power Profile`),
+  and (3) Damerau–Levenshtein edit distance against each word in the label,
+  capped at `1 + query.len()/4` edits. That last strategy handles the reported
+  case (`pwoer` → `Power`, distance 1 via one adjacent transposition) plus
+  substitutions (`poqer`), deletions (`powr`), and insertions (`poweer`).
+  The threshold scales with query length so noise like `wifi` never matches
+  `Power`. Covered by 8 unit tests in `settings::fuzzy_tests`.
+
+---
+
+## v0.8.14
+
+### Fixed
+
 - **calendar: "Details" button now actually opens the full calendar view.**
   The previous implementation flipped the layout to details mode and then
   resized the compact popup in place via

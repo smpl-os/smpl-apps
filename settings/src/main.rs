@@ -223,11 +223,60 @@ fn apply_theme(ui: &MainWindow) {
 
 // ── Fuzzy search ─────────────────────────────────────────────────────────────
 
-/// Simple fuzzy match: every character in the query must appear in order in the
-/// target string (case-insensitive). e.g. "ppr" matches "Power Profile".
+/// Match `query` against `target` for the Settings search box.
+///
+/// Three complementary strategies, tried in order (cheapest first):
+///
+///   1. Case-insensitive substring — hits "Power" for "pow".
+///   2. Subsequence — every char of `query` appears in `target` in order.
+///      This is the classic abbreviation match, e.g. "ppr" → "Power Profile".
+///   3. Damerau–Levenshtein distance against each whitespace-separated word
+///      in `target`, allowing up to `1 + query.len()/4` edits. This is the
+///      one that handles typos and transpositions the previous impl missed:
+///      "pwoer" → "power" (one adjacent transposition, D-L distance 1).
+///
+/// A `true` from any strategy short-circuits, so cheap matches never pay
+/// the O(n·m) cost of the edit-distance pass.
 fn fuzzy_match(target: &str, query: &str) -> bool {
-    let lower = target.to_lowercase();
-    let mut target_chars = lower.chars();
+    if query.is_empty() {
+        return true;
+    }
+    let target_lc = target.to_lowercase();
+    let query_lc = query.to_lowercase();
+
+    if target_lc.contains(&query_lc) {
+        return true;
+    }
+    if subsequence_match(&target_lc, &query_lc) {
+        return true;
+    }
+
+    // Edit-distance tolerance scales with query length so a 3-char query
+    // isn't matched by a 3-edit typo (which would match almost anything).
+    let query_chars: Vec<char> = query_lc.chars().collect();
+    let threshold = 1 + query_chars.len() / 4;
+
+    for word in target_lc.split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        let word_chars: Vec<char> = word.chars().collect();
+        // Skip words whose length is too different — no possible edit path.
+        let len_diff = word_chars.len().abs_diff(query_chars.len());
+        if len_diff > threshold {
+            continue;
+        }
+        if damerau_levenshtein(&word_chars, &query_chars) <= threshold {
+            return true;
+        }
+    }
+    false
+}
+
+/// Subsequence match: every char of `query` appears in `target` in order.
+/// Both inputs are expected to already be case-normalized.
+fn subsequence_match(target: &str, query: &str) -> bool {
+    let mut target_chars = target.chars();
     for qc in query.chars() {
         loop {
             match target_chars.next() {
@@ -238,6 +287,41 @@ fn fuzzy_match(target: &str, query: &str) -> bool {
         }
     }
     true
+}
+
+/// Optimal-String-Alignment (restricted Damerau–Levenshtein) distance.
+/// Counts insertions, deletions, substitutions, and single adjacent
+/// transpositions. This is what lets "pwoer" match "power" with distance 1:
+/// the swapped 'w' and 'o' count as one edit, not two.
+fn damerau_levenshtein(a: &[char], b: &[char]) -> usize {
+    let (n, m) = (a.len(), b.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    // Only three rows are ever needed for OSA (i, i-1, i-2). Full 2-D matrix
+    // is fine given Settings labels are short (typically < 40 chars).
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate().take(n + 1) {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate().take(m + 1) {
+        *cell = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[n][m]
 }
 
 // ── Keyboard helpers ─────────────────────────────────────────────────────────
@@ -3511,4 +3595,78 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     ui.run()
+}
+
+#[cfg(test)]
+mod fuzzy_tests {
+    use super::{damerau_levenshtein, fuzzy_match};
+
+    fn chars(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+
+    #[test]
+    fn transposition_pwoer_matches_power() {
+        // The exact case the user reported: swapped adjacent letters must
+        // still find the setting. D-L distance is 1 for a single adjacent
+        // transposition, which is within the threshold for a 5-char query.
+        assert!(fuzzy_match("Power", "pwoer"));
+        assert!(fuzzy_match("Power Profile", "pwoer"));
+    }
+
+    #[test]
+    fn common_typos_match() {
+        // Substitution: "poqer" (q instead of w) — 1 edit.
+        assert!(fuzzy_match("Power", "poqer"));
+        // Deletion: "powr" (missing e) — 1 edit.
+        assert!(fuzzy_match("Power", "powr"));
+        // Insertion: "poweer" (extra e) — 1 edit.
+        assert!(fuzzy_match("Power", "poweer"));
+    }
+
+    #[test]
+    fn substring_and_subsequence_still_work() {
+        // Substring — cheapest path.
+        assert!(fuzzy_match("Power Profile", "pow"));
+        assert!(fuzzy_match("Power Profile", "prof"));
+        // Subsequence — the old behavior for abbreviations.
+        assert!(fuzzy_match("Power Profile", "ppr"));
+        assert!(fuzzy_match("Display Settings", "dsp"));
+    }
+
+    #[test]
+    fn threshold_scales_with_query_length() {
+        // A 3-char query allows 1 edit. "abd" vs "xyz" is 3 edits → no match.
+        assert!(!fuzzy_match("xyz", "abd"));
+        // A 12-char query allows 4 edits (1 + 12/4). Two typos still match.
+        assert!(fuzzy_match("Configuration", "cnofigurtaion"));
+    }
+
+    #[test]
+    fn empty_query_matches_everything() {
+        assert!(fuzzy_match("Anything", ""));
+    }
+
+    #[test]
+    fn unrelated_query_rejects() {
+        // Guard against the threshold being too generous — random noise
+        // must not match a specific label.
+        assert!(!fuzzy_match("Power", "wifi"));
+        assert!(!fuzzy_match("Bluetooth", "wallpaper"));
+    }
+
+    #[test]
+    fn multi_word_target_matches_any_word() {
+        // The query only has to be close to ONE word in the label.
+        assert!(fuzzy_match("Screen Brightness", "brihgtness"));
+        assert!(fuzzy_match("Night Light", "nihgt"));
+    }
+
+    #[test]
+    fn dl_distance_transposition_is_one() {
+        // Sanity check on the D-L helper itself — a single adjacent swap
+        // must cost 1 edit, not 2 like plain Levenshtein would report.
+        assert_eq!(damerau_levenshtein(&chars("pwoer"), &chars("power")), 1);
+        assert_eq!(damerau_levenshtein(&chars("abcd"), &chars("acbd")), 1);
+    }
 }
