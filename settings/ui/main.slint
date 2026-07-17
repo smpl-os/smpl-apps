@@ -708,6 +708,7 @@ export component MainWindow inherits Window {
     callback set-idle-dpms(int);
     callback set-idle-suspend(int);
     callback set-idle-shutdown(int);
+    callback power-refresh();               // re-read hypridle.conf + power profile from disk
 
     // Keybindings
     callback kb-load();
@@ -774,6 +775,20 @@ export component MainWindow inherits Window {
 
     // Search
     callback filter-search(string);
+
+    // ── Keep UI in sync with on-disk configuration ────────────────────────
+    // Every path that changes `active-tab` (sidebar click, keyboard shortcut,
+    // search-jump Enter, programmatic set from Rust) fires this handler, so
+    // whichever tab the user lands on re-reads its config from disk instead
+    // of showing stale values captured at startup.
+    changed active-tab => {
+        if root.active-tab == 3 { root.disp-refresh-monitors(); }
+        if root.active-tab == 4 { root.power-refresh(); }
+        if root.active-tab == 5 { root.kb-load(); }
+        if root.active-tab == 7 { root.wifi-list(); }
+        if root.active-tab == 8 { root.bt-list(); }
+        if root.active-tab == 9 { root.xr-refresh(); }
+    }
 
     // ── Keyboard shortcuts ──
     focus-scope := FocusScope {

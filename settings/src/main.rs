@@ -623,6 +623,7 @@ fn read_hypridle_timeouts() -> (u32, u32, u32, u32) {
     let mut dpms = 0u32;
     let mut suspend = 0u32;
     let mut shutdown = 0u32;
+    let mut saw_any_listener = false;
 
     // Simple parser: find listener blocks and identify by on-timeout command
     let mut in_listener = false;
@@ -633,14 +634,24 @@ fn read_hypridle_timeouts() -> (u32, u32, u32, u32) {
         let trimmed = line.trim();
         if trimmed.starts_with("listener") && trimmed.contains('{') {
             in_listener = true;
+            saw_any_listener = true;
             cur_timeout = 0;
             cur_cmd.clear();
         } else if in_listener && trimmed == "}" {
-            // Classify this listener by its command
-            if cur_cmd.contains("lock-session") || cur_cmd.contains("hyprlock") {
-                lock = cur_timeout;
-            } else if cur_cmd.contains("dpms off") || cur_cmd.contains("dpms 0") {
+            // Classify this listener by its command. Accept both legacy CLI
+            // syntax (`hyprctl dispatch dpms off`) and current Lua/dispatcher
+            // syntax (`hyprctl dispatch "hl.dsp.dpms({state='off'})"`).
+            //
+            // Order matters: check `poweroff` before `suspend`, and check
+            // `dpms` before `lock-session` (the lock listener command never
+            // contains "dpms", but the dpms listener command never contains
+            // "lock-session" either, so those two are safe in any order).
+            if cur_cmd.contains("dpms")
+                && (cur_cmd.contains("off") || cur_cmd.contains(" 0"))
+            {
                 dpms = cur_timeout;
+            } else if cur_cmd.contains("lock-session") || cur_cmd.contains("hyprlock") {
+                lock = cur_timeout;
             } else if cur_cmd.contains("poweroff") {
                 shutdown = cur_timeout;
             } else if cur_cmd.contains("suspend") || cur_cmd.contains("hibernate") {
@@ -657,7 +668,51 @@ fn read_hypridle_timeouts() -> (u32, u32, u32, u32) {
         }
     }
 
+    // Silent-failure guard: if hypridle.conf exists AND contained listener
+    // blocks but our classifier didn't recognise ANY of them, all four values
+    // are 0 -> UI would silently show "Never" for every timer. Surface this
+    // to the debug log so the misclassification is visible instead of pretending
+    // the user intentionally disabled everything.
+    if saw_any_listener && lock == 0 && dpms == 0 && suspend == 0 && shutdown == 0 {
+        eprintln!(
+            "[settings] WARNING: hypridle.conf has listener blocks but none matched \
+             known on-timeout patterns (lock/hyprlock, dpms, suspend/hibernate, \
+             poweroff). UI will show 'Never' for all idle actions. Path: {}",
+            path.display()
+        );
+    }
+
     (lock, dpms, suspend, shutdown)
+}
+
+/// Re-populate every Power-tab UI property from disk (hypridle.conf,
+/// power-profiles-daemon, ~/.config/smplos/power.conf). Called at startup and
+/// again whenever the Power tab is entered so external changes to the config
+/// (or drift from a stale in-memory value) can never be silently displayed.
+fn refresh_power_tab(ui: &MainWindow) {
+    // Power profile (may not be available on this system)
+    let ppd_available = is_power_profiles_available();
+    ui.set_power_profiles_available(ppd_available);
+    if ppd_available {
+        let profile = get_power_profile();
+        let idx: i32 = match profile.as_str() {
+            "power-saver" => 0,
+            "balanced" => 1,
+            "performance" => 2,
+            _ => 1,
+        };
+        ui.set_power_profile_index(idx);
+    }
+
+    let (lock_s, dpms_s, suspend_s, shutdown_s) = read_hypridle_timeouts();
+    ui.set_idle_lock_index(timeout_to_index(lock_s, IDLE_PRESETS));
+    ui.set_idle_dpms_index(timeout_to_index(dpms_s, IDLE_PRESETS));
+    ui.set_idle_suspend_index(timeout_to_index(suspend_s, IDLE_PRESETS));
+    ui.set_idle_shutdown_index(timeout_to_index(shutdown_s, IDLE_PRESETS));
+    debug_log!(
+        "[settings] refresh_power_tab: lock={}s dpms={}s suspend={}s shutdown={}s",
+        lock_s, dpms_s, suspend_s, shutdown_s
+    );
 }
 
 /// Find closest preset index for a given timeout value
@@ -1242,26 +1297,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // ── Power tab init ───────────────────────────────────────────────────────
 
     {
-        // Power profiles (may not be available)
-        let ppd_available = is_power_profiles_available();
-        ui.set_power_profiles_available(ppd_available);
-        if ppd_available {
-            let profile = get_power_profile();
-            let idx: i32 = match profile.as_str() {
-                "power-saver" => 0,
-                "balanced" => 1,
-                "performance" => 2,
-                _ => 1,
-            };
-            ui.set_power_profile_index(idx);
-        }
-
-        // Idle timeouts from hypridle.conf (includes shutdown)
-        let (lock_s, dpms_s, suspend_s, shutdown_s) = read_hypridle_timeouts();
-        ui.set_idle_lock_index(timeout_to_index(lock_s, IDLE_PRESETS));
-        ui.set_idle_dpms_index(timeout_to_index(dpms_s, IDLE_PRESETS));
-        ui.set_idle_suspend_index(timeout_to_index(suspend_s, IDLE_PRESETS));
-        ui.set_idle_shutdown_index(timeout_to_index(shutdown_s, IDLE_PRESETS));
+        refresh_power_tab(&ui);
         // Cancel any stale hard shutdown timers from the old implementation
         cancel_pending_shutdown();
     }
@@ -1963,6 +1999,18 @@ fn main() -> Result<(), slint::PlatformError> {
         };
         set_power_profile(profile);
     });
+
+    // Fired by Slint whenever the Power tab is entered (sidebar click,
+    // keyboard shortcut "5", search-jump). Re-reads hypridle.conf and the
+    // active power profile from disk so the UI never displays stale values.
+    {
+        let ui_handle = ui.as_weak();
+        ui.on_power_refresh(move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                refresh_power_tab(&ui);
+            }
+        });
+    }
 
     // Helper: read current indices from UI, resolve to seconds, write config
     let write_idle = |ui: &MainWindow| {
