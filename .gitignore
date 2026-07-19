@@ -1,3 +1,8 @@
 /target/
 **/target/
 */Cargo.lock
+
+# Release staging dir populated fresh by CI; must never contain
+# checked-in binaries or old tarballs (was accidentally shipping
+# ~30MB of stale artifacts inside every smpl-apps release tarball).
+/dist/
