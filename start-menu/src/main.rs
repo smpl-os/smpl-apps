@@ -216,9 +216,15 @@ fn filter_apps(all: &[AppEntry], category_key: &str, query: &str) -> Vec<AppEntr
     filter_and_rank(all, category_key, query, &Usage::default(), 0)
 }
 
-/// Fuzzy-match `query` against `name`. Returns None when the query characters
-/// don't all appear in order in the name; Some(score) otherwise (higher is
-/// better — see nucleo-matcher docs for the scoring model).
+/// Fuzzy-match `query` against `name`. Returns None only when neither nucleo
+/// nor the typo-tolerant fallback accept the pair; Some(score) otherwise
+/// (higher is better — see nucleo-matcher docs for the scoring model).
+///
+/// Tried in order (cheapest first):
+///   1. nucleo — fzf-style subsequence match with quality scoring.
+///   2. Damerau–Levenshtein fallback for typos nucleo can't reach, e.g.
+///      "pwoer"→"Power Profile" (single adjacent transposition). Returns a
+///      small constant score so real subsequence matches always rank higher.
 ///
 /// `name` and `query` are converted on each call; this is fine because we run
 /// at most once per visible app per keystroke (≈ a few hundred ops/frame).
@@ -228,7 +234,78 @@ fn fuzzy_score(matcher: &mut nucleo_matcher::Matcher, name: &str, query: &str) -
     let mut buf_q = Vec::new();
     let n = Utf32Str::new(name, &mut buf_name);
     let q = Utf32Str::new(query, &mut buf_q);
-    matcher.fuzzy_match(n, q)
+    if let Some(s) = matcher.fuzzy_match(n, q) {
+        return Some(s);
+    }
+    // Nucleo said no — try a typo-tolerant Damerau-Levenshtein pass so that
+    // transpositions like "pwoer"→"power" still find the right app. Only
+    // reached when subsequence match failed, so this is not on the hot path
+    // for well-typed queries.
+    if typo_tolerant_match(name, query) {
+        // Fixed low score keeps typo hits below real fuzzy matches in ranking.
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// True when `query` matches any whitespace-separated word in `name` within a
+/// small Damerau-Levenshtein budget. Budget grows with query length so short
+/// queries don't collapse into "matches everything".
+fn typo_tolerant_match(name: &str, query: &str) -> bool {
+    let query_lc = query.to_lowercase();
+    let query_chars: Vec<char> = query_lc.chars().collect();
+    if query_chars.len() < 4 {
+        // Too short to safely allow edits without matching everything.
+        return false;
+    }
+    let threshold = 1 + query_chars.len() / 4;
+    let name_lc = name.to_lowercase();
+    for word in name_lc.split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        let word_chars: Vec<char> = word.chars().collect();
+        if word_chars.len().abs_diff(query_chars.len()) > threshold {
+            continue;
+        }
+        if damerau_levenshtein(&word_chars, &query_chars) <= threshold {
+            return true;
+        }
+    }
+    false
+}
+
+/// Optimal-String-Alignment (restricted Damerau–Levenshtein) distance.
+/// Counts insertions, deletions, substitutions, and single adjacent
+/// transpositions. Lets "pwoer" match "power" with distance 1.
+fn damerau_levenshtein(a: &[char], b: &[char]) -> usize {
+    let (n, m) = (a.len(), b.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate().take(n + 1) {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate().take(m + 1) {
+        *cell = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[n][m]
 }
 
 /// Filter by category/search, then in search mode rank by:
@@ -836,6 +913,24 @@ mod tests {
         let names: Vec<&str> = out.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"Visual Studio Code"),
                 "fuzzy match must find Visual Studio Code via 'vsc' acronym; got {:?}", names);
+    }
+
+    #[test]
+    fn fuzzy_matches_transposition_typo() {
+        // "pwoer" is one adjacent transposition away from "power".  Nucleo's
+        // subsequence match rejects it (no 'r' after the last 'e'), so this
+        // exercises the Damerau-Levenshtein fallback in fuzzy_score.
+        let apps = vec![
+            app("Power Profile",  "settings --tab power"),
+            app("Screen Off",     "settings --tab power"),
+            app("Firefox",        "firefox"),
+        ];
+        let out = filter_and_rank(&apps, "apps", "pwoer", &Usage::default(), 0);
+        let names: Vec<&str> = out.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"Power Profile"),
+                "typo 'pwoer' must still surface Power Profile; got {:?}", names);
+        assert!(!names.contains(&"Firefox"),
+                "typo fallback must not match unrelated apps; got {:?}", names);
     }
 
     #[test]
