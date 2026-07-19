@@ -741,9 +741,16 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
         String::new()
     };
 
+    // NOTE (nvidia DPMS wake fix): `dpms on` alone doesn't force a page-flip
+    // on nvidia -- if all visible clients are idle, the backlight comes back
+    // but the panel stays black because no new framebuffer was scanned out.
+    // Empirically (2026-07-19), the sequence that reliably brings the panel
+    // back is: `dpms on` -> `hyprctl reload` (forces a monitor reconfigure /
+    // full modeset) -> `dpms on` again (belt-and-suspenders in case the first
+    // was a no-op because Hyprland thought the CRTC was already on).
     let dpms_cmd = if dpms_secs > 0 {
         format!(
-            "# {:.0} min -- screen off\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || hyprctl dispatch \"hl.dsp.dpms({{state='off'}})\"\n    on-resume = hyprctl dispatch \"hl.dsp.dpms({{state='on'}})\"\n    ignore_inhibit = true\n}}\n",
+            "# {:.0} min -- screen off\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || hyprctl dispatch \"hl.dsp.dpms({{state='off'}})\"\n    on-resume = hyprctl dispatch \"hl.dsp.dpms({{state='on'}})\"; sleep 0.2; hyprctl reload; sleep 0.2; hyprctl dispatch \"hl.dsp.dpms({{state='on'}})\"\n    ignore_inhibit = true\n}}\n",
             dpms_secs as f64 / 60.0, dpms_secs
         )
     } else {
@@ -772,16 +779,21 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
     // When lock is set to "Never" (lock_secs == 0) we must NOT lock on
     // suspend/resume -- the desktop should wake unlocked. lock_cmd stays either
     // way so manual lock (Super+L / loginctl lock-session) still works.
+    //
+    // after_sleep_cmd uses the same double-tap + reload chain as the screen-off
+    // listener (nvidia DPMS-wake bug): dpms on -> reload -> dpms on. Without
+    // the second `dpms on`, resume can leave the panel black despite the
+    // backlight coming back.
     let general = if lock_secs > 0 {
         "general {\n    \
              lock_cmd = pidof hyprlock || hyprlock\n    \
              before_sleep_cmd = loginctl lock-session\n    \
-             after_sleep_cmd = loginctl lock-session; sleep 0.5; hyprctl dispatch \"hl.dsp.dpms({state='on'})\"\n\
+             after_sleep_cmd = loginctl lock-session; sleep 0.5; hyprctl dispatch \"hl.dsp.dpms({state='on'})\"; sleep 0.2; hyprctl reload; sleep 0.2; hyprctl dispatch \"hl.dsp.dpms({state='on'})\"\n\
          }\n"
     } else {
         "general {\n    \
              lock_cmd = pidof hyprlock || hyprlock\n    \
-             after_sleep_cmd = hyprctl dispatch \"hl.dsp.dpms({state='on'})\"\n\
+             after_sleep_cmd = hyprctl dispatch \"hl.dsp.dpms({state='on'})\"; sleep 0.2; hyprctl reload; sleep 0.2; hyprctl dispatch \"hl.dsp.dpms({state='on'})\"\n\
          }\n"
     };
 
