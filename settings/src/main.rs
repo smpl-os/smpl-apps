@@ -713,6 +713,11 @@ fn refresh_power_tab(ui: &MainWindow) {
         "[settings] refresh_power_tab: lock={}s dpms={}s suspend={}s shutdown={}s",
         lock_s, dpms_s, suspend_s, shutdown_s
     );
+
+    // Self-heal: if the daemon isn't running (dead exec-once, manual kill,
+    // never launched by an older session), start it now. Otherwise the values
+    // we just displayed are lies — user sees "Lock 5m" but nothing ever fires.
+    ensure_hypridle_running();
 }
 
 /// Find closest preset index for a given timeout value
@@ -728,6 +733,48 @@ fn timeout_to_index(secs: u32, presets: &[u32]) -> i32 {
         .min_by_key(|(_, &v)| (v as i64 - secs as i64).unsigned_abs())
         .map(|(i, _)| i as i32)
         .unwrap_or(2) // default to middle
+}
+
+/// Make sure hypridle is actually running. Silent no-op if already alive.
+///
+/// The classic bug this guards against: user opens Settings, sees "Lock 5m /
+/// Screen off 5m / Suspend 10m", assumes it works, walks away — and NOTHING
+/// happens because hypridle wasn't running in the current Hyprland session
+/// (exec-once fires once per session; if it died, or was killed, or the user
+/// pkilled every hyprXXX process for debugging, it stays gone). Settings would
+/// otherwise only respawn hypridle when the user *changes* a value.
+///
+/// Order of preference:
+///   1. If a bare hypridle process is already alive, leave it. Second launch
+///      would just fight over the Wayland connection and exit.
+///   2. Try the packaged systemd user unit (hypridle.service). This is the
+///      preferred path: it auto-restarts on failure and lives in the
+///      graphical-session.target dependency chain.
+///   3. Fallback: `setsid --fork hypridle` so the daemon survives Settings.
+fn ensure_hypridle_running() {
+    let alive = std::process::Command::new("pgrep")
+        .args(["-x", "hypridle"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if alive {
+        return;
+    }
+    let systemd_ok = std::process::Command::new("systemctl")
+        .args(["--user", "start", "hypridle.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if systemd_ok {
+        debug_log!("[settings] ensure_hypridle_running: started via systemctl --user");
+        return;
+    }
+    let _ = std::process::Command::new("setsid")
+        .args(["--fork", "hypridle"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    debug_log!("[settings] ensure_hypridle_running: spawned detached (no systemd unit)");
 }
 
 /// Write a new hypridle.conf with updated timeouts and restart hypridle
@@ -816,10 +863,22 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
     debug_log!("[settings] wrote hypridle.conf: lock={}s dpms={}s suspend={}s shutdown={}s",
         lock_secs, dpms_secs, suspend_secs, shutdown_secs);
 
-    // Restart hypridle to pick up changes
+    // Restart hypridle to pick up changes. Prefer the packaged systemd user
+    // service (auto-restart on failure, session-scoped). If it isn't installed
+    // for some reason, fall back to pkill + a detached setsid spawn so the
+    // daemon survives after Settings exits.
+    let restarted = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "hypridle.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if restarted {
+        return;
+    }
     let _ = std::process::Command::new("pkill").arg("hypridle").output();
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let _ = std::process::Command::new("hypridle")
+    let _ = std::process::Command::new("setsid")
+        .args(["--fork", "hypridle"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
