@@ -788,15 +788,18 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
         String::new()
     };
 
-    // NOTE (nvidia DPMS wake fix): the `dpms on -> reload -> dpms on` chain
-    // sometimes still fails to force a page-flip on nvidia — the only chain
-    // empirically proven to work in every case is the full `dpms off -> on ->
-    // reload -> on` cycle from `screen-recover` (same script bound to the
-    // emergency Ctrl+Alt+D shortcut). Routing on-resume through it keeps the
-    // no-lock case (hyprlock never runs) equivalent to the with-lock case.
+    // NOTE (nvidia DPMS wake): Hyprland 0.56.0's upstream fix (PR #14818,
+    // "compositor: fix monitor re-enabling on hotplug when dpms is off")
+    // handles nvidia DPMS wake cleanly. We used to route on-resume through
+    // the `screen-recover` script here as a workaround; removed because
+    // (a) the workaround is now unnecessary on 0.56.0+, and (b) it was
+    // running a destructive monitors.conf swap that raced with itself and
+    // occasionally left the file with all monitors disabled, bricking the
+    // next boot. If the bug ever regresses, screen-recover can still be
+    // triggered manually via Super+Ctrl+D (emergency.conf).
     let dpms_cmd = if dpms_secs > 0 {
         format!(
-            "# {:.0} min -- screen off\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || hyprctl dispatch \"hl.dsp.dpms({{state='off'}})\"\n    on-resume = screen-recover\n    ignore_inhibit = true\n}}\n",
+            "# {:.0} min -- screen off\nlistener {{\n    timeout = {}\n    on-timeout = systemd-detect-virt -q || hyprctl dispatch \"hl.dsp.dpms({{state='off'}})\"\n    ignore_inhibit = true\n}}\n",
             dpms_secs as f64 / 60.0, dpms_secs
         )
     } else {
@@ -828,10 +831,13 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
     //
     // lock_cmd points at the `lock-screen` wrapper (not bare `hyprlock`) so
     // that after successful unlock the post-hyprlock DPMS cycle fires — the
-    // wrapper handles the nvidia black-screen recovery. When lock is
-    // disabled, after_sleep_cmd routes through `screen-recover` directly so
-    // resume still gets an aggressive DPMS cycle even though hyprlock never
-    // runs.
+    // wrapper handles the nvidia black-screen recovery.
+    //
+    // after_sleep_cmd does the standard "turn the panel back on" dance after
+    // resume. We no longer route through `screen-recover` here because
+    // Hyprland 0.56.0's upstream DPMS fix makes the extra hop unnecessary
+    // (and the old screen-recover step 4 was crash-unsafe). If DPMS wake
+    // ever fails again, Super+Ctrl+D triggers screen-recover manually.
     let general = if lock_secs > 0 {
         "general {\n    \
              lock_cmd = pidof hyprlock || lock-screen\n    \
@@ -841,7 +847,7 @@ fn write_hypridle_config(lock_secs: u32, dpms_secs: u32, suspend_secs: u32, shut
     } else {
         "general {\n    \
              lock_cmd = pidof hyprlock || lock-screen\n    \
-             after_sleep_cmd = screen-recover\n\
+             after_sleep_cmd = hyprctl dispatch \"hl.dsp.dpms({state='on'})\"\n\
          }\n"
     };
 
