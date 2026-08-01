@@ -1,0 +1,52 @@
+[package]
+name              = "hints"
+version.workspace = true
+edition.workspace = true
+
+# Two binaries:
+#   * smpl-hintsd — long-running daemon (holds AT-SPI connection + Wayland
+#                   virtual pointer + Slint overlay). Starts warm on first
+#                   invocation, stays resident. ~15 MB RAM idle.
+#   * smpl-hints  — thin CLI. Talks to the daemon over a Unix socket to
+#                   trigger a mode (click / right-click / hover / drag /
+#                   cursor / scroll). Kicks off the daemon if it isn't running.
+[[bin]]
+name = "smpl-hints"
+path = "src/main.rs"
+
+[[bin]]
+name = "smpl-hintsd"
+path = "src/bin/daemon.rs"
+
+[dependencies]
+# UI overlay — same renderer/decorations pattern as every other smplOS app.
+slint                 = { workspace = true }
+i-slint-backend-winit = { workspace = true }
+smpl-common           = { workspace = true }
+
+# AT-SPI2 client (widget-tree enumeration + action invocation).
+atspi = { workspace = true }
+# atspi 0.30 links against zbus 5.x; we need direct access to zbus::Connection
+# to build proxies. sync-center uses zbus 3.x (workspace dep), so we pin our
+# own copy here to avoid a version tug-of-war.
+zbus  = { version = "5.5", default-features = false, features = ["tokio"] }
+
+# Wayland client + wlr virtual pointer for click/scroll injection.
+wayland-client        = { workspace = true }
+wayland-protocols     = { workspace = true }
+wayland-protocols-wlr = { workspace = true }
+
+# Shared infra
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tokio       = { workspace = true }
+futures     = { workspace = true }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs        = { workspace = true }
+libc        = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }

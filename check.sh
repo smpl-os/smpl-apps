@@ -179,7 +179,8 @@ if [[ "$MODE" == "--release" ]]; then
 
     for bin in start-menu notif-center settings app-center webapp-center \
                sync-center-daemon sync-center-gui \
-               smpl-calendar smpl-calendar-alertd; do
+               smpl-calendar smpl-calendar-alertd \
+               smpl-hints smpl-hintsd; do
         if [[ -f "target/release/$bin" ]]; then
             size=$(du -h "target/release/$bin" | cut -f1)
             pass "$bin ($size)"

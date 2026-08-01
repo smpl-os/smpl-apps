@@ -1,0 +1,122 @@
+// smplOS Hints — full-screen keyboard hint overlay.
+//
+// Draws two-letter hint labels over every clickable widget on screen so
+// the user can navigate the desktop without touching the mouse.
+//
+// The window is a click-through full-screen layer: everything outside a
+// label is transparent so the desktop underneath is fully visible and
+// (via Hyprland's `layerrule = blur, hints-overlay`) blurred.
+
+export struct HintItem {
+    x: length,
+    y: length,
+    label: string,
+    typed_prefix: string,
+}
+
+export global Theme {
+    in-out property <color> bg:     #1e1e2e;
+    in-out property <color> fg:     #cdd6f4;
+    in-out property <color> accent: #f9e2af;   // yellow: hint labels pop
+    in-out property <color> pill_bg:  #1e1e2e; // filled behind each hint
+    in-out property <color> pill_fg:  #1e1e2e; // dark text on yellow
+    in-out property <float> opacity: 0.35;
+    in-out property <length> pill_pad: 4px;
+    in-out property <length> pill_radius: 4px;
+    in-out property <length> hint_font_size: 14px;
+}
+
+// ── One hint label pill ──────────────────────────────────────────────────────
+component HintPill inherits Rectangle {
+    in property <string> label;
+    in property <string> typed_prefix;
+
+    background: Theme.accent.transparentize(1.0 - Theme.opacity - 0.5);
+    border-radius: Theme.pill_radius;
+    border-width: 1px;
+    border-color: Theme.accent;
+    // Sized to content; the parent positions us.
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    HorizontalLayout {
+        padding-left:  Theme.pill_pad;
+        padding-right: Theme.pill_pad;
+        padding-top:   1px;
+        padding-bottom: 1px;
+        spacing: 0px;
+
+        // Whole hint label. Slint doesn't have a runtime substring
+        // primitive, so typed-prefix dimming will be done by re-rendering
+        // the pill from Rust with two pre-split strings once the daemon
+        // key-grab is wired up. For now, render the full label bright.
+        Text {
+            text: root.label;
+            color: Theme.pill_fg;
+            font-size: Theme.hint_font_size;
+            font-weight: 700;
+            font-family: "monospace";
+        }
+    }
+}
+
+// ── Overlay root ────────────────────────────────────────────────────────────
+export component OverlayWindow inherits Window {
+    in property <[HintItem]> hints;
+    // "select" (show pills), "cursor" (hjkl), "scroll" (jk).
+    in property <string> mode: "select";
+    // Cursor position in "cursor" mode — drawn as a crosshair.
+    in property <length> cursor-x: 0px;
+    in property <length> cursor-y: 0px;
+
+    // One string per key press. Escape arrives as "\u{001b}", printable
+    // keys as the character. Enter as "\n". Slint-side always returns
+    // `accept` so keys don't leak past the overlay.
+    callback key-pressed(string);
+
+    title: "hints-overlay";
+    // Transparent so the desktop shows through (Hyprland blurs it).
+    background: transparent;
+    // Keep default size sane — Hyprland's `fullscreen` windowrule will
+    // override to actual output size.
+    width:  1920px;
+    height: 1080px;
+
+    forward-focus: fs;
+
+    fs := FocusScope {
+        // Sized to the whole window so no click gets past us.
+        width: 100%;
+        height: 100%;
+
+        key-pressed(event) => {
+            root.key-pressed(event.text);
+            accept
+        }
+
+        // Every hint label is absolutely positioned by (x, y) in screen coords.
+        for hint in root.hints: HintPill {
+            x: hint.x;
+            y: hint.y;
+            label: hint.label;
+            typed_prefix: hint.typed_prefix;
+        }
+
+        // Crosshair for cursor mode — a small "+" so the user can see
+        // where the virtual pointer is between hjkl bursts.
+        if root.mode == "cursor": Rectangle {
+            x: root.cursor-x - 8px;
+            y: root.cursor-y - 1px;
+            width: 16px;
+            height: 2px;
+            background: Theme.accent;
+        }
+        if root.mode == "cursor": Rectangle {
+            x: root.cursor-x - 1px;
+            y: root.cursor-y - 8px;
+            width: 2px;
+            height: 16px;
+            background: Theme.accent;
+        }
+    }
+}

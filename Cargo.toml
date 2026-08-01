@@ -8,6 +8,7 @@ members = [
     "webapp-center",
     "sync-center",
     "calendar",
+    "hints",
 ]
 resolver = "2"
 
@@ -73,6 +74,18 @@ thiserror   = "1.0"
 
 # Fuzzy matching (start-menu)
 nucleo-matcher = "0.3"
+
+# ── hints crate ──────────────────────────────────────────────────────────────
+# AT-SPI2 client for enumerating accessible widgets.
+atspi                 = { version = "0.30", default-features = false, features = ["proxies", "connection", "tokio"] }
+# Wayland client + wlr virtual-pointer for injecting synthetic clicks/scrolls
+# under Hyprland (and any other wlroots compositor).
+wayland-client        = "0.31"
+wayland-protocols     = { version = "0.32", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3",  features = ["client"] }
+# xkbcommon keysym → wl_pointer motion; already declared above but kept here
+# as a note that hints depends on it.
+# Async runtime is inherited via `tokio` above.
 
 # ── Release profile (applied to all apps) ────────────────────────────────────
 [profile.release]

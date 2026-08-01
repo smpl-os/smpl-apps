@@ -1,6 +1,7 @@
 mod bluetooth;
 mod dictation;
 mod display;
+mod hints;
 mod keybindings;
 mod layouts;
 mod taskbar;
@@ -3545,6 +3546,23 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_xr_set_prefer_dmabuf(xr::set_prefer_dmabuf);
         ui.on_xr_set_headtracking(xr::set_headtracking);
         ui.on_xr_recenter(xr::recenter);
+    }
+
+    // ── Hints callback ──────────────────────────────────────────────────────
+
+    {
+        ui.set_hints_enabled(hints::is_enabled());
+        let ui_weak = ui.as_weak();
+        ui.on_hints_set_enabled(move |v| {
+            if let Err(e) = hints::set_enabled(v) {
+                eprintln!("hints toggle failed: {e}");
+            }
+            // Re-read from disk in case the write partially succeeded so
+            // the UI reflects reality, not the click intent.
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_hints_enabled(hints::is_enabled());
+            }
+        });
     }
 
     // ── Search callback ──────────────────────────────────────────────────────

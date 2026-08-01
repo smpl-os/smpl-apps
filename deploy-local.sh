@@ -23,7 +23,7 @@ if [[ "$1" == "--build" ]]; then
     cargo build --release --manifest-path "$(dirname "$0")/Cargo.toml"
 fi
 
-BINS=(settings start-menu notif-center app-center webapp-center sync-center-gui smpl-calendar)
+BINS=(settings start-menu notif-center app-center webapp-center sync-center-gui smpl-calendar smpl-hints smpl-hintsd)
 
 echo ":: Deploying binaries to /usr/local/bin (canonical location only)..."
 for bin in "${BINS[@]}"; do
