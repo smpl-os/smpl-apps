@@ -54,9 +54,12 @@ rfd       = "0.15"
 glib = "0.20"
 gio  = { version = "0.20", features = ["v2_70"] }
 
-# D-Bus (sync-center)
-zbus     = { version = "3.0", features = ["tokio"] }
-zvariant = "3.0"
+# D-Bus (sync-center + hints)
+# zbus 5 unifies with atspi 0.30's transitive dep; default-features=false
+# drops the async-io default so we can opt into the tokio executor.
+# blocking-api gives sync-center's GUI thread `zbus::blocking::*`.
+zbus     = { version = "5.5", default-features = false, features = ["tokio", "blocking-api"] }
+zvariant = "5"
 
 # Async (sync-center)
 tokio   = { version = "1", features = ["full"] }

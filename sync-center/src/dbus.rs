@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
-use zbus::{dbus_interface, Connection, SignalContext};
+use zbus::{interface, object_server::SignalEmitter, Connection};
 
 // ─── Shared state ─────────────────────────────────────────────────────────────
 
@@ -128,8 +128,8 @@ async fn build_status_json(state: &DaemonState) -> String {
 async fn emit_status(state: &DaemonState) {
     let json = build_status_json(state).await;
     if let Some(conn) = state.dbus_conn.lock().await.as_ref() {
-        if let Ok(ctx) = SignalContext::new(conn, "/org/smpl/SyncCenter") {
-            let _ = DbusService::status_changed(&ctx, &json).await;
+        if let Ok(emitter) = SignalEmitter::new(conn, "/org/smpl/SyncCenter") {
+            let _ = DbusService::status_changed(&emitter, &json).await;
         }
     }
 }
@@ -377,7 +377,7 @@ impl DbusService {
 
     pub async fn start(state: DaemonState) -> Result<(), Box<dyn std::error::Error>> {
         let service = DbusService::new(state.clone());
-        let connection = zbus::ConnectionBuilder::session()?
+        let connection = zbus::connection::Builder::session()?
             .name("org.smpl.SyncCenter")?
             .serve_at("/org/smpl/SyncCenter", service)?
             .build()
@@ -390,14 +390,14 @@ impl DbusService {
     }
 }
 
-#[dbus_interface(name = "org.smpl.SyncCenter")]
+#[interface(name = "org.smpl.SyncCenter")]
 impl DbusService {
-    #[dbus_interface(property)]
+    #[zbus(property)]
     async fn is_active(&self) -> bool {
         self.state.active_profile_id.read().await.is_some()
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     async fn current_profile(&self) -> String {
         self.state
             .active_profile_id
@@ -507,6 +507,6 @@ impl DbusService {
         }
     }
 
-    #[dbus_interface(signal)]
-    pub async fn status_changed(ctxt: &SignalContext<'_>, json: &str) -> zbus::Result<()>;
+    #[zbus(signal)]
+    pub async fn status_changed(ctxt: &SignalEmitter<'_>, json: &str) -> zbus::Result<()>;
 }

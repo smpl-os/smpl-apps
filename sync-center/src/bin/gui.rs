@@ -120,7 +120,7 @@ fn is_daemon_running() -> bool {
         &"org.smpl.SyncCenter",
     )
     .ok()
-    .and_then(|m| m.body::<bool>().ok())
+    .and_then(|m| m.body().deserialize::<bool>().ok())
     .unwrap_or(false)
 }
 
@@ -152,7 +152,7 @@ impl DaemonProxy {
                 body,
             )
             .ok()
-            .and_then(|m| m.body::<R>().ok())
+            .and_then(|m| m.body().deserialize::<R>().ok())
     }
 
     fn sync_now(&self, profile_id: &str) -> bool {
@@ -333,7 +333,7 @@ fn start_signal_listener(window_weak: slint::Weak<MainWindow>) {
 
             // Build a match rule for the StatusChanged signal.
             let rule = match zbus::MatchRule::builder()
-                .msg_type(zbus::MessageType::Signal)
+                .msg_type(zbus::message::Type::Signal)
                 .interface("org.smpl.SyncCenter")
                 .and_then(|b| b.member("StatusChanged"))
                 .map(|b| b.build())
@@ -363,7 +363,7 @@ fn start_signal_listener(window_weak: slint::Weak<MainWindow>) {
             loop {
                 match iter.next() {
                     Some(Ok(msg)) => {
-                        if let Ok(json_str) = msg.body::<String>() {
+                        if let Ok(json_str) = msg.body().deserialize::<String>() {
                             if let Ok(status) =
                                 serde_json::from_str::<serde_json::Value>(&json_str)
                             {

@@ -26,10 +26,10 @@ smpl-common           = { workspace = true }
 
 # AT-SPI2 client (widget-tree enumeration + action invocation).
 atspi = { workspace = true }
-# atspi 0.30 links against zbus 5.x; we need direct access to zbus::Connection
-# to build proxies. sync-center uses zbus 3.x (workspace dep), so we pin our
-# own copy here to avoid a version tug-of-war.
-zbus  = { version = "5.5", default-features = false, features = ["tokio"] }
+# atspi 0.30 links against zbus 5.x. Since bumping the workspace to zbus 5
+# (sync-center was migrated together with this crate), we now share the
+# workspace dep directly — no version split.
+zbus  = { workspace = true }
 
 # Wayland client + wlr virtual pointer for click/scroll injection.
 wayland-client        = { workspace = true }
