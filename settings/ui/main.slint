@@ -579,12 +579,24 @@ export component MainWindow inherits Window {
     in property <bool> disp-has-changes: false;
 
     // ── Power tab properties ──
-    in-out property <int> power-profile-index: 1;
-    in-out property <int> idle-lock-index: 2;      // 0=1m 1=5m 2=10m 3=30m 4=Never 5+=custom(1h,2h,3h,5h,8h)
-    in-out property <int> idle-dpms-index: 2;       // same
-    in-out property <int> idle-suspend-index: 2;    // same
-    in-out property <int> idle-shutdown-index: 4;   // same (default Never)
-    in property <bool> power-profiles-available: true;
+    in property <int> power-profile-index: -1;
+    // -1 means custom/unavailable, not the nearest preset.
+    in property <int> idle-lock-index: -1;
+    in property <int> idle-dpms-index: -1;
+    in property <int> idle-suspend-index: -1;
+    in property <int> idle-shutdown-index: -1;
+    in property <string> idle-lock-saved: "Loading saved value...";
+    in property <string> idle-dpms-saved: "Loading saved value...";
+    in property <string> idle-suspend-saved: "Loading saved value...";
+    in property <string> idle-shutdown-saved: "Loading saved value...";
+    in property <bool> idle-available: false;
+    in property <bool> power-busy: false;
+    in property <bool> power-profiles-available: false;
+    in property <string> power-config-status: "";
+    in property <string> power-config-revision: "";
+    in property <string> power-runtime-status: "";
+    in property <string> power-profile-status: "";
+    in property <string> power-action-status: "";
 
     // ── About tab properties ──
     in property <string> app-version: "dev";
@@ -2784,6 +2796,30 @@ export component MainWindow inherits Window {
                 }
 
                 // ── Power Profile card ──
+                Text {
+                    text: root.power-config-status;
+                    color: Theme.fg_dim;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.power-runtime-status;
+                    color: Theme.fg_dim;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                if root.power-action-status != "": Text {
+                    text: root.power-action-status;
+                    color: Theme.fg;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                if root.power-profile-status != "": Text {
+                    text: root.power-profile-status;
+                    color: Theme.fg_dim;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
                 if root.power-profiles-available: Rectangle {
                     border-radius: 6px;
                     background: Theme.bg_light;
@@ -2843,8 +2879,8 @@ export component MainWindow inherits Window {
                             }
 
                             power-saver-touch := TouchArea {
+                                enabled: !root.power-busy;
                                 clicked => {
-                                    root.power-profile-index = 0;
                                     root.set-power-profile(0);
                                 }
                                 mouse-cursor: pointer;
@@ -2891,8 +2927,8 @@ export component MainWindow inherits Window {
                             }
 
                             power-balanced-touch := TouchArea {
+                                enabled: !root.power-busy;
                                 clicked => {
-                                    root.power-profile-index = 1;
                                     root.set-power-profile(1);
                                 }
                                 mouse-cursor: pointer;
@@ -2939,8 +2975,8 @@ export component MainWindow inherits Window {
                             }
 
                             power-perf-touch := TouchArea {
+                                enabled: !root.power-busy;
                                 clicked => {
-                                    root.power-profile-index = 2;
                                     root.set-power-profile(2);
                                 }
                                 mouse-cursor: pointer;
@@ -2963,7 +2999,7 @@ export component MainWindow inherits Window {
                         spacing: 8px;
 
                         Text {
-                            text: "Lock screen after";
+                            text: "Lock screen after - " + root.idle-lock-saved;
                             color: Theme.fg_dim;
                             font-size: 11px;
                             font-weight: 600;
@@ -2996,8 +3032,8 @@ export component MainWindow inherits Window {
                                 }
 
                                 lock-chip-touch := TouchArea {
+                                    enabled: root.idle-available && !root.power-busy;
                                     clicked => {
-                                        root.idle-lock-index = idx;
                                         root.set-idle-lock(idx);
                                     }
                                     mouse-cursor: pointer;
@@ -3034,10 +3070,10 @@ export component MainWindow inherits Window {
                                 }
 
                                 lock-custom-touch := TouchArea {
+                                    enabled: root.idle-available && !root.power-busy;
                                     clicked => {
-                                        root.idle-lock-index = root.idle-lock-index >= 5 ?
-                                            (root.idle-lock-index >= 9 ? 5 : root.idle-lock-index + 1) : 5;
-                                        root.set-idle-lock(root.idle-lock-index);
+                                        root.set-idle-lock(root.idle-lock-index >= 5 ?
+                                            (root.idle-lock-index >= 9 ? 5 : root.idle-lock-index + 1) : 5);
                                     }
                                     mouse-cursor: pointer;
                                 }
@@ -3063,7 +3099,7 @@ export component MainWindow inherits Window {
                         spacing: 8px;
 
                         Text {
-                            text: "Turn off screen after";
+                            text: "Turn off screen after - " + root.idle-dpms-saved;
                             color: Theme.fg_dim;
                             font-size: 11px;
                             font-weight: 600;
@@ -3096,8 +3132,8 @@ export component MainWindow inherits Window {
                                 }
 
                                 dpms-chip-touch := TouchArea {
+                                    enabled: root.idle-available && !root.power-busy;
                                     clicked => {
-                                        root.idle-dpms-index = idx;
                                         root.set-idle-dpms(idx);
                                     }
                                     mouse-cursor: pointer;
@@ -3134,10 +3170,10 @@ export component MainWindow inherits Window {
                                 }
 
                                 dpms-custom-touch := TouchArea {
+                                    enabled: root.idle-available && !root.power-busy;
                                     clicked => {
-                                        root.idle-dpms-index = root.idle-dpms-index >= 5 ?
-                                            (root.idle-dpms-index >= 9 ? 5 : root.idle-dpms-index + 1) : 5;
-                                        root.set-idle-dpms(root.idle-dpms-index);
+                                        root.set-idle-dpms(root.idle-dpms-index >= 5 ?
+                                            (root.idle-dpms-index >= 9 ? 5 : root.idle-dpms-index + 1) : 5);
                                     }
                                     mouse-cursor: pointer;
                                 }
@@ -3163,7 +3199,7 @@ export component MainWindow inherits Window {
                         spacing: 8px;
 
                         Text {
-                            text: "Suspend after";
+                            text: "Suspend after - " + root.idle-suspend-saved;
                             color: Theme.fg_dim;
                             font-size: 11px;
                             font-weight: 600;
@@ -3196,8 +3232,8 @@ export component MainWindow inherits Window {
                                 }
 
                                 susp-chip-touch := TouchArea {
+                                    enabled: root.idle-available && !root.power-busy;
                                     clicked => {
-                                        root.idle-suspend-index = idx;
                                         root.set-idle-suspend(idx);
                                     }
                                     mouse-cursor: pointer;
@@ -3234,10 +3270,10 @@ export component MainWindow inherits Window {
                                 }
 
                                 susp-custom-touch := TouchArea {
+                                    enabled: root.idle-available && !root.power-busy;
                                     clicked => {
-                                        root.idle-suspend-index = root.idle-suspend-index >= 5 ?
-                                            (root.idle-suspend-index >= 9 ? 5 : root.idle-suspend-index + 1) : 5;
-                                        root.set-idle-suspend(root.idle-suspend-index);
+                                        root.set-idle-suspend(root.idle-suspend-index >= 5 ?
+                                            (root.idle-suspend-index >= 9 ? 5 : root.idle-suspend-index + 1) : 5);
                                     }
                                     mouse-cursor: pointer;
                                 }
@@ -3263,7 +3299,7 @@ export component MainWindow inherits Window {
                         spacing: 8px;
 
                         Text {
-                            text: "Shutdown after";
+                            text: "Shutdown after - " + root.idle-shutdown-saved;
                             color: Theme.fg_dim;
                             font-size: 11px;
                             font-weight: 600;
@@ -3296,8 +3332,8 @@ export component MainWindow inherits Window {
                                 }
 
                                 shutdown-chip-touch := TouchArea {
+                                    enabled: root.idle-available && !root.power-busy;
                                     clicked => {
-                                        root.idle-shutdown-index = idx;
                                         root.set-idle-shutdown(idx);
                                     }
                                     mouse-cursor: pointer;
@@ -3334,10 +3370,10 @@ export component MainWindow inherits Window {
                                 }
 
                                 shutdown-custom-touch := TouchArea {
+                                    enabled: root.idle-available && !root.power-busy;
                                     clicked => {
-                                        root.idle-shutdown-index = root.idle-shutdown-index >= 5 ?
-                                            (root.idle-shutdown-index >= 9 ? 5 : root.idle-shutdown-index + 1) : 5;
-                                        root.set-idle-shutdown(root.idle-shutdown-index);
+                                        root.set-idle-shutdown(root.idle-shutdown-index >= 5 ?
+                                            (root.idle-shutdown-index >= 9 ? 5 : root.idle-shutdown-index + 1) : 5);
                                     }
                                     mouse-cursor: pointer;
                                 }
@@ -3348,9 +3384,10 @@ export component MainWindow inherits Window {
 
                 // Info text
                 Text {
-                    text: "Changes apply immediately and persist across reboots.";
+                    text: "Saved values refresh automatically. Select a timeout to save and attempt application; check status above.";
                     color: Theme.fg_dim;
                     font-size: 10px;
+                    wrap: word-wrap;
                 }
 
                 Rectangle { vertical-stretch: 1; }

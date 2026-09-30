@@ -74,6 +74,68 @@ Icon fixtures use temporary directories, not the user's HOME.
 
 ## Releases
 
+### Power preferences and OS rollout
+
+Settings reads exact saved idle delays from
+`$XDG_CONFIG_HOME/hypr/hypridle.conf` (normally
+`~/.config/hypr/hypridle.conf`). A stock 330-second screen-off delay is shown
+as 330 seconds, not rounded to five minutes. Changing one timer re-reads the
+latest file and changes only that timer, preserving other values, comments,
+general settings and listener properties. `Never` retains the listener as
+reversible `# smpl-settings-disabled: ` comments. Manual `lock_cmd` remains
+active even when every timer is Never; changing lock to Never also removes
+recognized stock suspend/resume lock hooks.
+
+This is a user-owned preferences file, not a generated compositor config.
+Settings refuses ambiguous listeners, includes (`source`), variables,
+unsupported syntax and custom timeout commands with a visible error rather
+than dropping them or guessing. Custom sleep hooks cannot be changed through
+the lock timer. Symlinked/hardlinked configs require manual editing. Edits
+are atomically replaced after a conflict check and isolated native Hypridle
+parser validation. A non-cooperating editor can still race between the final
+comparison and rename; do not edit the same file simultaneously in two tools.
+The legacy `~/.config/smplos/power.conf` shutdown copy is no longer written
+or used as a second source of truth.
+
+Ship the **smplOS power-preservation update first**, then the Settings release.
+That OS update must preserve user `hypridle.conf`, narrowly migrate known
+generated commands, and install `smplos-hypr-dpms on|off` with a read-only
+`--check`. Settings uses this helper for new/restored screen-off rules and
+normalizes only recognized legacy/Lua DPMS commands when it is installed.
+Without it, existing direct commands survive scoped timer edits, but creating
+or restoring a screen-off rule requires the OS update. The helper probes the
+running compositor's capabilities, rather than assuming its parser from the
+installed package version, and adapts across the next login. Unknown future
+syntax/capabilities must fail explicitly until a targeted migration/helper
+update is provided. Normal compositor configurations still receive OS updates;
+Hypridle's separate preferences grammar must not be injected into Hyprland.
+Both repositories' changes are needed: older updaters can still overwrite
+preferences and older Settings can still regenerate them.
+
+The Power tab distinguishes **saved preferences** from **daemon state**,
+refreshes while open, and reports save, validation, profile and restart errors.
+Opening Settings never starts/restarts Hypridle or cancels shutdown jobs.
+Only Hyprland sessions can edit idle timers. Changes attempt a systemd user
+service restart, checking the session/configuration, new PID and stability;
+unmanaged daemons are never killed or replaced. Successful restart is not
+proof of active rules (Hypridle has no rule acknowledgement API). Application
+failures retain the saved preferences and explicitly report "Saved, but
+application is unconfirmed"; select the desired timeout again after resolving
+the error to retry.
+Power profiles are confirmed by command status and readback, not optimistic
+chip selection.
+
+Headless checks (no real lock, suspend, shutdown or service actions):
+
+```bash
+cargo test -p settings --bin settings power
+cargo check -p settings --bin settings
+# Optional installed-hypridle parser check; isolated HOME/runtime/Wayland/D-Bus:
+cargo test -p settings --bin settings power::tests::native_parser_isolated_from_real_session -- --ignored
+```
+
+### Publishing
+
 Pre-built binaries are published to [Releases](../../releases) and consumed by the smplOS ISO builder.
 Run the **Release** workflow (`.github/workflows/release.yml`, `workflow_dispatch`)
 from `main` after the changes are merged. It increments the workspace patch
