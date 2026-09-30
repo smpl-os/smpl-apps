@@ -10,6 +10,9 @@ mod theme;
 mod wifi;
 mod xkb_labels;
 mod xr;
+mod ui_geometry;
+#[cfg(test)]
+mod ui_contract_tests;
 
 use display::backend::DisplayBackend;
 use display::monitor::{canvas_scale_factor, Monitor, MonitorConfig};
@@ -843,6 +846,7 @@ fn main() -> Result<(), slint::PlatformError> {
     smpl_common::init("settings", 900.0, 560.0)?;
 
     let ui = MainWindow::new()?;
+    ui.on_dropdown_scroll_offset(ui_geometry::dropdown_scroll_offset);
     apply_theme(&ui);
     ui.set_active_tab(initial_tab);
     if !initial_highlight.is_empty() {

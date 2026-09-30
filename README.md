@@ -79,7 +79,8 @@ Icon fixtures use temporary directories, not the user's HOME.
 Settings reads exact saved idle delays from
 `$XDG_CONFIG_HOME/hypr/hypridle.conf` (normally
 `~/.config/hypr/hypridle.conf`). A stock 330-second screen-off delay is shown
-as 330 seconds, not rounded to five minutes. Changing one timer re-reads the
+as `5 min 30 s` in the custom chip, not rounded to five minutes. Preset values
+select their matching chip without an extra saved-value label. Changing one timer re-reads the
 latest file and changes only that timer, preserving other values, comments,
 general settings and listener properties. `Never` retains the listener as
 reversible `# smpl-settings-disabled: ` comments. Manual `lock_cmd` remains
@@ -115,8 +116,10 @@ Hypridle's separate preferences grammar must not be injected into Hyprland.
 Both repositories' changes are needed: older updaters can still overwrite
 preferences and older Settings can still regenerate them.
 
-The Power tab distinguishes **saved preferences** from **daemon state**,
-refreshes while open, and reports save, validation, profile and restart errors.
+The Power tab refreshes while open and reports actionable save, validation,
+profile and restart errors in plain language. Successful operations and
+routine daemon diagnostics stay in logs, not persistent status banners;
+the UI never claims that a running daemon proves timers were applied.
 Background polling leaves controls interactive. User selections are queued
 in order ahead of further polling, with no optimistic saved-value changes;
 repeated identical pending selections are coalesced.
@@ -125,9 +128,8 @@ Only Hyprland sessions can edit idle timers. Changes attempt a systemd user
 service restart, checking the session/configuration, new PID and stability;
 unmanaged daemons are never killed or replaced. Successful restart is not
 proof of active rules (Hypridle has no rule acknowledgement API). Application
-failures retain the saved preferences and explicitly report "Saved, but
-application is unconfirmed"; select the desired timeout again after resolving
-the error to retry.
+failures retain the saved preferences and explain that timers could not be
+activated; select the desired timeout again after resolving the error to retry.
 Power profiles are confirmed by command status and readback, not optimistic
 chip selection.
 
@@ -139,6 +141,19 @@ cargo check -p settings --bin settings
 # Optional installed-hypridle parser check; isolated HOME/runtime/Wayland/D-Bus:
 cargo test -p settings --bin settings power::tests::native_parser_isolated_from_real_session -- --ignored
 ```
+
+### Settings readability
+
+Settings uses a consistent sans-serif hierarchy: 14px body/control text,
+13px secondary text, 12px compact annotations, and 16–18px headings.
+It prefers Noto Sans when available and uses the platform fallback otherwise;
+no additional font package is required. Compact controls are 32px tall and
+two-line choices have additional room. The original 500×350 minimum and
+900×560 preferred window sizes are unchanged. The sidebar scrolls at short
+heights; narrow tabs expose a horizontal scroll thumb instead of shrinking
+text or making controls unreachable. The Display page also scrolls as a whole.
+Wi-Fi, Bluetooth, and Hints sidebar icons use matching theme-tinted outline
+assets; connection/status glyphs elsewhere keep their existing meanings.
 
 ### Publishing
 

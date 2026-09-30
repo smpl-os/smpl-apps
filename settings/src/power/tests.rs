@@ -153,8 +153,26 @@ fn exact_values_and_custom_seconds_are_not_rounded() {
     assert_eq!(preset_index(330), -1);
     assert_eq!(preset_index(719), -1);
     assert_eq!(preset_index(0), 4);
-    assert_eq!(saved_label(330), "Saved: 330 seconds");
-    assert_eq!(saved_label(0), "Saved: Never");
+}
+
+#[test]
+fn timeout_labels_show_every_exact_component_without_saved_diagnostics() {
+    for (seconds, expected) in [
+        (0, "Never"),
+        (1, "1 s"),
+        (59, "59 s"),
+        (60, "1 min"),
+        (330, "5 min 30 s"),
+        (719, "11 min 59 s"),
+        (3600, "1 h"),
+        (3601, "1 h 1 s"),
+        (3660, "1 h 1 min"),
+        (3661, "1 h 1 min 1 s"),
+        (28800, "8 h"),
+        (u32::MAX, "1193046 h 28 min 15 s"),
+    ] {
+        assert_eq!(timeout_label(seconds), expected);
+    }
 }
 
 #[test]
@@ -352,8 +370,8 @@ fn unsupported_live_dpms_capability_is_saved_but_never_claimed_applied() {
         fail_helper: true,
         ..Mock::default()
     };
-    let message = save_timer(&path, &runtime, Action::Dpms, 600).unwrap();
-    assert!(message.starts_with("Saved, but application is unconfirmed:"));
+    let outcome = save_timer(&path, &runtime, Action::Dpms, 600).unwrap();
+    assert!(matches!(outcome, SaveOutcome::ApplicationUnconfirmed(_)));
     assert!(read(&path).unwrap().contains("smplos-hypr-dpms off"));
     assert!(!runtime.calls.borrow().iter().any(|c| c.contains("restart")));
 }
@@ -365,8 +383,8 @@ fn save_rereads_external_changes_and_preserves_exact_values() {
     let _old_view = Config::parse(&read(&path).unwrap()).unwrap();
     fs::write(&path, STOCK.replace("timeout = 719", "timeout = 1171")).unwrap();
     let runtime = Mock::default();
-    let message = save_timer(&path, &runtime, Action::Shutdown, 123).unwrap();
-    assert!(message.contains("cannot be independently verified"));
+    let outcome = save_timer(&path, &runtime, Action::Shutdown, 123).unwrap();
+    assert!(matches!(outcome, SaveOutcome::Restarted));
     assert_eq!(
         Config::parse(&read(&path).unwrap()).unwrap().seconds,
         [300, 330, 1171, 123]
@@ -457,10 +475,10 @@ fn failed_restart_stale_pid_wrong_config_and_unmanaged_daemon_are_truthful() {
     ] {
         let temp = Temp::new();
         let path = temp.config(STOCK);
-        let message = save_timer(&path, &runtime, Action::Shutdown, 60).unwrap();
+        let outcome = save_timer(&path, &runtime, Action::Shutdown, 60).unwrap();
         assert!(
-            message.starts_with("Saved, but application is unconfirmed:"),
-            "{message}"
+            matches!(outcome, SaveOutcome::ApplicationUnconfirmed(_)),
+            "{outcome:?}"
         );
         assert_eq!(Config::parse(&read(&path).unwrap()).unwrap().seconds[3], 60);
         if runtime.unmanaged || runtime.wrong_config {

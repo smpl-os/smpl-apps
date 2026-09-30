@@ -66,12 +66,20 @@ pub fn preset_index(seconds: u32) -> i32 {
         .map_or(-1, |i| i as i32)
 }
 
-pub fn saved_label(seconds: u32) -> String {
+pub fn timeout_label(seconds: u32) -> String {
     if seconds == 0 {
-        "Saved: Never".into()
-    } else {
-        format!("Saved: {seconds} seconds")
+        return "Never".into();
     }
+    [
+        (seconds / 3600, "h"),
+        (seconds % 3600 / 60, "min"),
+        (seconds % 60, "s"),
+    ]
+    .into_iter()
+    .filter(|(value, _)| *value != 0)
+    .map(|(value, unit)| format!("{value} {unit}"))
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 #[derive(Debug)]
@@ -750,7 +758,18 @@ fn restart(runtime: &impl Runtime, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn save_timer(path: &Path, runtime: &impl Runtime, action: Action, seconds: u32) -> Result<String> {
+#[derive(Debug)]
+enum SaveOutcome {
+    Restarted,
+    ApplicationUnconfirmed(Error),
+}
+
+fn save_timer(
+    path: &Path,
+    runtime: &impl Runtime,
+    action: Action,
+    seconds: u32,
+) -> Result<SaveOutcome> {
     let latest = read(path)?;
     let text = Config::parse(&latest)?.change(action, seconds, runtime.helper_available())?;
     let config = Config::parse(&text)?;
@@ -773,8 +792,8 @@ fn save_timer(path: &Path, runtime: &impl Runtime, action: Action, seconds: u32)
         Ok(())
     })();
     Ok(match apply {
-        Ok(()) => "Saved; daemon restarted. Active rules cannot be independently verified.".into(),
-        Err(error) => format!("Saved, but application is unconfirmed: {error}"),
+        Ok(()) => SaveOutcome::Restarted,
+        Err(error) => SaveOutcome::ApplicationUnconfirmed(error),
     })
 }
 
