@@ -89,7 +89,10 @@ recognized stock suspend/resume lock hooks.
 This is a user-owned preferences file, not a generated compositor config.
 Settings refuses ambiguous listeners, includes (`source`), variables,
 unsupported syntax and custom timeout commands with a visible error rather
-than dropping them or guessing. Custom sleep hooks cannot be changed through
+than dropping them or guessing. The smplOS updater preserves these custom
+and source-included configurations even though the Settings UI cannot edit
+them; this is not support for editing arbitrary Hypridle configurations.
+Custom sleep hooks cannot be changed through
 the lock timer. Symlinked/hardlinked configs require manual editing. Edits
 are atomically replaced after a conflict check and isolated native Hypridle
 parser validation. A non-cooperating editor can still race between the final
