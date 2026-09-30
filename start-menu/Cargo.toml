@@ -11,3 +11,6 @@ nucleo-matcher        = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

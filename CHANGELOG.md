@@ -8,6 +8,16 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **start-menu: User icons take precedence over system icons.** Icon roots are
+  searched user-first before considering size/format preferences, honoring
+  XDG data directories, legacy `~/.icons`, Flatpak exports and local icons.
+  Absolute paths and the first-letter fallback remain supported.
+
+- **start-menu: Quoting-only Exec changes no longer lose pinned metadata or
+  icons.** Literal argv equivalence is shared by metadata lookup, icon
+  preloading, pin indicators and toggling. Shell constructs retain conservative
+  exact matching, and startup never rewrites or reorders the pin file.
+
 - **settings: Search now tolerates typos and adjacent-letter transpositions.**
   The previous `fuzzy_match` was a pure left-to-right subsequence check, so
   `pwoer` failed against `Power` (the `o` has to come *after* the `w` in the

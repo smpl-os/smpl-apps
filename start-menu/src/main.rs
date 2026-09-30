@@ -1,3 +1,5 @@
+mod commands;
+mod icons;
 mod theme;
 mod usage;
 
@@ -5,9 +7,10 @@ use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::icons::IconResolver;
 use crate::usage::Usage;
 
 slint::include_modules!();
@@ -120,76 +123,17 @@ fn save_pinned(pinned: &[String]) {
 
 // ── Icon resolution ──
 
-/// Search directories for icon name, preferring SVG then PNG at useful sizes.
-const ICON_SEARCH_DIRS: &[&str] = &[
-    "/usr/share/icons/hicolor/scalable/apps",
-    "/usr/share/icons/hicolor/48x48/apps",
-    "/usr/share/icons/hicolor/64x64/apps",
-    "/usr/share/icons/hicolor/128x128/apps",
-    "/usr/share/icons/hicolor/32x32/apps",
-    // Flatpak system-wide exports (symlinks to per-app icons)
-    "/var/lib/flatpak/exports/share/icons/hicolor/scalable/apps",
-    "/var/lib/flatpak/exports/share/icons/hicolor/128x128/apps",
-    "/var/lib/flatpak/exports/share/icons/hicolor/64x64/apps",
-    "/var/lib/flatpak/exports/share/icons/hicolor/48x48/apps",
-    "/usr/share/pixmaps",
-];
-
-fn resolve_icon_path(icon_name: &str) -> Option<String> {
-    if icon_name.is_empty() {
-        return None;
-    }
-    // If it's already an absolute path, use it directly
-    if icon_name.starts_with('/') {
-        if Path::new(icon_name).exists() {
-            return Some(icon_name.to_string());
-        }
-        return None;
-    }
-    // Static dirs (system icons + system Flatpak)
-    for dir in ICON_SEARCH_DIRS {
-        for ext in &["svg", "png"] {
-            let path = format!("{}/{}.{}", dir, icon_name, ext);
-            if Path::new(&path).exists() {
-                return Some(path);
-            }
-        }
-    }
-    // User-level icons (webapps, user-installed themes, Flatpak exports)
-    if let Ok(home) = std::env::var("HOME") {
-        let user_dirs = [
-            // User icon theme (webapps save here via webapp-center)
-            format!("{}/.local/share/icons/hicolor/scalable/apps", home),
-            format!("{}/.local/share/icons/hicolor/256x256/apps", home),
-            format!("{}/.local/share/icons/hicolor/128x128/apps", home),
-            format!("{}/.local/share/icons/hicolor/64x64/apps", home),
-            format!("{}/.local/share/icons/hicolor/48x48/apps", home),
-            // User-level Flatpak exports
-            format!("{}/.local/share/flatpak/exports/share/icons/hicolor/scalable/apps", home),
-            format!("{}/.local/share/flatpak/exports/share/icons/hicolor/128x128/apps", home),
-            format!("{}/.local/share/flatpak/exports/share/icons/hicolor/64x64/apps", home),
-            format!("{}/.local/share/flatpak/exports/share/icons/hicolor/48x48/apps", home),
-        ];
-        for dir in &user_dirs {
-            for ext in &["svg", "png"] {
-                let path = format!("{}/{}.{}", dir, icon_name, ext);
-                if Path::new(&path).exists() {
-                    return Some(path);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Pre-resolve icon paths (fast: just stat calls, no image decoding).
-fn build_icon_path_cache(apps: &[AppEntry]) -> HashMap<String, String> {
+fn build_icon_path_cache<'a>(
+    apps: impl IntoIterator<Item = &'a AppEntry>,
+    resolver: &IconResolver,
+) -> HashMap<String, PathBuf> {
     let mut cache = HashMap::new();
     for app in apps {
         if app.icon.is_empty() || cache.contains_key(&app.icon) {
             continue;
         }
-        if let Some(path) = resolve_icon_path(&app.icon) {
+        if let Some(path) = resolver.resolve(&app.icon) {
             cache.insert(app.icon.clone(), path);
         }
     }
@@ -367,7 +311,7 @@ fn filter_and_rank(
 
 // ── Convert to Slint model item ──
 
-fn to_ui_item(app: &AppEntry, path_cache: &HashMap<String, String>, img_cache: &RefCell<HashMap<String, Image>>, pinned: &[String]) -> AppItem {
+fn to_ui_item(app: &AppEntry, path_cache: &HashMap<String, PathBuf>, img_cache: &RefCell<HashMap<String, Image>>, pinned: &[String]) -> AppItem {
     let initial = app
         .name
         .chars()
@@ -383,11 +327,15 @@ fn to_ui_item(app: &AppEntry, path_cache: &HashMap<String, String>, img_cache: &
         } else {
             drop(cache);
             if let Some(path) = path_cache.get(&app.icon) {
-                if let Ok(img) = Image::load_from_path(Path::new(path)) {
-                    img_cache.borrow_mut().insert(app.icon.clone(), img.clone());
-                    (img, true)
-                } else {
-                    (Image::default(), false)
+                match Image::load_from_path(path) {
+                    Ok(img) => {
+                        img_cache.borrow_mut().insert(app.icon.clone(), img.clone());
+                        (img, true)
+                    }
+                    Err(error) => {
+                        eprintln!("start-menu: cannot load icon {}: {error}", path.display());
+                        (Image::default(), false)
+                    }
                 }
             } else {
                 (Image::default(), false)
@@ -419,7 +367,7 @@ fn to_ui_item(app: &AppEntry, path_cache: &HashMap<String, String>, img_cache: &
         has_icon,
         is_web_app,
         source: SharedString::from(source),
-        is_pinned: pinned.contains(&app.exec),
+        is_pinned: commands::is_pinned(pinned, &app.exec),
     }
 }
 
@@ -430,7 +378,7 @@ fn update_view(
     ui: &MainWindow,
     all_apps: &[AppEntry],
     model: &Rc<VecModel<AppItem>>,
-    path_cache: &HashMap<String, String>,
+    path_cache: &HashMap<String, PathBuf>,
     img_cache: &RefCell<HashMap<String, Image>>,
     category_key: &str,
     query: &str,
@@ -445,17 +393,23 @@ fn update_view(
     ui.set_is_searching(!query.trim().is_empty());
 }
 
+fn pinned_apps<'a>(all_apps: &'a [AppEntry], pinned: &[String]) -> Vec<&'a AppEntry> {
+    pinned.iter().filter_map(|exec| {
+        all_apps.iter().find(|app| app.exec == *exec)
+            .or_else(|| all_apps.iter().find(|app| commands::equivalent(&app.exec, exec)))
+    }).collect()
+}
+
 fn update_pinned_model(
     ui: &MainWindow,
     all_apps: &[AppEntry],
     pinned_model: &Rc<VecModel<AppItem>>,
-    path_cache: &HashMap<String, String>,
+    path_cache: &HashMap<String, PathBuf>,
     img_cache: &RefCell<HashMap<String, Image>>,
     pinned: &[String],
 ) {
-    let items: Vec<AppItem> = pinned
-        .iter()
-        .filter_map(|exec| all_apps.iter().find(|a| &a.exec == exec))
+    let items: Vec<AppItem> = pinned_apps(all_apps, pinned)
+        .into_iter()
         .map(|a| to_ui_item(a, path_cache, img_cache, pinned))
         .collect();
     let count = items.len() as i32;
@@ -504,23 +458,14 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // ── Load all apps from cache ──
     let all_apps = Rc::new(load_apps());
+    let icon_resolver = Rc::new(IconResolver::from_env());
     // Defer full icon path scan to first category/search interaction.
     // Startup only pre-resolves icons for the pinned row (typically ≤5 entries)
     // instead of running stat() against 10+ dirs for every app in the index.
     let pinned = Rc::new(RefCell::new(load_pinned()));
     let path_cache = Rc::new(RefCell::new({
         let pinned_initial = pinned.borrow();
-        let pinned_set: std::collections::HashSet<&str> =
-            pinned_initial.iter().map(String::as_str).collect();
-        let mut m = HashMap::new();
-        for app in all_apps.iter().filter(|a| pinned_set.contains(a.exec.as_str())) {
-            if !app.icon.is_empty() && !m.contains_key(&app.icon) {
-                if let Some(p) = resolve_icon_path(&app.icon) {
-                    m.insert(app.icon.clone(), p);
-                }
-            }
-        }
-        m
+        build_icon_path_cache(pinned_apps(&all_apps, &pinned_initial), &icon_resolver)
     }));
     let path_cache_primed = Rc::new(Cell::new(false));
     let img_cache = Rc::new(RefCell::new(HashMap::<String, Image>::new()));
@@ -576,6 +521,7 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let ui_weak = ui.as_weak();
         let all_apps = all_apps.clone();
+        let icon_resolver = icon_resolver.clone();
         let path_cache = path_cache.clone();
         let path_cache_primed = path_cache_primed.clone();
         let img_cache = img_cache.clone();
@@ -609,7 +555,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
             // Prime full icon path cache on first interactive use
             if !path_cache_primed.get() {
-                *path_cache.borrow_mut() = build_icon_path_cache(&all_apps);
+                *path_cache.borrow_mut() = build_icon_path_cache(all_apps.iter(), &icon_resolver);
                 path_cache_primed.set(true);
             }
             let cache = path_cache.borrow();
@@ -665,6 +611,7 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let ui_weak = ui.as_weak();
         let all_apps = all_apps.clone();
+        let icon_resolver = icon_resolver.clone();
         let path_cache = path_cache.clone();
         let path_cache_primed = path_cache_primed.clone();
         let img_cache = img_cache.clone();
@@ -679,17 +626,13 @@ fn main() -> Result<(), slint::PlatformError> {
             let exec = exec.to_string();
             {
                 let mut p = pinned.borrow_mut();
-                if let Some(pos) = p.iter().position(|e| *e == exec) {
-                    p.remove(pos);
-                } else {
-                    p.push(exec);
-                }
+                commands::toggle_pin(&mut p, &exec);
                 save_pinned(&p);
             }
             let p = pinned.borrow();
             // Prime full icon cache if not done yet (user may pin before opening any category)
             if !path_cache_primed.get() {
-                *path_cache.borrow_mut() = build_icon_path_cache(&all_apps);
+                *path_cache.borrow_mut() = build_icon_path_cache(all_apps.iter(), &icon_resolver);
                 path_cache_primed.set(true);
             }
             let cache = path_cache.borrow();
@@ -792,6 +735,91 @@ mod tests {
             category: category.to_string(),
             icon: String::new(),
             search_only,
+        }
+    }
+
+    #[test]
+    fn pin_quoting_keeps_metadata_preload_order_and_ui_flags() {
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let data = home.join(".local/share");
+        let system = fixture.path().join("system");
+        let user_icon = data.join("icons/hicolor/256x256/apps/example.svg");
+        let system_icon = system.join("icons/hicolor/scalable/apps/example.svg");
+        for path in [&user_icon, &system_icon] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, icons::tests::SVG).unwrap();
+        }
+        let dirs = std::env::join_paths([&system]).unwrap();
+        let resolver = IconResolver::from_paths(
+            Some(&home),
+            None,
+            Some(&dirs),
+            &fixture.path().join("flatpak"),
+        );
+        let mut example = make_app("Example", "\"/home/foo/.local/bin/example\"", "graphics", false);
+        example.icon = "example".into();
+        let mut unpinned = make_app("Unpinned", "unpinned", "apps", false);
+        unpinned.icon = system_icon.to_str().unwrap().into();
+        let apps = vec![make_app("Other", "other", "apps", false), example, unpinned];
+        let mut pinned = vec![
+            "custom \"$HOME\" | another".to_string(),
+            "/home/foo/.local/bin/example".to_string(),
+            "other".to_string(),
+        ];
+        let original = pinned.clone();
+        let selected = pinned_apps(&apps, &pinned);
+        assert_eq!(selected.iter().map(|app| app.name.as_str()).collect::<Vec<_>>(), ["Example", "Other"]);
+        let paths = build_icon_path_cache(selected, &resolver);
+        assert_eq!(paths.len(), 1, "startup should only preload matching pins");
+        assert_eq!(paths.get("example"), Some(&user_icon));
+        let images = RefCell::new(HashMap::new());
+        let item = to_ui_item(&apps[1], &paths, &images, &pinned);
+        assert_eq!(item.name, "Example");
+        assert_eq!(item.category_key, "graphics");
+        assert_eq!(item.exec, apps[1].exec);
+        assert!(item.has_icon);
+        assert!(item.is_pinned);
+        assert_eq!(pinned, original, "lookup must not migrate or rewrite pin commands");
+
+        commands::toggle_pin(&mut pinned, item.exec.as_str());
+        assert!(!to_ui_item(&apps[1], &paths, &images, &pinned).is_pinned);
+        assert_eq!(pinned, [original[0].clone(), original[2].clone()]);
+        assert_eq!(pinned_apps(&apps, &pinned)[0].name, "Other");
+    }
+
+    #[test]
+    fn pin_lookup_prefers_exact_matches_and_preserves_shell_distinctions() {
+        let apps = vec![
+            make_app("Quoted", "'foo' arg", "apps", false),
+            make_app("Exact", "foo arg", "apps", false),
+            make_app("Literal", "foo '$HOME'", "apps", false),
+        ];
+        let pins = vec![
+            "foo arg".to_string(),
+            "foo \"$HOME\"".to_string(),
+            "foo different".to_string(),
+        ];
+        let selected = pinned_apps(&apps, &pins);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].name, "Exact");
+    }
+
+    #[test]
+    fn missing_and_undecodable_icons_keep_initial_fallback() {
+        let fixture = tempfile::tempdir().unwrap();
+        let invalid = fixture.path().join("invalid.svg");
+        std::fs::write(&invalid, "not an image").unwrap();
+        let mut app = make_app("Example", "'example'", "apps", false);
+        app.icon = "example".into();
+        let images = RefCell::new(HashMap::new());
+        let pinned = vec!["example".to_string()];
+        for paths in [HashMap::new(), HashMap::from([("example".to_string(), invalid)])] {
+            let item = to_ui_item(&app, &paths, &images, &pinned);
+            assert!(!item.has_icon);
+            assert_eq!(item.initial, "E");
+            assert!(item.is_pinned);
+            assert!(images.borrow().is_empty());
         }
     }
 
