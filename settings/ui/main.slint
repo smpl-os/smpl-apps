@@ -2814,6 +2814,12 @@ export component MainWindow inherits Window {
                     font-size: 11px;
                     wrap: word-wrap;
                 }
+                if root.power-busy: Text {
+                    text: "Saving queued selections... displayed values remain the last confirmed saved values.";
+                    color: Theme.fg_dim;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
                 if root.power-profile-status != "": Text {
                     text: root.power-profile-status;
                     color: Theme.fg_dim;
@@ -2879,7 +2885,6 @@ export component MainWindow inherits Window {
                             }
 
                             power-saver-touch := TouchArea {
-                                enabled: !root.power-busy;
                                 clicked => {
                                     root.set-power-profile(0);
                                 }
@@ -2927,7 +2932,6 @@ export component MainWindow inherits Window {
                             }
 
                             power-balanced-touch := TouchArea {
-                                enabled: !root.power-busy;
                                 clicked => {
                                     root.set-power-profile(1);
                                 }
@@ -2975,7 +2979,6 @@ export component MainWindow inherits Window {
                             }
 
                             power-perf-touch := TouchArea {
-                                enabled: !root.power-busy;
                                 clicked => {
                                     root.set-power-profile(2);
                                 }
@@ -3032,7 +3035,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 lock-chip-touch := TouchArea {
-                                    enabled: root.idle-available && !root.power-busy;
+                                    enabled: root.idle-available;
                                     clicked => {
                                         root.set-idle-lock(idx);
                                     }
@@ -3070,7 +3073,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 lock-custom-touch := TouchArea {
-                                    enabled: root.idle-available && !root.power-busy;
+                                    enabled: root.idle-available;
                                     clicked => {
                                         root.set-idle-lock(root.idle-lock-index >= 5 ?
                                             (root.idle-lock-index >= 9 ? 5 : root.idle-lock-index + 1) : 5);
@@ -3132,7 +3135,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 dpms-chip-touch := TouchArea {
-                                    enabled: root.idle-available && !root.power-busy;
+                                    enabled: root.idle-available;
                                     clicked => {
                                         root.set-idle-dpms(idx);
                                     }
@@ -3170,7 +3173,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 dpms-custom-touch := TouchArea {
-                                    enabled: root.idle-available && !root.power-busy;
+                                    enabled: root.idle-available;
                                     clicked => {
                                         root.set-idle-dpms(root.idle-dpms-index >= 5 ?
                                             (root.idle-dpms-index >= 9 ? 5 : root.idle-dpms-index + 1) : 5);
@@ -3232,7 +3235,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 susp-chip-touch := TouchArea {
-                                    enabled: root.idle-available && !root.power-busy;
+                                    enabled: root.idle-available;
                                     clicked => {
                                         root.set-idle-suspend(idx);
                                     }
@@ -3270,7 +3273,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 susp-custom-touch := TouchArea {
-                                    enabled: root.idle-available && !root.power-busy;
+                                    enabled: root.idle-available;
                                     clicked => {
                                         root.set-idle-suspend(root.idle-suspend-index >= 5 ?
                                             (root.idle-suspend-index >= 9 ? 5 : root.idle-suspend-index + 1) : 5);
@@ -3332,7 +3335,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 shutdown-chip-touch := TouchArea {
-                                    enabled: root.idle-available && !root.power-busy;
+                                    enabled: root.idle-available;
                                     clicked => {
                                         root.set-idle-shutdown(idx);
                                     }
@@ -3370,7 +3373,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 shutdown-custom-touch := TouchArea {
-                                    enabled: root.idle-available && !root.power-busy;
+                                    enabled: root.idle-available;
                                     clicked => {
                                         root.set-idle-shutdown(root.idle-shutdown-index >= 5 ?
                                             (root.idle-shutdown-index >= 9 ? 5 : root.idle-shutdown-index + 1) : 5);

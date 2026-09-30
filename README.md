@@ -117,6 +117,9 @@ preferences and older Settings can still regenerate them.
 
 The Power tab distinguishes **saved preferences** from **daemon state**,
 refreshes while open, and reports save, validation, profile and restart errors.
+Background polling leaves controls interactive. User selections are queued
+in order ahead of further polling, with no optimistic saved-value changes;
+repeated identical pending selections are coalesced.
 Opening Settings never starts/restarts Hypridle or cancels shutdown jobs.
 Only Hyprland sessions can edit idle timers. Changes attempt a systemd user
 service restart, checking the session/configuration, new PID and stability;

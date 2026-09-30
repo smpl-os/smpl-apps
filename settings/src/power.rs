@@ -1,5 +1,6 @@
 //! User-owned idle preferences. Editing never regenerates the configuration.
 
+mod scheduler;
 mod ui;
 pub use ui::install;
 
