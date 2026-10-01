@@ -189,7 +189,23 @@ from `main` after the changes are merged. It increments the workspace patch
 version itself, commits the version/lockfile change, and publishes tag
 `v<VERSION>`, bundle `smpl-apps-<VERSION>-x86_64.tar.gz`, and individual binaries
 including `start-menu`. Do not manually bump or tag to prepare that workflow.
-Starting from v0.8.22, its next version would be v0.8.23.
+The workflow only runs from `main` and serializes releases. It refuses to publish
+if main advances during the build, validates all 11 mandatory binaries, and
+checks bundle contents against the standalone assets. Uploads remain a draft
+until every required remote asset's size and SHA256 matches its local payload.
+Only then is the release published as latest. A failed upload leaves a draft,
+not an incomplete latest release; inspect the failed run before retrying.
+
+App Center's **Update OS** confirmation launches `smplos-update --mode full`.
+The OS updater fetches the published smpl-apps release bundle; pushing source
+alone does not deliver new app binaries. The v0.8.23 release packages the
+previously unreleased start-menu icon/pinning fix, Settings power persistence
+and polling fixes, readable typography, and monitor-owned Taskbar integration.
+Publish the corresponding OS helper/renderer changes before this app release.
+
+Headless delivery checks:
+`cargo test -p app-center --bin app-center os_update` and
+`python -m unittest discover -s tests -p 'test_release_assets.py' -v`.
 
 ```bash
 # Download a published version's bundle for the ISO build:

@@ -6,3 +6,7 @@
 # checked-in binaries or old tarballs (was accidentally shipping
 # ~30MB of stale artifacts inside every smpl-apps release tarball).
 /dist/
+
+# Python release-packaging checks.
+/scripts/__pycache__/
+/tests/__pycache__/

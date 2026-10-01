@@ -1,5 +1,6 @@
 mod catalog;
 mod installer;
+mod os_update;
 mod sources;
 mod theme;
 
@@ -1104,10 +1105,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 );
             }
 
-            match std::process::Command::new("smplos-update")
-                .args(["--mode", "full"])
-                .spawn()
-            {
+            match os_update::command().spawn() {
                 Ok(child) => {
                     let pid = child.id();
                     let msg = format!("[app-center] smplos-update spawned OK, pid={pid}");
