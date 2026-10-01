@@ -155,6 +155,32 @@ text or making controls unreachable. The Display page also scrolls as a whole.
 Wi-Fi, Bluetooth, and Hints sidebar icons use matching theme-tinted outline
 assets; connection/status glyphs elsewhere keep their existing meanings.
 
+### Taskbar workspace preferences
+
+Settings and the OS taskbar helpers share `~/.config/smplos/bar.conf` (the
+canonical HOME-based path, not an app-specific XDG override). Workspace count
+is a total across monitors, not a count per monitor. Automatic placement keeps
+at least one workspace per connected monitor and retains occupied or visible
+workspaces when the target is reduced. Settings never moves windows or switches
+workspaces to enforce a count; the OS workspace controller reconciles it.
+
+All Taskbar and clock changes use a shared, validated, atomic single-key writer,
+preserving comments and unknown preferences. Reading settings never writes clock
+defaults. Duplicate or invalid managed values and linked/nonregular files need
+manual correction rather than a destructive rewrite. A final conflict check
+protects against external edits, but a non-cooperating editor can still race the
+comparison and rename. Avoid simultaneous edits in multiple tools.
+
+Workspace changes run bounded `bar-ctl apply` commands off the UI thread.
+Requests are serialized with clock changes; rapid slider choices coalesce to
+the latest pending value. Controls display saved readback, refresh on tab entry
+and after changes, and show actionable save/apply failures without routine
+success banners. Publish the paired OS update first: it makes monitor-owned
+workspace widgets honor numbers/squares and spacing, and makes `bar-ctl apply`
+validate and report EWW failures. An older helper may conceal those failures.
+
+Headless regression checks: `cargo test -p settings --bin settings taskbar`.
+
 ### Publishing
 
 Pre-built binaries are published to [Releases](../../releases) and consumed by the smplOS ISO builder.

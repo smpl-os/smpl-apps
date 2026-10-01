@@ -1056,13 +1056,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // ── Taskbar tab init ──────────────────────────────────────────────────────
 
-    ui.set_tb_ws_count(taskbar::ws_count());
-    ui.set_tb_ws_position_index(taskbar::ws_position_index());
-    ui.set_tb_ws_spacing(taskbar::ws_spacing());
-    ui.set_tb_ws_style_index(taskbar::ws_style_index());
-    ui.set_tb_clock_format_index(taskbar::clock_format());
-    ui.set_tb_clock_24h(taskbar::clock_24h());
-    ui.set_tb_clock_date_fmt_index(taskbar::clock_date_fmt());
+    taskbar::ui::install(&ui);
 
     // ── Wi-Fi tab init (background) ────────────────────────────────────────────
     {
@@ -1990,36 +1984,6 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     }
-
-    // ── Taskbar callbacks ────────────────────────────────────────────────────
-
-    ui.on_tb_set_ws_count(|count| {
-        taskbar::set_ws_count(count);
-    });
-
-    ui.on_tb_set_ws_position(|idx| {
-        taskbar::set_ws_position(idx);
-    });
-
-    ui.on_tb_set_ws_spacing(|px| {
-        taskbar::set_ws_spacing(px);
-    });
-
-    ui.on_tb_set_ws_style(|idx| {
-        taskbar::set_ws_style(idx);
-    });
-
-    ui.on_tb_set_clock_format(|idx| {
-        taskbar::set_clock_format(idx);
-    });
-
-    ui.on_tb_set_clock_24h(|on| {
-        taskbar::set_clock_24h(on);
-    });
-
-    ui.on_tb_set_clock_date_fmt(|idx| {
-        taskbar::set_clock_date_fmt(idx);
-    });
 
     // ── Wi-Fi callbacks ──────────────────────────────────────────────────────
 

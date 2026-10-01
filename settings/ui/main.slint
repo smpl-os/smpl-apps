@@ -685,6 +685,8 @@ export component MainWindow inherits Window {
     in-out property <string> kb-new-cmd: "";
 
     // ── Taskbar tab properties ──
+    in-out property <string> tb-status;
+    in-out property <bool> tb-busy: false;
     in-out property <int>  tb-ws-count: 4;
     in-out property <int>  tb-ws-position-index: 0;      // 0 = center, 1 = left
     in-out property <int>  tb-ws-spacing: 1;             // pixel gap between dots (1-10)
@@ -803,6 +805,7 @@ export component MainWindow inherits Window {
     callback kb-cancel-capture();
 
     // Taskbar
+    callback tb-refresh();
     callback tb-set-ws-count(int);
     callback tb-set-ws-position(int);
     callback tb-set-ws-spacing(int);
@@ -867,6 +870,7 @@ export component MainWindow inherits Window {
         if root.active-tab == 3 { root.disp-refresh-monitors(); }
         if root.active-tab == 4 { root.power-refresh(); }
         if root.active-tab == 5 { root.kb-load(); }
+        if root.active-tab == 6 { root.tb-refresh(); }
         if root.active-tab == 7 { root.wifi-list(); }
         if root.active-tab == 8 { root.bt-list(); }
         if root.active-tab == 9 { root.xr-refresh(); }
@@ -4180,6 +4184,18 @@ export component MainWindow inherits Window {
                     font-weight: 600;
                 }
 
+                if root.tb-status != "": Text {
+                    text: root.tb-status;
+                    color: Theme.accent;
+                    font-size: Typography.secondary;
+                    wrap: word-wrap;
+                }
+                if root.tb-busy: Text {
+                    text: "Saving...";
+                    color: Theme.fg_dim;
+                    font-size: Typography.secondary;
+                }
+
                 // ── Workspace Count card ──
                 Rectangle {
                     border-radius: 6px;
@@ -4201,7 +4217,7 @@ export component MainWindow inherits Window {
                         }
 
                         Text {
-                            text: "Number of workspace indicators shown in the taskbar (1–10).";
+                            text: "Total workspaces across monitors (1–10). Automatic placement keeps at least one per monitor; occupied or visible workspaces remain when reducing the count.";
                             color: Theme.fg_dim;
                             font-size: Typography.secondary;
                             wrap: word-wrap;
@@ -4265,13 +4281,11 @@ export component MainWindow inherits Window {
                                     mouse-cursor: pointer;
                                     clicked => {
                                         // Map click x to 1–10
-                                        root.tb-ws-count = clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10);
-                                        root.tb-set-ws-count(root.tb-ws-count);
+                                        root.tb-set-ws-count(clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10));
                                     }
                                     moved => {
                                         if self.pressed {
-                                            root.tb-ws-count = clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10);
-                                            root.tb-set-ws-count(root.tb-ws-count);
+                                            root.tb-set-ws-count(clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10));
                                         }
                                     }
                                 }
@@ -4372,7 +4386,6 @@ export component MainWindow inherits Window {
 
                             ws-pos-center-touch := TouchArea {
                                 clicked => {
-                                    root.tb-ws-position-index = 0;
                                     root.tb-set-ws-position(0);
                                 }
                                 mouse-cursor: pointer;
@@ -4420,7 +4433,6 @@ export component MainWindow inherits Window {
 
                             ws-pos-left-touch := TouchArea {
                                 clicked => {
-                                    root.tb-ws-position-index = 1;
                                     root.tb-set-ws-position(1);
                                 }
                                 mouse-cursor: pointer;
@@ -4516,13 +4528,11 @@ export component MainWindow inherits Window {
                                 ws-spacing-track-touch := TouchArea {
                                     mouse-cursor: pointer;
                                     clicked => {
-                                        root.tb-ws-spacing = clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10);
-                                        root.tb-set-ws-spacing(root.tb-ws-spacing);
+                                        root.tb-set-ws-spacing(clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10));
                                     }
                                     moved => {
                                         if self.pressed {
-                                            root.tb-ws-spacing = clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10);
-                                            root.tb-set-ws-spacing(root.tb-ws-spacing);
+                                            root.tb-set-ws-spacing(clamp(round(1 + 9 * (self.mouse-x - 8px) / (self.width - 16px)), 1, 10));
                                         }
                                     }
                                 }
@@ -4613,13 +4623,12 @@ export component MainWindow inherits Window {
                                     alignment: center;
                                     spacing: 2px;
                                     Text { text: "Numbers"; color: Theme.fg; font-size: Typography.body; }
-                                    Text { text: "Numbered dots showing workspace index"; color: Theme.fg_dim; font-size: Typography.secondary; }
+                                    Text { text: "Workspace numbers"; color: Theme.fg_dim; font-size: Typography.secondary; }
                                 }
                             }
 
                             ws-style-numbers-touch := TouchArea {
                                 clicked => {
-                                    root.tb-ws-style-index = 0;
                                     root.tb-set-ws-style(0);
                                 }
                                 mouse-cursor: pointer;
@@ -4661,13 +4670,12 @@ export component MainWindow inherits Window {
                                     alignment: center;
                                     spacing: 2px;
                                     Text { text: "Squares"; color: Theme.fg; font-size: Typography.body; }
-                                    Text { text: "Compact grid of colored squares"; color: Theme.fg_dim; font-size: Typography.secondary; }
+                                    Text { text: "Compact squares for each workspace"; color: Theme.fg_dim; font-size: Typography.secondary; }
                                 }
                             }
 
                             ws-style-squares-touch := TouchArea {
                                 clicked => {
-                                    root.tb-ws-style-index = 1;
                                     root.tb-set-ws-style(1);
                                 }
                                 mouse-cursor: pointer;
@@ -4748,7 +4756,7 @@ export component MainWindow inherits Window {
                                 }
                             }
                             clock-fmt-time-touch := TouchArea {
-                                clicked => { root.tb-clock-format-index = 0; root.tb-set-clock-format(0); }
+                                clicked => { root.tb-set-clock-format(0); }
                                 mouse-cursor: pointer;
                             }
                         }
@@ -4783,7 +4791,7 @@ export component MainWindow inherits Window {
                                 }
                             }
                             clock-fmt-dow-touch := TouchArea {
-                                clicked => { root.tb-clock-format-index = 1; root.tb-set-clock-format(1); }
+                                clicked => { root.tb-set-clock-format(1); }
                                 mouse-cursor: pointer;
                             }
                         }
@@ -4818,7 +4826,7 @@ export component MainWindow inherits Window {
                                 }
                             }
                             clock-fmt-date-touch := TouchArea {
-                                clicked => { root.tb-clock-format-index = 2; root.tb-set-clock-format(2); }
+                                clicked => { root.tb-set-clock-format(2); }
                                 mouse-cursor: pointer;
                             }
                         }
@@ -4861,7 +4869,7 @@ export component MainWindow inherits Window {
                                     Text { text: "24-hour"; color: Theme.fg; font-size: Typography.body; vertical-alignment: center; }
                                 }
                                 clock-24h-touch := TouchArea {
-                                    clicked => { root.tb-clock-24h = true; root.tb-set-clock-24h(true); }
+                                    clicked => { root.tb-set-clock-24h(true); }
                                     mouse-cursor: pointer;
                                 }
                             }
@@ -4891,7 +4899,7 @@ export component MainWindow inherits Window {
                                     Text { text: "AM / PM"; color: Theme.fg; font-size: Typography.body; vertical-alignment: center; }
                                 }
                                 clock-ampm-touch := TouchArea {
-                                    clicked => { root.tb-clock-24h = false; root.tb-set-clock-24h(false); }
+                                    clicked => { root.tb-set-clock-24h(false); }
                                     mouse-cursor: pointer;
                                 }
                             }
@@ -4940,7 +4948,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     clock-date-md-touch := TouchArea {
-                                        clicked => { root.tb-clock-date-fmt-index = 0; root.tb-set-clock-date-fmt(0); }
+                                        clicked => { root.tb-set-clock-date-fmt(0); }
                                         mouse-cursor: pointer;
                                     }
                                 }
@@ -4974,7 +4982,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     clock-date-dm-touch := TouchArea {
-                                        clicked => { root.tb-clock-date-fmt-index = 1; root.tb-set-clock-date-fmt(1); }
+                                        clicked => { root.tb-set-clock-date-fmt(1); }
                                         mouse-cursor: pointer;
                                     }
                                 }
@@ -5010,7 +5018,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     clock-date-iso-touch := TouchArea {
-                                        clicked => { root.tb-clock-date-fmt-index = 2; root.tb-set-clock-date-fmt(2); }
+                                        clicked => { root.tb-set-clock-date-fmt(2); }
                                         mouse-cursor: pointer;
                                     }
                                 }
@@ -5044,7 +5052,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     clock-date-mon-touch := TouchArea {
-                                        clicked => { root.tb-clock-date-fmt-index = 3; root.tb-set-clock-date-fmt(3); }
+                                        clicked => { root.tb-set-clock-date-fmt(3); }
                                         mouse-cursor: pointer;
                                     }
                                 }

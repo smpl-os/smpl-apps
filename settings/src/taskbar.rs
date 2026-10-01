@@ -1,339 +1,348 @@
-//! Taskbar settings backend — workspace count & position.
-//!
-//! Persists to `~/.config/smplos/bar.conf` (KEY=VALUE format).
-//! Applies live via `eww update` and `bar-ctl apply`.
+//! Taskbar preferences. The OS controller alone owns workspace reconciliation.
 
-use std::collections::HashMap;
-use std::fs;
+mod scheduler;
+#[cfg(test)]
+mod tests;
+pub mod ui;
+
+use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Default workspace dot count shown in the bar.
-const DEFAULT_WS_COUNT: i32 = 4;
-/// Default spacing between workspace dots (pixels).
-const DEFAULT_WS_SPACING: i32 = 1;
-
-fn config_path() -> PathBuf {
-    let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    p.push(".config/smplos/bar.conf");
-    p
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setting {
+    Count,
+    Position,
+    Spacing,
+    Style,
+    ClockFormat,
+    Clock24h,
+    ClockDate,
 }
 
-fn eww_config_dir() -> String {
-    let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    p.push(".config/eww");
-    p.to_string_lossy().into_owned()
+const SETTINGS: [Setting; 7] = [
+    Setting::Count,
+    Setting::Position,
+    Setting::Spacing,
+    Setting::Style,
+    Setting::ClockFormat,
+    Setting::Clock24h,
+    Setting::ClockDate,
+];
+
+impl Setting {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Count => "ws_count",
+            Self::Position => "ws_position",
+            Self::Spacing => "ws_spacing",
+            Self::Style => "ws_style",
+            Self::ClockFormat => "clock_format",
+            Self::Clock24h => "clock_24h",
+            Self::ClockDate => "clock_date_fmt",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Count => "Workspace count",
+            Self::Position => "Workspace position",
+            Self::Spacing => "Workspace spacing",
+            Self::Style => "Workspace style",
+            Self::ClockFormat => "Clock format",
+            Self::Clock24h => "Time format",
+            Self::ClockDate => "Date format",
+        }
+    }
+
+    fn choices(self) -> &'static [&'static str] {
+        match self {
+            Self::Position => &["center", "left"],
+            Self::Style => &["numbers", "squares"],
+            Self::ClockFormat => &["time", "dow", "date"],
+            Self::Clock24h => &["false", "true"],
+            Self::ClockDate => &["M/D", "D/M", "ISO", "Mon D"],
+            Self::Count | Self::Spacing => &[],
+        }
+    }
+
+    fn encode(self, value: i32) -> Result<String> {
+        if matches!(self, Self::Count | Self::Spacing) {
+            if (1..=10).contains(&value) {
+                return Ok(value.to_string());
+            }
+        } else if let Some(choice) = self.choices().get(value as usize) {
+            return Ok((*choice).into());
+        }
+        Err(Error::Invalid(self.key().into()))
+    }
+
+    fn decode(self, text: &str) -> Result<i32> {
+        if text == "auto" && matches!(self, Self::Clock24h | Self::ClockDate) {
+            return Ok(Snapshot::default().values[self as usize]);
+        }
+        let value = if matches!(self, Self::Count | Self::Spacing) {
+            text.parse().ok()
+        } else {
+            self.choices()
+                .iter()
+                .position(|v| *v == text)
+                .map(|i| i as i32)
+        };
+        match value {
+            Some(value) if self.encode(value).is_ok_and(|encoded| encoded == text) => Ok(value),
+            _ => Err(Error::Invalid(self.key().into())),
+        }
+    }
+
+    fn workspace(self) -> bool {
+        matches!(
+            self,
+            Self::Count | Self::Position | Self::Spacing | Self::Style
+        )
+    }
 }
 
-/// Read bar.conf into a map.
-fn read_conf() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    if let Ok(data) = fs::read_to_string(config_path()) {
-        for line in data.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
+#[derive(Debug)]
+pub enum Error {
+    Io(std::io::Error),
+    Invalid(String),
+    Conflict,
+    Command(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Invalid(detail) => write!(f, "Unsupported taskbar preference: {detail}"),
+            Self::Conflict => write!(f, "Taskbar preferences changed during saving"),
+            Self::Command(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    values: [i32; 7],
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        let locale = ["LC_TIME", "LC_ALL", "LANG"]
+            .into_iter()
+            .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
+            .unwrap_or_else(|| "en_US.UTF-8".into());
+        let international = i32::from(!locale.starts_with("en_US"));
+        Self {
+            values: [4, 0, 1, 0, 0, international, international],
+        }
+    }
+}
+
+impl Snapshot {
+    fn parse(text: &str) -> Result<Self> {
+        let mut snapshot = Self::default();
+        let mut seen = [false; 7];
+        for line in text.lines() {
+            if line.trim_start().starts_with('#') {
                 continue;
             }
-            if let Some((k, v)) = line.split_once('=') {
-                map.insert(k.trim().to_string(), v.trim().to_string());
-            }
-        }
-    }
-    map
-}
-
-/// Write the full conf back.
-fn write_conf(map: &HashMap<String, String>) {
-    let path = config_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = fs::File::create(&path) {
-        // Sort for deterministic output
-        let mut pairs: Vec<_> = map.iter().collect();
-        pairs.sort_by_key(|(k, _)| k.to_owned());
-        for (k, v) in pairs {
-            let _ = writeln!(f, "{}={}", k, v);
-        }
-    }
-}
-
-/// Send a live update to a running EWW instance.
-fn eww_update(var: &str, val: &str) {
-    let cfg = eww_config_dir();
-    let _ = Command::new("eww")
-        .args(["--config", &cfg, "update", &format!("{}={}", var, val)])
-        .output();
-}
-
-/// Run clock-top.sh and clock-bot.sh immediately and push their output to
-/// the running eww instance — so the bar updates the instant a setting
-/// changes rather than waiting for the next poll tick.
-fn eww_update_clock() {
-    let scripts = format!("{}/scripts", eww_config_dir());
-    if let Ok(out) = Command::new("sh").arg(format!("{}/clock-top.sh", scripts)).output() {
-        let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !val.is_empty() { eww_update("clock-top", &val); }
-    }
-    if let Ok(out) = Command::new("sh").arg(format!("{}/clock-bot.sh", scripts)).output() {
-        let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        eww_update("clock-bot", &val);
-    }
-}
-
-// ── Public API ───────────────────────────────────────────────────────────────
-
-/// Read current workspace count from config (default 4).
-pub fn ws_count() -> i32 {
-    let map = read_conf();
-    map.get("ws_count")
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(DEFAULT_WS_COUNT)
-        .clamp(1, 10)
-}
-
-/// Read current workspace position: 0 = center, 1 = left.
-pub fn ws_position_index() -> i32 {
-    let map = read_conf();
-    match map.get("ws_position").map(|s| s.as_str()) {
-        Some("left") => 1,
-        _ => 0,
-    }
-}
-
-/// Set workspace count (1–10), persist, and apply live.
-/// Moves any windows on workspaces beyond the new limit to group 1,
-/// then switches the user to group 1 if they were on a removed group.
-pub fn set_ws_count(count: i32) {
-    let old_count = ws_count();
-    let count = count.clamp(1, 10);
-    let mut map = read_conf();
-    map.insert("ws_count".into(), count.to_string());
-    write_conf(&map);
-    eww_update("ws-count", &count.to_string());
-
-    // If reducing, migrate orphaned windows & switch away from removed groups
-    if count < old_count {
-        migrate_windows_above(count);
-    }
-}
-
-/// Set workspace position (0=center, 1=left), persist, and apply live.
-pub fn set_ws_position(index: i32) {
-    let val = if index == 1 { "left" } else { "center" };
-    let mut map = read_conf();
-    map.insert("ws_position".into(), val.to_string());
-    write_conf(&map);
-    eww_update("ws-position", val);
-}
-
-/// Read current workspace spacing from config (default 1).
-pub fn ws_spacing() -> i32 {
-    let map = read_conf();
-    map.get("ws_spacing")
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(DEFAULT_WS_SPACING)
-        .clamp(1, 10)
-}
-
-/// Set workspace dot spacing (1-10 px), persist, and apply live.
-pub fn set_ws_spacing(px: i32) {
-    let px = px.clamp(1, 10);
-    let mut map = read_conf();
-    map.insert("ws_spacing".into(), px.to_string());
-    write_conf(&map);
-    eww_update("ws-spacing", &px.to_string());
-}
-
-/// Read workspace style: 0 = numbers (dots), 1 = squares.
-pub fn ws_style_index() -> i32 {
-    let map = read_conf();
-    match map.get("ws_style").map(|s| s.as_str()) {
-        Some("squares") => 1,
-        _ => 0,
-    }
-}
-
-/// Set workspace style (0=numbers, 1=squares), persist, and apply live.
-pub fn set_ws_style(index: i32) {
-    let val = if index == 1 { "squares" } else { "numbers" };
-    let mut map = read_conf();
-    map.insert("ws_style".into(), val.to_string());
-    write_conf(&map);
-    eww_update("ws-style", val);
-}
-
-// ── Clock settings ───────────────────────────────────────────────────────────
-
-/// Detect whether the system locale prefers 24-hour time.
-/// en_US → false (12 h AM/PM), everything else → true (24 h).
-pub fn detect_clock_24h() -> bool {
-    let lc = std::env::var("LC_TIME")
-        .or_else(|_| std::env::var("LC_ALL"))
-        .or_else(|_| std::env::var("LANG"))
-        .unwrap_or_else(|_| "en_US.UTF-8".into());
-    !lc.starts_with("en_US")
-}
-
-/// Detect the preferred date format index from locale.
-/// en_US → 0 (M/D), others → 1 (D/M).
-pub fn detect_clock_date_fmt() -> i32 {
-    if detect_clock_24h() { 1 } else { 0 }
-}
-
-/// Read clock display format: 0=time only, 1=time+dow, 2=time+date.
-pub fn clock_format() -> i32 {
-    let map = read_conf();
-    match map.get("clock_format").map(|s| s.as_str()) {
-        Some("dow")  => 1,
-        Some("date") => 2,
-        _            => 0,
-    }
-}
-
-/// Set clock display format (0=time, 1=dow, 2=date), persist & apply live.
-pub fn set_clock_format(index: i32) {
-    let val = match index {
-        1 => "dow",
-        2 => "date",
-        _ => "time",
-    };
-    let mut map = read_conf();
-    map.insert("clock_format".into(), val.to_string());
-    write_conf(&map);
-    eww_update_clock();
-}
-
-/// Read whether 24-hour time is active.
-/// If not set in conf, auto-detect from locale and persist.
-pub fn clock_24h() -> bool {
-    let mut map = read_conf();
-    if let Some(v) = map.get("clock_24h") {
-        return v == "true";
-    }
-    // First run: detect and persist
-    let detected = detect_clock_24h();
-    map.insert("clock_24h".into(), detected.to_string());
-    write_conf(&map);
-    detected
-}
-
-/// Set 24-hour toggle, persist & apply live.
-pub fn set_clock_24h(on: bool) {
-    let mut map = read_conf();
-    map.insert("clock_24h".into(), on.to_string());
-    write_conf(&map);
-    eww_update_clock();
-}
-
-/// Read date format index: 0=M/D, 1=D/M, 2=ISO, 3=Mon D.
-/// If not set, auto-detect from locale.
-pub fn clock_date_fmt() -> i32 {
-    let mut map = read_conf();
-    if let Some(v) = map.get("clock_date_fmt") {
-        return match v.as_str() {
-            "D/M"   => 1,
-            "ISO"   => 2,
-            "Mon D" => 3,
-            _       => 0,
-        };
-    }
-    // First run: detect and persist
-    let detected = detect_clock_date_fmt();
-    let val = match detected {
-        1 => "D/M",
-        2 => "ISO",
-        3 => "Mon D",
-        _ => "M/D",
-    };
-    map.insert("clock_date_fmt".into(), val.to_string());
-    write_conf(&map);
-    detected
-}
-
-/// Set date format (0=M/D, 1=D/M, 2=ISO, 3=Mon D), persist.
-pub fn set_clock_date_fmt(index: i32) {
-    let val = match index {
-        1 => "D/M",
-        2 => "ISO",
-        3 => "Mon D",
-        _ => "M/D",
-    };
-    let mut map = read_conf();
-    map.insert("clock_date_fmt".into(), val.to_string());
-    write_conf(&map);
-    eww_update_clock();
-}
-
-// ── Workspace window-migration ────────────────────────────────────────────────
-
-/// Move all windows from workspace groups > `max_group` to group 1.
-///
-/// Uses the grouped-workspace model:
-///   monitor 0 (primary/rightmost) → workspace N
-///   monitor 1 (secondary)        → workspace N+10
-///   monitor 2                    → workspace N+20  etc.
-///
-/// A window on workspace 17 is in group ((17-1)%10)+1 = 7 on monitor 1.
-/// If max_group=6, move it to workspace 11 (group 1 on monitor 1).
-///
-/// After migrating, if the current group exceeds the limit, switch to group 1.
-fn migrate_windows_above(max_group: i32) {
-    // Get all clients
-    let output = match Command::new("hyprctl")
-        .args(["clients", "-j"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return,
-    };
-    let clients_json = String::from_utf8_lossy(&output.stdout);
-    let clients: serde_json::Value = match serde_json::from_str(&clients_json) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    if let Some(arr) = clients.as_array() {
-        for client in arr {
-            let ws_id = match client["workspace"]["id"].as_i64() {
-                Some(id) if id > 0 => id as i32,
-                _ => continue, // skip special workspaces
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
             };
-            // Determine which monitor slot this workspace belongs to
-            let monitor_offset = (ws_id - 1) / 10; // 0, 1, 2, ...
-            let group = ((ws_id - 1) % 10) + 1;    // 1–10
-
-            if group > max_group {
-                let target_ws = 1 + monitor_offset * 10; // group 1 on same monitor
-                let addr = match client["address"].as_str() {
-                    Some(a) => a.to_string(),
-                    None => continue,
-                };
-                let _ = Command::new("hyprctl")
-                    .args([
-                        "dispatch",
-                        "movetoworkspacesilent",
-                        &format!("{},address:{}", target_ws, addr),
-                    ])
-                    .output();
-            }
-        }
-    }
-
-    // If the user is currently on a group beyond the limit, switch to group 1
-    if let Ok(o) = Command::new("hyprctl")
-        .args(["activeworkspace", "-j"])
-        .output()
-    {
-        let json = String::from_utf8_lossy(&o.stdout);
-        if let Ok(ws) = serde_json::from_str::<serde_json::Value>(&json) {
-            if let Some(id) = ws["id"].as_i64() {
-                let group = ((id as i32 - 1) % 10) + 1;
-                if group > max_group {
-                    let _ = Command::new("workspace-group").arg("1").output();
+            if let Some(setting) = SETTINGS.iter().find(|s| s.key() == key.trim()) {
+                let index = *setting as usize;
+                if seen[index] {
+                    return Err(Error::Invalid(format!("duplicate {}", setting.key())));
                 }
+                seen[index] = true;
+                snapshot.values[index] = setting.decode(value.trim())?;
+            }
+        }
+        Ok(snapshot)
+    }
+}
+
+pub fn config_path() -> Result<PathBuf> {
+    // This path is shared with bar-ctl and the EWW clock scripts.
+    dirs::home_dir()
+        .map(|home| home.join(".config/smplos/bar.conf"))
+        .ok_or_else(|| Error::Invalid("HOME is unavailable".into()))
+}
+
+fn read_text(path: &Path) -> Result<Option<String>> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() && meta.nlink() == 1 => Ok(Some(fs::read_to_string(path)?)),
+        Ok(_) => Err(Error::Invalid(
+            "bar.conf must be a regular, unlinked file".into(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn read(path: &Path) -> Result<Snapshot> {
+    Snapshot::parse(read_text(path)?.as_deref().unwrap_or(""))
+}
+
+fn edit(text: &str, setting: Setting, value: i32) -> Result<String> {
+    Snapshot::parse(text)?;
+    let value = setting.encode(value)?;
+    let mut found = false;
+    let mut result = String::new();
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        let replacement = body
+            .split_once('=')
+            .filter(|(key, _)| key.trim() == setting.key());
+        if replacement.is_some() {
+            found = true;
+            result.push_str(&format!("{}={value}{}", setting.key(), &line[body.len()..]));
+        } else {
+            result.push_str(line);
+        }
+    }
+    if !found {
+        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        if !result.is_empty() && !result.ends_with('\n') {
+            result.push_str(newline);
+        }
+        result.push_str(&format!("{}={value}{newline}", setting.key()));
+    }
+    Snapshot::parse(&result)?;
+    Ok(result)
+}
+
+struct Temporary(PathBuf);
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_file(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[settings] cannot remove taskbar temporary file: {error}");
             }
         }
     }
+}
+
+fn replace(path: &Path, original: &Option<String>, text: &str) -> Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Invalid("bar.conf path".into()))?;
+    fs::create_dir_all(parent)?;
+    let temporary_path = parent.join(format!(
+        ".bar.conf.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary_path)?;
+    let temporary = Temporary(temporary_path);
+    if original.is_some() {
+        file.set_permissions(fs::metadata(path)?.permissions())?;
+    }
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    if read_text(path)? != *original {
+        return Err(Error::Conflict);
+    }
+    fs::rename(&temporary.0, path)?;
+    Ok(())
+}
+
+pub trait Runtime {
+    fn run(&self, program: &str, args: &[&str]) -> Result<String>;
+}
+
+pub struct System;
+impl Runtime for System {
+    fn run(&self, program: &str, args: &[&str]) -> Result<String> {
+        let output = Command::new("timeout")
+            .args(["--signal=TERM", "--kill-after=1s", "8s", program])
+            .args(args)
+            .output()?;
+        if !output.status.success() {
+            return Err(Error::Command(format!(
+                "{program} failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+                    .chars()
+                    .take(1000)
+                    .collect::<String>()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().into())
+    }
+}
+
+#[derive(Debug)]
+pub enum SaveOutcome {
+    Updated,
+    SavedButNotApplied(Error),
+}
+
+pub fn change(
+    path: &Path,
+    runtime: &impl Runtime,
+    setting: Setting,
+    value: i32,
+) -> Result<SaveOutcome> {
+    let original = read_text(path)?;
+    let text = edit(original.as_deref().unwrap_or(""), setting, value)?;
+    replace(path, &original, &text)?;
+    let applied = (|| {
+        if setting.workspace() {
+            runtime.run("bar-ctl", &["apply"])?;
+        } else {
+            let config = path
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| Error::Invalid("bar.conf path".into()))?
+                .join("eww");
+            let top = runtime.run(
+                "sh",
+                &[&config.join("scripts/clock-top.sh").to_string_lossy()],
+            )?;
+            let bottom = runtime.run(
+                "sh",
+                &[&config.join("scripts/clock-bot.sh").to_string_lossy()],
+            )?;
+            if top.is_empty() {
+                return Err(Error::Command("Clock script returned no time".into()));
+            }
+            runtime.run(
+                "eww",
+                &[
+                    "--config",
+                    &config.to_string_lossy(),
+                    "update",
+                    &format!("clock-top={top}"),
+                    &format!("clock-bot={bottom}"),
+                ],
+            )?;
+        }
+        if read_text(path)?.as_deref() != Some(text.as_str()) {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    })();
+    Ok(match applied {
+        Ok(()) => SaveOutcome::Updated,
+        Err(error) => SaveOutcome::SavedButNotApplied(error),
+    })
 }
