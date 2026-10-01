@@ -7,6 +7,5 @@
 # ~30MB of stale artifacts inside every smpl-apps release tarball).
 /dist/
 
-# Python release-packaging checks.
-/scripts/__pycache__/
-/tests/__pycache__/
+# Python checks, including per-app contract suites.
+__pycache__/
