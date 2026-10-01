@@ -8,6 +8,15 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **Native GUI transparency preserves opaque foregrounds.** Settings and all
+  other owned GUI apps share validated palette loading and last-good theme
+  refresh. Regular apps use `app_background_opacity`, with legacy popup opacity
+  compatibility; popup apps retain their popup role. Translucent background
+  paints replace opaque content sheets, disabled controls use opaque semantic
+  colors, and fullscreen Help views avoid duplicate background layers. Hint
+  overlays remain transparent outside themed badges and toasts. FemtoVG,
+  undecorated windows, and existing app IDs are unchanged.
+
 - **start-menu: User icons take precedence over system icons.** Icon roots are
   searched user-first before considering size/format preferences, honoring
   XDG data directories, legacy `~/.icons`, Flatpak exports and local icons.

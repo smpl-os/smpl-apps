@@ -36,7 +36,9 @@ export global Theme {
     in-out property <color> success: #a6e3a1;
     in-out property <color> warning: #f9e2af;
     in-out property <color> info: #94e2d5;
-    in-out property <float> opacity: 0.40;
+    in-out property <float> opacity: 1.0;
+    out property <color> surface: bg_light.transparentize(0.90);
+    out property <color> surface-hover: bg_light.transparentize(0.84);
     in-out property <length> border_radius: 12px;
 }
 
@@ -63,7 +65,7 @@ component ProfileCard inherits Rectangle {
         ? (root.status == "error" && root.error_text != "" ? 172px : 148px)
         : (root.status == "error" && root.error_text != "" ? 145px : 120px);
     border-radius: Theme.border_radius;
-    background: touch.has-hover ? Theme.bg_light.transparentize(0.3) : Theme.bg_light;
+    background: touch.has-hover ? Theme.surface-hover : Theme.surface;
 
     touch := TouchArea {
         clicked => { root.clicked(); }
@@ -200,7 +202,6 @@ component ProfileCard inherits Rectangle {
                 border-radius: 16px;
                 background: root.enabled ? Theme.success.transparentize(0.7) : Theme.bg_lighter;
                 // Disable toggle while syncing (don't allow changing enabled mid-sync)
-                opacity: root.is_syncing ? 0.4 : 1.0;
 
                 toggle_touch := TouchArea {
                     enabled: !root.is_syncing;
@@ -213,7 +214,7 @@ component ProfileCard inherits Rectangle {
                     x: root.enabled ? parent.width - self.width - 4px : 4px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 12px;
-                    background: root.enabled ? Theme.success : Theme.fg_dim;
+                    background: root.enabled && !root.is_syncing ? Theme.success : Theme.fg_dim;
 
                     animate x { duration: 200ms; easing: ease-in-out; }
                 }
@@ -225,7 +226,6 @@ component ProfileCard inherits Rectangle {
                 height: 32px;
                 border-radius: 6px;
                 background: (!root.is_syncing && delete_touch.has-hover) ? Theme.danger : transparent;
-                opacity: root.is_syncing ? 0.4 : 1.0;
 
                 delete_touch := TouchArea {
                     enabled: !root.is_syncing;

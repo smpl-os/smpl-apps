@@ -30,7 +30,8 @@ export global Theme {
     in-out property <color> success: #a6e3a1;
     in-out property <color> warning: #f9e2af;
     in-out property <color> info: #94e2d5;
-    in-out property <float> opacity: 0.40;
+    in-out property <float> opacity: 1.0;
+    out property <color> surface: bg_light.transparentize(0.90);
     in-out property <length> card_radius: 6px;
     in-out property <length> button_radius: 4px;
 }
@@ -181,7 +182,7 @@ export component AppCard inherits Rectangle {
     callback checkbox-toggled();
 
     height: 72px;
-    background: root.is-selected ? Theme.accent.transparentize(0.9) : Theme.bg_light.transparentize(0.5);
+    background: root.is-selected ? Theme.accent.transparentize(0.9) : Theme.surface;
     border-radius: Theme.card_radius;
     border-width: 1px;
     border-color: root.is-selected ? Theme.accent : Theme.bg_lighter;

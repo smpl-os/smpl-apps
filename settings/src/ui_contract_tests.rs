@@ -1,6 +1,37 @@
 const UI: &str = include_str!("../ui/main.slint");
 
 #[test]
+fn backgrounds_use_glass_without_fading_foreground_controls() {
+    assert!(UI.contains("background: Theme.bg.transparentize(1.0 - Theme.opacity)"));
+    assert!(UI.contains("panel: bg_light.transparentize(88%)"));
+    assert!(UI.matches("background: Theme.panel;").count() >= 40);
+    assert!(!UI.lines().any(|line| line.trim_start().starts_with("opacity:")));
+    for semantic_state in [
+        "model-row.disabled ? Theme.fg_dim : Theme.fg",
+        "root.wifi-scanning ? Theme.fg_dim : Theme.fg",
+        "root.wifi-connecting ? Theme.fg_dim : Theme.bg",
+        "root.bt-scanning ? Theme.fg_dim : Theme.fg",
+        "root.bt-connecting ? Theme.fg_dim : Theme.bg",
+    ] {
+        assert!(UI.contains(semantic_state));
+    }
+}
+
+#[test]
+fn help_replaces_content_without_another_background_fill() {
+    assert!(UI.contains("visible: !root.show-help;"));
+    let help = UI
+        .split("// ── Help overlay")
+        .nth(1)
+        .unwrap()
+        .split("Flickable {")
+        .next()
+        .unwrap();
+    assert!(help.contains("background: transparent;"));
+    assert!(!help.contains("background: Theme.bg;"));
+}
+
+#[test]
 fn readable_typography_uses_shared_tokens_without_tiny_text() {
     for token in [
         "caption: 12px",

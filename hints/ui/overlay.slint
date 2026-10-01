@@ -15,12 +15,9 @@ export struct HintItem {
 }
 
 export global Theme {
-    in-out property <color> bg:     #1e1e2e;
-    in-out property <color> fg:     #cdd6f4;
     in-out property <color> accent: #f9e2af;   // yellow: hint labels pop
-    in-out property <color> pill_bg:  #1e1e2e; // filled behind each hint
     in-out property <color> pill_fg:  #1e1e2e; // dark text on yellow
-    in-out property <float> opacity: 0.35;
+    in-out property <float> opacity: 1.0;
     in-out property <length> pill_pad: 4px;
     in-out property <length> pill_radius: 4px;
     in-out property <length> hint_font_size: 14px;
@@ -31,7 +28,7 @@ component HintPill inherits Rectangle {
     in property <string> label;
     in property <string> typed_prefix;
 
-    background: Theme.accent.transparentize(1.0 - Theme.opacity - 0.5);
+    background: Theme.accent.transparentize(1.0 - Theme.opacity);
     border-radius: Theme.pill_radius;
     border-width: 1px;
     border-color: Theme.accent;

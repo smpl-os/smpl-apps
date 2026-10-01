@@ -232,6 +232,12 @@ jobs:
       - name: Test release packaging
         run: python -m unittest discover -s tests -p 'test_release_assets.py' -v
 
+      - name: Test native theme contracts
+        run: |
+          python -m unittest discover -s tests -p 'test_theme_contracts.py' -v
+          python -m unittest discover -s start-menu/tests -p 'test_*.py' -v
+          python -m unittest discover -s calendar/tests -p 'test_*.py' -v
+
       - name: Check (all workspace members)
         run: cargo check --workspace
 
@@ -242,7 +248,7 @@ jobs:
         run: cargo build --workspace
 
       - name: Test
-        # --lib --bins: skip doctests that reference types from consuming crates
+        # --lib --bins --tests: include UI contracts, skip doctests referring to consuming crates
         # (e.g. MainWindow, which is only in scope after slint::include_modules!()).
         # Unit tests in #[cfg(test)] modules are fully covered by --lib.
-        run: cargo test --workspace --lib --bins --no-fail-fast 2>&1
+        run: cargo test --workspace --lib --bins --tests --no-fail-fast 2>&1

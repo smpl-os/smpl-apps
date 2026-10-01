@@ -1,7 +1,7 @@
 mod backend;
-mod theme;
 
 use backend::{clear_all_notifications, dismiss_notification, get_notifications, open_notification, Notification};
+use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Model, ModelRc, VecModel};
 use std::cell::RefCell;
@@ -20,12 +20,7 @@ fn to_ui_item(n: &Notification) -> NotificationItem {
     }
 }
 
-fn apply_theme(ui: &MainWindow) {
-    let palette = theme::load_theme_from_eww_scss(&format!(
-        "{}/.config/eww/theme-colors.scss",
-        std::env::var("HOME").unwrap_or_default()
-    ));
-
+fn apply_theme(ui: &MainWindow, palette: &ThemePalette) {
     let theme = Theme::get(ui);
     theme.set_bg(palette.bg.darker(0.05)); // Match EWW's darken($bg, 5%)
     theme.set_fg(palette.fg);
@@ -83,7 +78,12 @@ fn main() -> Result<(), slint::PlatformError> {
     smpl_common::init("notif-center", 384.0, 520.0)?;
 
     let ui = MainWindow::new()?;
-    apply_theme(&ui);
+    let ui_weak = ui.as_weak();
+    let _theme_timer = theme::watch(ThemeRole::Popup, move |palette| {
+        if let Some(ui) = ui_weak.upgrade() {
+            apply_theme(&ui, palette);
+        }
+    });
 
     let state: Rc<RefCell<Vec<Notification>>> = Rc::new(RefCell::new(Vec::new()));
     let model = Rc::new(VecModel::<NotificationItem>::default());
@@ -166,7 +166,6 @@ fn main() -> Result<(), slint::PlatformError> {
             std::time::Duration::from_secs(2),
             move || {
                 if let Some(ui) = ui_weak.upgrade() {
-                    apply_theme(&ui);
                     ui.invoke_refresh();
                 }
             },

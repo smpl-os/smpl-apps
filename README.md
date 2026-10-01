@@ -33,6 +33,8 @@ All apps use [Slint](https://slint.dev) with the FemtoVG renderer + Winit/Waylan
 | `app-center` | Package manager UI |
 | `webapp-center` | Web-app manager |
 | `sync-center` | File sync & backup |
+| `smpl-calendar` | Compact calendar and detailed event view |
+| `smpl-hints` / `smpl-hintsd` | Keyboard-navigation hint overlay and daemon |
 
 ## Building
 
@@ -41,6 +43,78 @@ cargo build --release --workspace
 ```
 
 Requires Arch Linux (or equivalent) with: `fontconfig freetype2 libxkbcommon wayland gtk4 gtk4-layer-shell libadwaita`
+
+## Native themes and transparency
+
+All GUI apps share the palette reader in `smpl-common::theme`. It reads
+`$XDG_CONFIG_HOME/eww/theme-colors.scss` when the config directory is absolute,
+falling back to the existing smplOS deployment at
+`$HOME/.config/eww/theme-colors.scss` only when the preferred file is absent.
+Without an absolute XDG directory it uses the HOME path directly. Every poll
+rechecks the preferred path, so creating/removing that file switches sources;
+an invalid or unreadable preferred file never silently selects the fallback.
+Theme changes are polled every
+two seconds; unchanged palettes are not reapplied. Atomic replacement is
+supported. Read errors, incomplete palettes, invalid colors, and invalid
+opacity values are reported to stderr without discarding the last good theme.
+At startup, an unavailable or invalid theme uses an opaque built-in palette
+until a valid theme arrives.
+
+| GUI surface / Wayland app ID | Background opacity source |
+|---|---|
+| `settings`, `app-center`, `webapp-center`, `sync-center` | `$theme-app-background-opacity`, then legacy `$theme-popup-opacity`, then `1.0` |
+| `start-menu`, `notif-center`, `smpl-calendar`, `smpl-calendar-details` | `$theme-popup-opacity`, then `1.0` |
+| `hints-overlay` | Popup opacity for painted badges/toasts only; the fullscreen root stays transparent |
+
+The `sync-center-gui` binary uses app ID `sync-center`; both calendar modes
+come from `smpl-calendar`. The sync, calendar-alert, and hints daemons do not
+add GUI app IDs. Compositor rules must keep these self-managed-alpha surfaces
+at window opacity `1.0`, including inactive windows.
+
+Opacity values must be finite numbers in `[0, 1]`. An explicitly invalid
+value rejects the update rather than falling through to a different key.
+Palette colors are opaque six-digit `#RRGGBB`; `bg`, `fg`, and `accent` are
+required. Muted and disabled foregrounds use opaque semantic colors, not
+ancestor opacity. The window paints the base alpha once; interior cards use
+light background-only tints rather than stacked opaque sheets. Help views
+replace covered content without another full-window fill. Menus and modal
+panels may retain opaque readability backgrounds. Setting the base opacity
+to `1.0` restores a solid surface; transparent space outside hint badges
+remains transparent.
+
+Do not replace the shared FemtoVG backend, enable software/Skia rendering,
+add a second backend builder, or remove the no-decoration/app-ID setup in
+`smpl_common::init`. Window background alpha is intentional and does not
+fade its descendants. Intrinsic image transparency and glyph antialiasing
+are normal; solid text/icon interiors must not inherit a window/control fade.
+
+Focused headless checks:
+`cargo test -p smpl-common --lib` and
+`cargo test -p settings --bin settings ui_contract_tests`.
+These cover parser/reload and UI structure, not compositor pixel output.
+Native visual checks must use isolated fixtures rather than capturing the
+user's desktop or running application actions against real data.
+
+The optional native fixture reads RGBA from FemtoVG's actual default OpenGL
+framebuffer on an authenticated private Xvfb display. It checks the opacity
+round trip, opaque glyph/icon interiors, normal antialias edges, native focus
+loss/regain, and the transparent hint-overlay case:
+
+```bash
+cargo build -p smpl-common --example femtovg_alpha_probe
+python tests/run_femtovg_alpha_probe.py
+```
+
+This requires Xvfb and Mesa OpenGL support. `LIBGL_ALWAYS_SOFTWARE=1` selects
+Mesa's CPU OpenGL driver for the fixture, **not** Slint's software renderer;
+the renderer remains FemtoVG. Logs are written under `target/native-alpha-probe/`.
+This is native framebuffer evidence, not proof of Wayland compositor blur,
+compositor rules, or every live application layout.
+
+Ship the matching smplOS palette-generator/compositor integration before the
+app release so the new application token and all self-managed-alpha IDs are
+available. Legacy themes without the new key remain compatible. Source commits
+alone do not update installed binaries; use the normal release workflow.
 
 ## Start-menu icons and pins
 

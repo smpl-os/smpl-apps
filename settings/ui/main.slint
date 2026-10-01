@@ -107,7 +107,9 @@ export global Theme {
     in property <color> success: #a6e3a1;
     in property <color> warning: #f9e2af;
     in property <color> info: #94e2d5;
-    in property <float> opacity: 0.40;
+    in property <float> opacity: 1.0;
+    out property <color> panel: bg_light.transparentize(88%);
+    out property <color> hover: bg_lighter.transparentize(80%);
 }
 
 // ── Key cap component ────────────────────────────────────────────────────────
@@ -219,7 +221,7 @@ component ResDropdown inherits Rectangle {
 
     height: Typography.compact-control;
     border-radius: 4px;
-    background: Theme.bg_light;
+    background: Theme.panel;
 
     HorizontalLayout {
         padding-left: 8px;
@@ -382,9 +384,9 @@ component MonitorRect inherits Rectangle {
     border-radius: 6px;
     border-width: selected ? 2px : 1px;
     border-color: selected ? Theme.accent : Theme.bg_lighter;
-    background: dragging ? Theme.bg_lighter
-              : selected ? Theme.bg_light
-              : Theme.bg_light.darker(0.3);
+    background: dragging ? Theme.hover
+              : selected ? Theme.panel
+              : Theme.bg_light.darker(0.3).transparentize(90%);
     drop-shadow-blur: dragging ? 12px : selected ? 8px : 2px;
     drop-shadow-color: #00000066;
 
@@ -479,7 +481,6 @@ component ScrollIndicator inherits Rectangle {
 
     width: 4px;
     visible: self.needed;
-    opacity: 0.6;
 
     // Track
     Rectangle {
@@ -496,7 +497,7 @@ component ScrollIndicator inherits Rectangle {
         width: 100%;
         height: max(20px, parent.height * parent.ratio);
         border-radius: 2px;
-        background: Theme.fg_dim.transparentize(40%);
+        background: Theme.fg_dim;
     }
 }
 
@@ -1039,6 +1040,7 @@ export component MainWindow inherits Window {
     // ── Layout ───────────────────────────────────────────────────────────────
 
     VerticalLayout {
+        visible: !root.show-help;
         padding: 10px;
         spacing: 6px;
 
@@ -1081,7 +1083,7 @@ export component MainWindow inherits Window {
                 width: 200px;
                 height: Typography.compact-control;
                 border-radius: 4px;
-                background: Theme.bg_light;
+                background: Theme.panel;
 
                 HorizontalLayout {
                     spacing: 4px;
@@ -1684,7 +1686,7 @@ export component MainWindow inherits Window {
                         Rectangle {
                             height: 6px;
                             border-radius: 3px;
-                            background: Theme.bg_light;
+                            background: Theme.panel;
 
                             Rectangle {
                                 y: 0;
@@ -1762,7 +1764,7 @@ export component MainWindow inherits Window {
                     // Language picker
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: (root.highlight-setting == "Language Model" || root.highlight-setting == "Dictation" || root.highlight-setting == "Speech to Text" || root.highlight-setting == "Microphone") && root.highlight-blink-on ? 2px : 0px;
                         border-color: (root.highlight-setting == "Language Model" || root.highlight-setting == "Dictation" || root.highlight-setting == "Speech to Text" || root.highlight-setting == "Microphone") && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -1866,7 +1868,7 @@ export component MainWindow inherits Window {
                     // Model picker
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: (root.highlight-setting == "Whisper" || root.highlight-setting == "Voice Input") && root.highlight-blink-on ? 2px : 0px;
                         border-color: (root.highlight-setting == "Whisper" || root.highlight-setting == "Voice Input") && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -1883,7 +1885,7 @@ export component MainWindow inherits Window {
                                 font-weight: 600;
                             }
 
-                            for model[idx] in root.dictation-model-list: Rectangle {
+                            for model[idx] in root.dictation-model-list: model-row := Rectangle {
                                 property <bool> disabled: model.english-only && !root.dictation-selected-lang-is-english;
                                 height: 32px;
                                 border-radius: 4px;
@@ -1892,7 +1894,6 @@ export component MainWindow inherits Window {
                                     : idx == root.dictation-selected-model-idx
                                         ? Theme.accent.transparentize(70%)
                                         : model-item-touch.has-hover ? Theme.bg_lighter : transparent;
-                                opacity: self.disabled ? 0.4 : 1.0;
 
                                 HorizontalLayout {
                                     padding-left: 10px;
@@ -1925,7 +1926,7 @@ export component MainWindow inherits Window {
 
                                     Text {
                                         text: model.label;
-                                        color: Theme.fg;
+                                        color: model-row.disabled ? Theme.fg_dim : Theme.fg;
                                         font-size: Typography.body;
                                         vertical-alignment: center;
                                     }
@@ -2161,7 +2162,7 @@ export component MainWindow inherits Window {
                     // Config info
                     if !root.dictation-config-missing: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: (root.highlight-setting == "Dictation" || root.highlight-setting == "Speech to Text" || root.highlight-setting == "Whisper" || root.highlight-setting == "Voice Input" || root.highlight-setting == "Language Model" || root.highlight-setting == "Microphone") && root.highlight-blink-on ? 2px : 0px;
                         border-color: (root.highlight-setting == "Dictation" || root.highlight-setting == "Speech to Text" || root.highlight-setting == "Whisper" || root.highlight-setting == "Voice Input" || root.highlight-setting == "Language Model" || root.highlight-setting == "Microphone") && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -2453,7 +2454,7 @@ export component MainWindow inherits Window {
 
                 // ── Monitor Canvas card ──
                 Rectangle {
-                    background: Theme.bg.darker(0.3);
+                    background: Theme.bg.darker(0.3).transparentize(88%);
                     border-radius: 6px;
                     border-width: (root.highlight-setting == "Display" || root.highlight-setting == "Monitor" || root.highlight-setting == "Screen Layout") && root.highlight-blink-on ? 2px : 1px;
                     border-color: (root.highlight-setting == "Display" || root.highlight-setting == "Monitor" || root.highlight-setting == "Screen Layout") && root.highlight-blink-on ? Theme.accent : Theme.bg_lighter;
@@ -2518,7 +2519,7 @@ export component MainWindow inherits Window {
                     // ── Resolution & Refresh Rate card ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: (root.highlight-setting == "Resolution" || root.highlight-setting == "Refresh Rate") && root.highlight-blink-on ? 2px : 0px;
                         border-color: (root.highlight-setting == "Resolution" || root.highlight-setting == "Refresh Rate") && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -2552,7 +2553,7 @@ export component MainWindow inherits Window {
                     // ── Scale card ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: root.highlight-setting == "Scale" && root.highlight-blink-on ? 2px : 0px;
                         border-color: root.highlight-setting == "Scale" && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -2587,7 +2588,7 @@ export component MainWindow inherits Window {
                     // ── Orientation card ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: root.highlight-setting == "Orientation" && root.highlight-blink-on ? 2px : 0px;
                         border-color: root.highlight-setting == "Orientation" && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -2621,7 +2622,7 @@ export component MainWindow inherits Window {
                     // ── Primary Monitor card ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: root.highlight-setting == "Primary Monitor" && root.highlight-blink-on ? 2px : 0px;
                         border-color: root.highlight-setting == "Primary Monitor" && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -2931,7 +2932,7 @@ export component MainWindow inherits Window {
                 }
                 if root.power-profiles-available: Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Power Profile" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Power Profile" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -3094,7 +3095,7 @@ export component MainWindow inherits Window {
                 // ── Lock Screen Timeout card ──
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Lock Screen Timeout" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Lock Screen Timeout" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -3192,7 +3193,7 @@ export component MainWindow inherits Window {
                 // ── Screen Off Timeout card ──
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Screen Off Timeout" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Screen Off Timeout" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -3293,7 +3294,7 @@ export component MainWindow inherits Window {
                 // ── Suspend Timeout card ──
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Suspend Timeout" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Suspend Timeout" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -3394,7 +3395,7 @@ export component MainWindow inherits Window {
                 // ── Shutdown After card ──
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Shutdown After" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Shutdown After" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -3550,7 +3551,7 @@ export component MainWindow inherits Window {
                         horizontal-stretch: 1;
                         height: Typography.compact-control;
                         border-radius: 4px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         kb-filter-input := TextInput {
                             x: 8px;
@@ -3616,7 +3617,7 @@ export component MainWindow inherits Window {
                 Rectangle {
                     vertical-stretch: 1;
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: (root.highlight-setting == "Keybindings" || root.highlight-setting == "Keyboard Shortcuts" || root.highlight-setting == "Hotkeys" || root.highlight-setting == "Shortcut") && root.highlight-blink-on ? 2px : 0px;
                     border-color: (root.highlight-setting == "Keybindings" || root.highlight-setting == "Keyboard Shortcuts" || root.highlight-setting == "Hotkeys" || root.highlight-setting == "Shortcut") && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -3894,7 +3895,7 @@ export component MainWindow inherits Window {
                 if root.kb-adding: Rectangle {
                     height: 70px;
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
 
                     VerticalLayout {
                         padding: 8px;
@@ -4199,7 +4200,7 @@ export component MainWindow inherits Window {
                 // ── Workspace Count card ──
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Workspace Count" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Workspace Count" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -4321,7 +4322,7 @@ export component MainWindow inherits Window {
                 // ── Workspace Position card ──
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Workspace Position" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Workspace Position" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -4444,7 +4445,7 @@ export component MainWindow inherits Window {
                 // ── Workspace Spacing card ──
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Workspace Spacing" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Workspace Spacing" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -4568,7 +4569,7 @@ export component MainWindow inherits Window {
                 // ── Workspace Style card ──
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Workspace Style" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Workspace Style" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -4687,7 +4688,7 @@ export component MainWindow inherits Window {
                 // ── Clock Format card ──────────────────────────────────
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: root.highlight-setting == "Clock Format" && root.highlight-blink-on ? 2px : 0px;
                     border-color: root.highlight-setting == "Clock Format" && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -5131,11 +5132,10 @@ export component MainWindow inherits Window {
                             height: Typography.compact-control;
                             border-radius: 4px;
                             background: wifi-scan-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
-                            opacity: root.wifi-scanning ? 0.5 : 1.0;
 
                             Text {
                                 text: root.wifi-scanning ? "Scanning…" : "Scan";
-                                color: Theme.fg;
+                                color: root.wifi-scanning ? Theme.fg_dim : Theme.fg;
                                 font-size: Typography.secondary;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -5155,7 +5155,7 @@ export component MainWindow inherits Window {
                     // ── Airplane Mode card ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: root.highlight-setting == "Airplane Mode" && root.highlight-blink-on ? 2px : 0px;
                         border-color: root.highlight-setting == "Airplane Mode" && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -5215,7 +5215,7 @@ export component MainWindow inherits Window {
                     // ── No hardware warning ──
                     if root.wifi-no-hardware: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         height: 48px;
 
                         HorizontalLayout {
@@ -5234,7 +5234,7 @@ export component MainWindow inherits Window {
                     // ── Network list card ──
                     if !root.wifi-airplane-mode && !root.wifi-no-hardware && root.wifi-selected-idx == -1: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: root.highlight-setting == "Wi-Fi" && root.highlight-blink-on ? 2px : 0px;
                         border-color: root.highlight-setting == "Wi-Fi" && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -5349,7 +5349,7 @@ export component MainWindow inherits Window {
                     if root.wifi-selected-idx != -1
                        && root.wifi-selected-idx < root.wifi-networks.length: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         VerticalLayout {
                             padding: 14px;
@@ -5538,7 +5538,6 @@ export component MainWindow inherits Window {
                                     height: 32px;
                                     border-radius: 4px;
                                     background: root.wifi-connecting ? Theme.bg_lighter : Theme.accent;
-                                    opacity: root.wifi-connecting ? 0.5 : 1.0;
 
                                     Text {
                                         text: root.wifi-connecting
@@ -5549,7 +5548,7 @@ export component MainWindow inherits Window {
                                                  : (root.wifi-networks[root.wifi-selected-idx].connected
                                                     ? "Reconnect"
                                                     : "Connect"));
-                                        color: Theme.bg;
+                                        color: root.wifi-connecting ? Theme.fg_dim : Theme.bg;
                                         font-size: Typography.secondary;
                                         font-weight: 600;
                                         horizontal-alignment: center;
@@ -5644,7 +5643,7 @@ export component MainWindow inherits Window {
                     // ── QR Code overlay card ──
                     if root.wifi-qr-visible: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         VerticalLayout {
                             padding: 12px;
@@ -5736,7 +5735,7 @@ export component MainWindow inherits Window {
                     // ── Connect via URI card ──
                     if !root.wifi-airplane-mode && !root.wifi-no-hardware: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         VerticalLayout {
                             padding: 12px;
@@ -5828,7 +5827,7 @@ export component MainWindow inherits Window {
                     // and prune stale credentials.
                     if !root.wifi-no-hardware: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         VerticalLayout {
                             padding: 12px;
@@ -6017,11 +6016,10 @@ export component MainWindow inherits Window {
                             height: Typography.compact-control;
                             border-radius: 4px;
                             background: bt-scan-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
-                            opacity: root.bt-scanning ? 0.5 : 1.0;
 
                             Text {
                                 text: root.bt-scanning ? "Scanning…" : "Scan";
-                                color: Theme.fg;
+                                color: root.bt-scanning ? Theme.fg_dim : Theme.fg;
                                 font-size: Typography.secondary;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -6041,7 +6039,7 @@ export component MainWindow inherits Window {
                     // ── Power toggle card ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         border-width: root.highlight-setting == "Bluetooth" && root.highlight-blink-on ? 2px : 0px;
                         border-color: root.highlight-setting == "Bluetooth" && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -6101,7 +6099,7 @@ export component MainWindow inherits Window {
                     // ── No hardware warning ──
                     if root.bt-no-hardware: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         height: 48px;
 
                         HorizontalLayout {
@@ -6120,7 +6118,7 @@ export component MainWindow inherits Window {
                     // ── Discoverable toggle ──
                     if root.bt-powered && !root.bt-no-hardware: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         VerticalLayout {
                             padding: 12px;
@@ -6176,7 +6174,7 @@ export component MainWindow inherits Window {
                     // ── Device list card ──
                     if root.bt-powered && !root.bt-no-hardware: Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         VerticalLayout {
                             padding: 12px;
@@ -6267,11 +6265,10 @@ export component MainWindow inherits Window {
                                             height: Typography.compact-control;
                                             border-radius: 4px;
                                             background: root.bt-connecting ? Theme.bg_lighter : Theme.accent;
-                                            opacity: root.bt-connecting ? 0.5 : 1.0;
 
                                             Text {
                                                 text: root.bt-connecting ? "…" : "Connect";
-                                                color: Theme.bg;
+                                                color: root.bt-connecting ? Theme.fg_dim : Theme.bg;
                                                 font-size: Typography.secondary;
                                                 font-weight: 600;
                                                 horizontal-alignment: center;
@@ -6439,7 +6436,7 @@ export component MainWindow inherits Window {
                     // ── Status card ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         VerticalLayout {
                             padding: 12px;
@@ -6485,7 +6482,7 @@ export component MainWindow inherits Window {
                     // ── Enable card (auto-launch + start now) ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
 
                         VerticalLayout {
                             padding: 12px;
@@ -6538,7 +6535,7 @@ export component MainWindow inherits Window {
                     // ── Monitor count ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         VerticalLayout {
                             padding: 12px; spacing: 8px;
                             Text { text: "Number of screens"; color: Theme.fg_dim; font-size: Typography.secondary; font-weight: 600; }
@@ -6563,7 +6560,7 @@ export component MainWindow inherits Window {
                     // ── Layout + radius ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         VerticalLayout {
                             padding: 12px; spacing: 8px;
                             Text { text: "Layout"; color: Theme.fg_dim; font-size: Typography.secondary; font-weight: 600; }
@@ -6600,7 +6597,7 @@ export component MainWindow inherits Window {
                     // ── Display tuning: FOV / curvature / smoothing ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         VerticalLayout {
                             padding: 12px; spacing: 10px;
                             Text { text: "Display"; color: Theme.fg_dim; font-size: Typography.secondary; font-weight: 600; }
@@ -6649,7 +6646,7 @@ export component MainWindow inherits Window {
                     // ── 3D / Stereo toggle ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         VerticalLayout {
                             padding: 12px; spacing: 4px;
                             HorizontalLayout {
@@ -6680,7 +6677,7 @@ export component MainWindow inherits Window {
                     // ── Head-tracking (mode B) toggle ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         VerticalLayout {
                             padding: 12px; spacing: 4px;
                             HorizontalLayout {
@@ -6711,7 +6708,7 @@ export component MainWindow inherits Window {
                     // ── Advanced: capture backend ──
                     Rectangle {
                         border-radius: 6px;
-                        background: Theme.bg_light;
+                        background: Theme.panel;
                         VerticalLayout {
                             padding: 12px; spacing: 8px;
                             Text { text: "Advanced — capture backend"; color: Theme.fg_dim; font-size: Typography.secondary; font-weight: 600; }
@@ -6814,7 +6811,7 @@ export component MainWindow inherits Window {
                         // ── Enable toggle card ──
                         Rectangle {
                             border-radius: 6px;
-                            background: Theme.bg_light;
+                            background: Theme.panel;
 
                             VerticalLayout {
                                 padding: 12px;
@@ -6852,7 +6849,7 @@ export component MainWindow inherits Window {
                         // ── Keybindings reference card ──
                         Rectangle {
                             border-radius: 6px;
-                            background: Theme.bg_light;
+                            background: Theme.panel;
 
                             VerticalLayout {
                                 padding: 12px;
@@ -6913,7 +6910,7 @@ export component MainWindow inherits Window {
                         // ── Accessibility footnote ──
                         Rectangle {
                             border-radius: 6px;
-                            background: Theme.bg_light;
+                            background: Theme.panel;
 
                             VerticalLayout {
                                 padding: 12px;
@@ -7002,7 +6999,7 @@ export component MainWindow inherits Window {
                 // System info card
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     border-width: (root.highlight-setting == "About smplOS" || root.highlight-setting == "Version" || root.highlight-setting == "Hostname" || root.highlight-setting == "Kernel" || root.highlight-setting == "Uptime" || root.highlight-setting == "Compositor") && root.highlight-blink-on ? 2px : 0px;
                     border-color: (root.highlight-setting == "About smplOS" || root.highlight-setting == "Version" || root.highlight-setting == "Hostname" || root.highlight-setting == "Kernel" || root.highlight-setting == "Uptime" || root.highlight-setting == "Compositor") && root.highlight-blink-on ? Theme.accent : transparent;
                     animate border-width { duration: 400ms; easing: ease-in-out; }
@@ -7112,7 +7109,7 @@ export component MainWindow inherits Window {
         visible: root.show-help;
         width: 100%;
         height: 100%;
-        background: Theme.bg;
+        background: transparent;
 
         Flickable {
             width: parent.width;
@@ -7144,7 +7141,7 @@ export component MainWindow inherits Window {
 
                 Rectangle {
                     border-radius: 6px;
-                    background: Theme.bg_light;
+                    background: Theme.panel;
                     VerticalLayout {
                         padding: 12px;
                         spacing: 8px;
@@ -7177,7 +7174,7 @@ export component MainWindow inherits Window {
 
     // ── Inline search results dropdown ─────────────────────────────────────────
 
-    if root.search-results.length > 0 && root.global-search-text != "": Rectangle {
+    if !root.show-help && root.search-results.length > 0 && root.global-search-text != "": Rectangle {
         x: root.width - 12px - 260px;
         y: 44px;
         width: 260px;
@@ -7387,7 +7384,7 @@ export component MainWindow inherits Window {
     // ── Dictation language dropdown overlay ───────────────────────────────────
 
     Rectangle {
-        visible: root.dictation-lang-dropdown-open && root.active-tab == 2;
+        visible: root.dictation-lang-dropdown-open && root.active-tab == 2 && !root.show-help;
         width: 100%;
         height: 100%;
 
@@ -7526,7 +7523,7 @@ export component MainWindow inherits Window {
 
     // ── Loading spinner ──────────────────────────────────────────────────────
 
-    if root.loading && root.active-tab == 1: Rectangle {
+    if root.loading && root.active-tab == 1 && !root.show-help: Rectangle {
         width: 100%;
         height: 100%;
         background: Theme.bg.transparentize(30%);

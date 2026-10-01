@@ -24,7 +24,9 @@ export global Theme {
     in-out property <color> success: #a6e3a1;
     in-out property <color> warning: #f9e2af;
     in-out property <color> info: #94e2d5;
-    in-out property <float> opacity: 0.40;
+    in-out property <float> opacity: 1.0;
+    out property <color> surface: bg_light.transparentize(0.90);
+    out property <color> surface-hover: bg_lighter.transparentize(0.84);
     in-out property <length> card_radius: 6px;
     in-out property <length> button_radius: 4px;
 }
@@ -52,7 +54,7 @@ component FormField inherits Rectangle {
         Rectangle {
             height: 32px;
             border-radius: Theme.button_radius;
-            background: Theme.bg_light;
+            background: Theme.surface;
             border-width: input.has-focus ? 1px : 0px;
             border-color: Theme.accent;
 
@@ -76,7 +78,6 @@ component FormField inherits Rectangle {
                 color: Theme.fg_dim;
                 font-size: 13px;
                 vertical-alignment: center;
-                opacity: 0.5;
             }
         }
     }
@@ -113,7 +114,6 @@ component ToggleRow inherits FocusScope {
             font-size: 13px;
             vertical-alignment: center;
             horizontal-stretch: 1;
-            opacity: root.enabled ? 1.0 : 0.5;
         }
 
         VerticalLayout {
@@ -126,7 +126,6 @@ component ToggleRow inherits FocusScope {
                     : (root.checked ? Theme.accent : Theme.bg_lighter);
                 border-width: root.has-focus && root.enabled ? 1px : 0px;
                 border-color: Theme.fg;
-                opacity: root.enabled ? 1.0 : 0.4;
 
                 Rectangle {
                     x: root.checked ? parent.width - self.width - 3px : 3px;
@@ -134,7 +133,7 @@ component ToggleRow inherits FocusScope {
                     width: 16px;
                     height: 16px;
                     border-radius: 8px;
-                    background: Theme.fg;
+                    background: root.enabled ? Theme.fg : Theme.fg_dim;
                     animate x { duration: 120ms; }
                 }
 
@@ -727,6 +726,7 @@ export component MainWindow inherits Window {
                             height: parent.height;
 
                             Rectangle {
+                                visible: !root.show-about;
                                 width: parent.width;
                                 height: parent.height;
                                 clip: true;
@@ -745,11 +745,11 @@ export component MainWindow inherits Window {
                                             border-radius: Theme.card_radius;
                                             background: app.marked
                                                 ? (root.selected-index == index
-                                                    ? Theme.accent.transparentize(0.6)
-                                                    : Theme.accent.transparentize(0.8))
+                                                    ? Theme.accent.transparentize(0.84)
+                                                    : Theme.accent.transparentize(0.90))
                                                 : (root.selected-index == index
-                                                    ? Theme.bg_lighter
-                                                    : (row_touch.has-hover ? Theme.bg_lighter : Theme.bg_light));
+                                                    ? Theme.surface-hover
+                                                    : (row_touch.has-hover ? Theme.surface-hover : Theme.surface));
 
                                             row_touch := TouchArea {
                                                 clicked => {
@@ -849,7 +849,6 @@ export component MainWindow inherits Window {
                                                             background: del_touch.has-hover ? Theme.danger : transparent;
                                                             width: 24px;
                                                             height: 24px;
-                                                            opacity: row_touch.has-hover || del_touch.has-hover ? 1.0 : 0.4;
                                                             Text {
                                                                 text: "x";
                                                                 color: del_touch.has-hover ? Theme.bg : Theme.fg_dim;
@@ -880,15 +879,14 @@ export component MainWindow inherits Window {
                                     x: parent.width - 6px;
                                     width: 6px;
                                     height: parent.height;
-                                    background: Theme.bg_light;
+                                    background: Theme.surface;
                                     Rectangle {
                                         width: parent.width;
                                         height: max(24px, parent.height * parent.height / list_flick.viewport-height);
                                         y: list_flick.viewport-height > list_flick.height
                                             ? (-list_flick.viewport-y / (list_flick.viewport-height - list_flick.height)) * (parent.height - self.height)
                                             : 0px;
-                                        background: Theme.bg_lighter;
-                                        opacity: 0.5;
+                                        background: Theme.fg_dim;
                                     }
                                 }
                             }
@@ -926,7 +924,7 @@ export component MainWindow inherits Window {
                                 visible: root.show-about;
                                 width: parent.width;
                                 height: parent.height;
-                                background: Theme.bg;
+                                background: transparent;
 
                                 about_flick := Flickable {
                                     width: parent.width;
@@ -970,7 +968,7 @@ export component MainWindow inherits Window {
                                         // How it works
                                         Rectangle {
                                             border-radius: Theme.card_radius;
-                                            background: Theme.bg_light;
+                                            background: Theme.surface;
 
                                             VerticalLayout {
                                                 padding: 12px;
@@ -994,7 +992,7 @@ export component MainWindow inherits Window {
                                         // Keyboard shortcuts
                                         Rectangle {
                                             border-radius: Theme.card_radius;
-                                            background: Theme.bg_light;
+                                            background: Theme.surface;
 
                                             VerticalLayout {
                                                 padding: 12px;

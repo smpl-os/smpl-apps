@@ -6,7 +6,6 @@ mod keybindings;
 mod layouts;
 mod power;
 mod taskbar;
-mod theme;
 mod wifi;
 mod xkb_labels;
 mod xr;
@@ -17,6 +16,7 @@ mod ui_contract_tests;
 use display::backend::DisplayBackend;
 use display::monitor::{canvas_scale_factor, Monitor, MonitorConfig};
 use slint::Model;
+use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -206,12 +206,7 @@ fn export_settings_index() {
 
 // ── Theme application ────────────────────────────────────────────────────────
 
-fn apply_theme(ui: &MainWindow) {
-    let palette = theme::load_theme_from_eww_scss(&format!(
-        "{}/.config/eww/theme-colors.scss",
-        std::env::var("HOME").unwrap_or_default()
-    ));
-
+fn apply_theme(ui: &MainWindow, palette: &ThemePalette) {
     let theme = Theme::get(ui);
     theme.set_bg(palette.bg.darker(0.05));
     theme.set_fg(palette.fg);
@@ -847,7 +842,12 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let ui = MainWindow::new()?;
     ui.on_dropdown_scroll_offset(ui_geometry::dropdown_scroll_offset);
-    apply_theme(&ui);
+    let theme_ui = ui.as_weak();
+    let _theme_timer = theme::watch(ThemeRole::Application, move |palette| {
+        if let Some(ui) = theme_ui.upgrade() {
+            apply_theme(&ui, palette);
+        }
+    });
     ui.set_active_tab(initial_tab);
     if !initial_highlight.is_empty() {
         ui.set_highlight_setting(slint::SharedString::from(&initial_highlight));
@@ -3173,7 +3173,7 @@ fn main() -> Result<(), slint::PlatformError> {
         std::mem::forget(deeplink_timer);
     }
 
-    // ── Theme polling timer ──────────────────────────────────────────────────
+    // ── Dictation status polling timer ────────────────────────────────────────
 
     {
         let ui_weak = ui.as_weak();
@@ -3183,8 +3183,6 @@ fn main() -> Result<(), slint::PlatformError> {
             std::time::Duration::from_secs(2),
             move || {
                 if let Some(ui) = ui_weak.upgrade() {
-                    apply_theme(&ui);
-
                     if ui.get_dictation_installing() {
                         let (progress, text) = dictation::read_progress();
                         ui.set_dictation_progress(progress);

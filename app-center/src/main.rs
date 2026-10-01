@@ -2,11 +2,11 @@ mod catalog;
 mod installer;
 mod os_update;
 mod sources;
-mod theme;
 
 use catalog::{merge_results, AppEntry, Source};
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Model, ModelRc, SharedString, VecModel};
+use smpl_common::theme::{ThemePalette, ThemeRole};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -44,12 +44,7 @@ fn to_ui_item(app: &AppEntry) -> AppItem {
     }
 }
 
-fn apply_theme(ui: &MainWindow) {
-    let palette = theme::load_theme_from_eww_scss(&format!(
-        "{}/.config/eww/theme-colors.scss",
-        std::env::var("HOME").unwrap_or_default()
-    ));
-
+fn apply_theme(ui: &MainWindow, palette: &ThemePalette) {
     let theme = Theme::get(ui);
     theme.set_bg(palette.bg.darker(0.05));
     theme.set_fg(palette.fg);
@@ -409,7 +404,12 @@ fn main() -> Result<(), slint::PlatformError> {
     smpl_common::init("app-center", 560.0, 620.0)?;
 
     let ui = MainWindow::new()?;
-    apply_theme(&ui);
+    let ui_weak = ui.as_weak();
+    let _theme_timer = smpl_common::theme::watch(ThemeRole::Application, move |palette| {
+        if let Some(ui) = ui_weak.upgrade() {
+            apply_theme(&ui, palette);
+        }
+    });
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
 
     let state: Rc<RefCell<Vec<AppEntry>>> = Rc::new(RefCell::new(Vec::new()));
@@ -1164,22 +1164,6 @@ fn main() -> Result<(), slint::PlatformError> {
                 );
             }
         });
-    }
-
-    // -- Periodic theme refresh --
-    {
-        let ui_weak = ui.as_weak();
-        let timer = slint::Timer::default();
-        timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_secs(2),
-            move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    apply_theme(&ui);
-                }
-            },
-        );
-        std::mem::forget(timer);
     }
 
     ui.invoke_focus_search();

@@ -30,7 +30,7 @@ export global Theme {
     in-out property <color> success: #a6e3a1;
     in-out property <color> warning: #f9e2af;
     in-out property <color> info: #94e2d5;
-    in-out property <float> opacity: 0.40;
+    in-out property <float> opacity: 1.0;
     in-out property <length> border_radius: 12px;
 }
 
@@ -45,8 +45,8 @@ component CategoryButton inherits Rectangle {
 
     height: 36px;
     border-radius: 6px;
-    background: root.active ? Theme.accent.transparentize(0.8) :
-        (touch.has-hover ? Theme.bg_light.transparentize(0.3) : transparent);
+    background: root.active ? Theme.accent.transparentize(0.84) :
+        (touch.has-hover ? Theme.bg_light.transparentize(0.88) : transparent);
 
     touch := TouchArea {
         clicked => { root.clicked(); }
@@ -106,8 +106,7 @@ component ToolbarButton inherits Rectangle {
         height: 18px;
         source: root.icon_image;
         image-fit: contain;
-        colorize: Theme.fg;
-        opacity: touch.has-hover ? 1.0 : 0.82;
+        colorize: touch.has-hover ? Theme.fg : Theme.fg_dim;
     }
 }
 
@@ -123,7 +122,7 @@ component PowerMenuItem inherits Rectangle {
 
     height: 34px;
     border-radius: 6px;
-    background: root.active ? Theme.accent.transparentize(0.8) : transparent;
+    background: root.active ? Theme.accent.transparentize(0.84) : transparent;
 
     touch := TouchArea {
         clicked => { root.clicked(); }
@@ -183,8 +182,8 @@ component AppRow inherits Rectangle {
 
     height: 38px;
     border-radius: 6px;
-    background: root.highlighted ? Theme.accent.transparentize(0.8) :
-        (touch.has-hover ? Theme.bg_light.transparentize(0.3) : transparent);
+    background: root.highlighted ? Theme.accent.transparentize(0.84) :
+        (touch.has-hover ? Theme.bg_light.transparentize(0.88) : transparent);
 
     touch := TouchArea {
         clicked => { root.clicked(); }
@@ -281,7 +280,7 @@ component PinnedTile inherits Rectangle {
     callback right-clicked();
 
     border-radius: 8px;
-    background: touch.has-hover ? Theme.bg_light.transparentize(0.3) : transparent;
+    background: touch.has-hover ? Theme.bg_light.transparentize(0.88) : transparent;
 
     touch := TouchArea {
         clicked => { root.clicked(); }
@@ -500,7 +499,7 @@ export component MainWindow inherits Window {
                     // Version label (right-aligned)
                     Text {
                         text: root.version;
-                        color: Theme.fg_dim.transparentize(0.5);
+                        color: Theme.fg_dim;
                         font-size: 9px;
                         vertical-alignment: center;
                         horizontal-alignment: right;
@@ -619,7 +618,7 @@ export component MainWindow inherits Window {
                     width: 100%;
                     height: 100%;
                     border-radius: 8px;
-                    background: Theme.bg_light;
+                    background: Theme.bg_light.transparentize(0.88);
 
                     search-input := TextInput {
                         x: 12px;
@@ -641,7 +640,7 @@ export component MainWindow inherits Window {
                         x: 12px;
                         y: (parent.height - self.preferred-height) / 2;
                         text: "Search all apps...";
-                        color: Theme.fg_dim.transparentize(0.3);
+                        color: Theme.fg_dim;
                         font-size: 13px;
                     }
                 }
@@ -658,7 +657,7 @@ export component MainWindow inherits Window {
                     width: 120px;
                     height: 100%;
                     border-radius: 8px;
-                    background: Theme.bg_light.transparentize(0.7);
+                    background: Theme.bg_light.transparentize(0.90);
                     border-width: root.focus-zone == 1 ? 1px : 0px;
                     border-color: Theme.accent.transparentize(0.5);
 
@@ -983,7 +982,7 @@ export component MainWindow inherits Window {
 
                             if !root.is-searching && root.active-category < 0: Text {
                                 text: "Right-click apps to pin them here";
-                                color: Theme.fg_dim.transparentize(0.3);
+                                color: Theme.fg_dim;
                                 font-size: 11px;
                                 horizontal-alignment: center;
                             }
@@ -1096,7 +1095,7 @@ export component MainWindow inherits Window {
                 clicked => { root.show-power-menu = false; root.focus-search(); }
             }
 
-            // Popup card
+            // Popup card keeps a 95% readability floor over the app list.
             Rectangle {
                 x: root.width - self.width - 14px;
                 y: root.height - self.height - 50px;
@@ -1174,7 +1173,7 @@ export component MainWindow inherits Window {
                 clicked => { root.show-context-menu = false; root.focus-search(); }
             }
 
-            // Context menu card
+            // Context menu keeps a 95% readability floor over the app list.
             Rectangle {
                 x: 240px;
                 y: Math.clamp(root.context-menu-y - 18px, 60px, root.height - 60px);
@@ -1221,4 +1220,3 @@ export component MainWindow inherits Window {
         }
     }
 }
-

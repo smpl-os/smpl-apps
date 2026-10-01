@@ -18,7 +18,7 @@ export global Theme {
     in-out property <color> success: #a6e3a1;
     in-out property <color> warning: #f9e2af;
     in-out property <color> info: #94e2d5;
-    in-out property <float> opacity: 0.40;
+    in-out property <float> opacity: 1.0;
     in-out property <length> card_radius: 6px;
     in-out property <length> button_radius: 4px;
 }
@@ -314,6 +314,7 @@ export component MainWindow inherits Window {
                     background: transparent;
 
                     viewport := Rectangle {
+                        visible: !root.show-help;
                         x: 0px;
                         y: 0px;
                         width: parent.width;
@@ -336,8 +337,8 @@ export component MainWindow inherits Window {
                                     border-radius: Theme.card_radius;
                                     border-width: 0px;
                                     background: root.selected-index == index
-                                        ? Theme.bg_lighter
-                                        : (row_touch.has-hover ? Theme.bg_lighter : Theme.bg_light);
+                                        ? Theme.accent.transparentize(0.84)
+                                        : (row_touch.has-hover ? Theme.bg_lighter.transparentize(0.84) : Theme.bg_light.transparentize(0.90));
 
                                     row_touch := TouchArea {
                                         pointer-event(e) => {
@@ -457,7 +458,7 @@ export component MainWindow inherits Window {
                             y: 0px;
                             width: 6px;
                             height: parent.height;
-                            background: Theme.bg_light;
+                            background: Theme.bg_light.transparentize(0.88);
 
                             Rectangle {
                                 width: parent.width;
@@ -465,8 +466,7 @@ export component MainWindow inherits Window {
                                 y: list_flick.viewport-height > list_flick.height
                                     ? (-list_flick.viewport-y / (list_flick.viewport-height - list_flick.height)) * (parent.height - self.height)
                                     : 0px;
-                                background: Theme.bg_lighter;
-                                opacity: 0.5;
+                                background: Theme.fg_dim;
                             }
                         }
                     }
@@ -538,7 +538,7 @@ export component MainWindow inherits Window {
 
                                 Rectangle {
                                     border-radius: Theme.card_radius;
-                                    background: Theme.bg_light;
+                                    background: Theme.bg_light.transparentize(0.90);
                                     VerticalLayout {
                                         padding: 12px;
                                         spacing: 8px;
@@ -559,7 +559,7 @@ export component MainWindow inherits Window {
 
                                 Rectangle {
                                     border-radius: Theme.card_radius;
-                                    background: Theme.bg_light;
+                                    background: Theme.bg_light.transparentize(0.90);
                                     VerticalLayout {
                                         padding: 12px;
                                         spacing: 8px;

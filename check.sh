@@ -71,6 +71,15 @@ else
     pass "smpl-common sets Wayland app_id"
 fi
 
+step "Guardrails: shared themes and opaque foregrounds"
+if python3 -m unittest discover -s tests -p 'test_theme_contracts.py' -v \
+    && python3 -m unittest discover -s start-menu/tests -p 'test_*.py' -v \
+    && python3 -m unittest discover -s calendar/tests -p 'test_*.py' -v; then
+    pass "Native theme contracts passed"
+else
+    fail "Native theme contracts failed"
+fi
+
 # ── 1b. Feature inventory guardrails ────────────────────────────────────────
 # These catch accidental deletion of features during sync operations between
 # the smpl-apps and smplos repos — the #1 source of regressions.

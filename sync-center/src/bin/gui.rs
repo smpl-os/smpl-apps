@@ -20,8 +20,24 @@ use std::cell::RefCell;
 use std::time::{SystemTime, UNIX_EPOCH};
 use rfd::FileDialog;
 use slint::{Model, ModelRc, SharedString, VecModel};
+use smpl_common::theme::{ThemePalette, ThemeRole};
 
 slint::include_modules!();
+
+fn apply_theme(ui: &MainWindow, palette: &ThemePalette) {
+    let theme = Theme::get(ui);
+    theme.set_bg(palette.bg);
+    theme.set_fg(palette.fg);
+    theme.set_fg_dim(palette.fg_dim);
+    theme.set_accent(palette.accent);
+    theme.set_bg_light(palette.bg_light);
+    theme.set_bg_lighter(palette.bg_lighter);
+    theme.set_danger(palette.danger);
+    theme.set_success(palette.success);
+    theme.set_warning(palette.warning);
+    theme.set_info(palette.info);
+    theme.set_opacity(palette.opacity);
+}
 
 // ─── USB volume helpers ───────────────────────────────────────────────────────
 
@@ -414,6 +430,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     let main_window = MainWindow::new()?;
+    let ui_weak = main_window.as_weak();
+    let _theme_timer = smpl_common::theme::watch(ThemeRole::Application, move |palette| {
+        if let Some(ui) = ui_weak.upgrade() {
+            apply_theme(&ui, palette);
+        }
+    });
     main_window.set_app_version(env!("CARGO_PKG_VERSION").into());
 
     // Ensure daemon is running. If we just spawned it, poll the D-Bus name

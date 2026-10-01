@@ -5,6 +5,16 @@ clickable widget on screen (like Vimium in the browser, but for the entire
 desktop) and lets you click / right-click / hover / drag / cursor-move / scroll
 without ever touching the mouse.
 
+## Overlay theme
+
+The shared `smpl_common::theme` popup watcher themes the hint pills from the
+desktop palette, applying changes every two seconds and retaining the last good
+palette on errors. Pills use the warning color with opaque background-color
+text, preserving the contrasting hint-label style. `$theme-popup-opacity`
+(default 1, independent of application-background opacity) affects only pill
+backgrounds, never text or cursor markers. The fullscreen `hints-overlay` root
+always stays fully transparent; nothing paints the unused desktop area.
+
 ## Status
 
 **MVP complete — ready for on-hardware testing.** Every module is wired up end-to-end;

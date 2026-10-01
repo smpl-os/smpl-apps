@@ -27,7 +27,9 @@ export global Theme {
     in-out property <color> success: #a6e3a1;
     in-out property <color> warning: #f9e2af;
     in-out property <color> info: #94e2d5;
-    in-out property <float> opacity: 0.40;
+    in-out property <float> opacity: 1.0;
+    out property <color> surface: bg_light.transparentize(0.90);
+    out property <color> surface-hover: bg_light.transparentize(0.84);
     in-out property <length> card_radius: 6px;
     in-out property <length> button_radius: 4px;
 }
@@ -188,7 +190,7 @@ component AppCard inherits Rectangle {
     height: 72px;
     clip: true;
     border-radius: Theme.card_radius;
-    background: root.selected ? Theme.bg_light : (card-touch.has-hover ? Theme.bg_light.transparentize(0.5) : transparent);
+    background: root.selected ? Theme.surface-hover : (card-touch.has-hover ? Theme.surface : transparent);
     border-width: root.selected ? 1px : 0px;
     border-color: Theme.accent.transparentize(0.5);
 
@@ -505,14 +507,17 @@ export component MainWindow inherits Window {
         }
     }
 
-    // -- Layout --
+    // Keep layout state while Help replaces it on the same window background.
+    Rectangle {
+        visible: !root.show-help;
+        background: transparent;
     VerticalLayout {
         padding: 0px;
 
         // == Header bar ==
         Rectangle {
             height: 42px;
-            background: Theme.bg.darker(0.05);
+            background: Theme.bg.darker(0.05).transparentize(0.90);
 
             // Drag area
             TouchArea {
@@ -729,7 +734,7 @@ export component MainWindow inherits Window {
 
                 Rectangle {
                     border-radius: Theme.button_radius;
-                    background: Theme.bg_light;
+                    background: Theme.surface;
                     border-width: installed-search-input.has-focus ? 1px : 0px;
                     border-color: Theme.accent;
 
@@ -808,7 +813,7 @@ export component MainWindow inherits Window {
 
                 Rectangle {
                     border-radius: Theme.button_radius;
-                    background: Theme.bg_light;
+                    background: Theme.surface;
                     border-width: search-input.has-focus ? 1px : 0px;
                     border-color: Theme.accent;
 
@@ -1050,7 +1055,7 @@ export component MainWindow inherits Window {
                         height: root.row-height;
                         clip: true;
                         border-radius: Theme.card_radius;
-                        background: root.selected-index == idx ? Theme.bg_light : (item.has-update ? Theme.bg_light.transparentize(0.5) : transparent);
+                        background: root.selected-index == idx ? Theme.surface-hover : (item.has-update ? Theme.surface : transparent);
                         border-width: root.selected-index == idx ? 1px : 0px;
                         border-color: Theme.accent.transparentize(0.5);
 
@@ -1400,7 +1405,7 @@ export component MainWindow inherits Window {
                         if root.installing: Rectangle {
                             height: 80px;
                             border-radius: Theme.card_radius;
-                            background: Theme.bg_light;
+                            background: Theme.surface;
                             vertical-stretch: 0;
 
                             VerticalLayout {
@@ -1421,22 +1426,19 @@ export component MainWindow inherits Window {
                                             width: 4px;
                                             height: 4px;
                                             border-radius: 2px;
-                                            background: Theme.accent;
-                                            opacity: 0.3 + 0.7 * abs(sin(animation-tick() / 5ms * 1deg));
+                                            background: abs(sin(animation-tick() / 5ms * 1deg)) > 0.5 ? Theme.accent : Theme.fg_dim;
                                         }
                                         Rectangle {
                                             width: 4px;
                                             height: 4px;
                                             border-radius: 2px;
-                                            background: Theme.accent;
-                                            opacity: 0.3 + 0.7 * abs(sin((animation-tick() / 5ms + 120) * 1deg));
+                                            background: abs(sin((animation-tick() / 5ms + 120) * 1deg)) > 0.5 ? Theme.accent : Theme.fg_dim;
                                         }
                                         Rectangle {
                                             width: 4px;
                                             height: 4px;
                                             border-radius: 2px;
-                                            background: Theme.accent;
-                                            opacity: 0.3 + 0.7 * abs(sin((animation-tick() / 5ms + 240) * 1deg));
+                                            background: abs(sin((animation-tick() / 5ms + 240) * 1deg)) > 0.5 ? Theme.accent : Theme.fg_dim;
                                         }
                                     }
 
@@ -1482,7 +1484,7 @@ export component MainWindow inherits Window {
                                 Rectangle {
                                     height: 24px;
                                     border-radius: 4px;
-                                    background: Theme.bg.darker(0.1);
+                                    background: Theme.bg.darker(0.1).transparentize(0.90);
                                     vertical-stretch: 0;
 
                                     HorizontalLayout {
@@ -1544,7 +1546,7 @@ export component MainWindow inherits Window {
                         // Error output (only on failure, scrollable via outer Flickable)
                         if root.process-finished && !root.process-success: Rectangle {
                             border-radius: Theme.card_radius;
-                            background: Theme.bg_light;
+                            background: Theme.surface;
                             vertical-stretch: 0;
 
                             VerticalLayout {
@@ -1581,7 +1583,7 @@ export component MainWindow inherits Window {
         Rectangle {
             height: 24px;
             vertical-stretch: 0;
-            background: Theme.bg.darker(0.05);
+            background: Theme.bg.darker(0.05).transparentize(0.90);
 
             HorizontalLayout {
                 padding-left: 14px;
@@ -1598,9 +1600,12 @@ export component MainWindow inherits Window {
         }
     }
 
+    }
+
     // == Global install/update progress overlay (any tab) ==
     if root.installing || (root.process-finished && root.current-tab == 0): Rectangle {
-        background: Theme.bg.transparentize(0.15);
+        visible: !root.show-help;
+        background: Theme.bg.transparentize(0.88);
 
         TouchArea {
             clicked => {
@@ -1616,6 +1621,7 @@ export component MainWindow inherits Window {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             border-radius: 8px;
+            // Opaque modal floor keeps live install output readable over the page.
             background: Theme.bg.darker(0.12);
             border-width: 1px;
             border-color: Theme.accent.transparentize(0.6);
@@ -1698,7 +1704,8 @@ export component MainWindow inherits Window {
 
     // == Update OS confirmation dialog ==
     if root.show-update-os-confirm: Rectangle {
-        background: Theme.bg.transparentize(0.15);
+        visible: !root.show-help;
+        background: Theme.bg.transparentize(0.88);
 
         TouchArea {
             clicked => { root.show-update-os-confirm = false; }
@@ -1710,6 +1717,7 @@ export component MainWindow inherits Window {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             border-radius: 8px;
+            // Destructive-action confirmation retains an opaque readability floor.
             background: Theme.bg.darker(0.12);
             border-width: 1px;
             border-color: Theme.warning.transparentize(0.6);
@@ -1767,7 +1775,7 @@ export component MainWindow inherits Window {
 
     // == Help overlay ==
     if root.show-help: Rectangle {
-        background: Theme.bg.transparentize(0.1);
+        background: transparent;
         border-radius: Theme.card_radius;
 
         TouchArea {

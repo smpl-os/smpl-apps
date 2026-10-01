@@ -1,13 +1,13 @@
 mod local_provider;
 mod models;
 mod provider;
-mod theme;
 
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
 use local_provider::LocalProvider;
 use models::{NewEvent, Recurrence};
 use provider::CalendarProvider;
 use slint::{ModelRc, SharedString, VecModel};
+use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -325,11 +325,7 @@ fn refresh_ui(ui: &MainWindow, state: &CalState) {
 
 // ── Apply smplOS theme ─────────────────────────────────────────────────────────
 
-fn apply_theme(ui: &MainWindow) {
-    let palette = theme::load_theme_from_eww_scss(&format!(
-        "{}/.config/eww/theme-colors.scss",
-        std::env::var("HOME").unwrap_or_default()
-    ));
+fn apply_theme(ui: &MainWindow, palette: &ThemePalette) {
     let t = Theme::get(ui);
     t.set_bg(palette.bg);
     t.set_fg(palette.fg);
@@ -342,7 +338,6 @@ fn apply_theme(ui: &MainWindow) {
     t.set_warning(palette.warning);
     t.set_info(palette.info);
     t.set_opacity(palette.opacity);
-    t.set_border_radius(palette.border_radius);
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────────
@@ -393,7 +388,12 @@ fn main() -> Result<(), slint::PlatformError> {
         CalState::new().expect("failed to open calendar database"),
     ));
 
-    apply_theme(&ui);
+    let ui_weak = ui.as_weak();
+    let _theme_timer = theme::watch(ThemeRole::Popup, move |palette| {
+        if let Some(ui) = ui_weak.upgrade() {
+            apply_theme(&ui, palette);
+        }
+    });
 
     if start_details {
         ui.set_is_details(true);
@@ -836,22 +836,6 @@ fn main() -> Result<(), slint::PlatformError> {
                 slint::PhysicalPosition::new(new_x as i32, new_y as i32),
             ));
         });
-    }
-
-    // ── Periodic theme refresh ──
-    {
-        let ui_weak = ui.as_weak();
-        let timer = slint::Timer::default();
-        timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_secs(2),
-            move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    apply_theme(&ui);
-                }
-            },
-        );
-        std::mem::forget(timer);
     }
 
     ui.run()

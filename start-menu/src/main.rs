@@ -1,9 +1,9 @@
 mod commands;
 mod icons;
-mod theme;
 mod usage;
 
 use i_slint_backend_winit::WinitWindowAccessor;
+use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -420,12 +420,7 @@ fn update_pinned_model(
 
 // ── Theme ──
 
-fn apply_theme(ui: &MainWindow) {
-    let palette = theme::load_theme_from_eww_scss(&format!(
-        "{}/.config/eww/theme-colors.scss",
-        std::env::var("HOME").unwrap_or_default()
-    ));
-
+fn apply_theme(ui: &MainWindow, palette: &ThemePalette) {
     let theme = Theme::get(ui);
     theme.set_bg(palette.bg);
     theme.set_fg(palette.fg);
@@ -438,7 +433,6 @@ fn apply_theme(ui: &MainWindow) {
     theme.set_warning(palette.warning);
     theme.set_info(palette.info);
     theme.set_opacity(palette.opacity);
-    theme.set_border_radius(palette.border_radius);
 }
 
 // ── Entry point ──
@@ -454,7 +448,12 @@ fn main() -> Result<(), slint::PlatformError> {
     smpl_common::init("start-menu", 520.0, 580.0)?;
 
     let ui = MainWindow::new()?;
-    apply_theme(&ui);
+    let ui_weak = ui.as_weak();
+    let _theme_timer = theme::watch(ThemeRole::Popup, move |palette| {
+        if let Some(ui) = ui_weak.upgrade() {
+            apply_theme(&ui, palette);
+        }
+    });
 
     // ── Load all apps from cache ──
     let all_apps = Rc::new(load_apps());
@@ -701,22 +700,6 @@ fn main() -> Result<(), slint::PlatformError> {
                 );
             }
         });
-    }
-
-    // ── Periodic theme refresh ──
-    {
-        let ui_weak = ui.as_weak();
-        let timer = slint::Timer::default();
-        timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_secs(2),
-            move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    apply_theme(&ui);
-                }
-            },
-        );
-        std::mem::forget(timer);
     }
 
     ui.set_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());

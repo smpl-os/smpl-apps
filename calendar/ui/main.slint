@@ -72,6 +72,9 @@ export global Theme {
     in-out property <color>  info:          #94e2d5;
     in-out property <float>  opacity:       0.92;
     in-out property <length> border-radius: 12px;
+    // Background-only tints preserve the window's alpha without dimming content.
+    out property <color> surface: bg-light.transparentize(0.90);
+    out property <color> surface-hover: bg-lighter.transparentize(0.84);
 }
 
 // ── IconBtn ───────────────────────────────────────────────────────────────────
@@ -543,7 +546,7 @@ component MiniMonthGrid inherits Rectangle {
                     color: cell.day == 0       ? transparent
                          : cell.is-selected    ? Theme.bg
                          : cell.is-today       ? Theme.accent
-                         : cell.is-other-month ? Theme.fg-dim.transparentize(0.45)
+                         : cell.is-other-month ? Theme.fg-dim
                          : Theme.fg;
                     font-size: 11px;
                     font-weight: (cell.is-today || cell.has-events) ? 700 : 400;
@@ -625,8 +628,7 @@ component BigDayCell inherits Rectangle {
             }
             Rectangle {
                 width: 18px; height: 18px; border-radius: 9px;
-                visible: !cell.is-other-month;
-                opacity: cell-ta.has-hover || add-ta.has-hover ? 1.0 : 0.0;
+                visible: !cell.is-other-month && (cell-ta.has-hover || add-ta.has-hover);
                 background: add-ta.has-hover ? Theme.accent : Theme.bg-lighter;
                 Text {
                     text: "+"; font-size: 13px; font-weight: 700;
@@ -700,7 +702,7 @@ component EventCard inherits Rectangle {
 
     border-radius: 8px;
     background: rt.has-hover || edit-ta.has-hover || del-ta.has-hover
-                ? Theme.bg-lighter : Theme.bg-light;
+                ? Theme.surface-hover : Theme.surface;
     min-height: 50px;
     rt := TouchArea { mouse-cursor: pointer; clicked => { root.edit-clicked(root.ev.id); } }
     HorizontalLayout {
@@ -727,7 +729,7 @@ component EventCard inherits Rectangle {
         VerticalLayout {
             width: 28px;
             alignment: center; spacing: 4px;
-            opacity: rt.has-hover || edit-ta.has-hover || del-ta.has-hover ? 1.0 : 0.0;
+            visible: rt.has-hover || edit-ta.has-hover || del-ta.has-hover;
             Rectangle {
                 width: 28px; height: 28px; border-radius: 14px;
                 background: edit-ta.has-hover ? Theme.accent.transparentize(0.6) : transparent;
@@ -774,6 +776,7 @@ component EventForm inherits Rectangle {
 
     width: 380px;
     border-radius: 12px;
+    // Modal readability floor: the form and its picker popovers stay opaque.
     background: Theme.bg-light;
     drop-shadow-blur: 32px;
     drop-shadow-color: #000000aa;
@@ -1032,7 +1035,7 @@ export component MainWindow inherits Window {
             // Toolbar
             Rectangle {
                 height: 36px;
-                background: Theme.bg-light.transparentize(0.5);
+                background: Theme.surface;
                 clip: true;
 
                 HorizontalLayout {
@@ -1133,7 +1136,7 @@ export component MainWindow inherits Window {
 
                     for ev in root.day-events: Rectangle {
                         border-radius: 6px;
-                        background: cev-ta.has-hover ? Theme.bg-lighter : Theme.bg-light;
+                        background: cev-ta.has-hover ? Theme.surface-hover : Theme.surface;
                         height: cev-col.preferred-height + 10px;
 
                         cev-ta := TouchArea {
@@ -1178,7 +1181,7 @@ export component MainWindow inherits Window {
             // ── LEFT SIDEBAR ──────────────────────────────────────────────────
             Rectangle {
                 width: 230px;
-                background: Theme.bg-light.transparentize(0.6);
+                background: Theme.surface;
 
                 VerticalLayout {
                     padding: 12px; spacing: 10px;
@@ -1242,7 +1245,7 @@ export component MainWindow inherits Window {
                 // Toolbar
                 Rectangle {
                     height: 50px;
-                    background: Theme.bg-light.transparentize(0.65);
+                    background: Theme.surface;
 
                     HorizontalLayout {
                         padding-left: 12px; padding-right: 8px; spacing: 6px;
@@ -1299,6 +1302,8 @@ export component MainWindow inherits Window {
                 // DOW header
                 HorizontalLayout {
                     height: 26px;
+                    // Keep grid text out from behind the translucent day panel.
+                    padding-right: root.show-day-panel ? 310px : 0px;
                     for hdr in ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]: Rectangle {
                         horizontal-stretch: 1; background: transparent;
                         Text { text: hdr; color: Theme.fg-dim; font-size: 11px; font-weight: 600;
@@ -1311,6 +1316,7 @@ export component MainWindow inherits Window {
                 // Big month grid — directly in the VerticalLayout, stretches to fill
                 for ri in [0,1,2,3,4,5]: HorizontalLayout {
                     vertical-stretch: 1; preferred-height: 0px; min-height: 0px; spacing: 0px;
+                    padding-right: root.show-day-panel ? 310px : 0px;
 
                     for ci in [0,1,2,3,4,5,6]: BigDayCell {
                         horizontal-stretch: 1;
@@ -1344,7 +1350,7 @@ export component MainWindow inherits Window {
         y: 51px;
         width: 310px;
         height: root.height - 51px;
-        background: Theme.bg.transparentize(0.06);
+        background: Theme.surface;
         drop-shadow-blur: 24px;
         drop-shadow-color: #00000077;
         drop-shadow-offset-x: -6px;
@@ -1356,7 +1362,7 @@ export component MainWindow inherits Window {
             // Panel header with date + Add button (fixed, never scrolls)
             Rectangle {
                 height: 46px;
-                background: Theme.bg-light.transparentize(0.4);
+                background: Theme.surface;
 
                 HorizontalLayout {
                     padding-left: 14px; padding-right: 8px; spacing: 6px;

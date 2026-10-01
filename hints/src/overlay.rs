@@ -49,9 +49,17 @@
 //! so those rules apply automatically.
 
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use std::rc::Rc;
 
 slint::include_modules!();
+
+fn apply_theme(ui: &OverlayWindow, palette: &ThemePalette) {
+    let theme = Theme::get(ui);
+    theme.set_accent(palette.warning);
+    theme.set_pill_fg(palette.bg);
+    theme.set_opacity(palette.opacity);
+}
 
 /// One hint label to render.
 #[derive(Clone)]
@@ -103,6 +111,7 @@ impl VisualMode {
 pub struct Overlay {
     ui: OverlayWindow,
     model: Rc<VecModel<HintItem>>,
+    _theme_timer: slint::Timer,
 }
 
 impl Overlay {
@@ -118,9 +127,15 @@ impl Overlay {
 
         let ui = OverlayWindow::new()
             .map_err(|e| anyhow::anyhow!("create overlay window: {e}"))?;
+        let ui_weak = ui.as_weak();
+        let _theme_timer = theme::watch(ThemeRole::Popup, move |palette| {
+            if let Some(ui) = ui_weak.upgrade() {
+                apply_theme(&ui, palette);
+            }
+        });
         let model = Rc::new(VecModel::from(Vec::<HintItem>::new()));
         ui.set_hints(ModelRc::from(model.clone()));
-        Ok(Self { ui, model })
+        Ok(Self { ui, model, _theme_timer })
     }
 
     /// Populate the label model and show the overlay in select mode.
