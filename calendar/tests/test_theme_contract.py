@@ -1,7 +1,6 @@
 """Headless source contracts; run with python -m unittest discover -s calendar/tests."""
 
 from pathlib import Path
-import re
 import unittest
 
 
@@ -55,14 +54,11 @@ class ThemeContractTests(unittest.TestCase):
         self.assertIn("clicked => { root.cancel-form(); }", self.ui)
         self.assertIn("save()   => { root.save-event(); }", self.ui)
         self.assertIn("cancel() => { root.cancel-form(); }", self.ui)
-        self.assertEqual(
-            len(re.findall(
-                r"if root.open: Rectangle \{.*?background: Theme.bg-lighter;",
-                self.ui,
-                re.DOTALL,
-            )),
-            4,
-        )
+        self.assertEqual(self.ui.count("popup := PopupWindow {"), 2)
+        self.assertEqual(self.ui.count("close-policy: close-on-click-outside;"), 2)
+        for picker in ("TimePicker", "RecurrencePicker", "ReminderPicker"):
+            self.assertIn(f"component {picker} inherits ChoicePicker", self.ui)
+        self.assertNotIn("if root.open: Rectangle", self.ui)
 
 
 if __name__ == "__main__":

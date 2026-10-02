@@ -1,0 +1,11 @@
+{
+  "generationtime_ms": 0.5,
+  "results": [
+    {"name": "Lafayette", "latitude": 30.22409, "longitude": -92.01984, "timezone": "America/Chicago", "admin1": "Louisiana", "country": "United States"},
+    {"name": "Lafayette", "latitude": 40.4167, "longitude": -86.87529, "timezone": "America/Indiana/Indianapolis", "admin1": "Indiana", "country": "United States"},
+    {"name": "Saint-Etienne", "latitude": 45.43389, "longitude": 4.39, "timezone": "Europe/Paris", "admin1": "Rhône-Alpes", "country": "France"},
+    {"name": "Bengaluru", "latitude": 12.97194, "longitude": 77.59369, "timezone": "Asia/Kolkata", "admin1": "Karnataka", "country": "India"},
+    {"name": "Thiruvananthapuram", "latitude": 8.4855, "longitude": 76.94924, "timezone": "Asia/Kolkata", "admin1": "Kerala", "country": "India"},
+    {"name": "Puducherry", "latitude": 11.93381, "longitude": 79.82979, "timezone": "Asia/Kolkata", "admin1": "Puducherry", "country": "India"}
+  ]
+}

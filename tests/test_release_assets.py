@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("release_assets", ROOT / "scripts/release_assets.py")
@@ -33,6 +34,12 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.source.mkdir()
         self.dist = self.root / "dist"
         self.bundle = self.root / "smpl-apps-0.8.23-x86_64.tar.gz"
+        self.service = self.root / assets.SERVICE
+        shutil.copyfile(assets.SERVICE_SOURCE, self.service)
+        self.service.chmod(0o644)
+        service_patch = patch.object(assets, "SERVICE_SOURCE", self.service)
+        service_patch.start()
+        self.addCleanup(service_patch.stop)
         for name in assets.BINARIES:
             shutil.copy2(self.binary, self.source / name)
 
@@ -66,6 +73,45 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.pack()
         assets.verify_bundle(self.dist, self.bundle)
         self.verify_metadata(self.upload_metadata())
+        self.assertEqual((self.dist / assets.SERVICE).stat().st_mode & 0o777, 0o644)
+        self.assertEqual((self.dist / assets.SERVICE).read_bytes(), self.service.read_bytes())
+
+    def test_service_matches_explicit_foreground_entry(self):
+        service = self.service.read_text()
+        self.assertIn("ExecStart=/usr/local/bin/smpl-calendar-alertd --foreground\n", service)
+        self.assertIn("WantedBy=default.target\n", service)
+
+    def test_missing_or_executable_service_fails_before_collection(self):
+        original = self.service.read_bytes()
+        self.service.unlink()
+        with self.assertRaises(ValueError):
+            assets.collect(self.source, self.dist)
+        self.assertFalse(self.dist.exists())
+        self.service.write_bytes(original)
+        self.service.chmod(0o755)
+        with self.assertRaises(ValueError):
+            assets.collect(self.source, self.dist)
+        self.assertFalse(self.dist.exists())
+
+    def test_service_must_be_present_nonexecutable_and_unchanged_in_bundle(self):
+        assets.collect(self.source, self.dist)
+        service = self.dist / assets.SERVICE
+        original = service.read_bytes()
+        service.unlink()
+        self.pack()
+        service.write_bytes(original)
+        service.chmod(0o644)
+        with self.assertRaises(ValueError):
+            assets.verify_bundle(self.dist, self.bundle)
+        service.chmod(0o755)
+        self.pack()
+        service.chmod(0o644)
+        with self.assertRaises(ValueError):
+            assets.verify_bundle(self.dist, self.bundle)
+        self.pack()
+        service.write_bytes(original + b"# changed\n")
+        with self.assertRaises(ValueError):
+            assets.verify_bundle(self.dist, self.bundle)
 
     def test_each_mandatory_missing_binary_fails_before_collection(self):
         for name in assets.BINARIES:
@@ -120,7 +166,7 @@ class ReleaseAssetsTests(unittest.TestCase):
             metadata["assets"][0][field] = value
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 self.verify_metadata(metadata)
-        for index in range(12):
+        for index in range(len(assets.BINARIES) + 2):
             metadata = self.upload_metadata()
             metadata["assets"].pop(index)
             with self.subTest(missing=index), self.assertRaises(ValueError):
@@ -149,6 +195,7 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.assertLess(workflow.index("release_assets.py uploaded"), workflow.index("-F draft=false"))
         for name in assets.BINARIES:
             self.assertIn(f"dist/{name}\n", workflow)
+        self.assertIn(f"dist/{assets.SERVICE}\n", workflow)
 
 
 if __name__ == "__main__":

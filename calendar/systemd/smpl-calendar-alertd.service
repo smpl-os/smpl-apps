@@ -1,0 +1,16 @@
+[Unit]
+Description=smpl Calendar reminders
+After=dbus.socket
+Requires=dbus.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/smpl-calendar-alertd --foreground
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=10
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -1,8 +1,16 @@
 mod local_provider;
 mod models;
 mod provider;
+mod weather;
+mod dashboard;
+mod cities;
+mod navigation;
+mod window_controls;
+mod agenda;
+mod event_time;
+mod editor;
 
-use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
+use chrono::{Datelike, Local, NaiveDate, Timelike};
 use local_provider::LocalProvider;
 use models::{NewEvent, Recurrence};
 use provider::CalendarProvider;
@@ -13,32 +21,30 @@ use std::rc::Rc;
 
 slint::include_modules!();
 
-// ── Launch alert daemon if not already running ─────────────────────────────────
+// ── Check reminder service without overriding user policy ──────────────────────
 
 fn ensure_alertd() {
-    // Check if already running (pgrep truncates name to 15 chars)
-    let already = std::process::Command::new("pgrep")
-        .args(["-x", "smpl-calendar-al"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !already {
-        // Find the alertd binary next to our own binary
+    // The no-argument launcher only checks the user service. It cannot override
+    // a stopped/masked unit or race the service with an unmanaged daemon.
+    std::thread::spawn(|| {
         let self_exe = std::env::current_exe().unwrap_or_default();
         let alertd = self_exe
             .parent()
             .unwrap_or(std::path::Path::new("/usr/local/bin"))
             .join("smpl-calendar-alertd");
-
         if alertd.exists() {
-            let _ = std::process::Command::new(&alertd)
+            match std::process::Command::new(&alertd)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+                .spawn()
+            {
+                Ok(mut child) => {
+                    let _ = child.wait();
+                }
+                Err(error) => eprintln!("smpl-calendar: could not start reminder daemon: {error}"),
+            }
         }
-    }
+    });
 }
 
 // ── Window sizes are defined in Slint's `global Sizes` — see ui/main.slint ───
@@ -142,102 +148,60 @@ fn build_day_cells(
     selected_day: u32,
     month_events: &[models::Event],
 ) -> Vec<DayCell> {
-    use chrono::Datelike;
-    use std::collections::HashMap;
+    build_day_cells_at(year, month, selected_day, month_events, Local::now())
+}
 
-    let today = Local::now().date_naive();
+fn build_day_cells_at(
+    year: i32,
+    month: u32,
+    selected_day: u32,
+    month_events: &[models::Event],
+    now: chrono::DateTime<Local>,
+) -> Vec<DayCell> {
+    use chrono::Datelike;
+    use std::collections::HashSet;
+
+    let today = now.date_naive();
     let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
     let first_col = first.weekday().num_days_from_monday() as i32;
-    let dim = days_in_month(year, month) as i32;
-
-    // Group events by day number for fast lookup
-    let mut events_by_day: HashMap<u32, Vec<&models::Event>> = HashMap::new();
-    for ev in month_events {
-        events_by_day.entry(ev.start.day()).or_default().push(ev);
-    }
-
-    // Prev month info (for padding cells before day 1)
-    let (prev_year, prev_month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
-    let prev_dim = days_in_month(prev_year, prev_month) as i32;
-
-    // Helper: build (title, time) strings for the i-th event of a day (or empty strings)
-    let ev_str = |evs: &[&models::Event], idx: usize| -> (i32, SharedString, SharedString) {
-        if let Some(ev) = evs.get(idx) {
-            let time = if ev.all_day {
-                String::new()
-            } else {
-                format!("{:02}:{:02}", ev.start.hour(), ev.start.minute())
-            };
-            (ev.id as i32, ev.title.clone().into(), time.into())
-        } else {
-            (0, SharedString::default(), SharedString::default())
-        }
-    };
+    let mut seen = HashSet::new();
+    let unique_events: Vec<_> = month_events.iter()
+        .filter(|event| seen.insert((event.id, event.start.timestamp()))).collect();
 
     (0..42)
         .map(|i| {
-            let day_num = i - first_col + 1;
+            let date = first + chrono::Duration::days(i64::from(i - first_col));
             let row = i / 7;
             let col = i % 7;
-
-            if day_num < 1 {
-                // Padding from previous month
-                let prev_day = (prev_dim + day_num) as u32;
-                DayCell {
-                    day: prev_day as i32, row, col,
-                    is_today: false, is_selected: false,
-                    has_events: false, event_count: 0,
-                    is_other_month: true, month_offset: -1,
-                    ev1_id: 0, ev1_title: SharedString::default(), ev1_time: SharedString::default(),
-                    ev2_id: 0, ev2_title: SharedString::default(), ev2_time: SharedString::default(),
-                    ev3_id: 0, ev3_title: SharedString::default(), ev3_time: SharedString::default(),
-                }
-            } else if day_num > dim {
-                // Padding from next month
-                let next_day = (day_num - dim) as u32;
-                DayCell {
-                    day: next_day as i32, row, col,
-                    is_today: false, is_selected: false,
-                    has_events: false, event_count: 0,
-                    is_other_month: true, month_offset: 1,
-                    ev1_id: 0, ev1_title: SharedString::default(), ev1_time: SharedString::default(),
-                    ev2_id: 0, ev2_title: SharedString::default(), ev2_time: SharedString::default(),
-                    ev3_id: 0, ev3_title: SharedString::default(), ev3_time: SharedString::default(),
-                }
-            } else {
-                // Current month day
-                let day = day_num as u32;
-                let date = NaiveDate::from_ymd_opt(year, month, day).unwrap();
-                let empty: Vec<&models::Event> = vec![];
-                let evs = events_by_day.get(&day).map(|v| v.as_slice()).unwrap_or(&empty);
-                let count = evs.len();
-
-                // For today: show 3 events nearest to current time
-                // (first event that hasn't ended yet, plus the next 2)
-                let start_idx = if date == today && count > 3 {
-                    let now = Local::now();
-                    let first_upcoming = evs.iter().position(|e| e.end > now).unwrap_or(count.saturating_sub(3));
-                    // Show one before the upcoming if possible, for context
-                    first_upcoming.saturating_sub(0).min(count.saturating_sub(3))
+            let other_month = date.month() != month || date.year() != year;
+            let evs: Vec<_> = unique_events.iter().copied().filter(|event| {
+                event.start.date_naive() == date || (event.start.date_naive() < date
+                    && (event.end.date_naive() > date || (event.end.date_naive() == date
+                        && event.end.time() > chrono::NaiveTime::MIN)))
+            }).collect();
+            let count = evs.len();
+            let first_upcoming = evs.iter().position(|event| event.end > now).unwrap_or(count);
+            // Adjacent dates navigate into their month before exposing event actions.
+            let events = evs.iter().filter(|_| !other_month).map(|event| GridEvent {
+                id: event.id as i32,
+                title: event.title.clone().into(),
+                time_label: if event.all_day {
+                    SharedString::default()
                 } else {
-                    0
-                };
+                    format!("{:02}:{:02}", event.start.hour(), event.start.minute()).into()
+                },
+            }).collect::<Vec<_>>();
 
-                let (ev1_id, ev1_title, ev1_time) = ev_str(evs, start_idx);
-                let (ev2_id, ev2_title, ev2_time) = ev_str(evs, start_idx + 1);
-                let (ev3_id, ev3_title, ev3_time) = ev_str(evs, start_idx + 2);
-
-                DayCell {
-                    day: day as i32, row, col,
-                    is_today:    date == today,
-                    is_selected: day == selected_day,
-                    has_events:  count > 0,
-                    event_count: count as i32,
-                    is_other_month: false, month_offset: 0,
-                    ev1_id, ev1_title, ev1_time,
-                    ev2_id, ev2_title, ev2_time,
-                    ev3_id, ev3_title, ev3_time,
-                }
+            DayCell {
+                day: date.day() as i32, row, col,
+                is_today:    date == today,
+                is_selected: !other_month && date.day() == selected_day,
+                has_events:  count > 0,
+                event_count: count as i32,
+                is_other_month: other_month,
+                month_offset: if !other_month { 0 } else if date < first { -1 } else { 1 },
+                events: ModelRc::from(Rc::new(VecModel::from(events))),
+                first_upcoming: if other_month { 0 } else { first_upcoming as i32 },
             }
         })
         .collect()
@@ -245,8 +209,11 @@ fn build_day_cells(
 
 // ── Build the event list for the selected day ─────────────────────────────────
 
-fn build_event_items(events: &[models::Event], day_tag: Option<u32>) -> Vec<CalEvent> {
-    let now = Local::now();
+fn build_event_items(
+    events: &[models::Event],
+    date: NaiveDate,
+    now: chrono::DateTime<Local>,
+) -> Vec<CalEvent> {
     events
         .iter()
         .map(|ev| {
@@ -261,7 +228,7 @@ fn build_event_items(events: &[models::Event], day_tag: Option<u32>) -> Vec<CalE
                     ev.end.minute()
                 )
             };
-            let day = day_tag.unwrap_or_else(|| ev.start.day()) as i32;
+            let day = date.day() as i32;
             let is_past = ev.end <= now;
             CalEvent {
                 id:               ev.id as i32,
@@ -277,6 +244,9 @@ fn build_event_items(events: &[models::Event], day_tag: Option<u32>) -> Vec<CalE
                 all_day:          ev.all_day,
                 recurrence_idx:   ev.recurrence.to_index(),
                 is_past,
+                is_ongoing:       agenda::is_ongoing(ev, date, now),
+                is_now_marker:    false,
+                section_label:    SharedString::default(),
                 day,
             }
         })
@@ -286,14 +256,23 @@ fn build_event_items(events: &[models::Event], day_tag: Option<u32>) -> Vec<CalE
 // ── Full UI refresh ────────────────────────────────────────────────────────────
 
 fn refresh_ui(ui: &MainWindow, state: &CalState) {
+    refresh_ui_for(ui, state, agenda::Update::Refresh);
+}
+
+fn refresh_ui_for(ui: &MainWindow, state: &CalState, update: agenda::Update) {
     let year  = state.year;
     let month = state.month;
     let day   = state.selected_day;
 
-    // Single month query — used for both the grid cells and the day panel
-    let month_events = state.provider.events_for_month(year, month);
+    // The six-week grid includes dates from both neighboring months.
+    let adjacent = [
+        if month == 1 { (year - 1, 12) } else { (year, month - 1) },
+        (year, month),
+        if month == 12 { (year + 1, 1) } else { (year, month + 1) },
+    ];
+    let month_events: Vec<_> = adjacent.into_iter()
+        .flat_map(|(year, month)| state.provider.events_for_month(year, month)).collect();
 
-    // Month grid (cells carry embedded first-3-events data)
     let cells = build_day_cells(year, month, day, &month_events);
     let cell_model = VecModel::from(cells);
     ui.set_day_cells(ModelRc::from(Rc::new(cell_model)));
@@ -302,7 +281,31 @@ fn refresh_ui(ui: &MainWindow, state: &CalState) {
     let date = NaiveDate::from_ymd_opt(year, month, day)
         .unwrap_or_else(|| NaiveDate::from_ymd_opt(year, month, 1).unwrap());
     let day_events = state.provider.events_for_day(date);
-    let ev_items = build_event_items(&day_events, Some(day));
+    let now = Local::now();
+    let ev_items = build_event_items(&day_events, date, now);
+    if !ui.get_is_details() {
+        let mut last_all_day = None;
+        let compact_items: Vec<_> = agenda::rows(&day_events, date, now)
+            .into_iter()
+            .map(|row| {
+                let mut item = match row {
+                    agenda::Row::Event(index) => ev_items[index].clone(),
+                    agenda::Row::Now => CalEvent {
+                        id: -1,
+                        title: format!("Now {:02}:{:02}", now.hour(), now.minute()).into(),
+                        is_now_marker: true,
+                        ..CalEvent::default()
+                    },
+                };
+                if last_all_day != Some(item.all_day) {
+                    item.section_label = if item.all_day { "All day" } else { "Timed events" }.into();
+                    last_all_day = Some(item.all_day);
+                }
+                item
+            })
+            .collect();
+        ui.set_compact_agenda(ModelRc::from(Rc::new(VecModel::from(compact_items))));
+    }
     let ev_model = VecModel::from(ev_items);
     ui.set_day_events(ModelRc::from(Rc::new(ev_model)));
 
@@ -314,13 +317,38 @@ fn refresh_ui(ui: &MainWindow, state: &CalState) {
     ui.set_selected_date_label(format_day_label(year, month, day).into());
 
     // Current time for "now" line in the day panel
-    let now = Local::now();
     let today = now.date_naive();
     let selected_date = NaiveDate::from_ymd_opt(year, month, day)
         .unwrap_or_else(|| NaiveDate::from_ymd_opt(year, month, 1).unwrap());
     ui.set_is_today_selected(selected_date == today);
     ui.set_current_hour(now.hour() as i32);
     ui.set_current_min(now.minute() as i32);
+
+    if agenda::should_scroll_to_now(
+        date,
+        today,
+        update,
+        !ui.get_is_details() && !ui.get_show_preferences(),
+    ) {
+        let weak = ui.as_weak();
+        // Use the laid-out marker row, never a time-to-pixel estimate.
+        slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
+            if let Some(ui) = weak.upgrade() {
+                if !ui.get_is_details()
+                    && !ui.get_show_preferences()
+                    && ui.window().is_visible()
+                    && !ui.window().is_minimized()
+                    && ui.get_is_today_selected()
+                    && ui.get_year() == date.year()
+                    && ui.get_month() == date.month() as i32
+                    && ui.get_selected_day() == date.day() as i32
+                {
+                    ui.set_agenda_scroll_pending(true);
+                    ui.set_agenda_scroll_request(ui.get_agenda_scroll_request().wrapping_add(1));
+                }
+            }
+        });
+    }
 }
 
 // ── Apply smplOS theme ─────────────────────────────────────────────────────────
@@ -344,6 +372,10 @@ fn apply_theme(ui: &MainWindow, palette: &ThemePalette) {
 
 fn main() -> Result<(), slint::PlatformError> {
     for arg in std::env::args() {
+        if arg == "--font-license" {
+            println!("{}", include_str!("../ui/assets/DSEG-LICENSE.txt"));
+            return Ok(());
+        }
         if arg == "-v" || arg == "--version" {
             println!("smpl-calendar v{}", env!("CARGO_PKG_VERSION"));
             return Ok(());
@@ -365,10 +397,21 @@ fn main() -> Result<(), slint::PlatformError> {
     // dance (which was fragile on Wayland / Hyprland 0.55 — the Lua parser
     // rejects `hyprctl dispatch resizewindowpixel/movewindowpixel …,class:…`).
     let start_details = std::env::args().any(|a| a == "--details");
+    let _compact_instance = if !start_details {
+        match navigation::acquire_compact().map_err(|e| slint::PlatformError::Other(format!("{e:#}")))? {
+            Some(lock) => Some(lock),
+            None => {
+                if navigation::focus_compact().map_err(|e| slint::PlatformError::Other(format!("{e:#}")))? {
+                    return Ok(());
+                }
+                return Err(slint::PlatformError::Other("Calendar is already open; switch to its existing window.".into()));
+            }
+        }
+    } else { None };
     let app_id: &'static str = if start_details { "smpl-calendar-details" } else { "smpl-calendar" };
     // Init the backend at the right initial size so Hyprland's windowrule
     // for the correct app_id can size and place the window on first map.
-    let (init_w, init_h) = if start_details { (1100.0, 700.0) } else { (230.0, 500.0) };
+    let (init_w, init_h) = if start_details { (1100.0, 700.0) } else { (364.0, 650.0) };
     smpl_common::init(app_id, init_w, init_h)?;
 
     // Start the reminder daemon (stays alive for the session)
@@ -382,8 +425,14 @@ fn main() -> Result<(), slint::PlatformError> {
     let details_w = ui.global::<Sizes>().get_details_w();
     let details_h = ui.global::<Sizes>().get_details_h();
 
-    // Ensure initial window size matches
-    ui.window().set_size(slint::LogicalSize::new(compact_w, compact_h));
+    // Select the layout before applying the initial native size.
+    if start_details {
+        ui.set_is_details(true);
+        ui.set_is_standalone(true);
+        ui.window().set_size(slint::LogicalSize::new(details_w, details_h));
+    } else {
+        ui.window().set_size(slint::LogicalSize::new(compact_w, compact_h));
+    }
     let state = Rc::new(RefCell::new(
         CalState::new().expect("failed to open calendar database"),
     ));
@@ -395,13 +444,38 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    if start_details {
-        ui.set_is_details(true);
-        ui.set_is_standalone(true);
-        ui.window().set_size(slint::LogicalSize::new(details_w, details_h));
-    }
+    refresh_ui_for(&ui, &state.borrow(), agenda::Update::Open);
+    let _dashboard = if !start_details { Some(dashboard::start(&ui)) } else { None };
+    let calendar_tick = slint::Timer::default();
+    let weak = ui.as_weak();
+    let tick_state = state.clone();
+    calendar_tick.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(60), move || {
+        if let Some(ui) = weak.upgrade() {
+            if ui.window().is_visible() && !ui.window().is_minimized()
+                && !ui.get_show_preferences() && !ui.get_show_form() {
+                refresh_ui(&ui, &tick_state.borrow());
+            }
+        }
+    });
 
-    refresh_ui(&ui, &state.borrow());
+    if !start_details {
+        let weak = ui.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(100), move || {
+            use i_slint_backend_winit::WinitWindowAccessor;
+            if let Some(ui) = weak.upgrade() {
+                let available = ui.window().with_winit_window(|window| {
+                    window.current_monitor().map(|monitor| {
+                        monitor.size().height as f64 / monitor.scale_factor() - 64.0
+                    })
+                }).flatten();
+                if let Some(height) = available {
+                    ui.window().set_size(slint::LogicalSize::new(
+                        compact_w, compact_h.min(height.max(320.0) as f32),
+                    ));
+                }
+            }
+        });
+    }
 
     // Launch time is captured up-front so both the on_close startup guard
     // (below) and the on_open_details spawn timing can reason about it.
@@ -426,7 +500,7 @@ fn main() -> Result<(), slint::PlatformError> {
             // Clamp selected day to valid range
             s.selected_day = s.selected_day.min(days_in_month(s.year, s.month));
             drop(s);
-            refresh_ui(&ui, &state.borrow());
+            refresh_ui_for(&ui, &state.borrow(), agenda::Update::Selection);
         });
     }
 
@@ -445,7 +519,7 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             s.selected_day = s.selected_day.min(days_in_month(s.year, s.month));
             drop(s);
-            refresh_ui(&ui, &state.borrow());
+            refresh_ui_for(&ui, &state.borrow(), agenda::Update::Selection);
         });
     }
 
@@ -458,7 +532,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let mut s = state.borrow_mut();
             s.selected_day = day as u32;
             drop(s);
-            refresh_ui(&ui, &state.borrow());
+            refresh_ui_for(&ui, &state.borrow(), agenda::Update::Selection);
             // Auto-open day panel in details mode when a day is clicked
             if ui.get_is_details() {
                 ui.set_show_day_panel(true);
@@ -500,14 +574,7 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // ── close-details ─────────────────────────────────────────────────────────
-    // Fired by the collapse button (top-right of the details view). In the
-    // standalone details window this simply closes the window (there is no
-    // compact popup to "collapse back to"). In compact mode is-details never
-    // flips to true, so the button never appears and this is a no-op.
-    ui.on_close_details(move || {
-        std::process::exit(0);
-    });
+    navigation::wire_back(&ui);
 
     // ── navigate-to-month-day (click other-month cell) ────────────────────────
     {
@@ -529,17 +596,20 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             s.selected_day = (day as u32).min(days_in_month(s.year, s.month));
             drop(s);
-            refresh_ui(&ui, &state.borrow());
+            refresh_ui_for(&ui, &state.borrow(), agenda::Update::Selection);
             if ui.get_is_details() {
                 ui.set_show_day_panel(true);
             }
         });
     }
 
+    let editor = editor::wire(&ui);
+
     // ── new-event ─────────────────────────────────────────────────────────────
     {
         let ui_weak = ui.as_weak();
         let state   = state.clone();
+        let editor = editor.clone();
         ui.on_new_event(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let s = state.borrow();
@@ -564,6 +634,10 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_form_year(s_year);
             ui.set_form_month(s_month as i32);
             ui.set_form_day(s_day as i32);
+            ui.set_form_end_year(s_year);
+            ui.set_form_end_month(s_month as i32);
+            ui.set_form_end_day(s_day as i32);
+            editor.begin(&ui, None);
             ui.set_show_form(true);
         });
     }
@@ -572,6 +646,7 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let ui_weak = ui.as_weak();
         let state   = state.clone();
+        let editor = editor.clone();
         ui.on_edit_event(move |id| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let s = state.borrow();
@@ -595,6 +670,10 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_form_year(ev.start.year());
                 ui.set_form_month(ev.start.month() as i32);
                 ui.set_form_day(ev.start.day() as i32);
+                ui.set_form_end_year(ev.end.year());
+                ui.set_form_end_month(ev.end.month() as i32);
+                ui.set_form_end_day(ev.end.day() as i32);
+                editor.begin(&ui, Some((ev.start, ev.end)));
                 ui.set_show_form(true);
             }
         });
@@ -617,64 +696,36 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let ui_weak = ui.as_weak();
         let state   = state.clone();
+        let editor = editor.clone();
         ui.on_save_event(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
 
             let title = ui.get_form_title().to_string();
             if title.trim().is_empty() {
-                return; // don't save empty title
+                ui.set_form_error("Enter an event title.".into());
+                return;
             }
 
-            let s_h  = ui.get_form_start_h()  as u32;
-            let s_m  = ui.get_form_start_m()  as u32;
-            let e_h  = ui.get_form_end_h()    as u32;
-            let e_m  = ui.get_form_end_m()    as u32;
             let all_day   = ui.get_form_all_day();
             let rec_idx   = ui.get_form_rec_idx();
             let alert_idx = ui.get_form_alert_idx();
             let editing_id = ui.get_form_editing_id();
 
-            // Parse and validate the date string
-            let date_str = ui.get_form_date_str().to_string();
-            // Prefer the DatePicker widget's split ints — those are the
-            // authoritative source of truth after the picker replaced the
-            // freeform text input. We still fall back to form-date-str so
-            // any code path that only writes the string keeps working.
-            let picker_y = ui.get_form_year();
-            let picker_m = ui.get_form_month() as u32;
-            let picker_d = ui.get_form_day() as u32;
-            let date = match NaiveDate::from_ymd_opt(picker_y, picker_m, picker_d) {
-                Some(d) => {
-                    ui.set_form_date_invalid(false);
-                    d
+            let (start, end) = match editor.interval(&ui) {
+                Ok(interval) => interval,
+                Err(error) => {
+                    ui.set_form_valid(false);
+                    ui.set_form_error(format!("{error:#}").into());
+                    return;
                 }
-                None => match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                    Ok(d) => {
-                        ui.set_form_date_invalid(false);
-                        d
-                    }
-                    Err(_) => {
-                        ui.set_form_date_invalid(true);
-                        return; // don't save with invalid date
-                    }
-                },
             };
+            let date = start.date_naive();
 
             let mut s = state.borrow_mut();
 
-            let make_dt = |h: u32, m: u32| {
-                date.and_hms_opt(h, m, 0)
-                    .and_then(|ndt| Local.from_local_datetime(&ndt).single())
-                    .unwrap_or_else(Local::now)
-            };
-
-            let start = if all_day { make_dt(0,  0) } else { make_dt(s_h, s_m) };
-            let end   = if all_day { make_dt(23, 59) } else { make_dt(e_h, e_m) };
-            let end   = if end <= start { start + chrono::Duration::hours(1) } else { end };
-
             let recurrence = Recurrence::from_index(rec_idx);
 
-            if editing_id < 0 {
+            let result = if editing_id < 0 {
                 // Create
                 let new_ev = NewEvent {
                     title,
@@ -687,7 +738,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     color:          None,
                     alert_minutes:  alert_minutes_from_idx(alert_idx),
                 };
-                let _ = s.provider.create_event(new_ev);
+                s.provider.create_event(new_ev).map(|_| ())
             } else {
                 // Update — look up on the currently-viewed date (original day before
                 // the user might have changed the date field) then apply new values.
@@ -702,17 +753,29 @@ fn main() -> Result<(), slint::PlatformError> {
                     ev.all_day     = all_day;
                     ev.recurrence  = recurrence;
                     ev.alert_minutes = alert_minutes_from_idx(alert_idx);
-                    let _ = s.provider.update_event(ev);
+                    s.provider.update_event(ev)
+                } else {
+                    Err(anyhow::anyhow!("This event no longer exists. Close the editor and reopen it."))
                 }
+            };
+            if let Err(error) = result {
+                eprintln!("[calendar] Could not save event: {error:#}");
+                ui.set_form_error(format!("Could not save event: {error:#}").into());
+                return;
             }
 
             // Navigate to the saved date so the user sees their event
+            let update = if (s.year, s.month, s.selected_day) != (date.year(), date.month(), date.day()) {
+                agenda::Update::Selection
+            } else {
+                agenda::Update::Refresh
+            };
             s.year         = date.year();
             s.month        = date.month();
             s.selected_day = date.day();
             drop(s);
             ui.set_show_form(false);
-            refresh_ui(&ui, &state.borrow());
+            refresh_ui_for(&ui, &state.borrow(), update);
         });
     }
 
@@ -758,85 +821,105 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // ── window resize (edge drag) ────────────────────────────────────────────
-    // edge: 0=top, 1=right, 2=bottom, 3=left,
-    //       4=top-left, 5=top-right, 6=bottom-left, 7=bottom-right
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_resize_window(move |dx, dy, edge| {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let scale = ui.window().scale_factor();
-            let pos   = ui.window().position();
-            let size  = ui.window().size();
-
-            let min_w: f32 = if ui.get_is_details() { 700.0 } else { 230.0 };
-            let min_h: f32 = if ui.get_is_details() { 400.0 } else { 300.0 };
-
-            let mut new_x = pos.x as f32;
-            let mut new_y = pos.y as f32;
-            let mut new_w = size.width as f32;
-            let mut new_h = size.height as f32;
-
-            let pdx = dx * scale;
-            let pdy = dy * scale;
-
-            match edge {
-                0 => { // top
-                    new_y += pdy;
-                    new_h -= pdy;
-                }
-                1 => { // right
-                    new_w += pdx;
-                }
-                2 => { // bottom
-                    new_h += pdy;
-                }
-                3 => { // left
-                    new_x += pdx;
-                    new_w -= pdx;
-                }
-                4 => { // top-left
-                    new_x += pdx; new_w -= pdx;
-                    new_y += pdy; new_h -= pdy;
-                }
-                5 => { // top-right
-                    new_w += pdx;
-                    new_y += pdy; new_h -= pdy;
-                }
-                6 => { // bottom-left
-                    new_x += pdx; new_w -= pdx;
-                    new_h += pdy;
-                }
-                7 => { // bottom-right
-                    new_w += pdx;
-                    new_h += pdy;
-                }
-                _ => {}
-            }
-
-            let min_w_phys = min_w * scale;
-            let min_h_phys = min_h * scale;
-
-            // Clamp to min size — if we'd go below min, don't move origin
-            if new_w < min_w_phys {
-                if edge == 3 || edge == 4 || edge == 6 {
-                    new_x = pos.x as f32 + (size.width as f32 - min_w_phys);
-                }
-                new_w = min_w_phys;
-            }
-            if new_h < min_h_phys {
-                if edge == 0 || edge == 4 || edge == 5 {
-                    new_y = pos.y as f32 + (size.height as f32 - min_h_phys);
-                }
-                new_h = min_h_phys;
-            }
-
-            ui.window().set_size(slint::PhysicalSize::new(new_w as u32, new_h as u32));
-            ui.window().set_position(slint::WindowPosition::Physical(
-                slint::PhysicalPosition::new(new_x as i32, new_y as i32),
-            ));
-        });
-    }
+    let _window_controls = window_controls::wire(&ui);
 
     ui.run()
+}
+
+#[cfg(test)]
+mod calendar_grid_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use slint::Model;
+
+    #[test]
+    fn event_dates_include_neighbors_and_overlap_without_day_number_aliases() {
+        let start = Local.with_ymd_and_hms(2026, 9, 30, 23, 50, 0).single().unwrap();
+        let overnight = models::Event {
+            id: 1, title: "Fixture".into(), description: String::new(),
+            start, end: start + chrono::Duration::minutes(20), all_day: false,
+            recurrence: Recurrence::None, recurrence_end: None, color: None, alert_minutes: 0,
+        };
+        let mut occurrence = overnight.clone();
+        occurrence.id = 2;
+        occurrence.start = Local.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).single().unwrap();
+        occurrence.end = occurrence.start + chrono::Duration::hours(1);
+        occurrence.recurrence = Recurrence::Monthly;
+        let mut next_occurrence = occurrence.clone();
+        next_occurrence.start = Local.with_ymd_and_hms(2026, 11, 1, 9, 0, 0).single().unwrap();
+        next_occurrence.end = next_occurrence.start + chrono::Duration::hours(1);
+        let mut ends_at_midnight = overnight.clone();
+        ends_at_midnight.id = 3;
+        ends_at_midnight.start = Local.with_ymd_and_hms(2026, 10, 31, 23, 0, 0).single().unwrap();
+        ends_at_midnight.end = ends_at_midnight.start + chrono::Duration::hours(1);
+        let events = vec![overnight.clone(), overnight, occurrence, next_occurrence, ends_at_midnight];
+        let now = Local.with_ymd_and_hms(2026, 10, 1, 0, 5, 0).single().unwrap();
+        let cells = build_day_cells_at(2026, 10, 1, &events, now);
+        let find = |offset, day| cells.iter().find(|cell| cell.month_offset == offset && cell.day == day).unwrap();
+        assert_eq!(find(-1, 30).event_count, 1);
+        assert!(find(-1, 30).has_events);
+        assert_eq!(find(0, 1).event_count, 2);
+        assert!(find(0, 1).is_selected && find(0, 1).is_today && find(0, 1).has_events);
+        assert!(!find(0, 30).has_events);
+        assert_eq!(find(0, 31).event_count, 1);
+        assert_eq!(find(1, 1).event_count, 1);
+        assert!(find(1, 1).has_events);
+    }
+
+    #[test]
+    fn details_keep_all_real_events_and_the_upcoming_anchor() {
+        let now = Local.with_ymd_and_hms(2026, 10, 2, 12, 15, 0).single().unwrap();
+        let events: Vec<_> = (0..10).map(|index| {
+            let start = Local.with_ymd_and_hms(2026, 10, 2, 8 + index, 0, 0).single().unwrap();
+            models::Event {
+                id: 100 + i64::from(index),
+                title: format!("Real event {index}"),
+                description: String::new(),
+                start,
+                end: start + chrono::Duration::minutes(30),
+                all_day: false,
+                recurrence: Recurrence::None,
+                recurrence_end: None,
+                color: None,
+                alert_minutes: 0,
+            }
+        }).collect();
+        let cells = build_day_cells_at(2026, 10, 2, &events, now);
+        let cell = cells.iter().find(|cell| !cell.is_other_month && cell.day == 2).unwrap();
+        assert!(cell.is_today);
+        assert_eq!(cell.event_count, 10);
+        assert_eq!(cell.events.row_count(), 10);
+        assert_eq!(cell.first_upcoming, 4);
+        assert_eq!(cell.events.row_data(9).unwrap().id, 109);
+        assert_eq!(cell.events.row_data(9).unwrap().title, "Real event 9");
+        assert_eq!(cell.events.row_data(9).unwrap().time_label, "17:00");
+
+        let late = now + chrono::Duration::hours(6);
+        let cells = build_day_cells_at(2026, 10, 2, &events, late);
+        let cell = cells.iter().find(|cell| !cell.is_other_month && cell.day == 2).unwrap();
+        assert_eq!(cell.first_upcoming, 10);
+        assert_eq!(cell.events.row_count(), 10);
+        assert!(cells.iter().filter(|cell| cell.is_other_month)
+            .all(|cell| cell.events.row_count() == 0));
+    }
+
+    #[test]
+    fn every_month_has_all_days_and_six_complete_rows() {
+        for year in [1900, 2000, 2026, 2028, 2100] {
+            for month in 1..=12 {
+                let cells = build_day_cells(year, month, 1, &[]);
+                assert_eq!(cells.len(), 42);
+                let days: Vec<_> = cells.iter().filter(|d| !d.is_other_month)
+                    .map(|d| d.day).collect();
+                assert_eq!(days, (1..=days_in_month(year, month) as i32).collect::<Vec<_>>());
+                for (i, cell) in cells.iter().enumerate() {
+                    assert_eq!((cell.row, cell.col), (i as i32 / 7, i as i32 % 7));
+                }
+            }
+        }
+        assert_eq!(days_in_month(1900, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(2028, 2), 29);
+        assert_eq!(days_in_month(2100, 2), 28);
+    }
 }

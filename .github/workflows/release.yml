@@ -161,7 +161,8 @@ jobs:
             exit 1
           }
           git add Cargo.toml Cargo.lock README.md
-          git commit -m "chore: release v${{ steps.version.outputs.new }}"
+          git commit -m "chore: release v${{ steps.version.outputs.new }}" \
+            -m "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>"
           git tag "${{ steps.version.outputs.tag }}"
           git push --atomic origin HEAD:refs/heads/main "refs/tags/${{ steps.version.outputs.tag }}"
 
@@ -187,6 +188,7 @@ jobs:
             dist/smpl-calendar-alertd
             dist/smpl-hints
             dist/smpl-hintsd
+            dist/smpl-calendar-alertd.service
 
       - name: Verify uploads before publishing latest release
         env:

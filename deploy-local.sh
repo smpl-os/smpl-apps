@@ -23,10 +23,19 @@ if [[ "$1" == "--build" ]]; then
     cargo build --release --manifest-path "$(dirname "$0")/Cargo.toml"
 fi
 
-BINS=(settings start-menu notif-center app-center webapp-center sync-center-gui smpl-calendar smpl-hints smpl-hintsd)
+BINS=(settings start-menu notif-center app-center webapp-center sync-center-gui smpl-calendar smpl-calendar-alertd smpl-hints smpl-hintsd)
+
+if [[ -x "$RELEASE/smpl-calendar" && -x "$RELEASE/smpl-calendar-alertd" ]]; then
+    python3 "$(dirname "$0")/scripts/deploy-calendar-reminders-local.py"
+elif [[ -f "$RELEASE/smpl-calendar" || -f "$RELEASE/smpl-calendar-alertd" ]]; then
+    echo "Build both calendar binaries before deploying; neither was installed." >&2
+    exit 1
+fi
 
 echo ":: Deploying binaries to /usr/local/bin (canonical location only)..."
 for bin in "${BINS[@]}"; do
+    # Calendar has its own verified backups and narrowly managed daemon restart.
+    [[ "$bin" == "smpl-calendar" || "$bin" == "smpl-calendar-alertd" ]] && continue
     src="$RELEASE/$bin"
     [[ -f "$src" ]] || continue
 
@@ -61,6 +70,7 @@ rebuild-app-cache 2>/dev/null && echo ":: App cache rebuilt" || echo "  (rebuild
 
 # Kill running instances so the new binaries take effect
 for bin in "${BINS[@]}"; do
+    [[ "$bin" == "smpl-calendar" || "$bin" == "smpl-calendar-alertd" ]] && continue
     pkill -f "^/usr/local/bin/$bin\$" 2>/dev/null || true
     pkill -x "$bin" 2>/dev/null || true
 done
@@ -69,6 +79,10 @@ echo ":: Old processes killed — new versions will load on next launch"
 # Show versions
 echo ":: Deployed versions:"
 for bin in "${BINS[@]}"; do
+    if [[ "$bin" == "smpl-calendar-alertd" ]]; then
+        [[ -f "/usr/local/bin/$bin" ]] && sha256sum "/usr/local/bin/$bin"
+        continue
+    fi
     [[ -f "/usr/local/bin/$bin" ]] && echo "  $(/usr/local/bin/$bin --version 2>/dev/null || /usr/local/bin/$bin -v 2>/dev/null || echo "$bin (no --version)")"
 done
 

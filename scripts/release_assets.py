@@ -17,6 +17,8 @@ BINARIES = (
     "sync-center-daemon", "sync-center-gui", "smpl-calendar",
     "smpl-calendar-alertd", "smpl-hints", "smpl-hintsd",
 )
+SERVICE = "smpl-calendar-alertd.service"
+SERVICE_SOURCE = Path(__file__).resolve().parents[1] / "calendar/systemd" / SERVICE
 
 
 def digest(path):
@@ -24,7 +26,7 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def required_files(directory):
+def required_binaries(directory):
     files = {name: directory / name for name in BINARIES}
     for name, path in files.items():
         if (path.is_symlink() or not path.is_file() or not path.stat().st_size
@@ -33,13 +35,30 @@ def required_files(directory):
     return files
 
 
+def validate_service(path):
+    if (path.is_symlink() or not path.is_file() or not path.stat().st_size
+            or path.stat().st_mode & 0o777 != 0o644):
+        raise ValueError(f"Missing or invalid mandatory service: {SERVICE}")
+
+
+def required_files(directory):
+    files = required_binaries(directory)
+    service = directory / SERVICE
+    validate_service(service)
+    files[SERVICE] = service
+    return files
+
+
 def collect(source, destination):
-    files = required_files(source)
+    files = required_binaries(source)
+    validate_service(SERVICE_SOURCE)
     destination.mkdir()  # A stale dist directory must not hide missing outputs.
     for name, path in files.items():
         target = destination / name
         shutil.copy2(path, target)
         subprocess.run(["strip", str(target)], check=True)
+    shutil.copyfile(SERVICE_SOURCE, destination / SERVICE)
+    (destination / SERVICE).chmod(0o644)
     required_files(destination)
 
 
@@ -54,8 +73,13 @@ def verify_bundle(directory, bundle):
             members[name] = member
         for name, path in files.items():
             member = members.get(name)
-            if member is None or not member.isfile() or not member.mode & 0o111:
-                raise ValueError(f"Missing or invalid bundled binary: {name}")
+            if member is None or not member.isfile():
+                raise ValueError(f"Missing or invalid bundled asset: {name}")
+            if name == SERVICE:
+                if member.mode & 0o777 != 0o644:
+                    raise ValueError(f"Bundled service must have mode 0644: {name}")
+            elif not member.mode & 0o111:
+                raise ValueError(f"Bundled binary must be executable: {name}")
             with archive.extractfile(member) as stream:
                 archived = hashlib.file_digest(stream, "sha256").hexdigest()
             if archived != digest(path):

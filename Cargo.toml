@@ -38,6 +38,8 @@ url  = "2"
 
 # Date/time
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono-tz = "0.10"
+unicode-normalization = "0.1"
 
 # System
 xkbcommon = "0.9"

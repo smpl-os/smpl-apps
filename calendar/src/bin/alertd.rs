@@ -1,244 +1,330 @@
-//! smpl-calendar-alertd — lightweight reminder daemon.
-//!
-//! Wakes every 30 seconds, queries the calendar SQLite database for events
-//! with `alert_minutes > 0` whose alert window falls in the near future,
-//! fires `notify-send`, and records sent alerts so they aren't repeated.
-//!
-//! Designed to be spawned once by `smpl-calendar` and stay running in the
-//! background for the duration of the user session.
+//! Session-long, notification-only reminders. No sound/action/snooze is invented.
+//! A per-user advisory lock guards launches; delivery failures remain retryable.
+//! Only --foreground enters runtime; ordinary launches merely check the service.
 
-use chrono::{DateTime, Duration, Local, Months, TimeZone};
-use rusqlite::{params, Connection};
+#[path = "../alarm.rs"]
+mod alarm;
+
+use anyhow::{bail, ensure, Context, Result};
+use chrono::{Local, TimeZone};
+use rusqlite::Connection;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
-// ── DB path (shared with smpl-calendar) ────────────────────────────────────────
-
-fn db_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".local/share/smplos/calendar/events.db")
+#[derive(Debug, PartialEq)]
+enum Invocation {
+    Service,
+    Foreground,
+    Version,
+    Check,
+    Help,
 }
 
-// ── Minimal event struct (only fields needed for alerts) ──────────────────────
-
-#[derive(Debug, Clone)]
-struct AlertEvent {
-    id: i64,
-    title: String,
-    start_ts: i64,
-    alert_minutes: i32,
-    recurrence: String,
-}
-
-// ── Recurrence expansion ──────────────────────────────────────────────────────
-
-fn advance(dt: DateTime<Local>, rec: &str) -> DateTime<Local> {
-    match rec {
-        "daily"    => dt + Duration::days(1),
-        "weekly"   => dt + Duration::weeks(1),
-        "biweekly" => dt + Duration::weeks(2),
-        "monthly"  => dt.checked_add_months(Months::new(1)).unwrap_or(dt),
-        "yearly"   => dt.checked_add_months(Months::new(12)).unwrap_or(dt),
-        _          => dt + Duration::days(36500), // none — far future
+fn invocation(args: &[String]) -> Result<Invocation> {
+    match args {
+        [] => Ok(Invocation::Service),
+        [arg] => match arg.as_str() {
+            "--foreground" => Ok(Invocation::Foreground),
+            "--version" | "-V" => Ok(Invocation::Version),
+            "--check" => Ok(Invocation::Check),
+            "--help" | "-h" => Ok(Invocation::Help),
+            _ => bail!("Unknown reminder daemon option; use --help"),
+        },
+        _ => bail!("Expected at most one reminder daemon option; use --help"),
     }
 }
 
-/// For a recurring event, find the next occurrence at or after `after`.
-fn next_occurrence(start_ts: i64, rec: &str, after: DateTime<Local>) -> Option<DateTime<Local>> {
-    let mut current = Local.timestamp_opt(start_ts, 0).single()?;
-    // Fast-forward (capped at 1000 iterations)
-    for _ in 0..1000 {
-        if current >= after {
-            return Some(current);
-        }
-        current = advance(current, rec);
-    }
-    None
+fn db_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is required for calendar reminders")?;
+    let home = PathBuf::from(home);
+    ensure!(
+        home.is_absolute(),
+        "Calendar reminder HOME must be absolute"
+    );
+    Ok(home.join(".local/share/smplos/calendar/events.db"))
 }
 
-// ── Sent-alerts tracking (in-DB table) ────────────────────────────────────────
-
-fn ensure_sent_table(conn: &Connection) {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS sent_alerts (
-            event_id   INTEGER NOT NULL,
-            alert_ts   INTEGER NOT NULL,
-            PRIMARY KEY (event_id, alert_ts)
-        );",
-    )
-    .ok();
+#[derive(Debug, PartialEq)]
+enum ServiceState {
+    Running,
+    Stopped,
+    Missing,
 }
 
-fn was_sent(conn: &Connection, event_id: i64, alert_ts: i64) -> bool {
-    conn.query_row(
-        "SELECT 1 FROM sent_alerts WHERE event_id=?1 AND alert_ts=?2",
-        params![event_id, alert_ts],
-        |_| Ok(true),
-    )
-    .unwrap_or(false)
-}
-
-fn mark_sent(conn: &Connection, event_id: i64, alert_ts: i64) {
-    conn.execute(
-        "INSERT OR IGNORE INTO sent_alerts (event_id, alert_ts) VALUES (?1, ?2)",
-        params![event_id, alert_ts],
-    )
-    .ok();
-}
-
-/// Purge old sent_alerts entries (older than 48 hours) to keep the table small.
-fn purge_old(conn: &Connection) {
-    let cutoff = (Local::now() - Duration::hours(48)).timestamp();
-    conn.execute("DELETE FROM sent_alerts WHERE alert_ts < ?1", params![cutoff])
-        .ok();
-}
-
-// ── Notification ──────────────────────────────────────────────────────────────
-
-fn send_notification(title: &str, start: DateTime<Local>, minutes_before: i32) {
-    let time_str = start.format("%H:%M").to_string();
-    let date_str = start.format("%A, %B %e").to_string();
-    let body = if minutes_before <= 0 {
-        format!("Starting now ({time_str} {date_str})")
-    } else if minutes_before < 60 {
-        format!("In {minutes_before} min ({time_str} {date_str})")
-    } else {
-        let hours = minutes_before / 60;
-        format!(
-            "In {} hour{} ({time_str} {date_str})",
-            hours,
-            if hours > 1 { "s" } else { "" }
-        )
+fn service_state(properties: &str) -> ServiceState {
+    let property = |name: &str| {
+        properties
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key == name).then_some(value)
+            })
+            .unwrap_or("")
     };
+    match property("LoadState") {
+        "masked" => ServiceState::Stopped,
+        "loaded" => {
+            if matches!(
+                property("ActiveState"),
+                "active" | "activating" | "reloading"
+            ) {
+                ServiceState::Running
+            } else {
+                ServiceState::Stopped
+            }
+        }
+        _ => ServiceState::Missing,
+    }
+}
 
-    let _ = Command::new("notify-send")
+fn check_user_service() -> Result<()> {
+    let output = Command::new("systemctl")
         .args([
-            "-a", "smpl-calendar",
-            "-i", "x-office-calendar",
-            "-u", "normal",
-            title,
+            "--user",
+            "--no-pager",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            "smpl-calendar-alertd.service",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .context("User reminder service could not be queried")?;
+    ensure!(
+        output.status.success(),
+        "User reminder service is unavailable; no daemon was started"
+    );
+    match service_state(&String::from_utf8_lossy(&output.stdout)) {
+        ServiceState::Running => Ok(()),
+        ServiceState::Stopped => {
+            eprintln!(
+                "smpl-calendar-alertd: reminder service is stopped or masked; leaving it unchanged"
+            );
+            Ok(())
+        }
+        ServiceState::Missing => {
+            bail!("Install and explicitly enable/start the calendar reminder user service")
+        }
+    }
+}
+
+fn check_configuration() -> Result<()> {
+    let _ = db_path()?;
+    ensure!(
+        alarm::lock_path()?.is_absolute(),
+        "Reminder lock directory must be absolute"
+    );
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    ensure!(
+        std::env::split_paths(&path).any(|directory| {
+            std::fs::metadata(directory.join("notify-send")).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        }),
+        "notify-send is not available in PATH"
+    );
+    println!("smpl-calendar-alertd: configuration check passed (database unopened)");
+    Ok(())
+}
+
+fn send_notification(reminder: &alarm::Reminder) -> Result<()> {
+    let now = Local::now().timestamp();
+    if now < reminder.due_ts || now.saturating_sub(reminder.due_ts) > alarm::MAX_LATENESS_SECONDS {
+        bail!("Reminder delivery window has expired");
+    }
+    let start = Local
+        .timestamp_opt(reminder.occurrence_ts, 0)
+        .single()
+        .context("Invalid reminder timestamp")?;
+    let body = format!("Starts at {}", start.format("%H:%M on %A, %B %e"));
+    let mut child = Command::new("notify-send")
+        .args([
+            "-a",
+            "smpl-calendar",
+            "-i",
+            "x-office-calendar",
+            "-u",
+            "normal",
+            "--",
+            &reminder.title,
             &body,
         ])
-        .spawn();
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Notification delivery could not start")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
+                return Ok(());
+            }
+            bail!("Desktop notification delivery was rejected");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("Desktop notification delivery timed out");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
-// ── Main loop ─────────────────────────────────────────────────────────────────
-
-fn check_alerts(conn: &Connection) {
-    let now = Local::now();
-    // Look ahead window: events starting within the next 24h + 5min margin
-    let look_ahead_ts = (now + Duration::hours(24) + Duration::minutes(5)).timestamp();
-
-    // Query all events with reminders that might fire in the next 24h
-    let sql = "
-        SELECT id, title, start_ts, alert_minutes, recurrence
-        FROM   events
-        WHERE  alert_minutes > 0
-          AND  (
-            (recurrence = 'none' AND start_ts <= ?1 AND start_ts >= ?2)
-            OR recurrence != 'none'
-          )
-    ";
-    let past_24h = (now - Duration::hours(24)).timestamp();
-
-    let mut stmt = match conn.prepare_cached(sql) {
-        Ok(s) => s,
-        Err(_) => return,
+fn run() -> Result<()> {
+    let Some(_lock) = alarm::acquire_lock(&alarm::lock_path()?)? else {
+        return Ok(());
     };
-    let events: Vec<AlertEvent> = match stmt.query_map(params![look_ahead_ts, past_24h], |row| {
-        Ok(AlertEvent {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            start_ts: row.get(2)?,
-            alert_minutes: row.get(3)?,
-            recurrence: row.get(4)?,
-        })
-    }) {
-        Ok(rows) => rows.flatten().collect(),
-        Err(_) => return,
+    let path = db_path()?;
+    // Login can start the service before the calendar's first database creation.
+    let conn = loop {
+        if path.exists() {
+            match open_database(&path) {
+                Ok(conn) => break conn,
+                Err(_) => eprintln!("smpl-calendar-alertd: database is not ready; retrying"),
+            }
+        }
+        std::thread::sleep(Duration::from_secs(1));
     };
+    loop {
+        match alarm::tick(&conn, &Local, Local::now().timestamp(), send_notification) {
+            Ok(report) => {
+                if report.failed > 0 {
+                    eprintln!("smpl-calendar-alertd: delivery failed; retrying recent reminders on the next tick");
+                }
+                if report.invalid > 0 {
+                    eprintln!("smpl-calendar-alertd: invalid reminder schedules were skipped");
+                }
+            }
+            Err(error) => eprintln!("smpl-calendar-alertd: reminder check failed: {error}"),
+        }
+        wait_for_next_poll(Duration::from_secs(30))?;
+    }
+}
 
-    for ev in &events {
-        // Determine the relevant occurrence start time
-        let occurrence_start = if ev.recurrence == "none" {
-            match Local.timestamp_opt(ev.start_ts, 0).single() {
-                Some(dt) => dt,
-                None => continue,
-            }
-        } else {
-            // Find next occurrence that hasn't passed yet (or is about to alert)
-            let look_from = now - Duration::minutes(ev.alert_minutes as i64 + 5);
-            match next_occurrence(ev.start_ts, &ev.recurrence, look_from) {
-                Some(dt) => dt,
-                None => continue,
-            }
+fn wait_for_next_poll(duration: Duration) -> Result<()> {
+    let mut requested = libc::timespec {
+        tv_sec: duration.as_secs().try_into()?,
+        tv_nsec: duration.subsec_nanos() as libc::c_long,
+    };
+    loop {
+        let mut remaining = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
         };
+        // BOOTTIME counts suspend, unlike ordinary monotonic sleep. An elapsed
+        // poll becomes runnable on resume; this is not a system-waking alarm.
+        let status =
+            unsafe { libc::clock_nanosleep(libc::CLOCK_BOOTTIME, 0, &requested, &mut remaining) };
+        match status {
+            0 => return Ok(()),
+            libc::EINTR => requested = remaining,
+            error => return Err(std::io::Error::from_raw_os_error(error).into()),
+        }
+    }
+}
 
-        // Alert should fire at: start_time - alert_minutes
-        let alert_time = occurrence_start - Duration::minutes(ev.alert_minutes as i64);
+fn open_database(path: &std::path::Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    // A newly created SQLite file can become visible before the UI has finished
+    // creating its events table or adding the reminder column.
+    conn.prepare(
+        "SELECT id, title, start_ts, alert_minutes, recurrence, recurrence_end FROM events LIMIT 0",
+    )?;
+    alarm::ensure_tracking(&conn)?;
+    Ok(conn)
+}
 
-        // Fire if alert_time is in the past or within the next 30 seconds
-        let fire_window = now + Duration::seconds(30);
-        if alert_time <= fire_window && occurrence_start > now - Duration::minutes(5) {
-            let alert_ts = occurrence_start.timestamp();
-            if !was_sent(conn, ev.id, alert_ts) {
-                send_notification(&ev.title, occurrence_start, ev.alert_minutes);
-                mark_sent(conn, ev.id, alert_ts);
-            }
+fn execute() -> Result<()> {
+    let args = std::env::args_os()
+        .skip(1)
+        .map(|arg| {
+            arg.into_string()
+                .map_err(|_| anyhow::anyhow!("Arguments must be UTF-8"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    match invocation(&args)? {
+        Invocation::Service => check_user_service(),
+        Invocation::Foreground => run(),
+        Invocation::Version => {
+            println!("smpl-calendar-alertd {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Invocation::Check => check_configuration(),
+        Invocation::Help => {
+            println!(
+                "Usage: smpl-calendar-alertd [--foreground | --version | --check | --help]\n\
+                No arguments: check the existing user service; never start an unmanaged daemon.\n\
+                --foreground: run the daemon (service/explicit administration only).\n\
+                --check: read-only dependency/configuration check; never open the database.\n\
+                --version: print version; never open the database."
+            );
+            Ok(())
         }
     }
 }
 
 fn main() {
-    // Single-instance check: if another alertd is running, exit quietly
-    let output = Command::new("pgrep")
-        .args(["-x", "smpl-calendar-al"]) // pgrep truncates to 15 chars
-        .output();
-    if let Ok(out) = output {
-        let pids: Vec<&str> = std::str::from_utf8(&out.stdout)
-            .unwrap_or("")
-            .lines()
-            .filter(|l| !l.is_empty())
-            .collect();
-        // If more than 1 process (ourselves), exit
-        if pids.len() > 1 {
-            return;
+    if let Err(error) = execute() {
+        eprintln!("smpl-calendar-alertd: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_explicit_foreground_can_enter_database_runtime() {
+        assert_eq!(invocation(&[]).unwrap(), Invocation::Service);
+        for (option, expected) in [
+            ("--foreground", Invocation::Foreground),
+            ("--version", Invocation::Version),
+            ("--check", Invocation::Check),
+            ("--help", Invocation::Help),
+        ] {
+            assert_eq!(invocation(&[option.into()]).unwrap(), expected);
         }
+        assert!(invocation(&["--unknown".into()]).is_err());
+        assert!(invocation(&["--foreground".into(), "--check".into()]).is_err());
     }
 
-    let path = db_path();
-    if !path.exists() {
-        // No calendar DB yet — wait for it
-        eprintln!("smpl-calendar-alertd: no database at {}, waiting...", path.display());
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        if !path.exists() {
-            return;
-        }
+    #[test]
+    fn suspend_aware_poll_clock_supports_nonblocking_wait() {
+        wait_for_next_poll(Duration::ZERO).unwrap();
     }
 
-    let conn = match Connection::open_with_flags(
-        &path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("smpl-calendar-alertd: failed to open DB: {e}");
-            return;
+    #[test]
+    fn inactive_failed_masked_and_custom_units_are_never_started_by_legacy_ui() {
+        for active in ["inactive", "failed", "deactivating"] {
+            assert_eq!(
+                service_state(&format!("LoadState=loaded\nActiveState={active}\n")),
+                ServiceState::Stopped
+            );
         }
-    };
-
-    ensure_sent_table(&conn);
-
-    let mut tick = 0u64;
-    loop {
-        check_alerts(&conn);
-
-        // Purge old sent_alerts every ~10 minutes (20 ticks * 30s)
-        if tick.is_multiple_of(20) {
-            purge_old(&conn);
-        }
-
-        tick += 1;
-        std::thread::sleep(std::time::Duration::from_secs(30));
+        assert_eq!(
+            service_state("LoadState=masked\nActiveState=inactive"),
+            ServiceState::Stopped
+        );
+        assert_eq!(
+            service_state("LoadState=loaded\nActiveState=active"),
+            ServiceState::Running
+        );
+        assert_eq!(
+            service_state("LoadState=loaded\nActiveState=activating"),
+            ServiceState::Running
+        );
+        assert_eq!(
+            service_state("LoadState=not-found\nActiveState=inactive"),
+            ServiceState::Missing
+        );
+        assert_eq!(service_state(""), ServiceState::Missing);
     }
 }

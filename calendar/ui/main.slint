@@ -1,20 +1,28 @@
 // smplOS Calendar — smpl-calendar
 // Two-mode UI:
-//   Compact : small month picker (230×500)
+//   Compact : weather, clock and month picker (364×650)
 //   Details : Teams-style full calendar (1100×700)
 //             Left sidebar: mini month + nav
 //             Main area: toolbar + 7-col big month grid + slide-in day panel
 
 // ── Window sizes (single source of truth — Rust reads these via global) ───────
 
+import "assets/DSEG7Modern-Regular.ttf";
+
 export global Sizes {
-    out property <float> compact-w: 230;
-    out property <float> compact-h: 500;
+    out property <float> compact-w: 364;
+    out property <float> compact-h: 650;
     out property <float> details-w: 1100;
     out property <float> details-h: 700;
 }
 
 // ── Data structures ───────────────────────────────────────────────────────────
+
+export struct GridEvent {
+    id: int,
+    title: string,
+    time-label: string,
+}
 
 struct DayCell {
     day:            int,
@@ -27,16 +35,20 @@ struct DayCell {
     // Adjacent-month cells (padding to fill the 6×7 grid)
     is-other-month: bool,
     month-offset:   int,   // -1 = prev month, 0 = this month, +1 = next month
-    // First 3 event display strings (empty string = no event at that slot)
-    ev1-id:         int,
-    ev1-title:      string,
-    ev1-time:       string,
-    ev2-id:         int,
-    ev2-title:      string,
-    ev2-time:       string,
-    ev3-id:         int,
-    ev3-title:      string,
-    ev3-time:       string,
+    events: [GridEvent],
+    first-upcoming: int,
+}
+
+export global DetailsGrid {
+    public pure function capacity(cell-height: length, count: int) -> int {
+        let slots = max(0, floor((cell-height - 30px) / 17px));
+        return min(count, max(0, floor(
+            (cell-height - 30px - (count > slots ? 16px : 0px)) / 17px
+        )));
+    }
+    public pure function first-visible(count: int, upcoming: int, shown: int, today: bool) -> int {
+        return today ? min(upcoming, max(0, count - shown)) : 0;
+    }
 }
 
 struct CalEvent {
@@ -53,8 +65,27 @@ struct CalEvent {
     all-day:          bool,
     recurrence-idx:   int,
     is-past:          bool,
+    is-ongoing:       bool,
+    is-now-marker:    bool,
+    section-label:    string,
     // day this event belongs to (1–31), used to filter in the big grid
     day:              int,
+}
+
+export struct ForecastDay {
+    day: string,
+    high: string,
+    low: string,
+    rain: string,
+    condition: int,
+    description: string,
+}
+
+export struct ClockItem {
+    name: string,
+    time: string,
+    date: string,
+    zone: string,
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -75,6 +106,134 @@ export global Theme {
     // Background-only tints preserve the window's alpha without dimming content.
     out property <color> surface: bg-light.transparentize(0.90);
     out property <color> surface-hover: bg-lighter.transparentize(0.84);
+}
+
+component WeatherIcon inherits Rectangle {
+    in property <int> condition;
+    in property <float> phase;
+    width: 42px; height: 46px;
+    if root.condition <= 1: Image {
+        width: root.condition == 0 ? 40px : 30px;
+        height: self.width;
+        x: root.condition == 0 ? 1px : -1px;
+        y: root.condition == 0 ? 2px : 0px;
+        source: @image-url("assets/sun.svg");
+        colorize: Theme.warning;
+        transform-rotation: root.phase * 8deg;
+    }
+    if root.condition > 0: Image {
+        x: sin(root.phase * 1rad) * 1.3px; y: -2px;
+        width: 42px; height: 42px;
+        source: @image-url("assets/cloud.svg");
+        colorize: Theme.fg;
+    }
+    if root.condition >= 3: Image {
+        x: root.condition == 5 ? sin(root.phase * 1rad) * 2px : 0px;
+        y: root.condition == 3 || root.condition == 4 ? sin(root.phase * 2rad) * 1.8px : 0px;
+        width: 42px; height: 42px;
+        source: root.condition == 3 ? @image-url("assets/rain.svg")
+              : root.condition == 4 ? @image-url("assets/snow.svg")
+              : root.condition == 5 ? @image-url("assets/fog.svg")
+              : @image-url("assets/bolt.svg");
+        colorize: root.condition == 6 ? Theme.warning : Theme.info;
+    }
+}
+
+component LcdClock inherits Rectangle {
+    in property <string> time;
+    in property <string> date;
+    in property <string> name;
+    in property <string> zone;
+    in property <int> count: 1;
+    in property <int> index: 0;
+    height: 104px;
+    private property <color> glow-wide: Theme.accent.transparentize(0.96);
+    private property <color> glow-near: Theme.accent.transparentize(0.87);
+    background: @linear-gradient(90deg, Theme.accent.transparentize(0.96), transparent);
+    Rectangle {
+        x: root.count == 1 ? 18px : 3px;
+        y: 22px; width: parent.width - 2 * self.x; height: 48px;
+        border-radius: 12px;
+        background: @linear-gradient(0deg, transparent, Theme.accent.transparentize(0.94), transparent);
+        for halo in [6px, 3px]: Text {
+            text: root.time; font-family: "DSEG7 Modern";
+            font-size: root.count == 1 ? 39px : root.count == 2 ? 22px : 16px;
+            width: parent.width; height: parent.height;
+            horizontal-alignment: center; vertical-alignment: center;
+            color: transparent;
+            stroke: halo > 3px ? root.glow-wide : root.glow-near;
+            stroke-width: root.count == 1 ? halo : halo / 3;
+        }
+        Text {
+            text: root.time; font-family: "DSEG7 Modern";
+            font-size: root.count == 1 ? 39px : root.count == 2 ? 22px : 16px;
+            width: parent.width; height: parent.height;
+            horizontal-alignment: center; vertical-alignment: center;
+            color: @linear-gradient(0deg, Theme.fg, Theme.accent);
+            accessible-role: text;
+            accessible-label: "Local time " + root.time;
+        }
+    }
+    Text {
+        x: 6px; y: 7px; width: parent.width - 12px; height: 18px;
+        text: root.name; color: Theme.fg; font-size: 11px; overflow: elide;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    Text {
+        y: 75px; width: parent.width; height: 16px;
+        text: root.date; color: Theme.fg-dim; font-size: 10px;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    Text {
+        y: 90px; width: parent.width; height: 12px;
+        text: root.zone; color: Theme.fg-dim; font-size: 9px;
+        horizontal-alignment: center; overflow: elide;
+    }
+    hover := TouchArea {}
+    if hover.has-hover: Rectangle {
+        x: root.index == root.count - 1 ? parent.width - self.width : 0px;
+        y: 104px; width: max(parent.width, 180px); height: 48px;
+        background: Theme.bg-light; border-radius: 5px; z: 10;
+        Text { text: root.name + "\n" + root.zone; color: Theme.fg;
+               x: 5px; width: parent.width - 10px; height: parent.height; wrap: word-wrap;
+               font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+    }
+}
+
+component OutlineButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    callback clicked();
+    width: 30px; height: 30px; border-radius: 7px;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+    border-width: keys.has-focus ? 1px : 0px; border-color: Theme.accent;
+    accessible-role: button; accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    Image { x: 6px; y: 6px; width: 18px; height: 18px;
+            source: root.icon; colorize: Theme.fg; }
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                keys.focus();
+                root.clicked();
+            }
+        }
+    }
+    if touch.has-hover || keys.has-focus: Rectangle {
+        x: -130px; y: 34px; width: 158px; height: 26px;
+        background: Theme.bg-light; border-radius: 5px; z: 10;
+        Text { text: root.label; color: Theme.fg; font-size: 11px;
+               horizontal-alignment: center; vertical-alignment: center; }
+    }
 }
 
 // ── IconBtn ───────────────────────────────────────────────────────────────────
@@ -105,6 +264,7 @@ component IconBtn inherits Rectangle {
 // ── PillBtn ───────────────────────────────────────────────────────────────────
 
 component PillBtn inherits Rectangle {
+    in property <bool> enabled: true;
     in property <string> label;
     in property <color>  bg-normal: Theme.bg-light;
     in property <color>  bg-hover:  Theme.accent;
@@ -113,12 +273,23 @@ component PillBtn inherits Rectangle {
     callback clicked();
 
     height: 30px; border-radius: 8px;
-    background: ta.has-hover ? root.bg-hover : root.bg-normal;
+    background: !root.enabled ? Theme.bg-lighter : ta.has-hover ? root.bg-hover : root.bg-normal;
+    accessible-role: button; accessible-label: root.label;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    border-width: keys.has-focus ? 1px : 0px; border-color: Theme.accent;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                if root.enabled { root.clicked(); } return accept;
+            }
+            return reject;
+        }
+    }
     HorizontalLayout {
         padding-left: 12px; padding-right: 12px;
         Text {
             text: root.label;
-            color: ta.has-hover ? root.fg-hover : root.fg-normal;
+            color: !root.enabled ? Theme.fg-dim : ta.has-hover ? root.fg-hover : root.fg-normal;
             font-size: 12px; font-weight: 600;
             horizontal-alignment: center; vertical-alignment: center;
             min-width: 40px;
@@ -127,7 +298,7 @@ component PillBtn inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: pointer;
         pointer-event(event) => {
-            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+            if (root.enabled && event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
                 root.clicked();
             }
         }
@@ -139,161 +310,177 @@ component PillBtn inherits Rectangle {
 
 // ── RecurrencePicker ──────────────────────────────────────────────────────────
 
-component RecurrencePicker inherits Rectangle {
-    in-out property <int> selected-idx: 0;
-    out property <bool> open: false;
-    private property <[string]> options: [
-        "Does not repeat","Daily","Weekly","Every 2 weeks","Monthly","Yearly",
-    ];
+export struct TimeJumpMatch { query: string, index: int, message: string }
+export global TimeJump {
+    pure callback is-input(string) -> bool;
+    pure callback edit(string, string, bool) -> TimeJumpMatch;
+}
 
-    height: 32px; border-radius: 6px; background: Theme.bg-lighter; clip: false;
+component ChoicePicker inherits Rectangle {
+    in property <bool> time-typeahead: false;
+    in property <int> count;
+    in property <int> selected-index;
+    in property <string> label;
+    in property <string> value;
+    private property <int> highlighted;
+    private property <string> query;
+    private property <string> match-message: "Type 21:30; Enter selects";
+    private property <duration> last-key: 0ms;
+    pure callback item-text(int) -> string;
+    callback selected(int);
+    public function open-popup() {
+        field-keys.focus();
+        root.query = "";
+        root.match-message = "Type 21:30; Enter selects";
+        root.highlighted = root.selected-index;
+        popup.show();
+    }
+    function type-key(text: string, backspace: bool) {
+        let result = TimeJump.edit(animation-tick() - root.last-key > 1500ms ? "" : root.query, text, backspace);
+        root.last-key = animation-tick();
+        root.query = result.query;
+        root.highlighted = result.query == "" ? root.selected-index : result.index;
+        root.match-message = result.message;
+    }
+    height: 32px; border-radius: 6px; background: Theme.bg-lighter;
+    accessible-role: button; accessible-label: root.label + ": " + root.value;
+    accessible-action-default => { root.open-popup(); }
+    forward-focus: field-keys;
+    border-width: field-keys.has-focus ? 1px : 0px; border-color: Theme.accent;
+    field-keys := FocusScope {
+        key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta { return reject; }
+            if root.time-typeahead && TimeJump.is-input(event.text) {
+                root.open-popup();
+                root.type-key(event.text, false);
+                return accept;
+            }
+            if event.text == Key.Return || event.text == " " || event.text == Key.DownArrow
+                || event.text == Key.UpArrow || event.text == Key.Home || event.text == Key.End {
+                root.open-popup();
+                if event.text == Key.Home { root.highlighted = 0; }
+                if event.text == Key.End { root.highlighted = root.count - 1; }
+                return accept;
+            }
+            return reject;
+        }
+    }
     HorizontalLayout {
         padding-left: 10px; padding-right: 6px;
-        Text { horizontal-stretch: 1; text: root.options[root.selected-idx];
+        Text { horizontal-stretch: 1; text: root.value;
                color: Theme.fg; font-size: 12px; vertical-alignment: center; }
-        Text { text: root.open ? "\u{25B2}" : "\u{25BC}";
+        Text { text: "\u{25BC}";
                color: Theme.fg-dim; font-size: 9px; vertical-alignment: center; }
     }
-    TouchArea { mouse-cursor: pointer; clicked => { root.open = !root.open; } }
-    if root.open: Rectangle {
-        x: 0px; y: 34px; width: parent.width; height: 6 * 32px;
+    TouchArea { mouse-cursor: pointer; clicked => { root.open-popup(); } }
+    popup := PopupWindow {
+        x: 0px; y: 34px;
+        width: root.time-typeahead ? max(210px, root.width) : root.width;
+        height: min(240px, root.count * 28px) + (root.time-typeahead ? 36px : 0px);
+        close-policy: close-on-click-outside;
+        Rectangle {
         border-radius: 6px; background: Theme.bg-lighter;
-        drop-shadow-blur: 8px; drop-shadow-color: #00000055; z: 100;
+        border-width: 1px; border-color: Theme.accent;
+        clip: true;
+        forward-focus: popup-keys;
+        popup-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { popup.close(); return accept; }
+                if event.text == Key.Tab { popup.close(); return reject; }
+                if event.modifiers.control || event.modifiers.alt || event.modifiers.meta { return reject; }
+                let cursor = root.highlighted < 0 ? root.selected-index : root.highlighted;
+                if event.text == Key.UpArrow {
+                    root.query = ""; root.highlighted = max(0, cursor - 1);
+                } else if event.text == Key.DownArrow {
+                    root.query = ""; root.highlighted = min(root.count - 1, cursor + 1);
+                } else if event.text == Key.Home {
+                    root.query = ""; root.highlighted = 0;
+                } else if event.text == Key.End {
+                    root.query = ""; root.highlighted = root.count - 1;
+                } else if event.text == Key.Return || event.text == " " {
+                    if root.highlighted >= 0 { root.selected(root.highlighted); popup.close(); }
+                    return accept;
+                } else if root.time-typeahead && (TimeJump.is-input(event.text) || event.text == Key.Backspace) {
+                    root.type-key(event.text, event.text == Key.Backspace);
+                } else {
+                    return reject;
+                }
+                if root.highlighted >= 0 {
+                    choices.viewport-y = -max(0px, min(root.highlighted * 28px - 84px, root.count * 28px - choices.height));
+                }
+                return accept;
+            }
+        }
+        choices := Flickable {
+        y: 0px;
+        height: parent.height - (root.time-typeahead ? 36px : 0px);
+        viewport-width: self.width;
+        viewport-y: -max(0px, min((root.highlighted < 0 ? root.selected-index : root.highlighted) * 28px - 84px, root.count * 28px - self.height));
         VerticalLayout {
-            for opt[i] in root.options: Rectangle {
-                height: 32px; border-radius: 4px;
+            spacing: 0px;
+            for i in root.count: Rectangle {
+                height: 28px; border-radius: 4px;
                 background: r.has-hover ? Theme.bg-light
-                          : (root.selected-idx == i ? Theme.accent.transparentize(0.7) : transparent);
+                          : (root.highlighted == i ? Theme.accent.transparentize(0.7) : transparent);
                 r := TouchArea { mouse-cursor: pointer;
-                    clicked => { root.selected-idx = i; root.open = false; } }
-                Text { x: 10px; text: opt;
-                       color: root.selected-idx == i ? Theme.accent : Theme.fg;
+                    clicked => { root.selected(i); popup.close(); } }
+                Text { x: 10px; text: root.item-text(i);
+                       color: root.highlighted == i ? Theme.accent : Theme.fg;
                        font-size: 12px; vertical-alignment: center; }
+            }
+        }
+        }
+            if root.time-typeahead: Text {
+                y: parent.height - 36px; x: 6px; width: parent.width - 12px; height: 36px;
+                text: root.query == "" ? "Type 21:30; Enter selects" : root.match-message;
+                color: root.highlighted < 0 ? Theme.danger : Theme.fg;
+                font-size: 10px; wrap: word-wrap; vertical-alignment: center;
             }
         }
     }
 }
 
-// ── ReminderPicker ────────────────────────────────────────────────────────────
-
-component ReminderPicker inherits Rectangle {
+component RecurrencePicker inherits ChoicePicker {
     in-out property <int> selected-idx: 0;
-    out property <bool> open: false;
+    private property <[string]> options: [
+        "Does not repeat","Daily","Weekly","Every 2 weeks","Monthly","Yearly",
+    ];
+    count: options.length; selected-index: selected-idx;
+    label: "Repeat"; value: options[selected-idx];
+    item-text(i) => { options[i] }
+    selected(i) => { root.selected-idx = i; }
+}
+
+component ReminderPicker inherits ChoicePicker {
+    in-out property <int> selected-idx: 0;
     private property <[string]> options: [
         "No reminder","15 minutes before","30 minutes before",
         "1 hour before","8 hours before","24 hours before",
     ];
 
-    height: 32px; border-radius: 6px; background: Theme.bg-lighter; clip: false;
-    HorizontalLayout {
-        padding-left: 10px; padding-right: 6px;
-        Text { horizontal-stretch: 1; text: root.options[root.selected-idx];
-               color: Theme.fg; font-size: 12px; vertical-alignment: center; }
-        Text { text: root.open ? "\u{25B2}" : "\u{25BC}";
-               color: Theme.fg-dim; font-size: 9px; vertical-alignment: center; }
-    }
-    TouchArea { mouse-cursor: pointer; clicked => { root.open = !root.open; } }
-    if root.open: Rectangle {
-        x: 0px; y: 34px; width: parent.width; height: 6 * 32px;
-        border-radius: 6px; background: Theme.bg-lighter;
-        drop-shadow-blur: 8px; drop-shadow-color: #00000055; z: 100;
-        VerticalLayout {
-            for opt[i] in root.options: Rectangle {
-                height: 32px; border-radius: 4px;
-                background: r.has-hover ? Theme.bg-light
-                          : (root.selected-idx == i ? Theme.accent.transparentize(0.7) : transparent);
-                r := TouchArea { mouse-cursor: pointer;
-                    clicked => { root.selected-idx = i; root.open = false; } }
-                Text { x: 10px; text: opt;
-                       color: root.selected-idx == i ? Theme.accent : Theme.fg;
-                       font-size: 12px; vertical-alignment: center; }
-            }
-        }
-    }
+    count: options.length; selected-index: selected-idx;
+    label: "Reminder"; value: options[selected-idx];
+    item-text(i) => { options[i] }
+    selected(i) => { root.selected-idx = i; }
 }
 
-// ── TimePicker ────────────────────────────────────────────────────────────────
-// Dropdown of 15-minute slots (96 entries: 00:00, 00:15, …, 23:45). Bound to
-// two ints so the existing Rust wiring (form-start-h/m, form-end-h/m) stays
-// intact — no Rust changes required for the picker upgrade.
-//
-// Design notes:
-//   * We keep the two int props (hour, minute) as the source of truth. On any
-//     selection we split the 15-min slot index back into H and M so callers
-//     receive whole numbers, matching how chrono::NaiveTime is constructed in
-//     save_event().
-//   * The list shows the CURRENT slot highlighted regardless of whether the
-//     underlying minute value snaps to 15. If the model has 09:07 (from an
-//     import), we round to the nearest slot for the highlight but leave the
-//     underlying value alone until the user picks something.
-//   * `commit()` is a no-op so EventForm's existing sh.commit()/sm.commit()
-//     chain keeps compiling without special-casing.
-component TimePicker inherits Rectangle {
+component TimePicker inherits ChoicePicker {
+    time-typeahead: true;
     in-out property <int> hour: 9;
     in-out property <int> minute: 0;
-    out property <bool> open: false;
-
-    // Nearest 15-min slot for the current (h,m) — used to scroll+highlight.
-    private property <int> current-slot: (root.hour * 60 + root.minute + 7) / 15;
-
-    public function commit() { /* no-op: dropdown selections write immediately */ }
-
-    height: 32px; width: 92px; border-radius: 6px;
-    background: Theme.bg-lighter; clip: false;
-
-    HorizontalLayout {
-        padding-left: 10px; padding-right: 8px;
-        Text {
-            horizontal-stretch: 1;
-            text: (root.hour < 10 ? "0" : "") + root.hour
-                + ":"
-                + (root.minute < 10 ? "0" : "") + root.minute;
-            color: Theme.fg; font-size: 13px; font-weight: 600;
-            vertical-alignment: center;
-        }
-        Text { text: root.open ? "\u{25B2}" : "\u{25BC}";
-               color: Theme.fg-dim; font-size: 9px; vertical-alignment: center; }
+    callback changed();
+    width: 100px; count: 288;
+    selected-index: min(287, floor((hour * 60 + minute) / 5));
+    value: (hour < 10 ? "0" : "") + hour + ":" + (minute < 10 ? "0" : "") + minute;
+    item-text(i) => {
+        (floor(i / 12) < 10 ? "0" : "") + floor(i / 12) + ":"
+        + (mod(i, 12) * 5 < 10 ? "0" : "") + (mod(i, 12) * 5)
     }
-    TouchArea { mouse-cursor: pointer; clicked => { root.open = !root.open; } }
-
-    if root.open: Rectangle {
-        // 96 slots × 26px = 2496px total. Cap the popup at 240px and let the
-        // Flickable scroll. Position it below the field with a tiny gap.
-        x: 0px; y: 34px; width: parent.width; height: 240px;
-        border-radius: 6px; background: Theme.bg-lighter;
-        drop-shadow-blur: 8px; drop-shadow-color: #00000055; z: 100;
-        clip: true;
-
-        fl := Flickable {
-            // Auto-scroll so the current slot is roughly centered.
-            viewport-y: -1phx * max(0, root.current-slot * 26 - 100);
-            VerticalLayout {
-                for slot-i in 96: Rectangle {
-                    height: 26px; border-radius: 4px;
-                    background: sr.has-hover ? Theme.bg-light
-                              : (root.current-slot == slot-i
-                                  ? Theme.accent.transparentize(0.7)
-                                  : transparent);
-                    sr := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.hour = floor(slot-i / 4);
-                            root.minute = mod(slot-i, 4) * 15;
-                            root.open = false;
-                        }
-                    }
-                    Text {
-                        x: 10px;
-                        text: (floor(slot-i / 4) < 10 ? "0" : "") + floor(slot-i / 4)
-                            + ":"
-                            + (mod(slot-i, 4) * 15 < 10 ? "0" : "") + (mod(slot-i, 4) * 15);
-                        color: root.current-slot == slot-i ? Theme.accent : Theme.fg;
-                        font-size: 12px; font-weight: 600;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-        }
+    selected(i) => {
+        root.hour = floor(i / 12);
+        root.minute = mod(i, 12) * 5;
+        root.changed();
     }
 }
 
@@ -309,11 +496,12 @@ component TimePicker inherits Rectangle {
 // each time the popup opens so the calendar always lands on the currently
 // selected month even after the user cancels and reopens the form.
 component DatePicker inherits Rectangle {
+    in property <string> label: "Date";
     in-out property <int> year:  2026;
     in-out property <int> month: 1;
     in-out property <int> day:   1;
     in-out property <bool> invalid: false;
-    out property <bool> open: false;
+    callback changed();
 
     private property <[string]> month-names: [
         "January","February","March","April","May","June",
@@ -323,6 +511,27 @@ component DatePicker inherits Rectangle {
     // Local view state — only used while popup is open. Initialized on open.
     in-out property <int> view-year:  year;
     in-out property <int> view-month: month;
+    private property <int> cursor-day: day;
+    public function open-popup() {
+        root.view-year = root.year;
+        root.view-month = root.month;
+        root.cursor-day = root.day;
+        popup.show();
+    }
+    function choose-day(d: int) {
+        root.year = root.view-year;
+        root.month = root.view-month;
+        root.day = d;
+        root.invalid = false;
+        root.changed();
+        popup.close();
+    }
+    function move-month(delta: int) {
+        root.view-month += delta;
+        if root.view-month < 1 { root.view-month = 12; root.view-year -= 1; }
+        if root.view-month > 12 { root.view-month = 1; root.view-year += 1; }
+        root.cursor-day = min(root.cursor-day, root.days-in-month(root.view-year, root.view-month));
+    }
 
     pure function is-leap(y: int) -> bool {
         (mod(y, 4) == 0 && mod(y, 100) != 0) || mod(y, 400) == 0
@@ -345,7 +554,7 @@ component DatePicker inherits Rectangle {
     // the given month. Used to pad the grid so Mon is column 0.
     pure function first-weekday(y: int, m: int) -> int {
         // Zeller treats Jan/Feb as months 13/14 of the previous year
-        mod(mod(1 + floor((13 * (m <= 2 ? m + 12 : m) + 1) / 5)
+        mod(mod(1 + floor((13 * ((m <= 2 ? m + 12 : m) + 1)) / 5)
                 + (m <= 2 ? y - 1 : y)
                 + floor((m <= 2 ? y - 1 : y) / 4)
                 - floor((m <= 2 ? y - 1 : y) / 100)
@@ -360,6 +569,18 @@ component DatePicker inherits Rectangle {
     background: Theme.bg-lighter; clip: false;
     border-width: root.invalid ? 1px : 0px;
     border-color: root.invalid ? Theme.danger : transparent;
+    accessible-role: button;
+    accessible-label: root.label + ": " + root.year + "-" + pad2(root.month) + "-" + pad2(root.day);
+    accessible-action-default => { root.open-popup(); }
+    forward-focus: field-keys;
+    field-keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.open-popup(); return accept;
+            }
+            return reject;
+        }
+    }
 
     HorizontalLayout {
         padding-left: 10px; padding-right: 8px;
@@ -379,18 +600,41 @@ component DatePicker inherits Rectangle {
     TouchArea {
         mouse-cursor: pointer;
         clicked => {
-            // Snap the popup's view to whatever the ints currently say.
-            root.view-year  = root.year;
-            root.view-month = root.month;
-            root.open = !root.open;
+            root.open-popup();
         }
     }
 
-    if root.open: Rectangle {
+    popup := PopupWindow {
         x: 0px; y: 34px; width: 240px; height: 260px;
+        close-policy: close-on-click-outside;
+        Rectangle {
         border-radius: 8px; background: Theme.bg-lighter;
-        drop-shadow-blur: 12px; drop-shadow-color: #00000077; z: 100;
+        border-width: 1px; border-color: Theme.accent;
         clip: true;
+        forward-focus: popup-keys;
+        popup-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { popup.close(); return accept; }
+                if event.text == Key.PageUp || event.text == Key.PageDown {
+                    root.move-month(event.text == Key.PageUp ? -1 : 1); return accept;
+                }
+                if event.text == Key.Return || event.text == " " {
+                    root.choose-day(min(root.cursor-day, root.days-in-month(root.view-year, root.view-month)));
+                    return accept;
+                }
+                if event.text == Key.LeftArrow || event.text == Key.UpArrow {
+                    root.cursor-day = max(1, root.cursor-day - (event.text == Key.UpArrow ? 7 : 1));
+                    return accept;
+                }
+                if event.text == Key.RightArrow || event.text == Key.DownArrow {
+                    root.cursor-day = min(root.days-in-month(root.view-year, root.view-month),
+                        root.cursor-day + (event.text == Key.DownArrow ? 7 : 1));
+                    return accept;
+                }
+                return reject;
+            }
+        }
 
         VerticalLayout {
             padding: 8px; spacing: 4px;
@@ -407,12 +651,7 @@ component DatePicker inherits Rectangle {
                     pv := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
-                            if (root.view-month <= 1) {
-                                root.view-month = 12;
-                                root.view-year = root.view-year - 1;
-                            } else {
-                                root.view-month = root.view-month - 1;
-                            }
+                            root.move-month(-1);
                         }
                     }
                 }
@@ -431,12 +670,7 @@ component DatePicker inherits Rectangle {
                     nx := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
-                            if (root.view-month >= 12) {
-                                root.view-month = 1;
-                                root.view-year = root.view-year + 1;
-                            } else {
-                                root.view-month = root.view-month + 1;
-                            }
+                            root.move-month(1);
                         }
                     }
                 }
@@ -471,9 +705,7 @@ component DatePicker inherits Rectangle {
                                         - first-weekday(view-year, view-month) + 1);
                     private property <bool> is-selected:
                         cell-day > 0
-                        && view-year  == root.year
-                        && view-month == root.month
-                        && cell-day   == root.day;
+                        && cell-day == root.cursor-day;
 
                     Rectangle {
                         x: (parent.width - 24px)/2; y: (parent.height - 24px)/2;
@@ -493,11 +725,8 @@ component DatePicker inherits Rectangle {
                         visible: parent.cell-day > 0;
                         mouse-cursor: pointer;
                         clicked => {
-                            root.year  = root.view-year;
-                            root.month = root.view-month;
-                            root.day   = parent.cell-day;
-                            root.invalid = false;
-                            root.open = false;
+                            root.choose-day(parent.cell-day);
+                        }
                         }
                     }
                 }
@@ -514,7 +743,7 @@ component MiniMonthGrid inherits Rectangle {
     // Fired when user clicks a day from the previous (-1) or next (+1) month
     callback other-month-clicked(/* offset */ int, /* day */ int);
 
-    private property <length> cw: 30px;
+    private property <length> cw: root.width / 7;
     private property <length> ch: 28px;
 
     VerticalLayout {
@@ -531,6 +760,15 @@ component MiniMonthGrid inherits Rectangle {
             for ci in [0,1,2,3,4,5,6]: Rectangle {
                 private property <DayCell> cell: root.cells[ri * 7 + ci];
                 width: root.cw; height: root.ch;
+                accessible-role: button;
+                accessible-label: (cell.is-today ? "Today, " : "") + cell.day
+                    + (cell.is-selected ? ", selected" : "")
+                    + (cell.is-other-month ? (cell.month-offset < 0 ? ", previous month" : ", next month") : "")
+                    + ", " + cell.event-count + " events";
+                accessible-action-default => {
+                    if cell.is-other-month { root.other-month-clicked(cell.month-offset, cell.day); }
+                    else { root.day-clicked(cell.day); }
+                }
                 Rectangle {
                     private property <length> csz: 22px;
                     x: (parent.width - csz)/2; y: (parent.height - csz)/2;
@@ -552,10 +790,11 @@ component MiniMonthGrid inherits Rectangle {
                     font-weight: (cell.is-today || cell.has-events) ? 700 : 400;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
-                if cell.has-events && !cell.is-selected && !cell.is-other-month: Rectangle {
-                    x: (parent.width - 4px)/2; y: parent.height - 5px;
-                    width: 4px; height: 4px; border-radius: 2px;
-                    background: cell.is-today ? Theme.bg : Theme.accent;
+                if cell.has-events: Rectangle {
+                    x: (parent.width - 26px)/2; y: (parent.height - 26px)/2;
+                    width: 26px; height: 26px; border-radius: 13px;
+                    background: transparent; border-width: 1.5px;
+                    border-color: cell.is-other-month ? Theme.fg-dim : Theme.fg;
                 }
                 dt := TouchArea {
                     visible: cell.day > 0; mouse-cursor: pointer;
@@ -576,14 +815,19 @@ component MiniMonthGrid inherits Rectangle {
 
 component BigDayCell inherits Rectangle {
     in property <DayCell> cell;
+    in property <length> allocated-height: 70px;
+    private property <int> visible-count: DetailsGrid.capacity(root.allocated-height, cell.events.length);
+    private property <int> first-visible: DetailsGrid.first-visible(
+        cell.events.length, cell.first-upcoming, self.visible-count, cell.is-today
+    );
+    private property <int> hidden-count: cell.events.length - self.visible-count;
     callback cell-clicked(int);
     callback other-month-clicked(/* offset */ int, /* day */ int);
     callback add-clicked(int);
     callback event-clicked(/* day */ int, /* event-id */ int);
 
     vertical-stretch: 1;
-    preferred-height: 0px;
-    min-height: 0px;
+    height: root.allocated-height;
     border-width: 1px; border-color: Theme.bg-lighter;
     background: cell.is-today    ? Theme.accent.transparentize(0.91)
               : cell.is-selected ? Theme.accent.transparentize(0.82)
@@ -594,12 +838,14 @@ component BigDayCell inherits Rectangle {
     // Full-cell click target — covers entire day square
     cell-ta := TouchArea {
         mouse-cursor: pointer;
-        clicked => {
+        pointer-event(event) => {
+          if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
             if (root.cell.is-other-month) {
                 root.other-month-clicked(root.cell.month-offset, root.cell.day);
             } else if (root.cell.day > 0) {
                 root.cell-clicked(root.cell.day);
             }
+          }
         }
     }
 
@@ -615,6 +861,20 @@ component BigDayCell inherits Rectangle {
                 background: (!cell.is-other-month && cell.is-selected) ? Theme.accent
                           : (!cell.is-other-month && cell.is-today)    ? Theme.accent
                           : transparent;
+                accessible-role: button;
+                accessible-label: (cell.is-today ? "Today, " : "") + cell.day
+                    + (cell.is-selected ? ", selected" : "")
+                    + (cell.is-other-month ? (cell.month-offset < 0 ? ", previous month" : ", next month") : "")
+                    + ", " + cell.event-count + " events";
+                accessible-action-default => {
+                    if cell.is-other-month { root.other-month-clicked(cell.month-offset, cell.day); }
+                    else { root.cell-clicked(cell.day); }
+                }
+                if cell.has-events: Rectangle {
+                    x: -2px; y: -2px; width: 26px; height: 26px; border-radius: 13px;
+                    background: transparent; border-width: 1.5px;
+                    border-color: cell.is-other-month ? Theme.fg-dim : Theme.fg;
+                }
                 Text {
                     text: cell.day > 0 ? "" + cell.day : "";
                     color: cell.is-other-month ? Theme.fg-dim
@@ -637,58 +897,54 @@ component BigDayCell inherits Rectangle {
                 }
                 add-ta := TouchArea {
                     mouse-cursor: pointer;
-                    clicked => { if (root.cell.day > 0) { root.add-clicked(root.cell.day); } }
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.up
+                            && root.cell.day > 0 { root.add-clicked(root.cell.day); }
+                    }
                 }
             }
         }
 
-        // Event pills — up to 3, embedded directly in DayCell struct
-        if cell.ev1-title != "": Rectangle {
+        // Real event rows: larger cells reveal more rows without requerying.
+        for index in root.visible-count: Rectangle {
+            private property <GridEvent> event: root.cell.events[root.first-visible + index];
             height: 15px; border-radius: 3px;
-            background: ev1-ta.has-hover ? Theme.accent.transparentize(0.35) : Theme.accent.transparentize(0.55);
-            ev1-ta := TouchArea {
+            background: event-ta.has-hover ? Theme.accent.transparentize(0.35) : Theme.accent.transparentize(0.55);
+            accessible-role: button;
+            accessible-label: self.event.time-label + " " + self.event.title;
+            event-ta := TouchArea {
                 mouse-cursor: pointer;
-                clicked => { root.event-clicked(root.cell.day, root.cell.ev1-id); }
+                pointer-event(input) => {
+                    if input.button == PointerEventButton.left && input.kind == PointerEventKind.up {
+                        root.event-clicked(root.cell.day, parent.event.id);
+                    }
+                }
             }
             Text {
                 x: 4px; width: parent.width - 8px; height: parent.height;
-                text: cell.ev1-time != "" ? cell.ev1-time + " " + cell.ev1-title : cell.ev1-title;
+                text: parent.event.time-label != ""
+                    ? parent.event.time-label + " " + parent.event.title : parent.event.title;
                 color: Theme.fg; font-size: 9px; overflow: elide;
                 vertical-alignment: center;
             }
         }
-        if cell.ev2-title != "": Rectangle {
-            height: 15px; border-radius: 3px;
-            background: ev2-ta.has-hover ? Theme.accent.transparentize(0.35) : Theme.accent.transparentize(0.55);
-            ev2-ta := TouchArea {
+        if root.hidden-count > 0: Rectangle {
+            height: 14px;
+            accessible-role: button;
+            accessible-label: "Show " + root.hidden-count + " more events";
+            TouchArea {
                 mouse-cursor: pointer;
-                clicked => { root.event-clicked(root.cell.day, root.cell.ev2-id); }
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.cell-clicked(root.cell.day);
+                    }
+                }
             }
             Text {
-                x: 4px; width: parent.width - 8px; height: parent.height;
-                text: cell.ev2-time != "" ? cell.ev2-time + " " + cell.ev2-title : cell.ev2-title;
-                color: Theme.fg; font-size: 9px; overflow: elide;
-                vertical-alignment: center;
+                text: "+" + root.hidden-count + " more";
+                color: Theme.fg-dim; font-size: 9px;
+                height: parent.height; vertical-alignment: center;
             }
-        }
-        if cell.ev3-title != "": Rectangle {
-            height: 15px; border-radius: 3px;
-            background: ev3-ta.has-hover ? Theme.accent.transparentize(0.35) : Theme.accent.transparentize(0.55);
-            ev3-ta := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.event-clicked(root.cell.day, root.cell.ev3-id); }
-            }
-            Text {
-                x: 4px; width: parent.width - 8px; height: parent.height;
-                text: cell.ev3-time != "" ? cell.ev3-time + " " + cell.ev3-title : cell.ev3-title;
-                color: Theme.fg; font-size: 9px; overflow: elide;
-                vertical-alignment: center;
-            }
-        }
-
-        if cell.event-count > 3: Text {
-            text: "+" + (cell.event-count - 3) + " more";
-            color: Theme.fg-dim; font-size: 9px;
         }
     }
 }
@@ -771,6 +1027,12 @@ component EventForm inherits Rectangle {
     in-out property <int>    form-year:   2026;
     in-out property <int>    form-month:     1;
     in-out property <int>    form-day:       1;
+    in-out property <int>    form-end-year: 2026;
+    in-out property <int>    form-end-month: 1;
+    in-out property <int>    form-end-day: 1;
+    in property <string> form-error;
+    in property <bool> form-valid: true;
+    callback interval-changed(bool);
     callback save();
     callback cancel();
 
@@ -781,6 +1043,7 @@ component EventForm inherits Rectangle {
     drop-shadow-blur: 32px;
     drop-shadow-color: #000000aa;
     clip: true;
+    TouchArea { clicked => { } }
 
     VerticalLayout {
         padding: 0px; spacing: 0px;
@@ -808,7 +1071,10 @@ component EventForm inherits Rectangle {
         Rectangle { height: 1px; background: Theme.bg-lighter; }
 
         // ── Form body ───────────────────────────────────────────────────
+        Flickable {
+        viewport-width: self.width;
         VerticalLayout {
+            width: parent.width;
             padding: 10px; spacing: 6px; alignment: start;
 
             // Title
@@ -847,7 +1113,10 @@ component EventForm inherits Rectangle {
                 Rectangle {
                     width: 38px; height: 20px; border-radius: 10px;
                     background: root.form-all-day ? Theme.accent : Theme.bg-lighter;
-                    TouchArea { mouse-cursor: pointer; clicked => { root.form-all-day = !root.form-all-day; } }
+                    TouchArea { mouse-cursor: pointer; clicked => {
+                        root.form-all-day = !root.form-all-day;
+                        root.interval-changed(!root.form-all-day);
+                    } }
                     Rectangle {
                         x: root.form-all-day ? 19px : 2px; y: 2px;
                         width: 16px; height: 16px; border-radius: 8px;
@@ -863,10 +1132,12 @@ component EventForm inherits Rectangle {
                 spacing: 2px;
                 Text { text: "Date"; color: Theme.fg-dim; font-size: 11px; font-weight: 600; }
                 DatePicker {
+                    label: "Start date";
                     year   <=> root.form-year;
                     month  <=> root.form-month;
                     day    <=> root.form-day;
                     invalid <=> root.form-date-invalid;
+                    changed => { root.interval-changed(true); }
                 }
                 if root.form-date-invalid: Text {
                     text: "Invalid date (use YYYY-MM-DD)";
@@ -888,8 +1159,10 @@ component EventForm inherits Rectangle {
                         vertical-alignment: center;
                     }
                     sh := TimePicker {
+                        label: "Start time";
                         hour   <=> root.form-start-h;
                         minute <=> root.form-start-m;
+                        changed => { root.interval-changed(true); }
                     }
                 }
 
@@ -902,9 +1175,19 @@ component EventForm inherits Rectangle {
                         vertical-alignment: center;
                     }
                     eh := TimePicker {
+                        label: "End time";
                         hour   <=> root.form-end-h;
                         minute <=> root.form-end-m;
+                        changed => { root.interval-changed(false); }
                     }
+                }
+                Text { text: "End date"; color: Theme.fg-dim; font-size: 11px; font-weight: 600; }
+                DatePicker {
+                    label: "End date";
+                    year <=> root.form-end-year;
+                    month <=> root.form-end-month;
+                    day <=> root.form-end-day;
+                    changed => { root.interval-changed(false); }
                 }
             }
 
@@ -922,8 +1205,13 @@ component EventForm inherits Rectangle {
                 ReminderPicker { selected-idx <=> root.form-alert-idx; }
             }
         }
+        }
 
         Rectangle { height: 1px; background: Theme.bg-lighter; }
+        if root.form-error != "": Text {
+            text: root.form-error; color: Theme.danger; font-size: 11px;
+            wrap: word-wrap; min-height: 32px;
+        }
 
         // ── Footer buttons ──────────────────────────────────────────────
         Rectangle {
@@ -932,6 +1220,7 @@ component EventForm inherits Rectangle {
                 padding-left: 10px; padding-right: 10px; spacing: 8px; alignment: end;
                 PillBtn { label: "Cancel"; clicked => { root.cancel(); } }
                 PillBtn {
+                    enabled: root.form-title != "" && root.form-valid;
                     label: root.editing-id >= 0 ? "Save" : "Create";
                     bg-normal: Theme.accent; fg-normal: Theme.bg;
                     bg-hover: Theme.accent.darker(0.1); fg-hover: Theme.bg;
@@ -957,17 +1246,27 @@ export component MainWindow inherits Window {
     // immediately when is-details flips, which races set_size and makes the
     // window disappear or refuse to expand on the first click.
     min-width:  Sizes.compact-w * 1px;
-    min-height: Sizes.compact-h * 1px;
+    min-height: 320px;
+    preferred-width: (root.is-details ? Sizes.details-w : Sizes.compact-w) * 1px;
+    preferred-height: (root.is-details ? Sizes.details-h : Sizes.compact-h) * 1px;
 
     // State
     in-out property <bool>   is-details:          false;
-    // True when this process is the standalone details window (spawned via
-    // `smpl-calendar --details`). Hides the "collapse to compact" button in
-    // the details header — there's no compact popup to return to.
+    in-out property <bool> details-maximized: false;
+    out property <float> details-cell-height: max(70px, (self.height - 78px) / 6) / 1px;
+    public pure function details-visible-count(index: int) -> int {
+        return DetailsGrid.capacity(root.details-cell-height * 1px, root.day-cells[index].events.length);
+    }
+    public pure function details-first-visible(index: int) -> int {
+        let cell = root.day-cells[index];
+        return DetailsGrid.first-visible(
+            cell.events.length, cell.first-upcoming, root.details-visible-count(index), cell.is-today
+        );
+    }
+    // True for a separately launched smpl-calendar --details process.
     in-out property <bool>   is-standalone:       false;
-    // Set to true by Rust after expand transition is fully settled.
-    // Prevents phantom close-details from pointer events during resize.
-    in-out property <bool>   can-collapse:        false;
+    in-out property <bool> navigation-busy: false;
+    in-out property <string> navigation-status;
     in-out property <int>    year:                2026;
     in-out property <int>    month:               3;
     in-out property <string> month-name:          "March 2026";
@@ -976,6 +1275,27 @@ export component MainWindow inherits Window {
 
     in-out property <[DayCell]>  day-cells:        [];
     in-out property <[CalEvent]> day-events:        [];
+    in-out property <[CalEvent]> compact-agenda: [];
+    in-out property <int> agenda-scroll-request: 0;
+    in-out property <bool> agenda-scroll-pending: false;
+    in-out property <length> agenda-scroll-y: 0px;
+    in-out property <length> agenda-page-scroll-y: 0px;
+    in-out property <[ClockItem]> clocks: [];
+    in-out property <bool> show-preferences: false;
+    in-out property <string> city-query;
+    in-out property <[string]> city-results: [];
+    in-out property <[string]> configured-cities: [];
+    in-out property <int> primary-city: 0;
+    in-out property <bool> fahrenheit: false;
+    in-out property <bool> city-busy: false;
+    in-out property <string> city-status: "Search online to add up to three city clocks.";
+    in-out property <string> weather-location: "7-day forecast";
+    in-out property <string> weather-status: "Weather not configured";
+    in-out property <string> weather-message: "Choose your primary city in Clock & weather settings.";
+    in-out property <[ForecastDay]> forecast: [];
+    in-out property <bool> animate-weather: false;
+    private property <float> weather-phase: root.animate-weather && !root.is-details && !root.show-preferences
+        ? animation-tick() / 1000ms : 0;
 
     // Current time tracking (for "now" line in day panel)
     in-out property <bool>   is-today-selected:  false;
@@ -991,6 +1311,12 @@ export component MainWindow inherits Window {
     in-out property <int>    form-start-m:     0;
     in-out property <int>    form-end-h:       10;
     in-out property <int>    form-end-m:        0;
+    in-out property <int> form-end-year: 2026;
+    in-out property <int> form-end-month: 1;
+    in-out property <int> form-end-day: 1;
+    in-out property <string> form-error;
+    in-out property <bool> form-valid: true;
+    callback form-interval-changed(bool);
     in-out property <bool>   form-all-day:    false;
     in-out property <int>    form-rec-idx:      0;
     in-out property <int>    form-alert-idx:    0;
@@ -1004,6 +1330,12 @@ export component MainWindow inherits Window {
 
     // Callbacks
     callback prev-month();
+    callback search-city();
+    callback cancel-city-search();
+    callback add-city(int);
+    callback remove-city(int);
+    callback select-primary(int);
+    callback set-fahrenheit(bool);
     callback next-month();
     callback select-day(int);
     callback open-details();
@@ -1020,23 +1352,111 @@ export component MainWindow inherits Window {
     // (mouse-x - pressed-x). Rust side calls set_position() to move the window.
     // This works on X11 and Wayland without needing a compositor float rule.
     callback move-window(float, float);
-    // Window resize: receives (dx, dy, edge) from edge TouchAreas.
+    // Native resize starts on pointer-down, using the current compositor serial.
     // edge: 0=top, 1=right, 2=bottom, 3=left, 4=top-left, 5=top-right, 6=bottom-left, 7=bottom-right
-    callback resize-window(float, float, int);
+    callback resize-window(int);
+    callback toggle-details-maximized();
+
+    if !root.is-details && root.show-preferences: Flickable {
+      viewport-width: self.width;
+      VerticalLayout {
+        width: root.width; height: max(root.height, 610px);
+        padding: 14px; spacing: 12px;
+        HorizontalLayout {
+            height: 32px;
+            Text { text: "Clock & weather"; color: Theme.fg; font-size: 17px;
+                   font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+            PillBtn { label: "Done"; clicked => { root.cancel-city-search(); root.show-preferences = false; } }
+        }
+        Text { text: "WORLD CLOCKS"; color: Theme.fg-dim; font-size: 10px; letter-spacing: 1px; }
+        Text {
+            text: root.configured-cities.length == 0
+                ? "Your local clock is shown until you add a city."
+                : "The primary city supplies the forecast. Up to 3 clocks.";
+            color: Theme.fg-dim; font-size: 12px; wrap: word-wrap;
+        }
+        for city[i] in root.configured-cities: Rectangle {
+            height: 54px; border-radius: 8px;
+            background: @linear-gradient(90deg, Theme.accent.transparentize(0.94), transparent);
+            HorizontalLayout {
+                padding: 5px; spacing: 5px;
+                Text { text: city; color: Theme.fg; font-size: 11px; overflow: elide;
+                       vertical-alignment: center; horizontal-stretch: 1; }
+                PillBtn {
+                    label: root.primary-city == i ? "Primary" : "Use";
+                    fg-normal: root.primary-city == i ? Theme.accent : Theme.fg;
+                    clicked => { root.select-primary(i); }
+                }
+                PillBtn { label: "Remove"; clicked => { root.remove-city(i); } }
+            }
+        }
+        HorizontalLayout {
+            height: 32px; spacing: 7px;
+            Text { text: "Temperature"; color: Theme.fg; font-size: 12px;
+                   horizontal-stretch: 1; vertical-alignment: center; }
+            PillBtn { label: "°C"; fg-normal: !root.fahrenheit ? Theme.accent : Theme.fg;
+                      clicked => { root.set-fahrenheit(false); } }
+            PillBtn { label: "°F"; fg-normal: root.fahrenheit ? Theme.accent : Theme.fg;
+                      clicked => { root.set-fahrenheit(true); } }
+        }
+        Rectangle { height: 1px; background: Theme.bg-lighter; }
+        Text { text: "FIND A CITY"; color: Theme.fg-dim; font-size: 10px; letter-spacing: 1px; }
+        HorizontalLayout {
+            height: 34px; spacing: 6px;
+            Rectangle {
+                horizontal-stretch: 1; border-radius: 6px; background: Theme.bg-light;
+                border-width: query.has-focus ? 1px : 0px; border-color: Theme.accent;
+                query := TextInput {
+                    x: 8px; width: parent.width - 16px; height: parent.height;
+                    text <=> root.city-query; color: Theme.fg; font-size: 13px;
+                    single-line: true; vertical-alignment: center;
+                    accessible-label: "City name";
+                    edited => { root.cancel-city-search(); }
+                    accepted => { if !root.city-busy { root.search-city(); } }
+                }
+            }
+            PillBtn {
+                label: root.city-busy ? "Searching" : "Search";
+                clicked => { if !root.city-busy { root.search-city(); } }
+            }
+        }
+        Text { text: root.city-status; color: Theme.fg-dim; font-size: 11px; wrap: word-wrap; }
+        Flickable {
+            vertical-stretch: 1; viewport-width: self.width;
+            VerticalLayout {
+                spacing: 6px; alignment: start;
+                for city[i] in root.city-results: Rectangle {
+                    height: 64px; border-radius: 7px; background: Theme.surface-hover;
+                    HorizontalLayout {
+                        padding: 6px; spacing: 6px;
+                        Text { text: city; color: Theme.fg; font-size: 12px; wrap: word-wrap;
+                               horizontal-stretch: 1; vertical-alignment: center; }
+                        PillBtn { label: "Add"; clicked => { root.add-city(i); } }
+                    }
+                }
+            }
+        }
+        Text { text: "City search & forecasts: Open-Meteo (online).\nSaved cities and clocks work offline. No automatic location lookup.";
+               color: Theme.fg-dim; font-size: 10px; wrap: word-wrap; }
+      }
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // COMPACT VIEW  250 × 390
+    // COMPACT VIEW
     // ══════════════════════════════════════════════════════════════════════════
-    if !root.is-details: VerticalLayout {
+    if !root.is-details && !root.show-preferences: compact-page := Flickable {
+      viewport-width: self.width;
+      viewport-y <=> root.agenda-page-scroll-y;
+      VerticalLayout {
             width: root.width;
-            height: root.height;
+            height: max(root.height, max(Sizes.compact-h * 1px, self.preferred-height));
             padding: 0px; spacing: 0px;
 
             // Toolbar
             Rectangle {
                 height: 36px;
                 background: Theme.surface;
-                clip: true;
+                z: 2;
 
                 HorizontalLayout {
                     padding-left: 4px; padding-right: 4px; spacing: 2px;
@@ -1044,6 +1464,11 @@ export component MainWindow inherits Window {
                     // Drag handle
                     Rectangle {
                         horizontal-stretch: 1; background: transparent;
+                        Text {
+                            x: 10px; text: "CALENDAR"; color: Theme.fg-dim;
+                            font-size: 10px; letter-spacing: 2px;
+                            vertical-alignment: center; height: parent.height;
+                        }
                         TouchArea {
                             mouse-cursor: move;
                             moved => {
@@ -1055,18 +1480,71 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // Details button
-                    PillBtn {
-                        horizontal-stretch: 1;
-                        label: "Details";
-                        bg-normal: Theme.accent.transparentize(0.7);
-                        bg-hover: Theme.accent;
-                        fg-normal: Theme.accent; fg-hover: Theme.bg;
+                    OutlineButton {
+                        icon: @image-url("assets/settings.svg"); label: "Clock & weather settings";
+                        clicked => { root.show-preferences = true; }
+                    }
+                    OutlineButton {
+                        icon: @image-url("assets/expand.svg"); label: "Open detailed calendar";
                         clicked => { root.open-details(); }
                     }
                 }
             }
 
+            Rectangle { height: 1px; background: Theme.bg-lighter; }
+
+            Rectangle {
+                height: 159px;
+                background: @linear-gradient(140deg, Theme.accent.transparentize(0.93),
+                    transparent, Theme.info.transparentize(0.96));
+                VerticalLayout {
+                    padding: 12px; spacing: 5px;
+                    HorizontalLayout {
+                        height: 18px;
+                        Text {
+                            text: root.weather-location; color: Theme.fg; font-size: 12px;
+                            font-weight: 600; overflow: elide; horizontal-stretch: 1;
+                        }
+                        Text { text: "7 DAYS"; color: Theme.fg-dim; font-size: 9px; }
+                    }
+                    if root.forecast.length > 0: HorizontalLayout {
+                        spacing: 2px;
+                        for day[i] in root.forecast: VerticalLayout {
+                            spacing: 2px; horizontal-stretch: 1;
+                            Text {
+                                text: day.day; color: i == 0 ? Theme.accent : Theme.fg-dim;
+                                font-size: 10px; horizontal-alignment: center;
+                            }
+                            WeatherIcon {
+                                condition: day.condition; phase: root.weather-phase + i * 0.6;
+                                accessible-role: image; accessible-label: day.description;
+                            }
+                            Text { text: day.high; color: Theme.fg; font-size: 12px;
+                                   font-weight: 600; horizontal-alignment: center; }
+                            Text { text: day.low; color: Theme.fg-dim; font-size: 10px;
+                                   horizontal-alignment: center; }
+                            Text { text: day.rain; color: Theme.info; font-size: 10px;
+                                   horizontal-alignment: center; }
+                        }
+                    }
+                    if root.forecast.length == 0: Text {
+                        text: root.weather-message; color: Theme.fg-dim; font-size: 12px;
+                        wrap: word-wrap; vertical-alignment: center; horizontal-alignment: center;
+                        vertical-stretch: 1;
+                    }
+                    Text {
+                        text: root.weather-status; color: Theme.fg-dim; font-size: 9px;
+                        overflow: elide; height: 14px;
+                    }
+                }
+            }
+            HorizontalLayout {
+                height: 104px; spacing: 0px;
+                for clock[i] in root.clocks: LcdClock {
+                    horizontal-stretch: 1; count: root.clocks.length; index: i;
+                    name: clock.name; time: clock.time; date: clock.date; zone: clock.zone;
+                }
+            }
             Rectangle { height: 1px; background: Theme.bg-lighter; }
 
             // Month navigation with label between arrows
@@ -1116,11 +1594,14 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // Scrollable event list
-            Flickable {
+            // Agenda rows, with a chronological divider rather than a scaled timeline.
+            compact-agenda-list := Flickable {
                 vertical-stretch: 1;
+                min-height: 96px;
+                preferred-height: 96px;
                 width: parent.width;
                 viewport-width: self.width;
+                viewport-y <=> root.agenda-scroll-y;
 
                 VerticalLayout {
                     padding-left: 6px; padding-right: 6px;
@@ -1134,35 +1615,92 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                     }
 
-                    for ev in root.day-events: Rectangle {
-                        border-radius: 6px;
-                        background: cev-ta.has-hover ? Theme.surface-hover : Theme.surface;
-                        height: cev-col.preferred-height + 10px;
-
-                        cev-ta := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.edit-event(ev.id); }
+                    for ev in root.compact-agenda: Rectangle {
+                        height: agenda-row-col.preferred-height;
+                        background: transparent;
+                        private property <int> scroll-request: root.agenda-scroll-request;
+                        changed scroll-request => {
+                            if ev.is-now-marker && root.agenda-scroll-pending {
+                                compact-agenda-list.viewport-y = max(
+                                    min(0px, compact-agenda-list.height - compact-agenda-list.viewport-height),
+                                    min(0px, compact-agenda-list.height / 3 - self.y)
+                                );
+                                compact-page.viewport-y = max(
+                                    min(0px, compact-page.height - compact-page.viewport-height),
+                                    min(0px, compact-page.height
+                                        - compact-agenda-list.y - compact-agenda-list.height)
+                                );
+                                root.agenda-scroll-pending = false;
+                            }
                         }
-
-                        cev-col := VerticalLayout {
-                            padding: 5px; spacing: 1px; alignment: center;
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Rectangle {
-                                    width: 3px; height: 14px; border-radius: 1px;
-                                    background: ev.is-past ? Theme.fg-dim : Theme.accent;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                                Text {
-                                    text: ev.title; color: ev.is-past ? Theme.fg-dim : Theme.fg;
-                                    font-size: 11px; font-weight: 600;
-                                    overflow: elide; horizontal-stretch: 1;
+                        agenda-row-col := VerticalLayout {
+                            padding: 0px; spacing: 3px; alignment: start;
+                            if ev.section-label != "": Text {
+                                text: ev.section-label;
+                                height: 14px; color: Theme.fg-dim;
+                                font-size: 10px; font-weight: 600;
+                            }
+                            if ev.is-now-marker: Rectangle {
+                                height: 24px;
+                                accessible-role: text;
+                                accessible-label: ev.title;
+                                HorizontalLayout {
+                                    padding: 0px; spacing: 6px;
+                                    Rectangle {
+                                        width: 6px; height: 6px; border-radius: 3px;
+                                        background: Theme.accent;
+                                    }
+                                    Text {
+                                        text: ev.title; color: Theme.accent;
+                                        font-size: 11px; font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        height: 1px; horizontal-stretch: 1;
+                                        background: Theme.accent;
+                                    }
                                 }
                             }
-                            if ev.time-label != "": Text {
-                                text: ev.time-label; color: Theme.fg-dim;
-                                font-size: 10px;
-                                horizontal-alignment: left;
+                            if !ev.is-now-marker: Rectangle {
+                                border-radius: 6px;
+                                border-width: ev.is-ongoing ? 1px : 0px;
+                                border-color: Theme.accent;
+                                background: ev.is-ongoing ? Theme.accent.transparentize(0.86)
+                                    : cev-ta.has-hover ? Theme.surface-hover : Theme.surface;
+                                height: cev-col.preferred-height + 10px;
+                                cev-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.edit-event(ev.id); }
+                                }
+                                cev-col := VerticalLayout {
+                                    padding: 5px; spacing: 1px; alignment: center;
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        Rectangle {
+                                            width: 3px; height: 14px; border-radius: 1px;
+                                            background: ev.is-past ? Theme.fg-dim : Theme.accent;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                        Text {
+                                            text: ev.title; color: ev.is-past ? Theme.fg-dim : Theme.fg;
+                                            font-size: 11px; font-weight: 600;
+                                            overflow: elide; horizontal-stretch: 1;
+                                        }
+                                        if ev.is-ongoing: Rectangle {
+                                            width: 32px; height: 16px; border-radius: 4px;
+                                            background: Theme.accent;
+                                            Text {
+                                                text: "Now"; color: Theme.bg; font-size: 10px;
+                                                horizontal-alignment: center; vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                    if ev.time-label != "": Text {
+                                        text: ev.time-label; color: Theme.fg-dim;
+                                        font-size: 10px;
+                                        horizontal-alignment: left;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1171,6 +1709,8 @@ export component MainWindow inherits Window {
         }
 
         // ══════════════════════════════════════════════════════════════════════
+      }
+
         // DETAILS VIEW  1100 × 680
         // ══════════════════════════════════════════════════════════════════════
         if root.is-details: HorizontalLayout {
@@ -1179,7 +1719,7 @@ export component MainWindow inherits Window {
             padding: 0px; spacing: 0px;
 
             // ── LEFT SIDEBAR ──────────────────────────────────────────────────
-            Rectangle {
+            if root.width >= 760px: Rectangle {
                 width: 230px;
                 background: Theme.surface;
 
@@ -1235,7 +1775,7 @@ export component MainWindow inherits Window {
             }
 
             // Divider
-            Rectangle { width: 1px; background: Theme.bg-lighter; }
+            if root.width >= 760px: Rectangle { width: 1px; background: Theme.bg-lighter; }
 
             // ── MAIN AREA (pure layout chain — no Rectangle wrappers) ─────────
             VerticalLayout {
@@ -1250,9 +1790,15 @@ export component MainWindow inherits Window {
                     HorizontalLayout {
                         padding-left: 12px; padding-right: 8px; spacing: 6px;
 
-                        // Drag handle (fills remaining space)
+                        // Month label / drag handle (fills remaining space)
                         Rectangle {
                             horizontal-stretch: 1; background: transparent;
+                            Text {
+                                text: root.month-name; color: Theme.fg;
+                                font-size: 14px; font-weight: 600;
+                                width: parent.width; height: parent.height;
+                                vertical-alignment: center; overflow: elide;
+                            }
                             TouchArea {
                                 mouse-cursor: move;
                                 moved => {
@@ -1264,22 +1810,22 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // Collapse to compact — hidden in standalone-details
-                        // mode where there's no compact popup to return to.
-                        if !root.is-standalone: Rectangle {
-                            width: 26px; height: 26px; border-radius: 4px;
-                            background: collapse-ta.has-hover ? Theme.bg-lighter : Theme.bg-light;
-                            Text {
-                                width: 100%; height: 100%;
-                                text: "\u{276C}"; font-size: 12px;
-                                color: collapse-ta.has-hover ? Theme.fg : Theme.fg-dim;
-                                horizontal-alignment: center; vertical-alignment: center;
-                            }
-                            collapse-ta := TouchArea {
-                                mouse-cursor: pointer;
-                                enabled: root.can-collapse;
-                                clicked => { root.close-details(); }
-                            }
+                        if root.width < 760px: IconBtn {
+                            icon: "\u{276E}"; sz: 24px; clicked => { root.prev-month(); }
+                        }
+                        if root.width < 760px: IconBtn {
+                            icon: "\u{276F}"; sz: 24px; clicked => { root.next-month(); }
+                        }
+                        OutlineButton {
+                            icon: root.details-maximized
+                                ? @image-url("assets/restore.svg") : @image-url("assets/maximize.svg");
+                            label: root.details-maximized ? "Restore window" : "Maximize window";
+                            clicked => { root.toggle-details-maximized(); }
+                        }
+                        OutlineButton {
+                            icon: @image-url("assets/back.svg");
+                            label: "Back to calendar";
+                            clicked => { root.close-details(); }
                         }
 
                         // Close
@@ -1299,8 +1845,19 @@ export component MainWindow inherits Window {
 
                 Rectangle { height: 1px; background: Theme.bg-lighter; }
 
-                // DOW header
-                HorizontalLayout {
+                // Keep seven columns and six rows readable on small screens.
+                Flickable {
+                  vertical-stretch: 1;
+                  min-height: 0px; preferred-height: 0px; max-height: root.height;
+                  min-width: 0px; preferred-width: 0px; max-width: root.width;
+                  viewport-width: max(self.width, 560px + (root.show-day-panel ? 310px : 0px));
+                  viewport-height: max(self.height, 447px);
+                  VerticalLayout {
+                   width: parent.viewport-width;
+                   height: parent.viewport-height;
+                   padding: 0px; spacing: 0px;
+                   // DOW header
+                   HorizontalLayout {
                     height: 26px;
                     // Keep grid text out from behind the translucent day panel.
                     padding-right: root.show-day-panel ? 310px : 0px;
@@ -1315,11 +1872,14 @@ export component MainWindow inherits Window {
 
                 // Big month grid — directly in the VerticalLayout, stretches to fill
                 for ri in [0,1,2,3,4,5]: HorizontalLayout {
-                    vertical-stretch: 1; preferred-height: 0px; min-height: 0px; spacing: 0px;
+                    min-height: root.details-cell-height * 1px;
+                    max-height: root.details-cell-height * 1px;
+                    spacing: 0px;
                     padding-right: root.show-day-panel ? 310px : 0px;
 
                     for ci in [0,1,2,3,4,5,6]: BigDayCell {
                         horizontal-stretch: 1;
+                        allocated-height: root.details-cell-height * 1px;
                         cell: root.day-cells[ri * 7 + ci];
 
                         cell-clicked(d) => {
@@ -1336,10 +1896,12 @@ export component MainWindow inherits Window {
                             root.show-day-panel = true;
                         }
                         event-clicked(d, id) => {
-                            root.selected-day = d;
+                            root.select-day(d);
                             root.edit-event(id);
                         }
                     }
+                }
+                  }
                 }
             }
         }
@@ -1470,6 +2032,9 @@ export component MainWindow inherits Window {
             if (event.text == Key.Escape) {
                 if (root.show-form) {
                     root.cancel-form();
+                } else if (root.show-preferences) {
+                    root.cancel-city-search();
+                    root.show-preferences = false;
                 } else if (root.show-day-panel) {
                     root.show-day-panel = false;
                 } else {
@@ -1492,6 +2057,8 @@ export component MainWindow inherits Window {
         }
 
         EventForm {
+            width: min(380px, parent.width - 16px);
+            height: min(600px, parent.height - 16px);
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             editing-id   <=> root.form-editing-id;
@@ -1509,8 +2076,24 @@ export component MainWindow inherits Window {
             form-year        <=> root.form-year;
             form-month       <=> root.form-month;
             form-day         <=> root.form-day;
+            form-end-year <=> root.form-end-year;
+            form-end-month <=> root.form-end-month;
+            form-end-day <=> root.form-end-day;
+            form-error: root.form-error;
+            form-valid: root.form-valid;
+            interval-changed(adjust) => { root.form-interval-changed(adjust); }
             save()   => { root.save-event(); }
             cancel() => { root.cancel-form(); }
+        }
+    }
+
+    if root.navigation-status != "": Rectangle {
+        x: 12px; y: root.height - 60px; width: root.width - 24px; height: 48px;
+        background: Theme.bg-light; border-radius: 8px; z: 200;
+        Text {
+            x: 10px; width: parent.width - 20px; height: parent.height;
+            text: root.navigation-status; color: Theme.fg; font-size: 12px;
+            wrap: word-wrap; vertical-alignment: center;
         }
     }
 
@@ -1524,55 +2107,87 @@ export component MainWindow inherits Window {
         x: 10px; y: 0px; width: root.width - 20px; height: 5px;
         visible: root.is-details;
         TouchArea { mouse-cursor: n-resize;
-            moved => { root.resize-window(0.0, (self.mouse-y - self.pressed-y) / 1px, 0); } }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.resize-window(0);
+                }
+            } }
     }
     // Bottom
     Rectangle {
         x: 10px; y: root.height - 5px; width: root.width - 20px; height: 5px;
         visible: root.is-details;
         TouchArea { mouse-cursor: s-resize;
-            moved => { root.resize-window(0.0, (self.mouse-y - self.pressed-y) / 1px, 2); } }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.resize-window(2);
+                }
+            } }
     }
     // Left
     Rectangle {
         x: 0px; y: 10px; width: 5px; height: root.height - 20px;
         visible: root.is-details;
         TouchArea { mouse-cursor: w-resize;
-            moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, 0.0, 3); } }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.resize-window(3);
+                }
+            } }
     }
     // Right
     Rectangle {
         x: root.width - 5px; y: 10px; width: 5px; height: root.height - 20px;
         visible: root.is-details;
         TouchArea { mouse-cursor: e-resize;
-            moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, 0.0, 1); } }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.resize-window(1);
+                }
+            } }
     }
     // Top-left corner
     Rectangle {
         x: 0px; y: 0px; width: 10px; height: 10px;
         visible: root.is-details;
         TouchArea { mouse-cursor: nw-resize;
-            moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, (self.mouse-y - self.pressed-y) / 1px, 4); } }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.resize-window(4);
+                }
+            } }
     }
     // Top-right corner
     Rectangle {
         x: root.width - 10px; y: 0px; width: 10px; height: 10px;
         visible: root.is-details;
         TouchArea { mouse-cursor: ne-resize;
-            moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, (self.mouse-y - self.pressed-y) / 1px, 5); } }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.resize-window(5);
+                }
+            } }
     }
     // Bottom-left corner
     Rectangle {
         x: 0px; y: root.height - 10px; width: 10px; height: 10px;
         visible: root.is-details;
         TouchArea { mouse-cursor: sw-resize;
-            moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, (self.mouse-y - self.pressed-y) / 1px, 6); } }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.resize-window(6);
+                }
+            } }
     }
     // Bottom-right corner
     Rectangle {
         x: root.width - 10px; y: root.height - 10px; width: 10px; height: 10px;
         visible: root.is-details;
         TouchArea { mouse-cursor: se-resize;
-            moved => { root.resize-window((self.mouse-x - self.pressed-x) / 1px, (self.mouse-y - self.pressed-y) / 1px, 7); } }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.resize-window(7);
+                }
+            } }
     }
 }

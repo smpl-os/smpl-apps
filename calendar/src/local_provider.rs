@@ -1,8 +1,13 @@
 use crate::models::{Event, NewEvent, Recurrence};
 use crate::provider::CalendarProvider;
-use chrono::{DateTime, Datelike, Duration, Local, Months, NaiveDate, TimeZone};
+use chrono::{Datelike, Local, NaiveDate, TimeZone};
+#[cfg(test)]
+use chrono::Duration;
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
+
+#[path = "recurrence.rs"]
+mod recurrence;
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -105,9 +110,8 @@ impl LocalProvider {
     /// Expand a single recurring root event into all concrete instances that
     /// fall within `[range_start, range_end)` (Unix seconds).
     ///
-    /// We expand lazily (at query time) rather than storing exceptions in the
-    /// database.  This keeps the schema trivial and queries O(1) for typical
-    /// monthly views.  A hard cap of 400 instances prevents runaway loops.
+    /// Display and reminders share anchored, local-calendar recurrence rules.
+    /// Start before the range when an overnight occurrence can overlap it.
     fn expand_recurring(
         event: &Event,
         range_start: i64,
@@ -115,57 +119,46 @@ impl LocalProvider {
     ) -> Vec<Event> {
         let duration = event.end - event.start;
 
-        let range_start_dt = Local.timestamp_opt(range_start, 0)
-            .single()
-            .unwrap_or_else(Local::now);
-        let range_end_dt = Local.timestamp_opt(range_end, 0)
-            .single()
-            .unwrap_or_else(Local::now);
-
-        // Honour the user-set recurrence end date.
-        let effective_end: DateTime<Local> = event
-            .recurrence_end
-            .and_then(|d| d.and_hms_opt(23, 59, 59))
-            .and_then(|ndt| Local.from_local_datetime(&ndt).single())
-            .unwrap_or(range_end_dt);
-
-        let stop = effective_end.min(range_end_dt);
-
+        let lookback = duration.num_seconds().max(0)
+            .saturating_add(if event.all_day { 86400 } else { 0 });
+        let starts = match recurrence::starts(
+            &Local, event.start, event.recurrence.as_str(), event.recurrence_end,
+            range_start.saturating_sub(lookback), range_end,
+        ) {
+            Ok(starts) => starts,
+            Err(_) => {
+                eprintln!("smpl-calendar: invalid recurrence range was skipped");
+                return Vec::new();
+            }
+        };
         let mut instances = Vec::new();
-        let mut current = event.start;
-        let mut count = 0_u32;
-
-        // Fast-forward to the first occurrence at or after range_start.
-        // For daily/weekly, we can jump directly; for monthly/yearly we iterate
-        // (at most 12 * range_years steps which is always tiny).
-        while current < range_start_dt && count < 400 {
-            current = Self::advance(current, &event.recurrence);
-            count += 1;
-        }
-        count = 0;
-
-        while current < stop && count < 400 {
+        for current in starts {
+            let end = Self::occurrence_end(&Local, event.start, event.end, current, event.all_day);
+            let Some(end) = end else { continue; };
+            if end.timestamp() <= range_start {
+                continue;
+            }
             let mut instance = event.clone();
             instance.start = current;
-            instance.end   = current + duration;
+            instance.end = end;
             instances.push(instance);
-            current = Self::advance(current, &event.recurrence);
-            count  += 1;
         }
-
         instances
     }
 
-    /// Advance a timestamp by exactly one recurrence period.
-    fn advance(dt: DateTime<Local>, rec: &Recurrence) -> DateTime<Local> {
-        match rec {
-            Recurrence::Daily    => dt + Duration::days(1),
-            Recurrence::Weekly   => dt + Duration::weeks(1),
-            Recurrence::Biweekly => dt + Duration::weeks(2),
-            Recurrence::Monthly  => dt.checked_add_months(Months::new(1)).unwrap_or(dt),
-            Recurrence::Yearly   => dt.checked_add_months(Months::new(12)).unwrap_or(dt),
-            // None should never be reached here, but handle gracefully.
-            Recurrence::None     => dt + Duration::days(36500),
+    fn occurrence_end<Tz: TimeZone>(
+        timezone: &Tz,
+        original_start: chrono::DateTime<Tz>,
+        original_end: chrono::DateTime<Tz>,
+        occurrence: chrono::DateTime<Tz>,
+        all_day: bool,
+    ) -> Option<chrono::DateTime<Tz>> {
+        if all_day {
+            let days = original_end.date_naive() - original_start.date_naive();
+            occurrence.date_naive().checked_add_signed(days)
+                .and_then(|date| recurrence::resolve_wall(timezone, date.and_time(original_end.time())))
+        } else {
+            occurrence.checked_add_signed(original_end - original_start)
         }
     }
 
@@ -285,6 +278,10 @@ impl CalendarProvider for LocalProvider {
     }
 
     fn create_event(&mut self, ev: NewEvent) -> anyhow::Result<Event> {
+        anyhow::ensure!(
+            ev.all_day || ev.end > ev.start,
+            "Timed event end must be after its start"
+        );
         let now = Local::now().timestamp();
         let rec_end_ts = ev.recurrence_end
             .and_then(|d| d.and_hms_opt(0, 0, 0))
@@ -326,6 +323,10 @@ impl CalendarProvider for LocalProvider {
     }
 
     fn update_event(&mut self, ev: Event) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            ev.all_day || ev.end > ev.start,
+            "Timed event end must be after its start"
+        );
         let now = Local::now().timestamp();
         let rec_end_ts = ev.recurrence_end
             .and_then(|d| d.and_hms_opt(0, 0, 0))
@@ -358,5 +359,184 @@ impl CalendarProvider for LocalProvider {
     fn delete_event(&mut self, id: i64) -> anyhow::Result<()> {
         self.conn.execute("DELETE FROM events WHERE id=?1", params![id])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+        use super::*;
+
+    fn provider() -> LocalProvider {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        LocalProvider::migrate_alert_minutes(&conn).unwrap();
+        LocalProvider { conn }
+        }
+
+    fn new_event() -> NewEvent {
+        let start = Local.with_ymd_and_hms(2026, 10, 2, 10, 0, 0).single().unwrap();
+        NewEvent {
+            title: "Fixture".into(),
+            description: "Original description".into(),
+            start,
+            end: start + Duration::minutes(1),
+            all_day: false,
+            recurrence: Recurrence::None,
+            recurrence_end: None,
+            color: None,
+            alert_minutes: 0,
+        }
+        }
+
+    #[test]
+    fn old_recurring_series_includes_overnight_overlap_and_honors_last_date() {
+        let mut provider = provider();
+        let mut event = new_event();
+        event.start = Local.with_ymd_and_hms(2000, 1, 1, 23, 30, 0).single().unwrap();
+        event.end = event.start + Duration::hours(2);
+        event.recurrence = Recurrence::Daily;
+        event.recurrence_end = NaiveDate::from_ymd_opt(2026, 10, 1);
+        provider.create_event(event).unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let occurrences = provider.events_for_day(day);
+        assert_eq!(occurrences.len(), 1);
+        assert_eq!(occurrences[0].start.date_naive(), day.pred_opt().unwrap());
+        assert_eq!(occurrences[0].end.date_naive(), day);
+        assert!(provider.events_for_day(day.succ_opt().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn dst_preserves_timed_elapsed_duration_but_all_day_local_date_span() {
+        use chrono::Timelike;
+        use chrono_tz::America::New_York;
+        let before = New_York.with_ymd_and_hms(2026, 3, 7, 1, 30, 0).single().unwrap();
+        let spring = New_York.with_ymd_and_hms(2026, 3, 8, 1, 30, 0).single().unwrap();
+        let end = LocalProvider::occurrence_end(
+            &New_York, before, before + Duration::hours(2), spring, false).unwrap();
+        assert_eq!(end - spring, Duration::hours(2));
+        assert_eq!((end.hour(), end.minute()), (4, 30));
+        let before = New_York.with_ymd_and_hms(2026, 10, 31, 1, 30, 0).single().unwrap();
+        let fall = New_York.with_ymd_and_hms(2026, 11, 1, 1, 30, 0).earliest().unwrap();
+        let end = LocalProvider::occurrence_end(
+            &New_York, before, before + Duration::hours(2), fall, false).unwrap();
+        assert_eq!(end - fall, Duration::hours(2));
+        assert_eq!((end.hour(), end.minute()), (2, 30));
+        let before = New_York.with_ymd_and_hms(2026, 3, 7, 0, 0, 0).single().unwrap();
+        let spring = New_York.with_ymd_and_hms(2026, 3, 8, 0, 0, 0).single().unwrap();
+        let end = LocalProvider::occurrence_end(
+            &New_York, before, before + Duration::minutes(1439), spring, true).unwrap();
+        assert_eq!(end.date_naive(), spring.date_naive());
+        assert_eq!((end.hour(), end.minute()), (23, 59));
+        assert_eq!(end - spring, Duration::minutes(1379));
+        let before = New_York.with_ymd_and_hms(2026, 10, 31, 0, 0, 0).single().unwrap();
+        let fall = New_York.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).single().unwrap();
+        let end = LocalProvider::occurrence_end(
+            &New_York, before, before + Duration::minutes(1439), fall, true).unwrap();
+        assert_eq!(end.date_naive(), fall.date_naive());
+        assert_eq!((end.hour(), end.minute()), (23, 59));
+        assert_eq!(end - fall, Duration::minutes(1499));
+        let before = New_York.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).single().unwrap();
+        let original_end = New_York.with_ymd_and_hms(2026, 3, 3, 23, 59, 0).single().unwrap();
+        let start = New_York.with_ymd_and_hms(2026, 3, 7, 0, 0, 0).single().unwrap();
+        let end = LocalProvider::occurrence_end(
+            &New_York, before, original_end, start, true).unwrap();
+        assert_eq!(end.date_naive(), NaiveDate::from_ymd_opt(2026, 3, 9).unwrap());
+        assert_eq!((end.hour(), end.minute()), (23, 59));
+        assert_eq!(end - start, Duration::minutes(4259));
+    }
+
+    #[test]
+    fn all_day_recurrence_end_includes_start_date_without_truncating_span() {
+        use chrono::Timelike;
+        let mut provider = provider();
+        let mut event = new_event();
+        event.start = Local.with_ymd_and_hms(2000, 1, 1, 0, 0, 0).single().unwrap();
+        event.end = Local.with_ymd_and_hms(2000, 1, 2, 23, 59, 0).single().unwrap();
+        event.all_day = true;
+        event.recurrence = Recurrence::Daily;
+        event.recurrence_end = NaiveDate::from_ymd_opt(2026, 10, 1);
+        provider.create_event(event).unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let occurrences = provider.events_for_day(day);
+        assert_eq!(occurrences.len(), 1);
+        assert_eq!(occurrences[0].start.date_naive(), day.pred_opt().unwrap());
+        assert_eq!(occurrences[0].end.date_naive(), day);
+        assert_eq!((occurrences[0].end.hour(), occurrences[0].end.minute()), (23, 59));
+        assert!(provider.events_for_day(day.succ_opt().unwrap()).is_empty());
+        let month = provider.events_for_month(2026, 10);
+        assert_eq!(month.len(), 2);
+        assert_eq!(month[0].start.date_naive(), NaiveDate::from_ymd_opt(2026, 9, 30).unwrap());
+        assert_eq!(month[1].start.date_naive(), NaiveDate::from_ymd_opt(2026, 10, 1).unwrap());
+    }
+
+    fn count(provider: &LocalProvider) -> i64 {
+        provider.conn.query_row("SELECT count(*) FROM events", [], |row| row.get(0)).unwrap()
+        }
+
+    fn stored(provider: &LocalProvider, id: i64) -> (String, String, i64, i64, i32, i64) {
+        provider.conn.query_row(
+            "SELECT title,description,start_ts,end_ts,all_day,updated_at FROM events WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        ).unwrap()
+        }
+
+    #[test]
+    fn invalid_timed_creates_never_write_a_row() {
+        let mut provider = provider();
+        for duration in [Duration::zero(), Duration::minutes(-1)] {
+            let mut event = new_event();
+            event.end = event.start + duration;
+            assert!(provider.create_event(event).is_err());
+            assert_eq!(count(&provider), 0);
+        }
+        }
+
+    #[test]
+    fn invalid_timed_updates_preserve_existing_data() {
+        let mut provider = provider();
+        let saved = provider.create_event(new_event()).unwrap();
+        let before = stored(&provider, saved.id);
+        for duration in [Duration::zero(), Duration::minutes(-1)] {
+            let mut invalid = saved.clone();
+            invalid.title = "Must not be saved".into();
+            invalid.description = "Must not replace description".into();
+            invalid.end = invalid.start + duration;
+            assert!(provider.update_event(invalid).is_err());
+            assert_eq!(stored(&provider, saved.id), before);
+            assert_eq!(count(&provider), 1);
+        }
+        }
+
+    #[test]
+    fn short_timed_creation_editing_and_overnight_intervals_remain_valid() {
+        let mut provider = provider();
+        let mut saved = provider.create_event(new_event()).unwrap();
+        assert_eq!(saved.end - saved.start, Duration::minutes(1));
+        saved.title = "Valid short edit".into();
+        saved.end = saved.start + Duration::seconds(1);
+        provider.update_event(saved.clone()).unwrap();
+        let row = stored(&provider, saved.id);
+        assert_eq!(row.0, "Valid short edit");
+        assert_eq!(row.3 - row.2, 1);
+        let mut overnight = new_event();
+        overnight.start = Local.with_ymd_and_hms(2026, 10, 2, 23, 55, 0).single().unwrap();
+        overnight.end = overnight.start + Duration::minutes(20);
+        let saved = provider.create_event(overnight).unwrap();
+        assert_eq!(saved.end.date_naive(), saved.start.date_naive().succ_opt().unwrap());
+        assert_eq!(count(&provider), 2);
+        }
+
+    #[test]
+    fn all_day_events_remain_outside_the_timed_interval_guard() {
+        let mut provider = provider();
+        let mut all_day = new_event();
+        all_day.all_day = true;
+        all_day.end = all_day.start;
+        let mut saved = provider.create_event(all_day).unwrap();
+        saved.title = "All-day edit".into();
+        provider.update_event(saved.clone()).unwrap();
+        assert_eq!(stored(&provider, saved.id).0, "All-day edit");
+        assert_eq!(count(&provider), 1);
     }
 }
