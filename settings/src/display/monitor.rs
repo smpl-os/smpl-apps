@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use super::scale;
+use super::{conf, scale};
 
 /// One display mode: unrotated pixel size and refresh rate.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -263,7 +263,7 @@ impl Output {
     pub fn matches_selector(&self, selector: &str) -> bool {
         match selector.strip_prefix("desc:") {
             Some(text) => {
-                let text = text.trim();
+                let text = conf::trim_space(text);
                 self.description.starts_with(text) || self.long_description().starts_with(text)
             }
             None => !selector.is_empty() && self.name == selector,

@@ -2,7 +2,8 @@
 //! with the smplOS Lua loader, and the Settings writer.
 //!
 //! Grammar (hyprlang): `#` starts a comment anywhere and `##` is a literal
-//! `#`. `monitor = <fields>` splits on commas; fields are trimmed. Forms:
+//! `#` whose following character is copied unchecked (see [`strip_comment`]).
+//! `monitor = <fields>` splits on commas; fields are trimmed. Forms:
 //! * full `<sel>, <mode>, <position>, <scale>[, <key>, <value>]…` creates a
 //!   fresh rule (transform 0, enabled), replacing any rule with the identical
 //!   selector and moving it to the end. Options stop at the first empty key;
@@ -41,25 +42,79 @@ const CARRIED_KEYS: [&str; 6] = [
 const BACKUP_PREFIX: &str = "monitors.conf.bak-";
 const BACKUPS_KEPT: usize = 5;
 
-/// Removes a hyprlang comment; `##` is unescaped to a literal `#`.
-pub fn strip_comment(line: &str) -> String {
-    let mut content = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '#' {
-            content.push(c);
-        } else if chars.peek() == Some(&'#') {
-            chars.next();
-            content.push('#');
-        } else {
-            break;
-        }
-    }
-    content
+/// C `isspace`, which hyprlang, Hyprland and the smplOS Lua loader trim.
+pub fn is_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r')
 }
 
-fn escape(value: &str) -> String {
-    value.replace('#', "##")
+pub fn trim_space(text: &str) -> &str {
+    text.trim_matches(is_space)
+}
+
+/// hyprlang's comment handling (`CConfig::parseLine`), step by step: the line
+/// is trimmed and a line starting with `#` is a comment. `##` keeps one `#`
+/// and the search resumes two characters later, so the character after the
+/// kept `#` is copied unchecked (`x###y` reads `x##y`, `x####y` reads `x##`);
+/// any other `#` starts a comment. The result is trimmed.
+pub fn strip_comment(line: &str) -> String {
+    let find = |line: &[u8], from: usize| {
+        line.get(from..)?
+            .iter()
+            .position(|&b| b == b'#')
+            .map(|offset| from + offset)
+    };
+    let mut line = trim_space(line).as_bytes().to_vec();
+    let mut position = find(&line, 0);
+    if position == Some(0) {
+        return String::new();
+    }
+    while let Some(at) = position {
+        if line.get(at + 1) != Some(&b'#') {
+            line.truncate(at);
+            break;
+        }
+        line.remove(at + 1);
+        position = find(&line, at + 2);
+    }
+    // Only ASCII bytes were removed, so this is still valid UTF-8.
+    trim_space(&String::from_utf8_lossy(&line)).to_string()
+}
+
+fn push_hashes(text: &mut String, run: usize) {
+    text.push_str(&"###".repeat(run / 2));
+    if run % 2 == 1 {
+        text.push_str("##");
+    }
+}
+
+/// Writes `value` as one field that [`strip_comment`] reads back unchanged.
+/// `##` reads as `#` and copies the next character unchecked, so a run of n
+/// `#` becomes n/2 × `###` (each read as `##`) plus `##` when n is odd:
+/// `#` → `##`, `##` → `###`, `###` → `#####`. `None` when the value can't be
+/// one field (commas, line breaks, surrounding whitespace).
+pub fn escape_value(value: &str) -> Option<String> {
+    let mut text = String::with_capacity(value.len() + 4);
+    let mut run = 0;
+    for c in value.chars() {
+        if c == '#' {
+            run += 1;
+        } else {
+            push_hashes(&mut text, std::mem::take(&mut run));
+            text.push(c);
+        }
+    }
+    push_hashes(&mut text, run);
+    let fields = |line: String| -> Vec<String> {
+        strip_comment(&line)
+            .split(',')
+            .map(|field| trim_space(field).to_string())
+            .collect()
+    };
+    // A field is either followed by another one or ends the line.
+    let reads_back = !value.contains('\n')
+        && fields(format!("x, {text}, x")) == ["x", value, "x"]
+        && fields(format!("x, {text}")) == ["x", value];
+    reads_back.then_some(text)
 }
 
 fn is_integer(text: &str) -> bool {
@@ -99,11 +154,10 @@ pub struct MonitorLine {
 pub fn parse_line(line: &str) -> Option<MonitorLine> {
     let content = strip_comment(line);
     let value = content
-        .trim()
         .strip_prefix("monitor")?
-        .trim_start()
+        .trim_start_matches(is_space)
         .strip_prefix('=')?;
-    let fields: Vec<&str> = value.split(',').map(str::trim).collect();
+    let fields: Vec<&str> = value.split(',').map(trim_space).collect();
     let field = |index: usize| fields.get(index).copied().unwrap_or("");
     let form = match field(1) {
         "disable" | "disabled" => Form::Disable,
@@ -295,7 +349,7 @@ pub fn effective<'a>(rules: &'a [Rule], output: &Output) -> Option<&'a Rule> {
 pub fn choose_selector(output: &Output, outputs: &[Output]) -> String {
     let description = output.description.as_str();
     let usable = !description.is_empty()
-        && description.trim() == description
+        && trim_space(description) == description
         && !description
             .chars()
             .any(|c| c == '#' || c == ',' || c.is_control());
@@ -340,7 +394,10 @@ pub fn format_line(selector: &str, target: &Target, options: &[(String, String)]
         target.transform
     );
     for (key, value) in options {
-        line.push_str(&format!(", {}, {}", escape(key), escape(value)));
+        // An option that can't be written back unchanged is dropped, never corrupted.
+        if let (Some(key), Some(value)) = (escape_value(key), escape_value(value)) {
+            line.push_str(&format!(", {key}, {value}"));
+        }
     }
     line
 }
@@ -359,7 +416,11 @@ fn carried_options(rule: &Rule) -> Vec<(String, String)> {
     }
     rule.options
         .iter()
-        .filter(|(key, value)| CARRIED_KEYS.contains(&key.as_str()) && valid_option(key, value))
+        .filter(|(key, value)| {
+            CARRIED_KEYS.contains(&key.as_str())
+                && valid_option(key, value)
+                && escape_value(value).is_some()
+        })
         .cloned()
         .collect()
 }
@@ -392,7 +453,7 @@ pub fn merge(existing: &str, planned: &[Planned], outputs: &[Output]) -> String 
     let written: Vec<&Output> = outputs.iter().filter(is_planned).collect();
     let others: Vec<&Output> = outputs.iter().filter(|o| !is_planned(o)).collect();
     let mut kept: Vec<&str> = Vec::new();
-    let mut reserved: Vec<(String, String)> = Vec::new();
+    let mut reserved: Vec<(String, Vec<String>)> = Vec::new();
     for line in split_lines(existing) {
         if is_header(line) {
             continue;
@@ -407,13 +468,15 @@ pub fn merge(existing: &str, planned: &[Planned], outputs: &[Output]) -> String 
                 .any(|output| output.matches_selector(&parsed.selector));
             if !hits.is_empty() && !shared {
                 if let Form::AddReserved(values) = &parsed.form {
-                    let values = values
-                        .iter()
-                        .map(|v| escape(v))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    for output in hits {
-                        reserved.push((output.name.clone(), values.clone()));
+                    // Parsed fields always round-trip; a line that couldn't is
+                    // dropped rather than rewritten differently.
+                    match values.iter().map(|v| escape_value(v)).collect::<Option<Vec<_>>>() {
+                        Some(values) => {
+                            for output in hits {
+                                reserved.push((output.name.clone(), values.clone()));
+                            }
+                        }
+                        None => eprintln!("[settings] dropped an addreserved line that can't be rewritten: {line}"),
                     }
                 }
                 continue;
@@ -454,17 +517,18 @@ pub fn merge(existing: &str, planned: &[Planned], outputs: &[Output]) -> String 
         text.push('\n');
         // In-place modifications: the last of identical lines decides, so
         // keep the last occurrence of duplicates.
-        let mut lines: Vec<&str> = Vec::new();
+        let mut lines: Vec<&Vec<String>> = Vec::new();
         for (name, values) in reserved.iter().rev() {
-            if *name == planned.target.name && !lines.contains(&values.as_str()) {
+            if *name == planned.target.name && !lines.contains(&values) {
                 lines.push(values);
             }
         }
         for values in lines.into_iter().rev() {
-            text.push_str(&format!(
-                "monitor = {}, addreserved, {values}\n",
-                planned.selector
-            ));
+            text.push_str(&format!("monitor = {}, addreserved", planned.selector));
+            for value in values {
+                text.push_str(&format!(", {value}"));
+            }
+            text.push('\n');
         }
     }
     text
@@ -793,18 +857,162 @@ mod tests {
     fn comments_and_escaped_hashes_follow_hyprlang() {
         assert_eq!(
             strip_comment("monitor = DP-1, preferred # note"),
-            "monitor = DP-1, preferred "
+            "monitor = DP-1, preferred"
         );
         assert_eq!(
             strip_comment("monitor = desc:A##B, preferred"),
             "monitor = desc:A#B, preferred"
         );
-        assert_eq!(strip_comment("a ### b"), "a #");
+        assert_eq!(strip_comment("a ### b"), "a ## b");
         assert!(parse_line("# monitor = DP-1, disable").is_none());
+        assert!(parse_line("## monitor = DP-1, disable").is_none());
         assert!(parse_line("monitorv2 = DP-1").is_none());
         assert_eq!(
             parse_line("monitor=desc:A##B,disable").unwrap().selector,
             "desc:A#B"
+        );
+    }
+
+    /// Every string of up to `max` characters from `alphabet`.
+    fn all_strings(alphabet: &[char], max: usize) -> Vec<String> {
+        let mut all = vec![String::new()];
+        let mut layer = vec![String::new()];
+        for _ in 0..max {
+            layer = layer
+                .iter()
+                .flat_map(|prefix| alphabet.iter().map(move |c| format!("{prefix}{c}")))
+                .collect();
+            all.extend(layer.iter().cloned());
+        }
+        all
+    }
+
+    /// An independent reading of hyprlang's rule: `##` emits `#` plus the
+    /// next character unchecked; any other `#` ends the line.
+    fn reference_reading(line: &str) -> String {
+        let line = trim_space(line);
+        if line.starts_with('#') {
+            return String::new();
+        }
+        let mut read = String::new();
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            if c != '#' {
+                read.push(c);
+                continue;
+            }
+            let mut rest = chars.clone();
+            if rest.next() != Some('#') {
+                break;
+            }
+            read.push('#');
+            read.extend(rest.next());
+            chars = rest;
+        }
+        trim_space(&read).to_string()
+    }
+
+    #[test]
+    fn hash_escapes_read_exactly_like_libhyprlang() {
+        // Each expectation was checked against libhyprlang 0.6.8 (parseDynamic).
+        for (line, expected) in [
+            ("a##b#c", "a#b"),
+            ("a###b", "a##b"),
+            ("x###y", "x##y"),
+            ("a####b", "a##"),
+            ("a#####b", "a###b"),
+            ("a ### b", "a ## b"),
+            ("a ## # b", "a #"),
+            ("a##b##c", "a#b#c"),
+            ("a#", "a"),
+            ("a##", "a#"),
+            ("  a## \t", "a#"),
+            ("é##é#x", "é#é"),
+            ("##x", ""),
+            ("  # x", ""),
+            ("#", ""),
+            ("", ""),
+        ] {
+            assert_eq!(strip_comment(line), expected, "{line:?}");
+        }
+        for line in all_strings(&['a', '#', ' ', ','], 8) {
+            assert_eq!(strip_comment(&line), reference_reading(&line), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn written_values_with_hash_runs_read_back_unchanged() {
+        assert_eq!(escape_value("#").as_deref(), Some("##"));
+        assert_eq!(escape_value("a##b").as_deref(), Some("a###b"));
+        assert_eq!(escape_value("###").as_deref(), Some("#####"));
+        // Doubling every `#` would truncate runs: `a####b` reads as `a##`.
+        assert_eq!(strip_comment("x, a####b"), "x, a##");
+        let target = Target {
+            name: "DP-1".into(),
+            mode: Mode {
+                width: 1920,
+                height: 1080,
+                refresh: 60.0,
+            },
+            x: 0,
+            y: 0,
+            scale: 1.0,
+            transform: 0,
+        };
+        for value in all_strings(&['a', '#', ' ', ','], 8) {
+            let representable = !value.contains(',') && trim_space(&value) == value;
+            assert_eq!(escape_value(&value).is_some(), representable, "{value:?}");
+            if !representable || value.is_empty() {
+                continue;
+            }
+            for options in [
+                vec![
+                    ("icc".to_string(), value.clone()),
+                    ("vrr".into(), "1".into()),
+                ],
+                vec![
+                    ("vrr".to_string(), "1".to_string()),
+                    ("icc".into(), value.clone()),
+                ],
+            ] {
+                let line = format_line("DP-1", &target, &options);
+                let Some(MonitorLine {
+                    form: Form::Full { options: read, .. },
+                    ..
+                }) = parse_line(&line)
+                else {
+                    panic!("{line:?} is not a full monitor line");
+                };
+                assert_eq!(read, options, "{line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn carried_hash_values_survive_a_rewrite() {
+        let live = live_pair();
+        let existing = "monitor = HDMI-A-1, 2560x1440@59.95, 0x0, 1, icc, /x/a###b.icm\n\
+                        monitor = HDMI-A-1, addreserved, 0, 3##2, 0, 0\n";
+        let text = merge(existing, &plan(&live, &live_targets()), &live);
+        assert!(text.contains(", icc, /x/a###b.icm\n"), "{text}");
+        assert!(text.contains(", addreserved, 0, 3##2, 0, 0\n"), "{text}");
+        let hdmi = effective(&rules(&text), &live[0]).unwrap().clone();
+        assert_eq!(
+            hdmi.options,
+            [("icc".to_string(), "/x/a##b.icm".to_string())]
+        );
+        let reserved = text
+            .lines()
+            .filter_map(parse_line)
+            .find(|l| matches!(l.form, Form::AddReserved(_)));
+        assert_eq!(
+            reserved.unwrap().form,
+            Form::AddReserved(vec!["0".into(), "3#2".into(), "0".into(), "0".into()])
+        );
+        assert_eq!(
+            merge(&text, &plan(&live, &live_targets()), &live),
+            text,
+            "idempotent"
         );
     }
 

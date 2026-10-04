@@ -534,7 +534,9 @@ The writer replaces only lines whose selector matches a written display,
 carries their `vrr`, `bitdepth`, `cm`, `sdrbrightness`, `sdrsaturation` and
 `icc` options and their `addreserved` lines, and keeps everything else verbatim:
 comments, the catch-all, and lines for displays that are disconnected,
-disabled, virtual or mirroring. A display is keyed by `desc:<make model
+disabled, virtual or mirroring. Comments follow hyprlang exactly (`##` is a
+literal `#` and the character after it is never a comment start), and carried
+values are re-escaped so they read back unchanged. A display is keyed by `desc:<make model
 serial>` when that description is unique, so a connector change (DP-3 becoming
 DP-4) keeps its rule; otherwise by connector. Writes are atomic, preserve the
 file mode, replace a symlink's target, skip byte-identical content and keep the
