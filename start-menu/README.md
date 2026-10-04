@@ -16,3 +16,7 @@ Headless source-contract checks for the launcher, notifications and hints:
 ```sh
 python3 -B -m unittest discover -s start-menu/tests -p 'test_popup_theme_contract.py' -v
 ```
+
+`start-menu --resident [--hidden]` keeps the menu in one long-lived process
+controlled by signals; see "Start-menu resident mode" in the repository
+README for the pidfile and signal contract.

@@ -1,5 +1,8 @@
 mod commands;
 mod icons;
+mod instance;
+mod signals;
+mod stamp;
 mod usage;
 
 use i_slint_backend_winit::WinitWindowAccessor;
@@ -7,10 +10,16 @@ use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::Duration;
 
 use crate::icons::IconResolver;
+use crate::signals::Request;
+use crate::stamp::FileStamp;
 use crate::usage::Usage;
 
 slint::include_modules!();
@@ -53,16 +62,33 @@ fn category_label(key: &str) -> &str {
 
 // ── Load the app index cache ──
 
-fn load_apps() -> Vec<AppEntry> {
+fn app_index_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
-    let path = format!("{}/.cache/smplos/app_index", home);
+    PathBuf::from(format!("{}/.cache/smplos/app_index", home))
+}
 
-    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-        // Try rebuilding the cache if it doesn't exist
-        let _ = std::process::Command::new("rebuild-app-cache").status();
-        std::fs::read_to_string(&path).unwrap_or_default()
-    });
+/// Read the app index together with the stamp taken *before* reading, so a
+/// rewrite racing with the read still differs from the stamp next time.
+/// `None` only when the cache is unreadable and no rebuild was requested.
+fn read_app_index(
+    path: &Path,
+    rebuild_if_missing: bool,
+) -> Option<(Vec<AppEntry>, Option<FileStamp>)> {
+    let mut stamp = FileStamp::of(path);
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) if rebuild_if_missing => {
+            // Try rebuilding the cache if it doesn't exist
+            let _ = std::process::Command::new("rebuild-app-cache").status();
+            stamp = FileStamp::of(path);
+            std::fs::read_to_string(path).unwrap_or_default()
+        }
+        Err(_) => return None,
+    };
+    Some((parse_app_index(&content), stamp))
+}
 
+fn parse_app_index(content: &str) -> Vec<AppEntry> {
     let mut apps = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -102,10 +128,13 @@ fn load_apps() -> Vec<AppEntry> {
 
 // ── Pinned apps persistence ──
 
-fn load_pinned() -> Vec<String> {
+fn pinned_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
-    let path = format!("{}/.config/smplos/pinned-apps.txt", home);
-    std::fs::read_to_string(&path)
+    PathBuf::from(format!("{}/.config/smplos/pinned-apps.txt", home))
+}
+
+fn load_pinned() -> Vec<String> {
+    std::fs::read_to_string(pinned_path())
         .unwrap_or_default()
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -114,10 +143,10 @@ fn load_pinned() -> Vec<String> {
 }
 
 fn save_pinned(pinned: &[String]) {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let dir = format!("{}/.config/smplos", home);
-    let _ = std::fs::create_dir_all(&dir);
-    let path = format!("{}/pinned-apps.txt", dir);
+    let path = pinned_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let _ = std::fs::write(&path, pinned.join("\n") + "\n");
 }
 
@@ -435,49 +464,189 @@ fn apply_theme(ui: &MainWindow, palette: &ThemePalette) {
     theme.set_opacity(palette.opacity);
 }
 
-// ── Entry point ──
+// ── Hidden-state reset (resident mode) ──
 
-fn main() -> Result<(), slint::PlatformError> {
-    for arg in std::env::args() {
-        if arg == "-v" || arg == "--version" {
-            println!("start-menu v{}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
-        }
+/// The view state that hiding resets, as the generated window's setters.
+/// `MainWindow` implements it; tests use a recording fake.
+trait MenuView {
+    fn set_search_text(&self, text: SharedString);
+    fn set_active_category(&self, index: i32);
+    fn set_apps(&self, apps: ModelRc<AppItem>);
+    fn set_app_count(&self, count: i32);
+    fn set_selected_app(&self, index: i32);
+    fn set_is_searching(&self, searching: bool);
+    fn set_show_context_menu(&self, shown: bool);
+    fn set_show_power_menu(&self, shown: bool);
+    fn invoke_reset_scroll(&self);
+    fn release_input(&self);
+    fn invoke_focus_search(&self);
+}
+
+impl MenuView for MainWindow {
+    fn set_search_text(&self, text: SharedString) {
+        MainWindow::set_search_text(self, text)
+    }
+    fn set_active_category(&self, index: i32) {
+        MainWindow::set_active_category(self, index)
+    }
+    fn set_apps(&self, apps: ModelRc<AppItem>) {
+        MainWindow::set_apps(self, apps)
+    }
+    fn set_app_count(&self, count: i32) {
+        MainWindow::set_app_count(self, count)
+    }
+    fn set_selected_app(&self, index: i32) {
+        MainWindow::set_selected_app(self, index)
+    }
+    fn set_is_searching(&self, searching: bool) {
+        MainWindow::set_is_searching(self, searching)
+    }
+    fn set_show_context_menu(&self, shown: bool) {
+        MainWindow::set_show_context_menu(self, shown)
+    }
+    fn set_show_power_menu(&self, shown: bool) {
+        MainWindow::set_show_power_menu(self, shown)
+    }
+    fn invoke_reset_scroll(&self) {
+        MainWindow::invoke_reset_scroll(self)
+    }
+    fn release_input(&self) {
+        // The destroyed window never sees the pointer leave or held keys go
+        // up. Without this the last hovered button stays highlighted, and a
+        // Ctrl still held from Ctrl+W/Ctrl+Y would keep Slint's modifiers set
+        // (refocusing an already active window does not reset them), turning
+        // typed letters into shortcuts on the next show.
+        let window = self.window();
+        let _ = window.try_dispatch_event(slint::platform::WindowEvent::PointerExited);
+        let _ = window.try_dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+    }
+    fn invoke_focus_search(&self) {
+        MainWindow::invoke_focus_search(self)
+    }
+}
+
+/// Return to the startup view: no search, no category, empty list, nothing
+/// selected, menus closed, list scrolled to the top, search focused.
+fn reset_view(view: &impl MenuView, apps: &Rc<VecModel<AppItem>>) {
+    view.set_show_context_menu(false);
+    view.set_show_power_menu(false);
+    view.set_search_text(SharedString::new());
+    view.set_active_category(-1);
+    apps.set_vec(Vec::new());
+    view.set_apps(ModelRc::from(apps.clone()));
+    view.set_app_count(0);
+    view.set_selected_app(-1);
+    view.set_is_searching(false);
+    view.invoke_reset_scroll();
+    view.release_input();
+    view.invoke_focus_search();
+}
+
+// ── Launcher state shared by the UI callbacks ──
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lifetime {
+    /// Plain `start-menu`: closing or launching exits the process.
+    ExitOnClose,
+    /// `start-menu --resident`: closing or launching hides and resets.
+    Resident,
+}
+
+/// Stamps of the files behind the loaded data, compared on every show.
+struct LoadedStamps {
+    app_index: Option<FileStamp>,
+    pinned: Option<FileStamp>,
+    usage: Option<FileStamp>,
+}
+
+/// Commands started by a resident menu. A plain launch exits right after
+/// spawning; a resident one must reap its children so they do not linger as
+/// zombies.
+#[derive(Default)]
+struct Children(RefCell<Vec<std::process::Child>>);
+
+impl Children {
+    fn adopt(&self, child: std::process::Child) {
+        self.0.borrow_mut().push(child);
     }
 
-    smpl_common::init("start-menu", 520.0, 580.0)?;
+    /// Reap exited children; returns how many are still running.
+    fn reap(&self) -> usize {
+        let mut children = self.0.borrow_mut();
+        children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+        children.len()
+    }
+}
 
-    let ui = MainWindow::new()?;
-    let ui_weak = ui.as_weak();
-    let _theme_timer = theme::watch(ThemeRole::Popup, move |palette| {
-        if let Some(ui) = ui_weak.upgrade() {
-            apply_theme(&ui, palette);
-        }
-    });
+struct Launcher {
+    ui: slint::Weak<MainWindow>,
+    lifetime: Cell<Lifetime>,
+    apps: RefCell<Vec<AppEntry>>,
+    icon_resolver: RefCell<IconResolver>,
+    path_cache: RefCell<HashMap<String, PathBuf>>,
+    path_cache_primed: Cell<bool>,
+    img_cache: RefCell<HashMap<String, Image>>,
+    model: Rc<VecModel<AppItem>>,
+    pinned_model: Rc<VecModel<AppItem>>,
+    cat_model: Rc<VecModel<CategoryItem>>,
+    pinned: RefCell<Vec<String>>,
+    usage: RefCell<Usage>,
+    loaded: RefCell<LoadedStamps>,
+    children: Children,
+}
 
-    // ── Load all apps from cache ──
-    let all_apps = Rc::new(load_apps());
-    let icon_resolver = Rc::new(IconResolver::from_env());
-    // Defer full icon path scan to first category/search interaction.
-    // Startup only pre-resolves icons for the pinned row (typically ≤5 entries)
-    // instead of running stat() against 10+ dirs for every app in the index.
-    let pinned = Rc::new(RefCell::new(load_pinned()));
-    let path_cache = Rc::new(RefCell::new({
-        let pinned_initial = pinned.borrow();
-        build_icon_path_cache(pinned_apps(&all_apps, &pinned_initial), &icon_resolver)
-    }));
-    let path_cache_primed = Rc::new(Cell::new(false));
-    let img_cache = Rc::new(RefCell::new(HashMap::<String, Image>::new()));
-    let model = Rc::new(VecModel::<AppItem>::default());
-    let pinned_model = Rc::new(VecModel::<AppItem>::default());
-    let usage = Rc::new(RefCell::new(Usage::load()));
+impl Launcher {
+    fn new(ui: &MainWindow, lifetime: Lifetime) -> Rc<Self> {
+        // ── Load all apps from cache ──
+        let (apps, app_index) = read_app_index(&app_index_path(), true).unwrap_or_default();
+        let icon_resolver = IconResolver::from_env();
+        // Defer full icon path scan to first category/search interaction.
+        // Startup only pre-resolves icons for the pinned row (typically ≤5 entries)
+        // instead of running stat() against 10+ dirs for every app in the index.
+        let pinned_stamp = FileStamp::of(&pinned_path());
+        let pinned = load_pinned();
+        let path_cache = build_icon_path_cache(pinned_apps(&apps, &pinned), &icon_resolver);
+        let usage_stamp = usage::state_path().and_then(|path| FileStamp::of(&path));
+        let usage = Usage::load();
+        let launcher = Rc::new(Self {
+            ui: ui.as_weak(),
+            lifetime: Cell::new(lifetime),
+            apps: RefCell::new(apps),
+            icon_resolver: RefCell::new(icon_resolver),
+            path_cache: RefCell::new(path_cache),
+            path_cache_primed: Cell::new(false),
+            img_cache: RefCell::new(HashMap::new()),
+            model: Rc::new(VecModel::default()),
+            pinned_model: Rc::new(VecModel::default()),
+            cat_model: Rc::new(VecModel::default()),
+            pinned: RefCell::new(pinned),
+            usage: RefCell::new(usage),
+            loaded: RefCell::new(LoadedStamps {
+                app_index,
+                pinned: pinned_stamp,
+                usage: usage_stamp,
+            }),
+            children: Children::default(),
+        });
 
-    // ── Build category sidebar ──
-    let cat_model = Rc::new(VecModel::<CategoryItem>::default());
-    {
+        // ── Build category sidebar ──
+        ui.set_categories(ModelRc::from(launcher.cat_model.clone()));
+        launcher.rebuild_categories(ui);
+
+        // ── Initial view: empty (no category selected, no search) ──
+        ui.set_active_category(-1);
+        ui.set_app_count(0);
+
+        // ── Load pinned apps ──
+        launcher.update_pinned(ui);
+        launcher
+    }
+
+    fn rebuild_categories(&self, ui: &MainWindow) {
+        let apps = self.apps.borrow();
         let mut items = Vec::new();
         for (key, display, icon) in CATEGORIES {
-            let count = all_apps.iter().filter(|a| a.category == *key).count();
+            let count = apps.iter().filter(|a| a.category == *key).count();
             // Skip empty categories (but always keep settings)
             if count == 0 && *key != "settings" {
                 continue;
@@ -488,21 +657,225 @@ fn main() -> Result<(), slint::PlatformError> {
                 icon: SharedString::from(*icon),
             });
         }
-        cat_model.set_vec(items);
-    }
-    ui.set_categories(ModelRc::from(cat_model.clone()));
-    ui.set_category_count(cat_model.row_count() as i32);
-
-    // ── Initial view: empty (no category selected, no search) ──
-    ui.set_active_category(-1);
-    ui.set_app_count(0);
-
-    // ── Load pinned apps ──
-    {
-        let cache = path_cache.borrow();
-        update_pinned_model(&ui, &all_apps, &pinned_model, &cache, &img_cache, &pinned.borrow());
+        self.cat_model.set_vec(items);
+        ui.set_category_count(self.cat_model.row_count() as i32);
     }
 
+    fn update_pinned(&self, ui: &MainWindow) {
+        let cache = self.path_cache.borrow();
+        update_pinned_model(
+            ui,
+            &self.apps.borrow(),
+            &self.pinned_model,
+            &cache,
+            &self.img_cache,
+            &self.pinned.borrow(),
+        );
+    }
+
+    /// Resolve every app's icon path once, on first interactive use.
+    fn prime_path_cache(&self) {
+        if !self.path_cache_primed.get() {
+            let cache = build_icon_path_cache(self.apps.borrow().iter(), &self.icon_resolver.borrow());
+            *self.path_cache.borrow_mut() = cache;
+            self.path_cache_primed.set(true);
+        }
+    }
+
+    fn category_key(&self, index: usize) -> String {
+        self.cat_model
+            .row_data(index)
+            .map(|c| c.key.to_string())
+            .unwrap_or_else(|| "all".to_string())
+    }
+
+    fn show_matches(&self, ui: &MainWindow, category_key: &str, query: &str) {
+        let cache = self.path_cache.borrow();
+        update_view(
+            ui,
+            &self.apps.borrow(),
+            &self.model,
+            &cache,
+            &self.img_cache,
+            category_key,
+            query,
+            &self.pinned.borrow(),
+            &self.usage.borrow(),
+        );
+    }
+
+    /// Search text or category changed.
+    fn filter_changed(&self) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        ui.set_show_context_menu(false);
+        let search = ui.get_search_text().to_string();
+        let cat_idx = ui.get_active_category() as usize;
+
+        // No category selected and no search => show nothing
+        if search.is_empty() && cat_idx >= self.cat_model.row_count() {
+            self.model.set_vec(Vec::new());
+            ui.set_apps(ModelRc::from(self.model.clone()));
+            ui.set_app_count(0);
+            ui.set_selected_app(-1);
+            ui.set_is_searching(false);
+            return;
+        }
+
+        let cat_key = self.category_key(cat_idx);
+        self.prime_path_cache();
+        self.show_matches(&ui, &cat_key, &search);
+    }
+
+    fn toggle_pin(&self, exec: &str) {
+        let Some(ui) = self.ui.upgrade() else { return; };
+        {
+            let mut p = self.pinned.borrow_mut();
+            commands::toggle_pin(&mut p, exec);
+            save_pinned(&p);
+        }
+        // Prime full icon cache if not done yet (user may pin before opening any category)
+        self.prime_path_cache();
+        self.update_pinned(&ui);
+        // Refresh current view to update is_pinned flags
+        let search = ui.get_search_text().to_string();
+        let cat_idx = ui.get_active_category() as usize;
+        if !search.is_empty() || cat_idx < self.cat_model.row_count() {
+            let cat_key = self.category_key(cat_idx);
+            self.show_matches(&ui, &cat_key, &search);
+        }
+    }
+
+    /// Record the launch for frecency ranking, run it, then close.
+    fn launch(&self, exec: &str) {
+        {
+            let mut u = self.usage.borrow_mut();
+            u.record(exec, usage::now_unix());
+            u.save();
+        }
+        self.spawn_shell(exec);
+        self.close();
+    }
+
+    fn spawn_shell(&self, command: &str) {
+        match std::process::Command::new("sh").arg("-c").arg(command).spawn() {
+            Ok(child) if self.lifetime.get() == Lifetime::Resident => self.children.adopt(child),
+            Ok(_) => {}
+            Err(error) => eprintln!("start-menu: cannot run {command:?}: {error}"),
+        }
+    }
+
+    /// Escape, compositor close, launching and the toolbar actions end here.
+    fn close(&self) {
+        match self.lifetime.get() {
+            Lifetime::ExitOnClose => std::process::exit(0),
+            Lifetime::Resident => self.hide(),
+        }
+    }
+
+    fn is_shown(&self) -> bool {
+        self.ui.upgrade().is_some_and(|ui| ui.window().is_visible())
+    }
+
+    fn show(&self) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        self.children.reap();
+        if !ui.window().is_visible() {
+            trace("show");
+            self.refresh_sources(&ui);
+            if let Err(error) = ui.show() {
+                eprintln!("start-menu: cannot show the menu: {error}");
+                return;
+            }
+            // After `--hidden`, Slint has already created the (unmapped)
+            // Wayland window and skipped its first frame while hidden; showing
+            // an existing window requests no new frame, and without a frame
+            // the compositor never maps it. Recreated windows draw anyway.
+            ui.window().request_redraw();
+        }
+        ui.invoke_focus_search();
+    }
+
+    /// Idempotent: a hidden menu was already reset when it was hidden.
+    fn hide(&self) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        if !ui.window().is_visible() {
+            return;
+        }
+        trace("hide");
+        // Wayland cannot unmap a window: Slint destroys it and recreates it on
+        // show, keeping the component, fonts and loaded GL libraries.
+        if let Err(error) = ui.hide() {
+            eprintln!("start-menu: cannot hide the menu: {error}");
+        }
+        reset_view(&ui, &self.model);
+        self.children.reap();
+    }
+
+    fn handle(&self, request: Request) {
+        match request {
+            Request::Toggle if self.is_shown() => self.close(),
+            Request::Toggle | Request::Show => self.show(),
+            Request::Hide => self.close(),
+            Request::Quit => {
+                let _ = slint::quit_event_loop();
+            }
+            Request::Reap => {
+                self.children.reap();
+            }
+        }
+    }
+
+    /// Re-read the app index, pins and usage if their files changed since
+    /// they were loaded; unchanged files cost one stat each.
+    fn refresh_sources(&self, ui: &MainWindow) {
+        let index_path = app_index_path();
+        let mut apps_changed = false;
+        // A missing index is being rebuilt; keep the last good list.
+        if stamp::should_reload(self.loaded.borrow().app_index, FileStamp::of(&index_path), false) {
+            if let Some((apps, read_at)) = read_app_index(&index_path, false) {
+                *self.apps.borrow_mut() = apps;
+                self.loaded.borrow_mut().app_index = read_at;
+                apps_changed = true;
+            }
+        }
+        let pinned_now = FileStamp::of(&pinned_path());
+        let pins_changed = stamp::should_reload(self.loaded.borrow().pinned, pinned_now, true);
+        if pins_changed {
+            *self.pinned.borrow_mut() = load_pinned();
+            self.loaded.borrow_mut().pinned = pinned_now;
+        }
+        if let Some(path) = usage::state_path() {
+            let usage_now = FileStamp::of(&path);
+            if stamp::should_reload(self.loaded.borrow().usage, usage_now, true) {
+                *self.usage.borrow_mut() = Usage::load();
+                self.loaded.borrow_mut().usage = usage_now;
+            }
+        }
+        if apps_changed {
+            trace("app index reloaded");
+            self.rebuild_categories(ui);
+            // New installs may add icon directories, so rescan the roots too.
+            *self.icon_resolver.borrow_mut() = IconResolver::from_env();
+            self.img_cache.borrow_mut().clear();
+            self.path_cache.borrow_mut().clear();
+            self.path_cache_primed.set(false);
+        }
+        if apps_changed || pins_changed {
+            if !self.path_cache_primed.get() {
+                let pinned_paths = build_icon_path_cache(
+                    pinned_apps(&self.apps.borrow(), &self.pinned.borrow()),
+                    &self.icon_resolver.borrow(),
+                );
+                self.path_cache.borrow_mut().extend(pinned_paths);
+            }
+            self.update_pinned(ui);
+        }
+    }
+}
+
+fn bind_callbacks(launcher: &Rc<Launcher>, ui: &MainWindow) {
     // ── Search pop-char callback (Backspace from FocusScope) ──
     {
         let ui_weak = ui.as_weak();
@@ -517,163 +890,53 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // ── Filter callback (search text or category changed) ──
-    {
-        let ui_weak = ui.as_weak();
-        let all_apps = all_apps.clone();
-        let icon_resolver = icon_resolver.clone();
-        let path_cache = path_cache.clone();
-        let path_cache_primed = path_cache_primed.clone();
-        let img_cache = img_cache.clone();
-        let model = model.clone();
-        let cat_model = cat_model.clone();
-        let pinned = pinned.clone();
-        let usage = usage.clone();
-
-        ui.on_filter_changed(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            ui.set_show_context_menu(false);
-            let search = ui.get_search_text().to_string();
-            let cat_idx = ui.get_active_category() as usize;
-
-            // No category selected and no search => show nothing
-            if search.is_empty() && cat_idx >= cat_model.row_count() {
-                model.set_vec(Vec::new());
-                ui.set_apps(ModelRc::from(model.clone()));
-                ui.set_app_count(0);
-                ui.set_selected_app(-1);
-                ui.set_is_searching(false);
-                return;
-            }
-
-            let cat_key = cat_model
-                .row_data(cat_idx)
-                .map(|c| c.key.to_string())
-                .unwrap_or_else(|| "all".to_string());
-
-            // Prime full icon path cache on first interactive use
-            if !path_cache_primed.get() {
-                *path_cache.borrow_mut() = build_icon_path_cache(all_apps.iter(), &icon_resolver);
-                path_cache_primed.set(true);
-            }
-            let cache = path_cache.borrow();
-            update_view(&ui, &all_apps, &model, &cache, &img_cache, &cat_key, &search, &pinned.borrow(), &usage.borrow());
-        });
-    }
+    let l = launcher.clone();
+    ui.on_filter_changed(move || l.filter_changed());
 
     // ── Launch app ──
-    {
-        let model = model.clone();
-        let usage = usage.clone();
-        ui.on_launch_app(move |index| {
-            let idx = index as usize;
-            if let Some(item) = model.row_data(idx) {
-                let exec = item.exec.to_string();
-                {
-                    let mut u = usage.borrow_mut();
-                    u.record(&exec, usage::now_unix());
-                    u.save();
-                }
-                let _ = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&exec)
-                    .spawn();
-                std::process::exit(0);
-            }
-        });
-    }
+    let l = launcher.clone();
+    ui.on_launch_app(move |index| {
+        if let Some(item) = l.model.row_data(index as usize) {
+            l.launch(item.exec.as_str());
+        }
+    });
 
     // ── Launch pinned app ──
-    {
-        let pinned_model = pinned_model.clone();
-        let usage = usage.clone();
-        ui.on_launch_pinned(move |index| {
-            let idx = index as usize;
-            if let Some(item) = pinned_model.row_data(idx) {
-                let exec = item.exec.to_string();
-                {
-                    let mut u = usage.borrow_mut();
-                    u.record(&exec, usage::now_unix());
-                    u.save();
-                }
-                let _ = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&exec)
-                    .spawn();
-                std::process::exit(0);
-            }
-        });
-    }
+    let l = launcher.clone();
+    ui.on_launch_pinned(move |index| {
+        if let Some(item) = l.pinned_model.row_data(index as usize) {
+            l.launch(item.exec.as_str());
+        }
+    });
 
     // ── Toggle pin ──
-    {
-        let ui_weak = ui.as_weak();
-        let all_apps = all_apps.clone();
-        let icon_resolver = icon_resolver.clone();
-        let path_cache = path_cache.clone();
-        let path_cache_primed = path_cache_primed.clone();
-        let img_cache = img_cache.clone();
-        let model = model.clone();
-        let pinned = pinned.clone();
-        let pinned_model = pinned_model.clone();
-        let cat_model = cat_model.clone();
-        let usage = usage.clone();
-
-        ui.on_toggle_pin(move |exec| {
-            let Some(ui) = ui_weak.upgrade() else { return; };
-            let exec = exec.to_string();
-            {
-                let mut p = pinned.borrow_mut();
-                commands::toggle_pin(&mut p, &exec);
-                save_pinned(&p);
-            }
-            let p = pinned.borrow();
-            // Prime full icon cache if not done yet (user may pin before opening any category)
-            if !path_cache_primed.get() {
-                *path_cache.borrow_mut() = build_icon_path_cache(all_apps.iter(), &icon_resolver);
-                path_cache_primed.set(true);
-            }
-            let cache = path_cache.borrow();
-            update_pinned_model(&ui, &all_apps, &pinned_model, &cache, &img_cache, &p);
-            // Refresh current view to update is_pinned flags
-            let search = ui.get_search_text().to_string();
-            let cat_idx = ui.get_active_category() as usize;
-            if !search.is_empty() || cat_idx < cat_model.row_count() {
-                let cat_key = cat_model
-                    .row_data(cat_idx)
-                    .map(|c| c.key.to_string())
-                    .unwrap_or_else(|| "all".to_string());
-                update_view(&ui, &all_apps, &model, &cache, &img_cache, &cat_key, &search, &p, &usage.borrow());
-            }
-        });
-    }
+    let l = launcher.clone();
+    ui.on_toggle_pin(move |exec| l.toggle_pin(exec.as_str()));
 
     // ── Close ──
-    ui.on_close(|| {
-        std::process::exit(0);
+    let l = launcher.clone();
+    ui.on_close(move || {
+        trace("close: Escape");
+        l.close();
     });
 
     // ── Open Web App Center ──
-    ui.on_open_webapp_center(|| {
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("webapp-center")
-            .spawn();
-        std::process::exit(0);
+    let l = launcher.clone();
+    ui.on_open_webapp_center(move || {
+        l.spawn_shell("webapp-center");
+        l.close();
     });
 
     // ── Open Sync Center ──
-    ui.on_open_sync_center(|| {
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("sync-center-gui")
-            .spawn();
-        std::process::exit(0);
+    let l = launcher.clone();
+    ui.on_open_sync_center(move || {
+        l.spawn_shell("sync-center-gui");
+        l.close();
     });
 
     // ── Power actions ──
-    ui.on_power_action(|action| {
+    let l = launcher.clone();
+    ui.on_power_action(move |action| {
         let cmd = match action.as_str() {
             "lock" => "lock-screen",
             "sleep" => "systemctl suspend",
@@ -681,11 +944,8 @@ fn main() -> Result<(), slint::PlatformError> {
             "shutdown" => "systemctl poweroff",
             _ => return,
         };
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .spawn();
-        std::process::exit(0);
+        l.spawn_shell(cmd);
+        l.close();
     });
 
     // ── Window drag ──
@@ -701,10 +961,316 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     }
+}
 
-    ui.set_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
-    ui.invoke_focus_search();
-    ui.run()
+/// The window, its launcher, and the theme timer that must live as long.
+struct Menu {
+    ui: MainWindow,
+    launcher: Rc<Launcher>,
+    _theme_timer: slint::Timer,
+}
+
+impl Menu {
+    fn new(lifetime: Lifetime) -> Result<Self, slint::PlatformError> {
+        let ui = MainWindow::new()?;
+        let ui_weak = ui.as_weak();
+        let _theme_timer = theme::watch(ThemeRole::Popup, move |palette| {
+            if let Some(ui) = ui_weak.upgrade() {
+                apply_theme(&ui, palette);
+            }
+        });
+        let launcher = Launcher::new(&ui, lifetime);
+        bind_callbacks(&launcher, &ui);
+        ui.set_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
+        Ok(Self {
+            ui,
+            launcher,
+            _theme_timer,
+        })
+    }
+}
+
+// ── Entry point ──
+
+#[derive(Debug, PartialEq, Eq)]
+enum Invocation {
+    Version,
+    /// No flags: show once, exit on close or launch.
+    Legacy,
+    Resident { hidden: bool },
+}
+
+fn parse_invocation(args: impl IntoIterator<Item = OsString>) -> Invocation {
+    let (mut resident, mut hidden) = (false, false);
+    for arg in args {
+        match arg.to_str() {
+            Some("-v" | "--version") => return Invocation::Version,
+            Some("--resident") => resident = true,
+            Some("--hidden") => hidden = true,
+            // Earlier releases ignored other arguments; keep doing so.
+            _ => {}
+        }
+    }
+    if resident {
+        Invocation::Resident { hidden }
+    } else {
+        Invocation::Legacy
+    }
+}
+
+/// OS scripts can only probe safely with `--version` (older builds open the
+/// menu for any other argument); they print just the first line.
+fn version_text() -> String {
+    format!(
+        "start-menu v{}\nfeatures: resident\n",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn main() -> Result<(), slint::PlatformError> {
+    match parse_invocation(std::env::args_os().skip(1)) {
+        Invocation::Version => {
+            print!("{}", version_text());
+            Ok(())
+        }
+        Invocation::Legacy => run_once(),
+        Invocation::Resident { hidden } => run_resident(hidden),
+    }
+}
+
+fn run_once() -> Result<(), slint::PlatformError> {
+    smpl_common::init("start-menu", 520.0, 580.0)?;
+    let menu = Menu::new(Lifetime::ExitOnClose)?;
+    menu.ui.invoke_focus_search();
+    menu.ui.run()
+}
+
+thread_local! {
+    /// The resident launcher, for requests forwarded by the signal thread.
+    static RESIDENT: RefCell<Option<Rc<Launcher>>> = const { RefCell::new(None) };
+}
+
+fn run_resident(hidden: bool) -> Result<(), slint::PlatformError> {
+    // Before any thread exists, so that every later thread inherits the mask.
+    let blocked = signals::block().map_err(|error| {
+        slint::PlatformError::Other(format!("cannot block signals: {error}"))
+    })?;
+    init_trace();
+    let pid = std::process::id();
+    let pidfile = instance::pidfile_path();
+    let _instance_lock = match instance::start(&pidfile, pid, !hidden) {
+        Ok(instance::Startup::Resident(lock)) => lock,
+        Ok(instance::Startup::HandedOff(existing)) => {
+            trace(&format!("resident {existing} is running; exiting"));
+            return Ok(());
+        }
+        Err(error) => {
+            eprintln!("start-menu: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    smpl_common::init("start-menu", 520.0, 580.0)?;
+    // Hiding destroys the Wayland window and showing recreates it without the
+    // init hook's attributes; the backend reapplies this app ID every time.
+    slint::set_xdg_app_id("start-menu")?;
+    let menu = Menu::new(Lifetime::Resident)?;
+    let launcher = menu.launcher.clone();
+    {
+        let launcher = launcher.clone();
+        menu.ui.window().on_close_requested(move || {
+            trace("close: compositor request");
+            launcher.close();
+            slint::CloseRequestResponse::KeepWindowShown
+        });
+    }
+    trace_rendering(&menu.ui);
+    RESIDENT.with(|resident| *resident.borrow_mut() = Some(launcher.clone()));
+
+    let signal_pidfile = pidfile.clone();
+    let progress = Arc::new(Progress::default());
+    exit_when_stalled(progress.clone(), pidfile.clone(), pid).map_err(|error| {
+        slint::PlatformError::Other(format!("cannot start UI watchdog: {error}"))
+    })?;
+    signals::listen(blocked, move |signal, request| {
+        trace(&format!("signal {signal}: {request:?}"));
+        if request == Request::Quit {
+            // Stop advertising this process at once: a launch racing the
+            // shutdown must wait on the lock and become the next resident,
+            // not hand off to a process that is about to exit.
+            QUITTING.store(true, Ordering::SeqCst);
+            let _ = instance::remove_pidfile_if_ours(&signal_pidfile, pid);
+            exit_if_stuck(signal_pidfile.clone(), pid);
+        }
+        let sequence = progress.forwarded();
+        let ui_progress = progress.clone();
+        let forwarded = slint::invoke_from_event_loop(move || {
+            if let Some(launcher) = RESIDENT.with(|resident| resident.borrow().clone()) {
+                launcher.handle(request);
+            }
+            ui_progress.handled(sequence);
+        });
+        if forwarded.is_err() {
+            // The loop has stopped; nothing is left to wait for.
+            progress.handled(sequence);
+        }
+    })
+    .map_err(|error| slint::PlatformError::Other(format!("cannot listen for signals: {error}")))?;
+
+    if !hidden {
+        launcher.show();
+    }
+    // Signals sent to this PID are handled from here on.
+    if let Err(error) = instance::write_pidfile(&pidfile, pid) {
+        eprintln!("start-menu: cannot write {}: {error}", pidfile.display());
+        if hidden {
+            std::process::exit(1);
+        }
+        // Nothing can find this process to toggle it: close like a plain launch.
+        launcher.lifetime.set(Lifetime::ExitOnClose);
+    }
+    // A termination request may have raced the write above.
+    if QUITTING.load(Ordering::SeqCst) {
+        let _ = instance::remove_pidfile_if_ours(&pidfile, pid);
+    }
+    if hidden {
+        // Measuring text loads the system font collection, which otherwise
+        // makes the first show after a preload several times slower.
+        trace("font warm-up");
+        let _ = menu.ui.get_font_warmup();
+        trace("font warm-up done");
+    }
+
+    let result = slint::run_event_loop_until_quit();
+    trace("event loop finished");
+    if menu.ui.window().is_visible() {
+        let _ = menu.ui.hide();
+    }
+    if let Err(error) = instance::remove_pidfile_if_ours(&pidfile, pid) {
+        eprintln!("start-menu: cannot remove {}: {error}", pidfile.display());
+    }
+    RESIDENT.with(|resident| resident.borrow_mut().take());
+    result
+}
+
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// Longer than an output power-up or display reconfiguration, during which
+/// the compositor sends no frame callbacks and a vsync'd swap blocks.
+const UI_STALL_LIMIT: Duration = Duration::from_secs(20);
+
+/// Set by the signal thread once SIGTERM/SIGINT arrives.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Requests forwarded to the UI thread and how many of them it has handled.
+#[derive(Default)]
+struct Progress {
+    counts: Mutex<(u64, u64)>,
+    changed: Condvar,
+}
+
+impl Progress {
+    /// Returns the request's sequence number.
+    fn forwarded(&self) -> u64 {
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        counts.0 += 1;
+        self.changed.notify_all();
+        counts.0
+    }
+
+    fn handled(&self, sequence: u64) {
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        counts.1 = counts.1.max(sequence);
+        self.changed.notify_all();
+    }
+
+    /// Return once requests are pending and none was handled for `limit`.
+    fn wait_for_stall(&self, limit: Duration) {
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if counts.1 >= counts.0 {
+                counts = self.changed.wait(counts).unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            let handled = counts.1;
+            let (guard, wait) = self
+                .changed
+                .wait_timeout_while(counts, limit, |counts| counts.1 == handled)
+                .unwrap_or_else(PoisonError::into_inner);
+            if wait.timed_out() {
+                return;
+            }
+            counts = guard;
+        }
+    }
+}
+
+/// A UI thread that stops handling requests (e.g. a frame blocked because the
+/// compositor no longer renders the window) would ignore every later toggle.
+/// Exit instead, so the next launch replaces this process.
+fn exit_when_stalled(progress: Arc<Progress>, pidfile: PathBuf, pid: u32) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("ui-watchdog".into())
+        .spawn(move || {
+            progress.wait_for_stall(UI_STALL_LIMIT);
+            eprintln!("start-menu: no request handled for {UI_STALL_LIMIT:?}; exiting");
+            let _ = instance::remove_pidfile_if_ours(&pidfile, pid);
+            // SAFETY: terminates immediately without running other threads' code.
+            unsafe { libc::_exit(1) }
+        })
+        .map(drop)
+}
+
+/// Termination signals are blocked, so a wedged event loop would otherwise
+/// keep the process alive after SIGTERM.
+fn exit_if_stuck(pidfile: PathBuf, pid: u32) {
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    if ARMED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("exit-watchdog".into())
+        .spawn(move || {
+            std::thread::sleep(EXIT_GRACE);
+            eprintln!("start-menu: still running {EXIT_GRACE:?} after termination request");
+            let _ = instance::remove_pidfile_if_ours(&pidfile, pid);
+            // SAFETY: terminates immediately without running other threads' code.
+            unsafe { libc::_exit(1) }
+        });
+}
+
+// ── Latency trace (SMPL_START_MENU_TRACE=1) ──
+
+static TRACE: AtomicBool = AtomicBool::new(false);
+
+fn init_trace() {
+    TRACE.store(
+        std::env::var_os("SMPL_START_MENU_TRACE").is_some_and(|value| !value.is_empty() && value != "0"),
+        Ordering::Relaxed,
+    );
+}
+
+/// Prints CLOCK_MONOTONIC seconds, the clock of Python's `time.monotonic()`,
+/// so external measurements can be lined up with these events.
+fn trace(event: &str) {
+    if TRACE.load(Ordering::Relaxed) {
+        let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: `now` is a valid out-pointer.
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+        eprintln!("start-menu: trace {}.{:06} {event}", now.tv_sec, now.tv_nsec / 1000);
+    }
+}
+
+fn trace_rendering(ui: &MainWindow) {
+    if !TRACE.load(Ordering::Relaxed) {
+        return;
+    }
+    let _ = ui.window().set_rendering_notifier(|state, _| match state {
+        slint::RenderingState::RenderingSetup => trace("GL context ready"),
+        slint::RenderingState::AfterRendering => trace("frame rendered"),
+        slint::RenderingState::RenderingTeardown => trace("GL context released"),
+        _ => {}
+    });
 }
 
 #[cfg(test)]
@@ -1017,5 +1583,265 @@ mod tests {
         let out = filter_and_rank(&apps, "apps", "cod", &Usage::default(), 0);
         assert_eq!(out[0].name, "Codium",
                    "prefix match 'Codium' must beat embedded substring 'xcoder'");
+    }
+
+    // ── Resident mode ──
+
+    #[test]
+    fn version_probe_prints_the_legacy_line_then_the_resident_feature() {
+        let text = version_text();
+        assert_eq!(
+            text,
+            format!("start-menu v{}\nfeatures: resident\n", env!("CARGO_PKG_VERSION"))
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "exactly two lines: {text:?}");
+        // The first line is unchanged from releases without resident mode.
+        let version = lines[0].strip_prefix("start-menu v").unwrap();
+        assert_eq!(version.split('.').count(), 3);
+        assert!(version.split('.').all(|part| part.parse::<u32>().is_ok()));
+        assert_eq!(lines[1], "features: resident");
+    }
+
+    #[test]
+    fn only_resident_flag_changes_the_legacy_launch() {
+        let parse = |args: &[&str]| parse_invocation(args.iter().map(OsString::from));
+        assert_eq!(parse(&[]), Invocation::Legacy);
+        assert_eq!(parse(&["--hidden"]), Invocation::Legacy);
+        assert_eq!(parse(&["--unknown"]), Invocation::Legacy);
+        assert_eq!(parse(&["--resident"]), Invocation::Resident { hidden: false });
+        assert_eq!(parse(&["--resident", "--hidden"]), Invocation::Resident { hidden: true });
+        assert_eq!(parse(&["--hidden", "--resident"]), Invocation::Resident { hidden: true });
+        for version in [&["-v"][..], &["--version"], &["--resident", "--version"], &["-v", "--resident"]] {
+            assert_eq!(parse(version), Invocation::Version, "{version:?}");
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordedView {
+        search: RefCell<String>,
+        category: Cell<i32>,
+        apps: RefCell<Option<ModelRc<AppItem>>>,
+        app_count: Cell<i32>,
+        selected: Cell<i32>,
+        searching: Cell<bool>,
+        context_menu: Cell<bool>,
+        power_menu: Cell<bool>,
+        scrolled: Cell<bool>,
+        input_held: Cell<bool>,
+        focus_zone: Cell<i32>,
+    }
+
+    impl MenuView for RecordedView {
+        fn set_search_text(&self, text: SharedString) {
+            *self.search.borrow_mut() = text.into();
+        }
+        fn set_active_category(&self, index: i32) {
+            self.category.set(index);
+        }
+        fn set_apps(&self, apps: ModelRc<AppItem>) {
+            *self.apps.borrow_mut() = Some(apps);
+        }
+        fn set_app_count(&self, count: i32) {
+            self.app_count.set(count);
+        }
+        fn set_selected_app(&self, index: i32) {
+            self.selected.set(index);
+        }
+        fn set_is_searching(&self, searching: bool) {
+            self.searching.set(searching);
+        }
+        fn set_show_context_menu(&self, shown: bool) {
+            self.context_menu.set(shown);
+        }
+        fn set_show_power_menu(&self, shown: bool) {
+            self.power_menu.set(shown);
+        }
+        fn invoke_reset_scroll(&self) {
+            self.scrolled.set(false);
+        }
+        fn release_input(&self) {
+            self.input_held.set(false);
+        }
+        fn invoke_focus_search(&self) {
+            self.focus_zone.set(0);
+        }
+    }
+
+    #[test]
+    fn hiding_resets_the_view_to_its_startup_state() {
+        let items = [app("Firefox", "firefox"), app("Files", "nemo")]
+            .iter()
+            .map(|entry| to_ui_item(entry, &HashMap::new(), &RefCell::new(HashMap::new()), &[]))
+            .collect::<Vec<_>>();
+        let model = Rc::new(VecModel::from(items));
+        let view = RecordedView {
+            search: RefCell::new("fi".into()),
+            category: Cell::new(3),
+            apps: RefCell::new(Some(ModelRc::from(model.clone()))),
+            app_count: Cell::new(2),
+            selected: Cell::new(1),
+            searching: Cell::new(true),
+            context_menu: Cell::new(true),
+            power_menu: Cell::new(true),
+            scrolled: Cell::new(true),
+            input_held: Cell::new(true),
+            focus_zone: Cell::new(2),
+        };
+
+        reset_view(&view, &model);
+
+        assert_eq!(view.search.borrow().as_str(), "");
+        assert_eq!(view.category.get(), -1, "no category selected");
+        assert_eq!(model.row_count(), 0, "app list empty as at startup");
+        let bound = view.apps.borrow().clone().unwrap();
+        assert_eq!(bound.row_count(), 0);
+        assert_eq!(view.app_count.get(), 0);
+        assert_eq!(view.selected.get(), -1);
+        assert!(!view.searching.get());
+        assert!(!view.context_menu.get(), "context menu closed");
+        assert!(!view.power_menu.get(), "power menu closed");
+        assert!(!view.scrolled.get(), "list scrolled to the top");
+        assert!(!view.input_held.get(), "stale hover and modifiers cleared");
+        assert_eq!(view.focus_zone.get(), 0, "typing goes to the search field");
+
+        // The window keeps showing the shared model, so later searches appear.
+        model.push(to_ui_item(&app("Gimp", "gimp"), &HashMap::new(), &RefCell::new(HashMap::new()), &[]));
+        assert_eq!(bound.row_count(), 1);
+
+        // Resetting an already reset view changes nothing.
+        model.set_vec(Vec::new());
+        reset_view(&view, &model);
+        assert_eq!(view.category.get(), -1);
+        assert_eq!(view.search.borrow().as_str(), "");
+    }
+
+    #[test]
+    fn hidden_reset_matches_the_declared_startup_state() {
+        let ui = include_str!("../ui/main.slint");
+        for declaration in [
+            "in-out property <int> active-category: -1;",
+            "in-out property <int> app-count: 0;",
+            "in-out property <bool> is-searching: false;",
+            "in-out property <int> selected-app: -1;",
+            "in-out property <bool> show-context-menu: false;",
+            "in-out property <bool> show-power-menu: false;",
+            "in-out property <string> search-text <=> search-input.text;",
+        ] {
+            assert!(ui.contains(declaration), "missing startup default: {declaration}");
+        }
+        let reset_scroll = ui
+            .split("public function reset-scroll() {")
+            .nth(1)
+            .expect("reset-scroll function")
+            .split('}')
+            .next()
+            .unwrap();
+        assert!(reset_scroll.contains("app-flick.viewport-x = 0;"));
+        assert!(reset_scroll.contains("app-flick.viewport-y = 0;"));
+        assert!(ui.contains("app-flick := Flickable {"));
+    }
+
+    #[test]
+    fn hidden_preload_measures_text_without_drawing_it() {
+        let ui = include_str!("../ui/main.slint");
+        assert!(ui.contains("out property <length> font-warmup: font-warmup-text.preferred-width;"));
+        let text = ui
+            .split("font-warmup-text := Text {")
+            .nth(1)
+            .expect("font warm-up text")
+            .split("\n    }")
+            .next()
+            .unwrap();
+        assert!(text.contains("visible: false;"));
+        // Plain text plus an icon glyph, so the icon-font fallback loads too.
+        assert!(text.contains("\\u{f0ac3}"));
+    }
+
+    #[test]
+    fn app_index_is_read_with_the_stamp_taken_before_reading() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("app_index");
+        assert!(read_app_index(&path, false).is_none(), "missing index keeps the old list");
+
+        std::fs::write(
+            &path,
+            "Firefox;firefox;internet;firefox\n\
+             firefox;firefox-dup;internet\n\
+             broken line\n\
+             Display;smplos-settings display;settings;preferences;1\n",
+        )
+        .unwrap();
+        let (apps, stamp) = read_app_index(&path, false).unwrap();
+        assert_eq!(stamp, FileStamp::of(&path));
+        let names: Vec<&str> = apps.iter().map(|app| app.name.as_str()).collect();
+        assert_eq!(names, ["Firefox", "Display"], "deduplicated by lowercase name");
+        assert!(apps[1].search_only);
+        assert_eq!(apps[0].icon, "firefox");
+
+        std::fs::write(&path, "Gimp;gimp;graphics;gimp\n").unwrap();
+        assert!(stamp::should_reload(stamp, FileStamp::of(&path), false));
+    }
+
+    #[test]
+    fn exited_launches_are_reaped_and_running_ones_kept() {
+        let wait_until = |done: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !done() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let children = Children::default();
+        let exited = std::process::Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let exited_pid = exited.id();
+        children.adopt(exited);
+        children.adopt(std::process::Command::new("sleep").arg("30").spawn().unwrap());
+
+        wait_until(&|| children.reap() == 1);
+        assert_eq!(children.reap(), 1, "the running launch is kept");
+        assert!(
+            !Path::new(&format!("/proc/{exited_pid}")).exists(),
+            "an exited launch must not stay a zombie"
+        );
+
+        for child in children.0.borrow_mut().iter_mut() {
+            child.kill().unwrap();
+        }
+        wait_until(&|| children.reap() == 0);
+        assert_eq!(children.reap(), 0);
+    }
+
+    #[test]
+    fn ui_stall_is_detected_only_while_requests_wait() {
+        let limit = Duration::from_millis(200);
+        let progress = Arc::new(Progress::default());
+        let (stalled, detected) = std::sync::mpsc::channel();
+        let watcher = {
+            let progress = progress.clone();
+            std::thread::spawn(move || {
+                progress.wait_for_stall(limit);
+                stalled.send(std::time::Instant::now()).unwrap();
+            })
+        };
+
+        // Idle (nothing pending) is never a stall.
+        assert!(detected.recv_timeout(limit * 2).is_err());
+
+        // Requests handled one by one keep resetting the limit, even when
+        // the queue as a whole waits longer than the limit.
+        let first = progress.forwarded();
+        let second = progress.forwarded();
+        std::thread::sleep(limit * 3 / 4);
+        progress.handled(first);
+        std::thread::sleep(limit * 3 / 4);
+        progress.handled(second);
+        assert!(detected.recv_timeout(limit).is_err());
+
+        // A request the UI thread never handles is a stall.
+        let started = std::time::Instant::now();
+        progress.forwarded();
+        let at = detected.recv_timeout(Duration::from_secs(5)).expect("stall detected");
+        assert!(at.duration_since(started) >= limit);
+        watcher.join().unwrap();
     }
 }

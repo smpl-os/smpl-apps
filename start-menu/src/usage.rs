@@ -24,7 +24,7 @@ pub struct Usage {
     entries: HashMap<String, (u32, u64)>,
 }
 
-fn state_path() -> Option<PathBuf> {
+pub(crate) fn state_path() -> Option<PathBuf> {
     let base = std::env::var("XDG_STATE_HOME")
         .ok()
         .filter(|s| !s.is_empty())

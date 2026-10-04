@@ -4772,6 +4772,7 @@ name = "start-menu"
 version = "0.8.25"
 dependencies = [
  "i-slint-backend-winit",
+ "libc",
  "nucleo-matcher",
  "slint",
  "slint-build",

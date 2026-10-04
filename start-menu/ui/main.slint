@@ -390,6 +390,15 @@ export component MainWindow inherits Window {
     // Focus the search scope (not the TextInput) so FocusScope owns ALL key events,
     // including arrow keys that TextInput would otherwise consume for cursor movement.
     public function focus-search() { root.focus-zone = 0; search-scope.focus(); }
+    // Resident mode resets the view while hidden; this puts the list back at the top.
+    public function reset-scroll() {
+        app-flick.viewport-x = 0;
+        app-flick.viewport-y = 0;
+    }
+    // Read once by a hidden resident (`--resident --hidden`): measuring text
+    // loads the system font collection (and the icon-glyph fallback) at
+    // preload time instead of during the first show.
+    out property <length> font-warmup: font-warmup-text.preferred-width;
     function focus-cat() {
         root.focus-zone = 1;
         if (root.active-category < 0) {
@@ -1218,5 +1227,12 @@ export component MainWindow inherits Window {
                 }
             }
         }
+    }
+
+    // Never drawn; only measured through `font-warmup`.
+    font-warmup-text := Text {
+        visible: false;
+        text: "smplOS MENU Search all apps... \u{f0ac3}\u{f0493}";
+        font-size: 13px;
     }
 }

@@ -6,6 +6,22 @@ All notable changes to smpl-apps are documented here.
 
 ## Unreleased
 
+### Added
+
+- **start-menu: resident mode opens the menu in about 20 ms.** Each Super
+  press used to start a new process, taking 260–300 ms to map, mostly for
+  the system font scan and NVIDIA EGL initialization.
+  `start-menu --resident [--hidden]` keeps one process instead. It publishes
+  `$XDG_RUNTIME_DIR/smplos/start-menu.pid` (override:
+  `SMPL_START_MENU_PIDFILE`), toggles on SIGUSR1, hides on SIGUSR2, shows on
+  SIGRTMIN and exits cleanly on SIGTERM/SIGINT. A second `--resident` hands
+  off to the running one. Closing, launching and the toolbar and power actions
+  hide the menu and reset its view instead of exiting. Each show reloads a
+  changed app index, pins and usage. `--hidden` preloads the window and fonts,
+  so even the first show is fast. `start-menu --version` adds a
+  `features: resident` line for the OS probe. Plain `start-menu` is
+  unchanged. Takes effect with the matching smplOS toggle/autostart update.
+
 ### Fixed
 
 - **settings: Display always shows, saves and verifies the real configuration.**

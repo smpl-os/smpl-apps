@@ -8,6 +8,7 @@ slint                 = { workspace = true }
 i-slint-backend-winit = { workspace = true }
 smpl-common           = { workspace = true }
 nucleo-matcher        = { workspace = true }
+libc                  = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }
