@@ -24,6 +24,20 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **settings: Dictation says when its model isn't downloaded and how to get it.**
+  voxtype loads whisper.cpp model files from `~/.local/share/voxtype/models`.
+  Setup and Reconfigure looked instead for smplOS's faster-whisper copies in the
+  Hugging Face cache, treated them as "already cached" and skipped the download.
+  The daemon then stopped with "Model not found", and Settings only said
+  "Service is stopped". Settings now checks the file voxtype actually loads,
+  including its GGML header. While that file is missing, Dictation says so and
+  shows the source (huggingface.co/ggerganov/whisper.cpp), the size, where the
+  file goes and the terminal command, with a **Download model** button.
+  Reconfigure names the selected model when it still needs downloading.
+  Downloads run `voxtype setup --download --model <model>`, move invalid files
+  aside, treat a saved HTTP error page as a failure and explain how to retry.
+  Large Turbo is listed as ~1.6 GB instead of ~3 GB.
+
 - **settings: Display always shows, saves and verifies the real configuration.**
   Selecting a rotated display could show "Landscape" because the controls kept
   separate copies of the selected display's values that some paths never

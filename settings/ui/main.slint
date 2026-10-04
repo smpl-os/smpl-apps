@@ -18,6 +18,7 @@ struct ModelEntry {
     size: string,
     note: string,
     english-only: bool,
+    downloaded: bool,
 }
 
 /// One managed display exactly as Rust last verified or edited it. Every
@@ -670,8 +671,13 @@ export component MainWindow inherits Window {
     property <int> dictation-lang-highlighted-idx: 0;
     in property <[ModelEntry]> dictation-model-list;
     in-out property <int> dictation-selected-model-idx: 0;
+    property <ModelEntry> dictation-selected-model: root.dictation-model-list[root.dictation-selected-model-idx];
     in-out property <bool> dictation-also-english: true;
     in property <bool> dictation-config-missing: false;
+    // Set by Rust when the configured model can't be loaded; empty when it's ready.
+    in property <string> dictation-model-problem: "";
+    in property <string> dictation-model-help: "";
+    in property <bool> dictation-model-downloadable: false;
     property <bool> dictation-selected-lang-is-english:
         root.dictation-selected-lang-name == "English (recommended)";
 
@@ -835,6 +841,7 @@ export component MainWindow inherits Window {
     callback select-dictation-lang(int);
     callback start-dictation-install();
     callback start-dictation-reconfigure();
+    callback download-dictation-model();
     callback open-dictation-config();
     callback restart-dictation-service();
     callback cancel-dictation-install();
@@ -2031,6 +2038,18 @@ export component MainWindow inherits Window {
                         }
                     }
 
+                    // Where the selected model comes from, until it's downloaded
+                    if root.dictation-selected-model.label != "" && !root.dictation-selected-model.downloaded: Text {
+                        text: root.dictation-installed
+                            ? root.dictation-selected-model.label + " isn't downloaded yet. Save & Download Model gets it ("
+                                + root.dictation-selected-model.size + ") from Hugging Face; needs internet."
+                            : "Install Dictation also downloads " + root.dictation-selected-model.label + " ("
+                                + root.dictation-selected-model.size + ") from Hugging Face; needs internet.";
+                        color: Theme.fg_dim;
+                        font-size: Typography.secondary;
+                        wrap: word-wrap;
+                    }
+
                     // Action buttons
                     HorizontalLayout {
                         spacing: 8px;
@@ -2066,8 +2085,8 @@ export component MainWindow inherits Window {
 
                             Text {
                                 width: 100%; height: 100%;
-                                text: root.dictation-installed
-                                    ? "Save & Download Model" : "Install Dictation";
+                                text: !root.dictation-installed ? "Install Dictation"
+                                    : root.dictation-selected-model.downloaded ? "Save" : "Save & Download Model";
                                 color: Theme.bg;
                                 font-size: Typography.body;
                                 font-weight: 600;
@@ -2110,6 +2129,61 @@ export component MainWindow inherits Window {
 
                             Text {
                                 text: "Click Reconfigure to set up language and model.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // Model not downloaded (or not loadable): where to get it
+                    if root.dictation-model-problem != "": Rectangle {
+                        border-radius: 6px;
+                        background: Theme.warning.transparentize(85%);
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 10px;
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: root.dictation-model-problem;
+                                    color: Theme.warning;
+                                    font-size: Typography.body;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+
+                                if root.dictation-model-downloadable: Rectangle {
+                                    width: download-model-text.preferred-width + 20px;
+                                    height: Typography.compact-control;
+                                    border-radius: 4px;
+                                    background: download-model-touch.has-hover
+                                        ? Theme.accent.darker(0.1) : Theme.accent;
+
+                                    download-model-text := Text {
+                                        width: 100%; height: 100%;
+                                        text: "Download model";
+                                        color: Theme.bg;
+                                        font-size: Typography.body;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    download-model-touch := TouchArea {
+                                        clicked => { root.download-dictation-model(); }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: root.dictation-model-help;
                                 color: Theme.fg_dim;
                                 font-size: Typography.secondary;
                                 wrap: word-wrap;
@@ -2256,8 +2330,8 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // Service stopped hint
-                    if !root.dictation-service-running && !root.dictation-config-missing: Rectangle {
+                    // Service stopped hint (starting it can't help while the model is missing)
+                    if !root.dictation-service-running && !root.dictation-config-missing && root.dictation-model-problem == "": Rectangle {
                         border-radius: 6px;
                         background: Theme.warning.transparentize(90%);
 

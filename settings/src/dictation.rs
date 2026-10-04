@@ -1,4 +1,7 @@
 use crate::debug_log;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -127,7 +130,7 @@ pub static MODELS: &[WhisperModel] = &[
     WhisperModel { id: "base",            label: "Base",           size: "~150 MB", note: "Fast, 99 languages",        english_only: false },
     WhisperModel { id: "small",           label: "Small",          size: "~500 MB", note: "Good balance",              english_only: false },
     WhisperModel { id: "medium",          label: "Medium",         size: "~1.5 GB", note: "Higher accuracy, slower",   english_only: false },
-    WhisperModel { id: "large-v3-turbo",  label: "Large Turbo",    size: "~3 GB",   note: "Best quality, needs 6GB+ RAM", english_only: false },
+    WhisperModel { id: "large-v3-turbo",  label: "Large Turbo",    size: "~1.6 GB", note: "Best quality, needs 6GB+ RAM", english_only: false },
 ];
 
 pub fn find_language_idx(code: &str) -> Option<usize> {
@@ -153,12 +156,15 @@ pub fn language_display(cfg: &DictationConfig) -> slint::SharedString {
     }
 }
 
-pub fn model_display(model_id: &str) -> slint::SharedString {
+fn model_label(model_id: &str) -> &str {
     MODELS.iter()
         .find(|m| m.id == model_id)
         .map(|m| m.label)
         .unwrap_or(model_id)
-        .into()
+}
+
+pub fn model_display(model_id: &str) -> slint::SharedString {
+    model_label(model_id).into()
 }
 
 pub fn is_model_english_only(model_idx: usize) -> bool {
@@ -181,6 +187,17 @@ pub struct DictationConfig {
     pub primary_code: String,
     pub also_english: bool,
     pub model: String,
+    /// Top-level `engine`; voxtype uses whisper when it's absent.
+    pub engine: String,
+    /// `[whisper] mode` (or the deprecated `backend`): local, remote or cli.
+    pub whisper_mode: String,
+}
+
+impl DictationConfig {
+    /// Whether voxtype loads a local whisper.cpp model file with this config.
+    pub fn uses_local_model(&self) -> bool {
+        self.engine == "whisper" && self.whisper_mode != "remote"
+    }
 }
 
 fn home_dir() -> Option<String> {
@@ -211,54 +228,84 @@ pub fn is_installed() -> bool {
 pub fn read_config() -> Option<DictationConfig> {
     let path = config_path()?;
     let content = std::fs::read_to_string(&path).ok()?;
+    let cfg = parse_config(&content);
 
+    debug_log!("[settings] dictation config: primary={}, also_en={}, model={}",
+        cfg.primary_code, cfg.also_english, cfg.model);
+
+    Some(cfg)
+}
+
+/// `key = value` with both sides trimmed.
+fn key_value(line: &str) -> Option<(&str, &str)> {
+    let (key, value) = line.split_once('=')?;
+    Some((key.trim(), value.trim()))
+}
+
+/// A TOML string value without its quotes or a trailing comment.
+fn string_value(raw: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(rest) = raw.strip_prefix(quote) {
+            return rest.split(quote).next().unwrap_or_default();
+        }
+    }
+    raw.split('#').next().unwrap_or_default().trim()
+}
+
+fn parse_config(content: &str) -> DictationConfig {
     let mut language = String::from("auto");
-    let mut model = String::from("base");
-    let mut in_whisper = false;
+    // voxtype's defaults when the keys are absent.
+    let mut model = String::from("base.en");
+    let mut engine = String::from("whisper");
+    let mut mode: Option<String> = None;
+    let mut backend: Option<String> = None;
+    let mut section = String::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
 
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_whisper = trimmed == "[whisper]";
+            section = trimmed.to_string();
             continue;
         }
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
+        let Some((key, raw)) = key_value(trimmed) else {
+            continue;
+        };
 
-        if in_whisper {
-            if let Some(rest) = trimmed.strip_prefix("model") {
-                if let Some((_, val)) = rest.split_once('=') {
-                    let val = val.trim().trim_matches('"');
-                    if !val.is_empty() {
-                        model = val.to_string();
+        match (section.as_str(), key) {
+            ("", "engine") => engine = string_value(raw).to_string(),
+            ("[whisper]", "model") => {
+                let val = string_value(raw);
+                if !val.is_empty() {
+                    model = val.to_string();
+                }
+            }
+            ("[whisper]", "mode") => mode = Some(string_value(raw).to_string()),
+            ("[whisper]", "backend") => backend = Some(string_value(raw).to_string()),
+            ("[whisper]", "language") => {
+                if raw.starts_with('[') {
+                    let inner = raw
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .split(',')
+                        .map(|s| s.trim().trim_matches('"').to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if !inner.is_empty() {
+                        language = inner;
+                    }
+                } else {
+                    let v = raw.trim_matches('"').to_string();
+                    if !v.is_empty() {
+                        language = v;
                     }
                 }
             }
-            if let Some(rest) = trimmed.strip_prefix("language") {
-                if let Some((_, val)) = rest.split_once('=') {
-                    let raw = val.trim();
-                    if raw.starts_with('[') {
-                        let inner = raw
-                            .trim_start_matches('[')
-                            .trim_end_matches(']')
-                            .split(',')
-                            .map(|s| s.trim().trim_matches('"').to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        if !inner.is_empty() {
-                            language = inner;
-                        }
-                    } else {
-                        let v = raw.trim_matches('"').to_string();
-                        if !v.is_empty() {
-                            language = v;
-                        }
-                    }
-                }
-            }
+            _ => {}
         }
     }
 
@@ -271,10 +318,13 @@ pub fn read_config() -> Option<DictationConfig> {
         (codes[0].to_string(), false)
     };
 
-    debug_log!("[settings] dictation config: primary={}, also_en={}, model={}",
-        primary_code, also_english, model);
-
-    Some(DictationConfig { primary_code, also_english, model })
+    DictationConfig {
+        primary_code,
+        also_english,
+        model,
+        engine,
+        whisper_mode: mode.or(backend).unwrap_or_else(|| "local".to_string()),
+    }
 }
 
 pub fn is_service_running() -> bool {
@@ -285,6 +335,173 @@ pub fn is_service_running() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+// ── Model files ──────────────────────────────────────────────────────────────
+//
+// voxtype's Whisper engine is whisper.cpp: it loads one GGML file per model
+// from its data directory, and `voxtype setup --download` fetches that file
+// from Hugging Face. The faster-whisper copies smplOS primes into
+// ~/.cache/huggingface are a different format that voxtype never reads.
+
+/// Where `voxtype setup --download` gets Whisper models.
+pub const MODEL_SOURCE: &str = "huggingface.co/ggerganov/whisper.cpp";
+
+/// Models `voxtype setup --download --model` accepts, with download sizes.
+const DOWNLOADS: &[(&str, &str)] = &[
+    ("tiny", "~78 MB"),
+    ("tiny.en", "~78 MB"),
+    ("base", "~150 MB"),
+    ("base.en", "~150 MB"),
+    ("small", "~500 MB"),
+    ("small.en", "~500 MB"),
+    ("medium", "~1.5 GB"),
+    ("medium.en", "~1.5 GB"),
+    ("large-v3", "~3.1 GB"),
+    ("large-v3-turbo", "~1.6 GB"),
+];
+
+/// whisper.cpp model files start with the GGML magic 0x67676d6c (little-endian).
+const GGML_MAGIC: [u8; 4] = *b"lmgg";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelStatus {
+    Ready,
+    Missing,
+    /// Present but not a whisper.cpp model, e.g. an error page that a failed
+    /// download saved in its place.
+    Invalid,
+}
+
+/// voxtype's models directory, resolved like voxtype does:
+/// `$XDG_DATA_HOME/voxtype/models`, normally `~/.local/share/voxtype/models`.
+pub fn models_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|dir| dir.join("voxtype").join("models"))
+}
+
+/// The file voxtype loads for a `[whisper] model` value, following its
+/// `resolve_model_path`: an absolute path, a model name, or a `.bin` file
+/// name in the models directory. `None` for names voxtype rejects.
+pub fn model_file(model: &str, models_dir: &Path) -> Option<PathBuf> {
+    if Path::new(model).is_absolute() {
+        return Some(PathBuf::from(model));
+    }
+    let file = match model {
+        "large" | "large-v1" => "ggml-large-v1.bin".to_string(),
+        "large-v2" => "ggml-large-v2.bin".to_string(),
+        name if is_downloadable(name) => format!("ggml-{name}.bin"),
+        name if name.ends_with(".bin") => name.to_string(),
+        _ => return None,
+    };
+    Some(models_dir.join(file))
+}
+
+pub fn is_downloadable(model: &str) -> bool {
+    download_size(model).is_some()
+}
+
+fn download_size(model: &str) -> Option<&'static str> {
+    DOWNLOADS.iter().find(|(name, _)| *name == model).map(|(_, size)| *size)
+}
+
+pub fn model_status(path: &Path) -> ModelStatus {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ModelStatus::Missing,
+        _ => return ModelStatus::Invalid,
+    }
+    let mut magic = [0; 4];
+    match File::open(path).and_then(|mut file| file.read_exact(&mut magic)) {
+        Ok(()) if magic == GGML_MAGIC => ModelStatus::Ready,
+        _ => ModelStatus::Invalid,
+    }
+}
+
+/// Whether each entry of `MODELS` is downloaded, in order.
+pub fn downloaded_models(models_dir: &Path) -> Vec<bool> {
+    MODELS
+        .iter()
+        .map(|m| {
+            model_file(m.id, models_dir)
+                .is_some_and(|path| model_status(&path) == ModelStatus::Ready)
+        })
+        .collect()
+}
+
+/// What the Dictation page says about the configured model; empty when the
+/// model is ready or the config doesn't use a local Whisper model.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ModelNotice {
+    pub problem: String,
+    pub help: String,
+    /// Whether "Download model" can fetch it (`voxtype setup --download`).
+    pub downloadable: bool,
+}
+
+pub fn model_notice(cfg: &DictationConfig, models_dir: &Path, home: Option<&Path>) -> ModelNotice {
+    if !cfg.uses_local_model() {
+        return ModelNotice::default();
+    }
+    let Some(path) = model_file(&cfg.model, models_dir) else {
+        return ModelNotice {
+            problem: format!(
+                "voxtype doesn't know the model \"{}\", so dictation can't start.",
+                cfg.model
+            ),
+            help: "Pick a model under Reconfigure.".to_string(),
+            downloadable: false,
+        };
+    };
+    let status = model_status(&path);
+    if status == ModelStatus::Ready {
+        return ModelNotice::default();
+    }
+    let label = model_label(&cfg.model);
+    let file = path.file_name().unwrap_or_default().to_string_lossy();
+    match (download_size(&cfg.model), status) {
+        (Some(size), ModelStatus::Missing) => ModelNotice {
+            problem: format!("The {label} model isn't downloaded, so dictation can't start."),
+            help: format!(
+                "Download model fetches {file} ({size}) from {MODEL_SOURCE} into {}; \
+                 needs internet. Terminal: voxtype setup --download --model {}",
+                display_path(models_dir, home),
+                cfg.model
+            ),
+            downloadable: true,
+        },
+        (Some(size), _) => ModelNotice {
+            problem: format!(
+                "The {label} model file isn't a valid Whisper model, so dictation can't start."
+            ),
+            help: format!(
+                "Download model moves it aside and fetches {file} ({size}) again from \
+                 {MODEL_SOURCE}; needs internet."
+            ),
+            downloadable: true,
+        },
+        (None, status) => ModelNotice {
+            problem: if status == ModelStatus::Missing {
+                "voxtype can't find the model file, so dictation can't start."
+            } else {
+                "The model file isn't a valid Whisper model, so dictation can't start."
+            }
+            .to_string(),
+            help: format!(
+                "It looks for {}. Put a whisper.cpp model there, or pick another model \
+                 under Reconfigure.",
+                display_path(&path, home)
+            ),
+            downloadable: false,
+        },
+    }
+}
+
+/// `path` with the home directory shown as `~`.
+fn display_path(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 // ── Setup actions ────────────────────────────────────────────────────────────
@@ -400,7 +617,82 @@ pub fn cleanup_stale_progress() {
     set_install_running(false);
 }
 
-pub fn launch_install() -> bool {
+/// Shell functions shared by the setup scripts. `download_model <percent>`
+/// makes sure `$2` is a whisper.cpp model, downloading model `$1` (size `$3`)
+/// with voxtype when it isn't. Arguments come from `spawn_script`.
+macro_rules! model_download_functions {
+    () => {
+        concat!(
+            "MODEL=\"$1\"; MODEL_FILE=\"$2\"; MODEL_SIZE=\"$3\"\n",
+            "MODEL_URL=\"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILE##*/}\"\n",
+            "# whisper.cpp model files start with the GGML magic \"lmgg\".\n",
+            "model_ok() {\n",
+            "    [[ -f \"$MODEL_FILE\" ]] &&\n",
+            "        [[ \"$(od -An -tx1 -N4 -- \"$MODEL_FILE\" 2>/dev/null | tr -d ' \\n')\" == 6c6d6767 ]]\n",
+            "}\n",
+            "download_failed() {\n",
+            "    echo '0|Error: Model download failed. Check your internet connection, press Back, then click Download model.' > \"$PROG\"\n",
+            "    echo ''\n",
+            "    echo \"  ERROR: Could not download the $MODEL model ($MODEL_SIZE).\"\n",
+            "    echo '  It comes from Hugging Face, so it needs an internet connection:'\n",
+            "    echo \"    $MODEL_URL\"\n",
+            "    echo ''\n",
+            "    echo '  Check your connection, then try again:'\n",
+            "    echo '    - Settings > Dictation > Download model, or'\n",
+            "    echo \"    - in a terminal: voxtype setup --download --model $MODEL\"\n",
+            "    echo \"  Or download that file yourself and save it as $MODEL_FILE\"\n",
+            "    echo ''\n",
+            "    echo '  Press Enter to close.'; read -r; exit 1\n",
+            "}\n",
+            "download_model() {\n",
+            "    if model_ok; then\n",
+            "        echo '70|Model already downloaded' > \"$PROG\"\n",
+            "        echo \"  The $MODEL model is already downloaded -- skipping download.\"\n",
+            "        return\n",
+            "    fi\n",
+            "    # voxtype skips files that exist, so move an invalid one aside first.\n",
+            "    if [[ -e \"$MODEL_FILE\" ]]; then\n",
+            "        mv -f -- \"$MODEL_FILE\" \"$MODEL_FILE.invalid\" &&\n",
+            "            echo \"  Moved an invalid model file aside: $MODEL_FILE.invalid\"\n",
+            "    fi\n",
+            "    echo \"$1|Downloading the $MODEL model ($MODEL_SIZE)...\" > \"$PROG\"\n",
+            "    echo ''\n",
+            "    echo \"  Downloading the $MODEL model ($MODEL_SIZE) from Hugging Face...\"\n",
+            "    voxtype setup --download --no-post-install --model \"$MODEL\" 2>&1 || download_failed\n",
+            "    # curl saves HTTP error pages too; only a whisper.cpp model counts.\n",
+            "    if ! model_ok; then\n",
+            "        [[ -e \"$MODEL_FILE\" ]] && mv -f -- \"$MODEL_FILE\" \"$MODEL_FILE.invalid\"\n",
+            "        download_failed\n",
+            "    fi\n",
+            "}\n",
+        )
+    };
+}
+
+/// Runs a setup script in a terminal with the arguments `download_model`
+/// needs. Returns false, with the reason in the progress file, if it can't.
+fn spawn_script(script: &str, model_id: &str) -> bool {
+    let error = match models_dir().and_then(|dir| model_file(model_id, &dir)) {
+        None => "Error: Could not find voxtype's models directory",
+        Some(file) => match Command::new("terminal")
+            .args(["-e", "bash", "-c", script, "bash", model_id])
+            .arg(file)
+            .arg(download_size(model_id).unwrap_or("unknown size"))
+            .spawn()
+        {
+            Ok(_) => return true,
+            Err(e) => {
+                eprintln!("[settings] failed to spawn terminal: {}", e);
+                "Error: Could not open terminal"
+            }
+        },
+    };
+    set_install_running(false);
+    let _ = std::fs::write(progress_file_path(), format!("0|{error}"));
+    false
+}
+
+pub fn launch_install(model_id: &str) -> bool {
     if INSTALL_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         debug_log!("[settings] install already in progress, ignoring");
         return false;
@@ -411,6 +703,7 @@ pub fn launch_install() -> bool {
         "PROG=\"${XDG_RUNTIME_DIR:-/tmp}/settings-install-progress\"\n",
         "cleanup() { echo \"0|Error: Interrupted\" > \"$PROG\"; exit 1; }\n",
         "trap cleanup INT TERM\n",
+        model_download_functions!(),
         "echo ''\n",
         "echo '  Setting up dictation...'\n",
         "\n",
@@ -485,26 +778,7 @@ pub fn launch_install() -> bool {
         "    kill $SUDO_KEEPALIVE 2>/dev/null || true\n",
         "fi\n",
         "\n",
-        "# Check if model is already cached (bundled or previously downloaded)\n",
-        "HF_CACHE=\"${XDG_CACHE_HOME:-$HOME/.cache}/huggingface/hub\"\n",
-        "CFG_MODEL=$(grep '^model' \"$HOME/.config/voxtype/config.toml\" 2>/dev/null | sed 's/.*\"\\(.*\\)\".*/\\1/' | head -1)\n",
-        "CFG_MODEL=${CFG_MODEL:-base.en}\n",
-        "CACHE_DIR=\"$HF_CACHE/models--Systran--faster-whisper-${CFG_MODEL}\"\n",
-        "if [[ -d \"$CACHE_DIR/snapshots\" ]] && find \"$CACHE_DIR/snapshots\" -name model.bin -print -quit 2>/dev/null | grep -q .; then\n",
-        "    echo '70|Model already cached' > \"$PROG\"\n",
-        "    echo '  AI model already cached -- skipping download.'\n",
-        "else\n",
-        "    echo '40|Downloading AI model...' > \"$PROG\"\n",
-        "    echo ''\n",
-        "    echo '  Downloading AI model (this may take a few minutes)...'\n",
-        "    if ! voxtype setup --download --no-post-install 2>&1; then\n",
-        "        echo '0|Error: Model download failed' > \"$PROG\"\n",
-        "        echo ''\n",
-        "        echo '  ERROR: Model download failed.'\n",
-        "        echo '  Check your internet connection and try again.'\n",
-        "        echo '  Press Enter to close.'; read -r; exit 1\n",
-        "    fi\n",
-        "fi\n",
+        "download_model 40\n",
         "echo '85|Setting up service...' > \"$PROG\"\n",
         "echo ''\n",
         "echo '  Setting up systemd service...'\n",
@@ -524,22 +798,10 @@ pub fn launch_install() -> bool {
         "echo '  You can close this window now.'\n",
         "read -r\n",
     );
-    match Command::new("terminal")
-        .args(["-e", "bash", "-c", script])
-        .spawn()
-    {
-        Ok(_) => true,
-        Err(e) => {
-            eprintln!("[settings] failed to spawn terminal: {}", e);
-            set_install_running(false);
-            let path = progress_file_path();
-            let _ = std::fs::write(&path, "0|Error: Could not open terminal");
-            false
-        }
-    }
+    spawn_script(script, model_id)
 }
 
-pub fn launch_model_download() -> bool {
+pub fn launch_model_download(model_id: &str) -> bool {
     if INSTALL_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         debug_log!("[settings] install already in progress, ignoring");
         return false;
@@ -550,32 +812,13 @@ pub fn launch_model_download() -> bool {
         "PROG=\"${XDG_RUNTIME_DIR:-/tmp}/settings-install-progress\"\n",
         "cleanup() { echo \"0|Error: Interrupted\" > \"$PROG\"; exit 1; }\n",
         "trap cleanup INT TERM\n",
+        model_download_functions!(),
         "if ! command -v voxtype &>/dev/null; then\n",
         "    echo '0|Error: voxtype not found' > \"$PROG\"\n",
         "    echo '  ERROR: voxtype is not installed.'\n",
         "    echo '  Press Enter to close.'; read -r; exit 1\n",
         "fi\n",
-        "# Check if the configured model is already cached\n",
-        "HF_CACHE=\"${XDG_CACHE_HOME:-$HOME/.cache}/huggingface/hub\"\n",
-        "CFG_MODEL=$(grep '^model' \"$HOME/.config/voxtype/config.toml\" 2>/dev/null | sed 's/.*\"\\(.*\\)\".*/\\1/' | head -1)\n",
-        "CFG_MODEL=${CFG_MODEL:-base.en}\n",
-        "CACHE_DIR=\"$HF_CACHE/models--Systran--faster-whisper-${CFG_MODEL}\"\n",
-        "if [[ -d \"$CACHE_DIR/snapshots\" ]] && find \"$CACHE_DIR/snapshots\" -name model.bin -print -quit 2>/dev/null | grep -q .; then\n",
-        "    echo '70|Model already cached' > \"$PROG\"\n",
-        "    echo ''\n",
-        "    echo '  AI model already cached -- no download needed.'\n",
-        "else\n",
-        "    echo '10|Downloading AI model...' > \"$PROG\"\n",
-        "    echo ''\n",
-        "    echo '  Downloading AI model...'\n",
-        "    if ! voxtype setup --download --no-post-install 2>&1; then\n",
-        "        echo '0|Error: Model download failed' > \"$PROG\"\n",
-        "        echo ''\n",
-        "        echo '  ERROR: Model download failed.'\n",
-        "        echo '  Check your internet connection and try again.'\n",
-        "        echo '  Press Enter to close.'; read -r; exit 1\n",
-        "    fi\n",
-        "fi\n",
+        "download_model 10\n",
         "echo '80|Restarting service...' > \"$PROG\"\n",
         "echo ''\n",
         "echo '  Restarting dictation service...'\n",
@@ -586,19 +829,7 @@ pub fn launch_model_download() -> bool {
         "echo '  Done! You can close this window.'\n",
         "read -r\n",
     );
-    match Command::new("terminal")
-        .args(["-e", "bash", "-c", script])
-        .spawn()
-    {
-        Ok(_) => true,
-        Err(e) => {
-            eprintln!("[settings] failed to spawn terminal: {}", e);
-            set_install_running(false);
-            let path = progress_file_path();
-            let _ = std::fs::write(&path, "0|Error: Could not open terminal");
-            false
-        }
-    }
+    spawn_script(script, model_id)
 }
 
 pub fn open_config() {
@@ -631,4 +862,262 @@ pub fn restart_service() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+    use std::sync::atomic::AtomicU64;
+
+    /// The start of a real whisper.cpp model file.
+    const GGML: &[u8] = b"lmgg\x99\xca\x00\x00";
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "settings-dictation-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(path.join("models")).unwrap();
+            Self(path)
+        }
+
+        fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
+            let path = self.0.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, bytes).unwrap();
+            path
+        }
+
+        fn progress(&self) -> String {
+            fs::read_to_string(self.0.join("progress")).unwrap_or_default()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn config(model: &str) -> DictationConfig {
+        parse_config(&format!("[whisper]\nmodel = \"{model}\"\n"))
+    }
+
+    #[test]
+    fn model_names_resolve_to_the_files_voxtype_loads() {
+        let dir = Path::new("/models");
+        for (model, file) in [
+            ("base.en", "/models/ggml-base.en.bin"),
+            ("large-v3-turbo", "/models/ggml-large-v3-turbo.bin"),
+            ("large", "/models/ggml-large-v1.bin"),
+            ("base_en_acft_q8_0.bin", "/models/base_en_acft_q8_0.bin"),
+            ("/opt/whisper/custom.bin", "/opt/whisper/custom.bin"),
+        ] {
+            assert_eq!(model_file(model, dir), Some(PathBuf::from(file)), "{model}");
+        }
+        assert_eq!(model_file("huge", dir), None);
+        assert!(!is_downloadable("large-v2"));
+        for model in MODELS {
+            assert!(is_downloadable(model.id), "{} can't be downloaded", model.id);
+            assert_eq!(download_size(model.id), Some(model.size), "{} size", model.id);
+        }
+    }
+
+    #[test]
+    fn only_whisper_cpp_model_files_count_as_downloaded() {
+        let fx = Fixture::new();
+        assert_eq!(model_status(&fx.0.join("ggml-base.bin")), ModelStatus::Missing);
+        assert_eq!(model_status(&fx.write("ggml-base.bin", GGML)), ModelStatus::Ready);
+        assert_eq!(model_status(&fx.write("error.bin", b"Entry not found")), ModelStatus::Invalid);
+        assert_eq!(model_status(&fx.write("empty.bin", b"")), ModelStatus::Invalid);
+        // smplOS's bundled faster-whisper (CTranslate2) model.bin can't be loaded by voxtype.
+        assert_eq!(model_status(&fx.write("model.bin", &[6, 0, 0, 0, 1])), ModelStatus::Invalid);
+        fs::create_dir(fx.0.join("dir.bin")).unwrap();
+        assert_eq!(model_status(&fx.0.join("dir.bin")), ModelStatus::Invalid);
+    }
+
+    #[test]
+    fn missing_model_notice_says_where_and_how_to_get_it_until_downloaded() {
+        let fx = Fixture::new();
+        let dir = fx.0.join(".local/share/voxtype/models");
+        let notice = model_notice(&config("base.en"), &dir, Some(&fx.0));
+        assert_eq!(
+            notice.problem,
+            "The Base (English) model isn't downloaded, so dictation can't start."
+        );
+        assert_eq!(
+            notice.help,
+            "Download model fetches ggml-base.en.bin (~150 MB) from \
+             huggingface.co/ggerganov/whisper.cpp into ~/.local/share/voxtype/models; \
+             needs internet. Terminal: voxtype setup --download --model base.en"
+        );
+        assert!(notice.downloadable);
+        assert_eq!(downloaded_models(&dir), vec![false; MODELS.len()]);
+
+        fx.write(".local/share/voxtype/models/ggml-base.en.bin", GGML);
+        assert_eq!(model_notice(&config("base.en"), &dir, Some(&fx.0)), ModelNotice::default());
+        let downloaded = downloaded_models(&dir);
+        for (model, downloaded) in MODELS.iter().zip(downloaded) {
+            assert_eq!(downloaded, model.id == "base.en", "{}", model.id);
+        }
+    }
+
+    #[test]
+    fn invalid_and_custom_model_files_get_matching_advice() {
+        let fx = Fixture::new();
+        let dir = fx.0.join("models");
+        fx.write("models/ggml-small.bin", b"<!DOCTYPE html>");
+        let notice = model_notice(&config("small"), &dir, None);
+        assert_eq!(
+            notice.problem,
+            "The Small model file isn't a valid Whisper model, so dictation can't start."
+        );
+        assert_eq!(
+            notice.help,
+            "Download model moves it aside and fetches ggml-small.bin (~500 MB) again from \
+             huggingface.co/ggerganov/whisper.cpp; needs internet."
+        );
+        assert!(notice.downloadable);
+
+        // voxtype can't download a custom file, so say where it looks for it.
+        let notice = model_notice(&config("base_en_acft_q8_0.bin"), &dir, Some(&fx.0));
+        assert_eq!(notice.problem, "voxtype can't find the model file, so dictation can't start.");
+        assert_eq!(
+            notice.help,
+            "It looks for ~/models/base_en_acft_q8_0.bin. Put a whisper.cpp model there, \
+             or pick another model under Reconfigure."
+        );
+        assert!(!notice.downloadable);
+        fx.write("models/base_en_acft_q8_0.bin", GGML);
+        assert_eq!(model_notice(&config("base_en_acft_q8_0.bin"), &dir, None), ModelNotice::default());
+
+        let notice = model_notice(&config("huge"), &dir, None);
+        assert_eq!(notice.problem, "voxtype doesn't know the model \"huge\", so dictation can't start.");
+        assert!(!notice.downloadable);
+    }
+
+    #[test]
+    fn notice_only_applies_when_voxtype_loads_a_local_whisper_model() {
+        let fx = Fixture::new();
+        for text in [
+            "engine = \"parakeet\"\n[whisper]\nmodel = \"base\"\n",
+            "[whisper]\nmodel = \"base\"\nmode = \"remote\"\n",
+            "[whisper]\nmodel = \"base\"\nbackend = \"remote\"\n",
+        ] {
+            assert_eq!(model_notice(&parse_config(text), &fx.0, None), ModelNotice::default(), "{text}");
+        }
+        // whisper-cli mode loads the same file, and `mode` wins over the deprecated `backend`.
+        for text in [
+            "[whisper]\nmodel = \"base\"\nmode = \"cli\"\n",
+            "engine = \"whisper\"\n[whisper]\nmodel = \"base\"\nmode = \"local\"\nbackend = \"remote\"\n",
+        ] {
+            assert!(!model_notice(&parse_config(text), &fx.0, None).problem.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn config_reading_follows_voxtype_keys_sections_and_defaults() {
+        assert_eq!(parse_config("[whisper]\nlanguage = \"en\"\n").model, "base.en");
+        let cfg = parse_config(
+            "# engine = \"parakeet\"\n\
+             [hotkey]\n\
+             model_modifier = \"LEFTSHIFT\"\n\
+             [whisper]\n\
+             model = \"small\" # better accuracy\n\
+             language = [\"en\", \"fr\"]\n\
+             [meeting.summary]\n\
+             backend = \"remote\"\n\
+             [vad]\n\
+             model = \"/models/ggml-silero-vad.bin\"\n",
+        );
+        assert_eq!(cfg.model, "small");
+        assert!(cfg.uses_local_model());
+        assert_eq!(cfg.primary_code, "fr");
+        assert!(cfg.also_english);
+    }
+
+    /// Runs the setup scripts' `download_model` step for base.en with a stub
+    /// `voxtype` that runs `stub`.
+    fn run_download_step(fx: &Fixture, stub: &str) -> (bool, String) {
+        let voxtype = fx.write(
+            "bin/voxtype",
+            format!("#!/bin/bash\necho \"$*\" >> '{}'\n{stub}\n", fx.0.join("calls").display())
+                .as_bytes(),
+        );
+        fs::set_permissions(&voxtype, fs::Permissions::from_mode(0o755)).unwrap();
+        let script = concat!("PROG=\"$PROGRESS\"\n", model_download_functions!(), "download_model 10\n");
+        let path = format!("{}:{}", fx.0.join("bin").display(), std::env::var("PATH").unwrap_or_default());
+        let output = Command::new("bash")
+            .args(["-c", script, "bash", "base.en"])
+            .arg(fx.0.join("models/ggml-base.en.bin"))
+            .arg("~150 MB")
+            .env("PATH", path)
+            .env("PROGRESS", fx.0.join("progress"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        (output.status.success(), String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    #[test]
+    fn download_step_keeps_a_ready_model_and_downloads_a_missing_or_invalid_one() {
+        let fx = Fixture::new();
+        fx.write("models/ggml-base.en.bin", GGML);
+        let (ok, out) = run_download_step(&fx, "exit 1");
+        assert!(ok, "{out}");
+        assert!(!fx.0.join("calls").exists(), "voxtype ran for a ready model");
+        assert_eq!(fx.progress(), "70|Model already downloaded\n");
+
+        let fx = Fixture::new();
+        let model = fx.0.join("models/ggml-base.en.bin");
+        let stub = format!("printf 'lmgg\\0\\0' > '{}'", model.display());
+        // A file voxtype would treat as present is moved aside, not deleted.
+        fx.write("models/ggml-base.en.bin", b"<html>");
+        let (ok, out) = run_download_step(&fx, &stub);
+        assert!(ok, "{out}");
+        assert_eq!(
+            fs::read_to_string(fx.0.join("calls")).unwrap(),
+            "setup --download --no-post-install --model base.en\n"
+        );
+        assert_eq!(model_status(&model), ModelStatus::Ready);
+        assert_eq!(fs::read(fx.0.join("models/ggml-base.en.bin.invalid")).unwrap(), b"<html>");
+        assert_eq!(fx.progress(), "10|Downloading the base.en model (~150 MB)...\n");
+    }
+
+    #[test]
+    fn failed_downloads_say_what_to_do_next() {
+        for saves_error_page in [false, true] {
+            let fx = Fixture::new();
+            let model = fx.0.join("models/ggml-base.en.bin");
+            // curl without --fail saves an HTTP error page as the model and exits 0.
+            let stub = if saves_error_page {
+                format!("echo 'Entry not found' > '{}'", model.display())
+            } else {
+                "exit 1".to_string()
+            };
+            let (ok, out) = run_download_step(&fx, &stub);
+            assert!(!ok, "{out}");
+            assert!(!model.exists());
+            assert_eq!(
+                fx.progress(),
+                "0|Error: Model download failed. Check your internet connection, press Back, \
+                 then click Download model.\n"
+            );
+            for advice in [
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+                "needs an internet connection",
+                "Settings > Dictation > Download model",
+                "voxtype setup --download --model base.en",
+                &format!("save it as {}", model.display()),
+            ] {
+                assert!(out.contains(advice), "missing {advice:?} in:\n{out}");
+            }
+        }
+    }
 }

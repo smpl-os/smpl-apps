@@ -581,6 +581,35 @@ fn slint_key_to_hyprland(text: &str) -> String {
     result
 }
 
+/// Shows whether the configured model and each listed model are downloaded.
+fn refresh_dictation_models(ui: &MainWindow, cfg: Option<&dictation::DictationConfig>) {
+    let dir = dictation::models_dir();
+    let notice = match (&dir, cfg) {
+        (Some(dir), Some(cfg)) => {
+            dictation::model_notice(cfg, dir, dirs::home_dir().as_deref())
+        }
+        _ => dictation::ModelNotice::default(),
+    };
+    ui.set_dictation_model_problem(notice.problem.into());
+    ui.set_dictation_model_help(notice.help.into());
+    ui.set_dictation_model_downloadable(notice.downloadable);
+
+    let downloaded = dir
+        .map(|dir| dictation::downloaded_models(&dir))
+        .unwrap_or_default();
+    let list = ui.get_dictation_model_list();
+    for row in 0..list.row_count() {
+        let Some(mut entry) = list.row_data(row) else {
+            continue;
+        };
+        let now = downloaded.get(row).copied().unwrap_or(false);
+        if entry.downloaded != now {
+            entry.downloaded = now;
+            list.set_row_data(row, entry);
+        }
+    }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -682,6 +711,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 size: m.size.into(),
                 note: m.note.into(),
                 english_only: m.english_only,
+                downloaded: false,
             })
             .collect();
         ui.set_dictation_model_list(slint::ModelRc::from(Rc::new(slint::VecModel::from(model_entries))));
@@ -693,9 +723,10 @@ fn main() -> Result<(), slint::PlatformError> {
 
         let installed = dictation::is_installed();
         ui.set_dictation_installed(installed);
+        let cfg = if installed { dictation::read_config() } else { None };
         if installed {
-            if let Some(cfg) = dictation::read_config() {
-                ui.set_dictation_language(dictation::language_display(&cfg));
+            if let Some(cfg) = &cfg {
+                ui.set_dictation_language(dictation::language_display(cfg));
                 ui.set_dictation_model(dictation::model_display(&cfg.model));
                 if let Some(idx) = dictation::find_language_idx(&cfg.primary_code) {
                     ui.set_dictation_selected_lang_name(
@@ -716,6 +747,7 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             ui.set_dictation_service_running(dictation::is_service_running());
         }
+        refresh_dictation_models(&ui, cfg.as_ref());
     }
 
     layouts::cleanup_legacy_config();
@@ -1155,7 +1187,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_dictation_progress_text("Starting...".into());
                 ui.set_dictation_install_error(false);
                 ui.set_dictation_installing(true);
-                if !dictation::launch_install() {
+                if !dictation::launch_install(model_id) {
                     ui.set_dictation_install_error(true);
                 }
             }
@@ -1202,9 +1234,32 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_dictation_install_error(false);
                 ui.set_dictation_installing(true);
                 ui.set_dictation_configuring(false);
-                if !dictation::launch_model_download() {
+                if !dictation::launch_model_download(model_id) {
                     ui.set_dictation_install_error(true);
                 }
+            }
+        });
+    }
+
+    // Download the configured model (the config is left as it is)
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_download_dictation_model(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            if dictation::is_install_running() {
+                return;
+            }
+            let Some(cfg) = dictation::read_config() else {
+                return;
+            };
+            ui.set_dictation_progress(0.0);
+            ui.set_dictation_progress_text("Starting...".into());
+            ui.set_dictation_install_error(false);
+            ui.set_dictation_installing(true);
+            if !dictation::launch_model_download(&cfg.model) {
+                ui.set_dictation_install_error(true);
             }
         });
     }
@@ -2735,9 +2790,10 @@ fn main() -> Result<(), slint::PlatformError> {
 
                                         let installed = dictation::is_installed();
                                         ui.set_dictation_installed(installed);
+                                        let cfg = if installed { dictation::read_config() } else { None };
                                         if installed {
-                                            if let Some(cfg) = dictation::read_config() {
-                                                ui.set_dictation_language(dictation::language_display(&cfg));
+                                            if let Some(cfg) = &cfg {
+                                                ui.set_dictation_language(dictation::language_display(cfg));
                                                 ui.set_dictation_model(dictation::model_display(&cfg.model));
                                                 if let Some(idx) = dictation::find_language_idx(&cfg.primary_code) {
                                                     ui.set_dictation_selected_lang_name(
@@ -2758,6 +2814,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                             }
                                             ui.set_dictation_service_running(dictation::is_service_running());
                                         }
+                                        refresh_dictation_models(&ui, cfg.as_ref());
                                     }
                                 },
                             );
@@ -2765,9 +2822,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     } else {
                         let installed = dictation::is_installed();
                         ui.set_dictation_installed(installed);
+                        let cfg = if installed { dictation::read_config() } else { None };
                         if installed {
-                            if let Some(cfg) = dictation::read_config() {
-                                ui.set_dictation_language(dictation::language_display(&cfg));
+                            if let Some(cfg) = &cfg {
+                                ui.set_dictation_language(dictation::language_display(cfg));
                                 ui.set_dictation_model(dictation::model_display(&cfg.model));
                                 ui.set_dictation_config_missing(false);
                             } else if !dictation::config_exists() {
@@ -2777,6 +2835,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             }
                             ui.set_dictation_service_running(dictation::is_service_running());
                         }
+                        refresh_dictation_models(&ui, cfg.as_ref());
                     }
 
                     // Refresh about uptime

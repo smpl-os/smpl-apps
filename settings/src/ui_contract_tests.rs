@@ -301,3 +301,38 @@ fn display_tab_never_shows_unverified_or_stale_state_as_applicable() {
     assert!(rect.contains("text: root.narrow ? root.sublabel-two-line : root.sublabel;"));
     assert!(!rect.contains("overflow: elide"));
 }
+
+fn dictation_tab() -> &'static str {
+    UI.split("// DICTATION TAB")
+        .nth(1)
+        .unwrap()
+        .split("// DISPLAY TAB")
+        .next()
+        .unwrap()
+}
+
+#[test]
+fn dictation_says_when_the_model_is_missing_and_how_to_get_it() {
+    let tab = dictation_tab();
+    for binding in [
+        "if root.dictation-model-problem != \"\": Rectangle",
+        "text: root.dictation-model-problem;",
+        "text: root.dictation-model-help;",
+        "if root.dictation-model-downloadable: Rectangle",
+        "clicked => { root.download-dictation-model(); }",
+        // Starting the service can't help while the model is missing.
+        "if !root.dictation-service-running && !root.dictation-config-missing && root.dictation-model-problem == \"\": Rectangle",
+        // Setup and Reconfigure say when the selected model still has to be downloaded.
+        "if root.dictation-selected-model.label != \"\" && !root.dictation-selected-model.downloaded: Text",
+        ": root.dictation-selected-model.downloaded ? \"Save\" : \"Save & Download Model\";",
+    ] {
+        assert!(tab.contains(binding), "missing dictation binding: {binding}");
+    }
+    assert!(UI.contains(
+        "property <ModelEntry> dictation-selected-model: root.dictation-model-list[root.dictation-selected-model-idx];"
+    ));
+    let rust = include_str!("main.rs");
+    assert!(rust.contains("dictation::launch_model_download(&cfg.model)"));
+    // Startup, the status poll and the end of an install all refresh model state.
+    assert_eq!(rust.matches("refresh_dictation_models(&ui, cfg.as_ref());").count(), 3);
+}

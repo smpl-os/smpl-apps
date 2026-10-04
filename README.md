@@ -644,6 +644,39 @@ shows each name on its own screen.
 Headless regression checks (temporary directories and mocked command runners):
 `cargo test -p settings --bin settings display`.
 
+### Dictation models
+
+Settings → Dictation configures voxtype, whose Whisper engine is whisper.cpp.
+Each model is one GGML file, `ggml-<model>.bin`, in
+`$XDG_DATA_HOME/voxtype/models` (normally `~/.local/share/voxtype/models`).
+`voxtype setup --download --model <model>` fetches it from
+`huggingface.co/ggerganov/whisper.cpp`. The download needs an internet
+connection: Base is about 150 MB, Small 500 MB, Medium 1.5 GB and
+Large Turbo 1.6 GB. After that, dictation runs offline. The smplOS image copies
+faster-whisper (CTranslate2) models into `~/.cache/huggingface`. Those are a
+different format, and voxtype doesn't use them.
+
+Every two seconds, Settings checks the file voxtype loads for the configured
+model. Only a file with the GGML header counts as downloaded. While the model is
+missing, the page says so. It shows where the file comes from, its size, where
+it goes and the terminal command, and it offers **Download model**. It also hides
+the "Service is stopped" hint, because starting the service can't work without
+a model. Reconfigure names the selected model when it still has to be
+downloaded. The download runs in a terminal:
+
+- An invalid existing file is moved aside to `*.invalid`; otherwise voxtype
+  would skip the download.
+- An HTTP error page saved in place of the model counts as a failed download.
+- Every failure explains how to retry.
+
+A model given as an absolute path or a custom `.bin` file name can't be
+downloaded by voxtype, so the page shows the path voxtype looks for instead.
+Settings doesn't detect a truncated file that still has a valid header; voxtype
+reports it when it loads the model.
+
+Headless checks, using temporary directories and a stub `voxtype`:
+`cargo test -p settings --bin settings dictation`.
+
 ### Publishing
 
 Pre-built binaries are published to [Releases](../../releases) and consumed by the smplOS ISO builder.
