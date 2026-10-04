@@ -38,6 +38,13 @@ All notable changes to smpl-apps are documented here.
   aside, treat a saved HTTP error page as a failure and explain how to retry.
   Large Turbo is listed as ~1.6 GB instead of ~3 GB.
 
+- **settings: Dictation records from the system microphone again.** Setup
+  and Reconfigure wrote `device = "auto"`, but voxtype only accepts
+  `"default"` for the system microphone and treats any other value as a
+  device name. Recording failed with "Audio device not found: 'auto'".
+  Settings now writes `device = "default"`. To fix an existing config,
+  click Reconfigure → Save. smplOS's own default config needs the same fix.
+
 - **settings: Display always shows, saves and verifies the real configuration.**
   Selecting a rotated display could show "Landscape" because the controls kept
   separate copies of the selected display's values that some paths never

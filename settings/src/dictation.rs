@@ -519,6 +519,21 @@ pub fn write_config(lang_code: &str, model_id: &str, also_english: bool) -> bool
         return false;
     }
 
+    let config = config_text(lang_code, model_id, also_english);
+    let path = format!("{}/config.toml", dir);
+    match std::fs::write(&path, &config) {
+        Ok(_) => {
+            debug_log!("[settings] wrote config to {}", path);
+            true
+        }
+        Err(e) => {
+            eprintln!("[settings] failed to write config: {}", e);
+            false
+        }
+    }
+}
+
+fn config_text(lang_code: &str, model_id: &str, also_english: bool) -> String {
     let lang_line = if lang_code == "en" || lang_code == "auto" {
         format!("language = \"{}\"", lang_code)
     } else if also_english {
@@ -527,7 +542,9 @@ pub fn write_config(lang_code: &str, model_id: &str, also_english: bool) -> bool
         format!("language = \"{}\"", lang_code)
     };
 
-    let config = format!(
+    // voxtype treats any device name except "default" (the system microphone)
+    // literally, so "auto" fails with "Audio device not found".
+    format!(
         "# Voxtype configuration for smplOS\n\
          # Docs: https://github.com/peteonrails/voxtype\n\
          \n\
@@ -550,26 +567,14 @@ pub fn write_config(lang_code: &str, model_id: &str, also_english: bool) -> bool
          on_transcription = true\n\
          \n\
          [audio]\n\
-         device = \"auto\"\n\
+         device = \"default\"\n\
          sample_rate = 16000\n\
          max_duration_secs = 60\n\
          \n\
          [audio.feedback]\n\
          enabled = true\n\
          theme = \"default\"\n"
-    );
-
-    let path = format!("{}/config.toml", dir);
-    match std::fs::write(&path, &config) {
-        Ok(_) => {
-            debug_log!("[settings] wrote config to {}", path);
-            true
-        }
-        Err(e) => {
-            eprintln!("[settings] failed to write config: {}", e);
-            false
-        }
-    }
+    )
 }
 
 // ── Progress tracking ────────────────────────────────────────────────────────
@@ -1040,6 +1045,18 @@ mod tests {
         assert!(cfg.uses_local_model());
         assert_eq!(cfg.primary_code, "fr");
         assert!(cfg.also_english);
+    }
+
+    #[test]
+    fn written_config_uses_the_system_microphone_and_reads_back() {
+        let text = config_text("fr", "small", true);
+        assert!(text.contains("[audio]\ndevice = \"default\"\n"), "{text}");
+        assert!(!text.contains("\"auto\"\nsample_rate"));
+        let cfg = parse_config(&text);
+        assert_eq!(cfg.model, "small");
+        assert_eq!(cfg.primary_code, "fr");
+        assert!(cfg.also_english);
+        assert!(cfg.uses_local_model());
     }
 
     /// Runs the setup scripts' `download_model` step for base.en with a stub
