@@ -162,3 +162,142 @@ fn hints_scrollbars_are_fixed_siblings_of_the_scrolling_viewport() {
     assert!(hints.find("HorizontalScrollIndicator {").unwrap() > end);
     assert!(hints.find("ScrollIndicator {").unwrap() > end);
 }
+
+/// The body of a top-level `component <name>` declaration.
+fn component(name: &str) -> &'static str {
+    let start = UI
+        .find(&format!("\ncomponent {name} inherits"))
+        .unwrap_or_else(|| panic!("component {name} missing"));
+    let rest = &UI[start + 1..];
+    let end = rest[1..]
+        .find("\ncomponent ")
+        .map_or(rest.len(), |offset| offset + 1);
+    &rest[..end]
+}
+
+fn display_tab() -> &'static str {
+    UI.split("// DISPLAY TAB")
+        .nth(1)
+        .unwrap()
+        .split("// POWER TAB")
+        .next()
+        .unwrap()
+}
+
+#[test]
+fn dropdown_and_slider_inputs_are_controlled_and_never_assigned_internally() {
+    let dropdown = component("ResDropdown");
+    assert!(dropdown.contains("in property <int> current-index"));
+    assert!(!dropdown.contains("in-out property <int> current-index"));
+    assert!(!dropdown.contains("current-index ="), "ResDropdown assigns current-index");
+    assert!(dropdown.contains("root.selected(idx);"));
+
+    let slider = component("ThemeSlider");
+    assert!(slider.contains("in property <float> value"));
+    assert!(!slider.contains("in-out property <float> value"));
+    for assignment in ["root.value =", "root.value +=", "value = clamp", "value = round"] {
+        assert!(!slider.contains(assignment), "ThemeSlider assigns its value: {assignment}");
+    }
+    assert!(slider.contains("root.changed(root.value-at(self.mouse-x));"));
+    // The fill starts at the left edge, like the knob.
+    let fill = slider.split("// Starts at the left edge").nth(1).unwrap();
+    let fill = fill.split_once('\n').unwrap().1.trim_start();
+    assert!(fill.starts_with("Rectangle {\n            x: 0;"), "{fill}");
+
+    // XR sliders keep working by storing the emitted value themselves.
+    for (property, callback) in [
+        ("xr-radius", "xr-set-radius"),
+        ("xr-fov", "xr-set-fov"),
+        ("xr-curvature", "xr-set-curvature"),
+        ("xr-smoothing", "xr-set-smoothing"),
+    ] {
+        assert!(UI.contains(&format!("value: root.{property};")));
+        assert!(UI.contains(&format!("changed(v) => {{ root.{property} = v; root.{callback}(v); }}")));
+    }
+}
+
+#[test]
+fn display_controls_read_the_selected_row_of_disp_monitors() {
+    for (property, field) in [
+        ("[string]> disp-selected-modes", "available-modes"),
+        ("int> disp-selected-mode-index", "current-mode-index"),
+        ("float> disp-selected-scale", "scale"),
+        ("[string]> disp-selected-orientations", "orientation-options"),
+        ("int> disp-selected-orientation", "current-orientation-index"),
+    ] {
+        let declaration = format!(
+            "out property <{property}: root.disp-selection-valid ? root.disp-monitors[root.disp-selected-index].{field} :"
+        );
+        assert!(UI.contains(&declaration), "missing derived {property}");
+    }
+    let tab = display_tab();
+    for binding in [
+        "model: root.disp-selected-modes;\n                                    current-index: root.disp-selected-mode-index;",
+        "value: root.disp-selected-scale;",
+        "model: root.disp-selected-orientations;\n                                    current-index: root.disp-selected-orientation;",
+        "sublabel: mon.size-label;",
+        "sublabel-two-line: mon.size-label-two-line;",
+    ] {
+        assert!(tab.contains(binding), "missing display binding: {binding}");
+    }
+    // The orientation list comes from the row (it can name transforms 4–7).
+    assert!(!tab.contains("model: [\"Landscape\""));
+    // Nothing in the tab writes a displayed value; only the selection index.
+    for property in ["disp-selected-scale", "disp-selected-orientation", "disp-selected-mode-index", "disp-monitors"] {
+        assert!(!UI.contains(&format!("root.{property} =")), "{property} assigned in UI");
+    }
+}
+
+#[test]
+fn duplicated_display_selection_setters_are_gone() {
+    let rust = [
+        include_str!("main.rs"),
+        include_str!("display/ui.rs"),
+        include_str!("display/model.rs"),
+    ];
+    for setter in [
+        "set_disp_selected_orientation",
+        "set_disp_selected_scale",
+        "set_disp_selected_mode_index",
+        "set_disp_selected_modes",
+    ] {
+        assert!(rust.iter().all(|source| !source.contains(setter)), "{setter} still exists");
+    }
+    for property in [
+        "disp-selected-orientation:",
+        "disp-selected-scale:",
+        "disp-selected-mode-index:",
+        "disp-selected-modes:",
+    ] {
+        for kind in ["in property <", "in-out property <"] {
+            assert!(
+                !UI.lines().any(|line| line.contains(kind) && line.contains(property)),
+                "{property} is still writable"
+            );
+        }
+    }
+    assert!(include_str!("display/ui.rs").contains("ui.set_disp_selected_index(controller.model.selected_index());"));
+}
+
+#[test]
+fn display_tab_never_shows_unverified_or_stale_state_as_applicable() {
+    assert!(UI.contains("if root.active-tab == 3 { root.disp-tab-entered(); }"));
+    assert!(UI.contains(
+        "out property <bool> disp-can-apply: root.disp-has-changes && !root.disp-busy && !root.disp-stale;"
+    ));
+    let tab = display_tab();
+    assert!(tab.contains("enabled: root.disp-can-apply;"));
+    assert!(tab.contains("enabled: root.disp-can-revert;"));
+    assert!(tab.contains("if !root.disp-available: Rectangle"));
+    assert!(tab.contains("text: root.disp-unavailable-reason;"));
+    assert!(tab.contains("if root.disp-stale: Rectangle"));
+    assert!(tab.contains("if root.disp-drift-text != \"\": Rectangle"));
+    assert!(tab.contains("clicked => { root.disp-use-saved(); }"));
+    assert!(tab.contains("clicked => { root.disp-keep-current(); }"));
+    assert!(tab.contains("if !root.disp-workspace-policy: VerticalLayout"));
+    assert!(tab.contains("Move workspace 1 here"));
+    let rect = component("MonitorRect");
+    assert!(rect.contains("private property <bool> narrow: size-measure.preferred-width + 8px > root.width;"));
+    assert!(rect.contains("text: root.narrow ? root.sublabel-two-line : root.sublabel;"));
+    assert!(!rect.contains("overflow: elide"));
+}

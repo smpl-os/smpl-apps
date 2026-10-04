@@ -502,6 +502,61 @@ validate and report EWW failures. An older helper may conceal those failures.
 
 Headless regression checks: `cargo test -p settings --bin settings taskbar`.
 
+### Display settings
+
+Settings → Display is a projection of verified Hyprland state. Rows come only
+from `hyprctl -j monitors all`; enabled, physical, non-mirroring outputs are
+drawn and written, while disabled, virtual (`HEADLESS-*`, `WL-*`, `FALLBACK`)
+and mirroring outputs are named in the status line and never written. Every
+control reads the selected row, so the canvas, mode, scale and orientation
+always match what Hyprland reports. Mirrored transforms 4–7 appear as an extra,
+exactly named orientation. Outside Hyprland, or when `hyprctl` fails, the tab
+explains why it is unavailable; simulated displays need `settings --demo`.
+
+Edits (drag, mode, scale, orientation) are normalized immediately so the canvas
+shows exactly what will be saved: an overlapping or detached display moves to
+the nearest position sharing an edge with the arrangement (on the side facing
+it), and the arrangement is translated to 0,0. Displays that are already
+attached never move, and edits that keep every size (a refresh rate, a 180°
+turn) leave the layout alone; a loaded live layout is never altered. Scales
+snap to values Hyprland keeps for the mode; it silently replaces others (1.5
+becomes 1.6 on 2560×1440).
+
+Apply runs off the UI thread. It refuses when the displays or the saved file
+changed since editing began, rewrites `$HOME/.config/hypr/monitors.conf` (never
+an `XDG_CONFIG_HOME` copy), stops the bar, reloads Hyprland, waits up to 3 s for
+the result, restarts the bar, centers off-screen floating windows, reads config
+errors and reloads the tab from the live state. It reports "Applied and
+verified" only when every written field matches and otherwise lists each
+difference.
+
+The writer replaces only lines whose selector matches a written display,
+carries their `vrr`, `bitdepth`, `cm`, `sdrbrightness`, `sdrsaturation` and
+`icc` options and their `addreserved` lines, and keeps everything else verbatim:
+comments, the catch-all, and lines for displays that are disconnected,
+disabled, virtual or mirroring. A display is keyed by `desc:<make model
+serial>` when that description is unique, so a connector change (DP-3 becoming
+DP-4) keeps its rule; otherwise by connector. Writes are atomic, preserve the
+file mode, replace a symlink's target, skip byte-identical content and keep the
+newest five `monitors.conf.bak-YYYYmmdd-HHMMSS` copies for the OS monitors
+guard. The grammar and rule semantics (last matching rule wins; standalone
+`transform` and `addreserved` forms) are shared with the smplOS Lua loader.
+Publish the matching OS update first.
+
+While the tab is open it checks for changes every two seconds. Without pending
+edits it reloads automatically; with pending edits Apply stays blocked until
+Refresh or Revert. When a display's saved rule differs from what is active, a
+notice offers **Use saved** (reload the file) or **Keep current** (save the
+active layout). "Primary" marks the display showing workspace 1. With the
+workspace policy enabled (`workspace-ctl enabled`), placement follows the
+arrangement and the button becomes a note; otherwise **Move workspace 1 here**
+moves it now without saving. Dispatches use the running config provider's
+syntax (Lua `hl.dsp.*` or legacy) and succeed only on an `ok` reply. Identify
+shows each name on its own screen.
+
+Headless regression checks (temporary directories and mocked command runners):
+`cargo test -p settings --bin settings display`.
+
 ### Publishing
 
 Pre-built binaries are published to [Releases](../../releases) and consumed by the smplOS ISO builder.

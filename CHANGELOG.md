@@ -8,6 +8,24 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **settings: Display always shows, saves and verifies the real configuration.**
+  Selecting a rotated display could show "Landscape" because the controls kept
+  separate copies of the selected display's values that some paths never
+  updated, and controls dropped their bindings after the first interaction.
+  Controls now read the selected row of the verified model (selection follows
+  the connector across reloads), and transforms 0–7 are kept exactly. Apply no
+  longer re-packs displays into one row: the canvas shows the normalized layout
+  that is saved. It refuses stale edits, rewrites only the managed lines of
+  `$HOME/.config/hypr/monitors.conf` (description selectors, carried options,
+  backups, atomic replace), reloads Hyprland off the UI thread and reports
+  "Applied and verified" only when Hyprland matches. Lua-config dispatches use
+  `hl.dsp.*` and require an `ok` reply. Settings shows saved/active drift with
+  Use saved / Keep current, follows external changes, snaps scales to values
+  Hyprland keeps, identifies displays on the right screen, marks the display
+  showing workspace 1 as primary, and never shows invented displays outside
+  Hyprland. Disabled, virtual and mirroring outputs are listed, not written.
+  Requires the matching smplOS monitors loader update.
+
 - **Native GUI transparency preserves opaque foregrounds.** Settings and all
   other owned GUI apps share validated palette loading and last-good theme
   refresh. Regular apps use `app_background_opacity`, with legacy popup opacity

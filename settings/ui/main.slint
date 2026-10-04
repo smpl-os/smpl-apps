@@ -20,8 +20,9 @@ struct ModelEntry {
     english-only: bool,
 }
 
+/// One managed display exactly as Rust last verified or edited it. Every
+/// Display control reads the selected row; nothing duplicates these values.
 struct MonitorInfo {
-    id: int,
     name: string,
     description: string,
     width: int,
@@ -30,7 +31,8 @@ struct MonitorInfo {
     pos-x: int,
     pos-y: int,
     scale: float,
-    enabled: bool,
+    // Exact Hyprland transform 0–7.
+    transform: int,
     is-primary: bool,
     canvas-x: float,
     canvas-y: float,
@@ -38,7 +40,11 @@ struct MonitorInfo {
     canvas-h: float,
     available-modes: [string],
     current-mode-index: int,
+    orientation-options: [string],
     current-orientation-index: int,
+    // Rotated size, e.g. "1080×1920" for portrait, and a two-line variant.
+    size-label: string,
+    size-label-two-line: string,
 }
 
 struct SearchResult {
@@ -211,12 +217,15 @@ component TabButton inherits Rectangle {
     }
 }
 
-// ── Display dropdown (resolution picker) ─────────────────────────────────────
+// ── Display dropdown (resolution / orientation picker) ───────────────────────
+// Controlled: `current-index` is only ever bound by the parent. Choosing an
+// item emits `selected`; the verified state then flows back through the
+// binding, so the dropdown can never show a value that isn't in the model.
 
 component ResDropdown inherits Rectangle {
     in property <[string]> model: [];
-    in-out property <int> current-index: 0;
-    in-out property <bool> open: false;
+    in property <int> current-index: -1;
+    in property <bool> enabled: true;
     callback selected(int);
 
     height: Typography.compact-control;
@@ -228,9 +237,9 @@ component ResDropdown inherits Rectangle {
         padding-right: 8px;
 
         Text {
-            text: model.length > 0 && current-index >= 0 && current-index < model.length
-                ? model[current-index] : "---";
-            color: Theme.fg;
+            text: root.model.length > 0 && root.current-index >= 0 && root.current-index < root.model.length
+                ? root.model[root.current-index] : "---";
+            color: root.enabled ? Theme.fg : Theme.fg_dim;
             font-size: Typography.secondary;
             vertical-alignment: center;
             horizontal-stretch: 1;
@@ -238,7 +247,7 @@ component ResDropdown inherits Rectangle {
         }
 
         Text {
-            text: root.open ? "\u{25b2}" : "\u{25bc}";
+            text: "\u{25bc}";
             color: Theme.fg_dim;
             font-size: Typography.caption;
             vertical-alignment: center;
@@ -248,6 +257,8 @@ component ResDropdown inherits Rectangle {
     }
 
     drop-touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
         clicked => { popup.show(); }
     }
 
@@ -292,7 +303,6 @@ component ResDropdown inherits Rectangle {
 
                         opt-touch := TouchArea {
                             clicked => {
-                                root.current-index = idx;
                                 root.selected(idx);
                                 popup.close();
                             }
@@ -304,13 +314,27 @@ component ResDropdown inherits Rectangle {
     }
 }
 
-// ── Scale slider ─────────────────────────────────────────────────────────────
+// ── Slider ───────────────────────────────────────────────────────────────────
+// Controlled: `value` is only ever bound by the parent. Dragging emits
+// `changed` with the stepped value; the parent stores it (XR) or Rust snaps
+// it (display scale) and the binding moves the knob.
 
 component ThemeSlider inherits Rectangle {
-    in-out property <float> value: 1.0;
+    in property <float> value: 1.0;
     in property <float> minimum: 0.5;
     in property <float> maximum: 3.0;
+    in property <float> step: 0.25;
+    in property <bool> enabled: true;
     callback changed(float);
+    private property <float> fraction: clamp((root.value - root.minimum) / (root.maximum - root.minimum), 0, 1);
+
+    pure function value-at(position: length) -> float {
+        return root.stepped(clamp(root.minimum + (position / root.width) * (root.maximum - root.minimum), root.minimum, root.maximum));
+    }
+
+    pure function stepped(raw: float) -> float {
+        return root.step > 0 ? clamp(round(raw / root.step) * root.step, root.minimum, root.maximum) : raw;
+    }
 
     height: 20px;
 
@@ -320,38 +344,38 @@ component ThemeSlider inherits Rectangle {
         border-radius: 2px;
         background: Theme.bg_lighter;
 
+        // Starts at the left edge so fill and knob always agree.
         Rectangle {
-            width: parent.width * ((root.value - root.minimum) / (root.maximum - root.minimum));
+            x: 0;
+            width: parent.width * root.fraction;
             height: parent.height;
             border-radius: parent.border-radius;
-            background: Theme.accent;
+            background: root.enabled ? Theme.accent : Theme.fg_dim;
         }
     }
 
     Rectangle {
-        x: (parent.width - 14px) * ((root.value - root.minimum) / (root.maximum - root.minimum));
+        x: (parent.width - 14px) * root.fraction;
         y: (parent.height - 14px) / 2;
         width: 14px;
         height: 14px;
         border-radius: 7px;
-        background: slider-touch.pressed ? Theme.accent.darker(0.2) : Theme.accent;
+        background: !root.enabled ? Theme.fg_dim
+            : slider-touch.pressed ? Theme.accent.darker(0.2) : Theme.accent;
         drop-shadow-blur: 3px;
         drop-shadow-color: #00000044;
     }
 
     slider-touch := TouchArea {
+        enabled: root.enabled;
         moved => {
             if (self.pressed) {
-                root.value = clamp(root.minimum + (self.mouse-x / root.width) * (root.maximum - root.minimum), root.minimum, root.maximum);
-                root.value = round(root.value * 4) / 4;
-                root.changed(root.value);
+                root.changed(root.value-at(self.mouse-x));
             }
         }
         pointer-event(event) => {
             if (event.kind == PointerEventKind.down) {
-                root.value = clamp(root.minimum + (self.mouse-x / root.width) * (root.maximum - root.minimum), root.minimum, root.maximum);
-                root.value = round(root.value * 4) / 4;
-                root.changed(root.value);
+                root.changed(root.value-at(self.mouse-x));
             }
         }
     }
@@ -362,8 +386,10 @@ component ThemeSlider inherits Rectangle {
 component MonitorRect inherits Rectangle {
     in property <string> label;
     in property <string> sublabel;
+    in property <string> sublabel-two-line;
     in property <bool> selected;
     in property <bool> is-primary;
+    in property <bool> interactive: true;
 
     in property <float> base-x;
     in property <float> base-y;
@@ -372,6 +398,11 @@ component MonitorRect inherits Rectangle {
     in-out property <float> offset-x: 0;
     in-out property <float> offset-y: 0;
     private property <bool> dragging: false;
+    // Narrow (usually portrait) rectangles show the size on two lines; labels
+    // are centered at their natural width so they are never truncated.
+    private property <bool> narrow: size-measure.preferred-width + 8px > root.width;
+    private property <length> block-height: name-text.preferred-height + size-text.preferred-height
+        + (root.is-primary ? badge-text.preferred-height : 0px);
 
     callback clicked();
     callback drag-finished(float, float);
@@ -390,35 +421,50 @@ component MonitorRect inherits Rectangle {
     drop-shadow-blur: dragging ? 12px : selected ? 8px : 2px;
     drop-shadow-color: #00000066;
 
-    VerticalLayout {
-        alignment: center;
-        padding: 8px;
+    size-measure := Text {
+        visible: false;
+        text: root.sublabel;
+        font-size: Typography.secondary;
+    }
 
-        Text {
-            text: label;
-            color: Theme.fg;
-            font-size: Typography.heading;
-            font-weight: 700;
-            horizontal-alignment: center;
-        }
+    name-text := Text {
+        x: (root.width - self.width) / 2;
+        y: (root.height - root.block-height) / 2;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        text: root.label;
+        color: Theme.fg;
+        font-size: Typography.heading;
+        font-weight: 700;
+        horizontal-alignment: center;
+    }
 
-        Text {
-            text: sublabel;
-            color: Theme.fg_dim;
-            font-size: Typography.secondary;
-            horizontal-alignment: center;
-        }
+    size-text := Text {
+        x: (root.width - self.width) / 2;
+        y: name-text.y + name-text.height;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        text: root.narrow ? root.sublabel-two-line : root.sublabel;
+        color: Theme.fg_dim;
+        font-size: Typography.secondary;
+        horizontal-alignment: center;
+    }
 
-        if is-primary: Text {
-            text: "Primary";
-            color: Theme.accent;
-            font-size: Typography.caption;
-            font-weight: 600;
-            horizontal-alignment: center;
-        }
+    badge-text := Text {
+        visible: root.is-primary;
+        x: (root.width - self.width) / 2;
+        y: size-text.y + size-text.height;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        text: "Primary";
+        color: Theme.accent;
+        font-size: Typography.caption;
+        font-weight: 600;
+        horizontal-alignment: center;
     }
 
     touch := TouchArea {
+        enabled: root.interactive;
         mouse-cursor: root.dragging ? pointer : default;
 
         clicked => {
@@ -630,15 +676,36 @@ export component MainWindow inherits Window {
         root.dictation-selected-lang-name == "English (recommended)";
 
     // ── Display tab properties ──
+    // Rust publishes verified rows. The controls below only read the selected
+    // row through these derived properties; no separate copies exist.
     in property <[MonitorInfo]> disp-monitors: [];
     in-out property <int> disp-selected-index: -1;
     in-out property <bool> disp-dragging: false;
-    in property <[string]> disp-selected-modes: [];
-    in-out property <int> disp-selected-mode-index: 0;
-    in-out property <float> disp-selected-scale: 1.0;
-    in-out property <int> disp-selected-orientation: 0;
-    in property <string> disp-status-text: "Ready";
+    out property <bool> disp-selection-valid: root.disp-selected-index >= 0 && root.disp-selected-index < root.disp-monitors.length;
+    out property <[string]> disp-selected-modes: root.disp-selection-valid ? root.disp-monitors[root.disp-selected-index].available-modes : [];
+    out property <int> disp-selected-mode-index: root.disp-selection-valid ? root.disp-monitors[root.disp-selected-index].current-mode-index : -1;
+    out property <float> disp-selected-scale: root.disp-selection-valid ? root.disp-monitors[root.disp-selected-index].scale : 1.0;
+    out property <[string]> disp-selected-orientations: root.disp-selection-valid ? root.disp-monitors[root.disp-selected-index].orientation-options : [];
+    out property <int> disp-selected-orientation: root.disp-selection-valid ? root.disp-monitors[root.disp-selected-index].current-orientation-index : -1;
+    in property <string> disp-status-text: "";
+    in property <bool> disp-status-warning: false;
     in property <bool> disp-has-changes: false;
+    // A display task (apply, reload, refresh…) is running.
+    in property <bool> disp-busy: false;
+    // The live configuration changed while edits were pending.
+    in property <bool> disp-stale: false;
+    in property <bool> disp-available: true;
+    in property <string> disp-unavailable-reason: "";
+    // Saved rules that differ from the active configuration, one per line.
+    in property <string> disp-drift-text: "";
+    in property <bool> disp-workspace-policy: false;
+    // The display currently showing workspace 1.
+    in property <string> disp-primary-name: "";
+    out property <bool> disp-can-apply: root.disp-has-changes && !root.disp-busy && !root.disp-stale;
+    out property <bool> disp-can-revert: root.disp-has-changes && !root.disp-busy;
+    out property <bool> disp-drift-actionable: !root.disp-has-changes && !root.disp-busy && !root.disp-stale;
+    out property <bool> disp-primary-movable: root.disp-selection-valid && !root.disp-workspace-policy && !root.disp-busy
+        && !root.disp-monitors[root.disp-selected-index].is-primary;
 
     // ── Power tab properties ──
     in property <int> power-profile-index: -1;
@@ -782,7 +849,10 @@ export component MainWindow inherits Window {
     callback disp-apply-changes();
     callback disp-revert-changes();
     callback disp-refresh-monitors();
+    callback disp-tab-entered();
     callback disp-identify-monitors();
+    callback disp-use-saved();             // reload monitors.conf as saved
+    callback disp-keep-current();          // save the active layout
 
     // Power
     callback set-power-profile(int);
@@ -868,7 +938,7 @@ export component MainWindow inherits Window {
     // whichever tab the user lands on re-reads its config from disk instead
     // of showing stale values captured at startup.
     changed active-tab => {
-        if root.active-tab == 3 { root.disp-refresh-monitors(); }
+        if root.active-tab == 3 { root.disp-tab-entered(); }
         if root.active-tab == 4 { root.power-refresh(); }
         if root.active-tab == 5 { root.kb-load(); }
         if root.active-tab == 6 { root.tb-refresh(); }
@@ -961,23 +1031,23 @@ export component MainWindow inherits Window {
             }
             // Display tab hotkeys
             if e.modifiers.alt && root.active-tab == 3 {
-                if e.text == "i" {
+                if e.text == "i" && root.disp-available && !root.disp-busy {
                     root.disp-identify-monitors();
                     return accept;
                 }
-                if e.text == "r" {
+                if e.text == "r" && !root.disp-busy {
                     root.disp-refresh-monitors();
                     return accept;
                 }
-                if e.text == "p" && root.disp-selected-index >= 0 {
+                if e.text == "p" && root.disp-selection-valid && !root.disp-workspace-policy && !root.disp-busy {
                     root.disp-set-primary(root.disp-selected-index);
                     return accept;
                 }
-                if e.text == "a" && root.disp-has-changes {
+                if e.text == "a" && root.disp-can-apply {
                     root.disp-apply-changes();
                     return accept;
                 }
-                if e.text == "v" && root.disp-has-changes {
+                if e.text == "v" && root.disp-has-changes && !root.disp-busy {
                     root.disp-revert-changes();
                     return accept;
                 }
@@ -2340,7 +2410,9 @@ export component MainWindow inherits Window {
                     height: parent.height;
                     viewport-width: max(self.width, 640px);
 
+                // Packed at the top: cards keep their natural height in tall windows.
                 VerticalLayout {
+                    alignment: start;
                     padding-left: 10px;
                     padding-right: 4px;
                     spacing: 10px;
@@ -2376,7 +2448,7 @@ export component MainWindow inherits Window {
                                 height: parent.height;
                                 Text {
                                     text: "I";
-                                    color: disp-identify-touch.has-hover ? Theme.bg : Theme.fg;
+                                    color: !disp-identify-touch.enabled ? Theme.fg_dim : disp-identify-touch.has-hover ? Theme.bg : Theme.fg;
                                     font-size: Typography.body;
                                     vertical-alignment: center;
                                     horizontal-alignment: center;
@@ -2388,20 +2460,21 @@ export component MainWindow inherits Window {
                                     y: parent.height / 2 + 7px;
                                     width: parent.width;
                                     height: 1px;
-                                    background: disp-identify-touch.has-hover ? Theme.bg : Theme.fg;
+                                    background: !disp-identify-touch.enabled ? Theme.fg_dim : disp-identify-touch.has-hover ? Theme.bg : Theme.fg;
                                 }
                             }
                             Text {
                                 text: "dentify";
-                                color: disp-identify-touch.has-hover ? Theme.bg : Theme.fg;
+                                color: !disp-identify-touch.enabled ? Theme.fg_dim : disp-identify-touch.has-hover ? Theme.bg : Theme.fg;
                                 font-size: Typography.body;
                                 vertical-alignment: center;
                             }
                         }
 
                         disp-identify-touch := TouchArea {
+                            enabled: root.disp-available && root.disp-monitors.length > 0 && !root.disp-busy;
                             clicked => { root.disp-identify-monitors(); }
-                            mouse-cursor: pointer;
+                            mouse-cursor: self.enabled ? pointer : default;
                         }
                     }
 
@@ -2422,7 +2495,7 @@ export component MainWindow inherits Window {
                                 height: parent.height;
                                 Text {
                                     text: "R";
-                                    color: disp-refresh-touch.has-hover ? Theme.bg : Theme.fg;
+                                    color: !disp-refresh-touch.enabled ? Theme.fg_dim : disp-refresh-touch.has-hover ? Theme.bg : Theme.fg;
                                     font-size: Typography.body;
                                     vertical-alignment: center;
                                     horizontal-alignment: center;
@@ -2434,26 +2507,52 @@ export component MainWindow inherits Window {
                                     y: parent.height / 2 + 7px;
                                     width: 7px;
                                     height: 1px;
-                                    background: disp-refresh-touch.has-hover ? Theme.bg : Theme.fg;
+                                    background: !disp-refresh-touch.enabled ? Theme.fg_dim : disp-refresh-touch.has-hover ? Theme.bg : Theme.fg;
                                 }
                             }
                             Text {
                                 text: "efresh";
-                                color: disp-refresh-touch.has-hover ? Theme.bg : Theme.fg;
+                                color: !disp-refresh-touch.enabled ? Theme.fg_dim : disp-refresh-touch.has-hover ? Theme.bg : Theme.fg;
                                 font-size: Typography.body;
                                 vertical-alignment: center;
                             }
                         }
 
                         disp-refresh-touch := TouchArea {
+                            enabled: !root.disp-busy;
                             clicked => { root.disp-refresh-monitors(); }
-                            mouse-cursor: pointer;
+                            mouse-cursor: self.enabled ? pointer : default;
+                        }
+                    }
+                }
+
+                // ── Unavailable: say why instead of showing invented displays ──
+                if !root.disp-available: Rectangle {
+                    border-radius: 6px;
+                    background: Theme.panel;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 4px;
+
+                        Text {
+                            text: "Display settings are unavailable";
+                            color: Theme.fg;
+                            font-size: Typography.body;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: root.disp-unavailable-reason;
+                            color: Theme.fg_dim;
+                            font-size: Typography.secondary;
+                            wrap: word-wrap;
                         }
                     }
                 }
 
                 // ── Monitor Canvas card ──
-                Rectangle {
+                if root.disp-available: Rectangle {
                     background: Theme.bg.darker(0.3).transparentize(88%);
                     border-radius: 6px;
                     border-width: (root.highlight-setting == "Display" || root.highlight-setting == "Monitor" || root.highlight-setting == "Screen Layout") && root.highlight-blink-on ? 2px : 1px;
@@ -2462,15 +2561,15 @@ export component MainWindow inherits Window {
                     animate border-color { duration: 400ms; easing: ease-in-out; }
                     height: 200px;
 
-                    if disp-monitors.length == 0: Text {
-                        text: "No monitors detected";
+                    if root.disp-monitors.length == 0: Text {
+                        text: root.disp-busy ? "Reading displays…" : "No displays to show";
                         color: Theme.fg_dim;
                         font-size: Typography.heading;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
 
-                    for mon[i] in disp-monitors: MonitorRect {
+                    for mon[i] in root.disp-monitors: MonitorRect {
                         width: mon.canvas-w * 1px;
                         height: mon.canvas-h * 1px;
                         base-x: mon.canvas-x;
@@ -2478,9 +2577,11 @@ export component MainWindow inherits Window {
                         canvas-max-x: parent.width / 1px - mon.canvas-w;
                         canvas-max-y: parent.height / 1px - mon.canvas-h;
                         label: mon.name;
-                        sublabel: "\{mon.width}x\{mon.height}";
-                        selected: i == disp-selected-index;
+                        sublabel: mon.size-label;
+                        sublabel-two-line: mon.size-label-two-line;
+                        selected: i == root.disp-selected-index;
                         is-primary: mon.is-primary;
+                        interactive: !root.disp-busy;
 
                         clicked => {
                             root.disp-selected-index = i;
@@ -2502,15 +2603,126 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                // ── The live configuration changed while edits were pending ──
+                if root.disp-stale: Rectangle {
+                    border-radius: 6px;
+                    background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.warning;
+
+                    VerticalLayout {
+                        padding: 10px;
+
+                        Text {
+                            text: "Displays changed since you started editing. Refresh to load the active layout, or Revert to discard your changes.";
+                            color: Theme.warning;
+                            font-size: Typography.secondary;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // ── Saved settings differ from what is active ──
+                if root.disp-drift-text != "": Rectangle {
+                    border-radius: 6px;
+                    background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.warning;
+
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 8px;
+
+                        Text {
+                            text: root.disp-drift-text;
+                            color: Theme.warning;
+                            font-size: Typography.secondary;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: end;
+
+                            if root.disp-has-changes: Text {
+                                text: "Apply or Revert your changes first.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                vertical-alignment: center;
+                            }
+
+                            // Use saved: reload monitors.conf as saved
+                            Rectangle {
+                                height: Typography.compact-control;
+                                min-width: disp-use-saved-layout.preferred-width + 20px;
+                                border-radius: 4px;
+                                background: !root.disp-drift-actionable ? Theme.bg_light.darker(0.2)
+                                    : disp-use-saved-touch.has-hover ? Theme.accent : Theme.bg_light;
+
+                                disp-use-saved-layout := HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+
+                                    Text {
+                                        text: "Use saved";
+                                        color: !root.disp-drift-actionable ? Theme.fg_dim.darker(0.3)
+                                            : disp-use-saved-touch.has-hover ? Theme.bg : Theme.fg;
+                                        font-size: Typography.body;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                disp-use-saved-touch := TouchArea {
+                                    enabled: root.disp-drift-actionable;
+                                    mouse-cursor: root.disp-drift-actionable ? pointer : default;
+                                    clicked => { root.disp-use-saved(); }
+                                }
+                            }
+
+                            // Keep current: save the active layout
+                            Rectangle {
+                                height: Typography.compact-control;
+                                min-width: disp-keep-current-layout.preferred-width + 20px;
+                                border-radius: 4px;
+                                background: !root.disp-drift-actionable ? Theme.bg_light.darker(0.2)
+                                    : disp-keep-current-touch.has-hover ? Theme.success : Theme.bg_light;
+
+                                disp-keep-current-layout := HorizontalLayout {
+                                    alignment: center;
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+
+                                    Text {
+                                        text: "Keep current";
+                                        color: !root.disp-drift-actionable ? Theme.fg_dim.darker(0.3)
+                                            : disp-keep-current-touch.has-hover ? Theme.bg : Theme.fg;
+                                        font-size: Typography.body;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                disp-keep-current-touch := TouchArea {
+                                    enabled: root.disp-drift-actionable;
+                                    mouse-cursor: root.disp-drift-actionable ? pointer : default;
+                                    clicked => { root.disp-keep-current(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 VerticalLayout {
                     spacing: 10px;
                 // ── Monitor settings cards (shown when a monitor is selected) ──
-                if disp-selected-index >= 0 && disp-selected-index < disp-monitors.length: VerticalLayout {
+                // Every control reads the selected row through the derived
+                // disp-selected-* properties and only emits change requests.
+                if root.disp-available && root.disp-selection-valid: VerticalLayout {
                     spacing: 10px;
 
                     // Monitor name header
                     Text {
-                        text: "Monitor: " + disp-monitors[root.disp-selected-index].name + "  \u{2014}  " + disp-monitors[root.disp-selected-index].description;
+                        text: "Monitor: " + root.disp-monitors[root.disp-selected-index].name + "  \u{2014}  " + root.disp-monitors[root.disp-selected-index].description;
                         color: Theme.fg_dim;
                         font-size: Typography.secondary;
                         overflow: elide;
@@ -2542,6 +2754,7 @@ export component MainWindow inherits Window {
                                 ResDropdown {
                                     model: root.disp-selected-modes;
                                     current-index: root.disp-selected-mode-index;
+                                    enabled: !root.disp-busy;
                                     selected(idx) => {
                                         root.disp-change-resolution(root.disp-selected-index, idx);
                                     }
@@ -2573,10 +2786,12 @@ export component MainWindow inherits Window {
                                     width: 90px;
                                 }
 
+                                // Rust snaps each request to a scale Hyprland keeps for this mode.
                                 ThemeSlider {
                                     value: root.disp-selected-scale;
                                     minimum: 0.5;
                                     maximum: 3.0;
+                                    enabled: !root.disp-busy;
                                     changed(v) => {
                                         root.disp-change-scale(root.disp-selected-index, v);
                                     }
@@ -2609,8 +2824,9 @@ export component MainWindow inherits Window {
                                 }
 
                                 ResDropdown {
-                                    model: ["Landscape", "Portrait", "Landscape (flipped)", "Portrait (flipped)"];
+                                    model: root.disp-selected-orientations;
                                     current-index: root.disp-selected-orientation;
+                                    enabled: !root.disp-busy;
                                     selected(idx) => {
                                         root.disp-change-orientation(root.disp-selected-index, idx);
                                     }
@@ -2619,7 +2835,7 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // ── Primary Monitor card ──
+                    // ── Primary Monitor card: the display showing workspace 1 ──
                     Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
@@ -2645,22 +2861,27 @@ export component MainWindow inherits Window {
                                 }
 
                                 Text {
-                                    text: disp-monitors[root.disp-selected-index].is-primary
-                                        ? "This monitor is primary"
-                                        : "Set this monitor as the main display";
+                                    text: root.disp-workspace-policy
+                                        ? "Workspace placement follows the display arrangement. Change it in Taskbar settings."
+                                        : root.disp-monitors[root.disp-selected-index].is-primary
+                                            ? "Workspace 1 is on this display."
+                                            : root.disp-primary-name != ""
+                                                ? "Workspace 1 is on " + root.disp-primary-name + ". Moving it takes effect now and is not saved."
+                                                : "Workspace 1 is not open on any display.";
                                     color: Theme.fg_dim;
                                     font-size: Typography.secondary;
+                                    wrap: word-wrap;
                                 }
                             }
 
-                            VerticalLayout {
+                            if !root.disp-workspace-policy: VerticalLayout {
                                 alignment: center;
 
                                 Rectangle {
                                     height: Typography.compact-control;
                                     min-width: disp-primary-layout.preferred-width + 20px;
                                     border-radius: 4px;
-                                    background: disp-monitors[root.disp-selected-index].is-primary
+                                    background: !root.disp-primary-movable
                                         ? Theme.bg_light.darker(0.2)
                                         : disp-primary-touch.has-hover ? Theme.accent : Theme.bg_lighter;
 
@@ -2669,41 +2890,9 @@ export component MainWindow inherits Window {
                                         padding-left: 10px;
                                         padding-right: 10px;
 
-                                        if !disp-monitors[root.disp-selected-index].is-primary: Text {
-                                            text: "Set ";
-                                            color: disp-primary-touch.has-hover ? Theme.bg : Theme.fg;
-                                            font-size: Typography.body;
-                                            vertical-alignment: center;
-                                        }
-
-                                        Rectangle {
-                                            width: 10px;
-                                            height: parent.height;
-                                            Text {
-                                                text: "P";
-                                                color: disp-monitors[root.disp-selected-index].is-primary
-                                                    ? Theme.fg_dim.darker(0.3)
-                                                    : disp-primary-touch.has-hover ? Theme.bg : Theme.fg;
-                                                font-size: Typography.body;
-                                                vertical-alignment: center;
-                                                horizontal-alignment: center;
-                                                width: parent.width;
-                                                height: parent.height;
-                                            }
-                                            Rectangle {
-                                                x: 1px;
-                                                y: parent.height / 2 + 7px;
-                                                width: 8px;
-                                                height: 1px;
-                                                background: disp-monitors[root.disp-selected-index].is-primary
-                                                    ? Theme.fg_dim.darker(0.3)
-                                                    : disp-primary-touch.has-hover ? Theme.bg : Theme.fg;
-                                            }
-                                        }
-
                                         Text {
-                                            text: "rimary";
-                                            color: disp-monitors[root.disp-selected-index].is-primary
+                                            text: "Move workspace 1 here";
+                                            color: !root.disp-primary-movable
                                                 ? Theme.fg_dim.darker(0.3)
                                                 : disp-primary-touch.has-hover ? Theme.bg : Theme.fg;
                                             font-size: Typography.body;
@@ -2712,8 +2901,8 @@ export component MainWindow inherits Window {
                                     }
 
                                     disp-primary-touch := TouchArea {
-                                        enabled: !disp-monitors[root.disp-selected-index].is-primary;
-                                        mouse-cursor: disp-monitors[root.disp-selected-index].is-primary ? default : pointer;
+                                        enabled: root.disp-primary-movable;
+                                        mouse-cursor: root.disp-primary-movable ? pointer : default;
                                         clicked => {
                                             root.disp-set-primary(root.disp-selected-index);
                                         }
@@ -2724,26 +2913,26 @@ export component MainWindow inherits Window {
                     }
                 }
                 }
-                // Footer scrolls with the cards so it remains reachable at minimum height.
+
+                // Status and actions scroll with the cards so they remain reachable at minimum height.
+                if root.disp-status-text != "": Text {
+                    text: root.disp-status-text;
+                    color: root.disp-status-warning ? Theme.warning : Theme.fg_dim;
+                    font-size: Typography.secondary;
+                    wrap: word-wrap;
+                }
+
                 HorizontalLayout {
                     height: Typography.compact-control;
                     spacing: 8px;
-
-                    Text {
-                        text: root.disp-status-text;
-                        color: Theme.fg_dim;
-                        font-size: Typography.secondary;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                        overflow: elide;
-                    }
+                    alignment: end;
 
                     // Revert
                     Rectangle {
                         height: Typography.compact-control;
                         min-width: disp-revert-layout.preferred-width + 20px;
                         border-radius: 4px;
-                        background: !root.disp-has-changes
+                        background: !root.disp-can-revert
                             ? Theme.bg_light.darker(0.2)
                             : disp-revert-touch.has-hover ? Theme.warning : Theme.bg_light;
 
@@ -2754,7 +2943,7 @@ export component MainWindow inherits Window {
 
                             Text {
                                 text: "Re";
-                                color: !root.disp-has-changes ? Theme.fg_dim.darker(0.3)
+                                color: !root.disp-can-revert ? Theme.fg_dim.darker(0.3)
                                     : disp-revert-touch.has-hover ? Theme.bg : Theme.fg;
                                 font-size: Typography.body;
                                 vertical-alignment: center;
@@ -2765,7 +2954,7 @@ export component MainWindow inherits Window {
                                 height: parent.height;
                                 Text {
                                     text: "v";
-                                    color: !root.disp-has-changes ? Theme.fg_dim.darker(0.3)
+                                    color: !root.disp-can-revert ? Theme.fg_dim.darker(0.3)
                                         : disp-revert-touch.has-hover ? Theme.bg : Theme.fg;
                                     font-size: Typography.body;
                                     vertical-alignment: center;
@@ -2778,14 +2967,14 @@ export component MainWindow inherits Window {
                                     y: parent.height / 2 + 7px;
                                     width: parent.width;
                                     height: 1px;
-                                    background: !root.disp-has-changes ? Theme.fg_dim.darker(0.3)
+                                    background: !root.disp-can-revert ? Theme.fg_dim.darker(0.3)
                                         : disp-revert-touch.has-hover ? Theme.bg : Theme.fg;
                                 }
                             }
 
                             Text {
                                 text: "ert";
-                                color: !root.disp-has-changes ? Theme.fg_dim.darker(0.3)
+                                color: !root.disp-can-revert ? Theme.fg_dim.darker(0.3)
                                     : disp-revert-touch.has-hover ? Theme.bg : Theme.fg;
                                 font-size: Typography.body;
                                 vertical-alignment: center;
@@ -2793,18 +2982,18 @@ export component MainWindow inherits Window {
                         }
 
                         disp-revert-touch := TouchArea {
-                            enabled: root.disp-has-changes;
-                            mouse-cursor: root.disp-has-changes ? pointer : default;
+                            enabled: root.disp-can-revert;
+                            mouse-cursor: root.disp-can-revert ? pointer : default;
                             clicked => { root.disp-revert-changes(); }
                         }
                     }
 
-                    // Apply
+                    // Apply: write monitors.conf, reload Hyprland, verify the result
                     Rectangle {
                         height: Typography.compact-control;
                         min-width: disp-apply-layout.preferred-width + 20px;
                         border-radius: 4px;
-                        background: !root.disp-has-changes
+                        background: !root.disp-can-apply
                             ? Theme.bg_light.darker(0.2)
                             : disp-apply-touch.has-hover ? Theme.success : Theme.bg_light;
 
@@ -2818,7 +3007,7 @@ export component MainWindow inherits Window {
                                 height: parent.height;
                                 Text {
                                     text: "A";
-                                    color: !root.disp-has-changes ? Theme.fg_dim.darker(0.3)
+                                    color: !root.disp-can-apply ? Theme.fg_dim.darker(0.3)
                                         : disp-apply-touch.has-hover ? Theme.bg : Theme.fg;
                                     font-size: Typography.body;
                                     vertical-alignment: center;
@@ -2831,14 +3020,14 @@ export component MainWindow inherits Window {
                                     y: parent.height / 2 + 7px;
                                     width: 7px;
                                     height: 1px;
-                                    background: !root.disp-has-changes ? Theme.fg_dim.darker(0.3)
+                                    background: !root.disp-can-apply ? Theme.fg_dim.darker(0.3)
                                         : disp-apply-touch.has-hover ? Theme.bg : Theme.fg;
                                 }
                             }
 
                             Text {
                                 text: "pply";
-                                color: !root.disp-has-changes ? Theme.fg_dim.darker(0.3)
+                                color: !root.disp-can-apply ? Theme.fg_dim.darker(0.3)
                                     : disp-apply-touch.has-hover ? Theme.bg : Theme.fg;
                                 font-size: Typography.body;
                                 vertical-alignment: center;
@@ -2846,8 +3035,8 @@ export component MainWindow inherits Window {
                         }
 
                         disp-apply-touch := TouchArea {
-                            enabled: root.disp-has-changes;
-                            mouse-cursor: root.disp-has-changes ? pointer : default;
+                            enabled: root.disp-can-apply;
+                            mouse-cursor: root.disp-can-apply ? pointer : default;
                             clicked => { root.disp-apply-changes(); }
                         }
                     }
@@ -7152,7 +7341,7 @@ export component MainWindow inherits Window {
                             font-weight: 600;
                         }
                         Text {
-                            text: "1-8       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Set primary monitor\nEsc      Close overlay / app\n?         Toggle this Help";
+                            text: "1-8       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Move workspace 1 here\nEsc      Close overlay / app\n?         Toggle this Help";
                             color: Theme.fg;
                             font-size: Typography.body;
                             wrap: word-wrap;
