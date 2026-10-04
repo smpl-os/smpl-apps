@@ -1,0 +1,5 @@
+# The resident menu blocks its control signals in every thread, and
+# `std::process::Command` passes that mask on to the processes it starts.
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "use signals::command so launched processes start with an empty signal mask" },
+]

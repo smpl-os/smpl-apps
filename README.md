@@ -409,17 +409,20 @@ Probe support with `--version` only: older builds print just the first line
 and open the menu for any other argument.
 
 Once it can handle signals, the resident writes its PID atomically (temp file
-and rename) to `${SMPL_START_MENU_PIDFILE:-$XDG_RUNTIME_DIR/smplos/start-menu.pid}`,
-using `/run/user/<uid>` when `XDG_RUNTIME_DIR` is unset or empty and creating
-a missing directory with mode 0700. It removes the file as soon as SIGTERM or
+and rename) to
+`${SMPL_START_MENU_PIDFILE:-$XDG_RUNTIME_DIR/smplos/start-menu.pid}`, using
+`/run/user/<uid>` when `XDG_RUNTIME_DIR` is unset or empty and creating a
+missing directory with mode 0700. It removes the file as soon as SIGTERM or
 SIGINT arrives (or on any other exit), and only while the file still holds its
-PID. A running resident is a live process named there whose
-`/proc/<pid>/comm` is `start-menu`; stale, dead, zombie and other PIDs are
-ignored. `flock` on the neighbouring `start-menu.pid.lock` serializes startup:
-a launch racing a resident that is still starting or already exiting waits up
-to 5 s on the lock or pidfile, then hands off or becomes the next resident,
-never a second one. If the pidfile cannot be written, `--hidden` exits 1 and a
-shown menu falls back to exiting on close, like plain `start-menu`.
+PID. A running resident is a live process named there whose `/proc/<pid>/comm`
+is `start-menu`; stale, dead, zombie and other PIDs are ignored. `flock` on
+the neighbouring `start-menu.pid.lock` serializes startup: a launch racing a
+resident that is still starting or already exiting waits up to 5 s on the lock
+or pidfile, then hands off or becomes the next resident, never a second one.
+If the pidfile cannot be written, `--hidden` exits 1 and a shown menu falls
+back to exiting on close, like plain `start-menu`. That menu still handles the
+signals below (for example `pkill -x start-menu`), but keeps the startup lock
+until it exits, so other `--resident` launches meanwhile wait 5 s and fail.
 
 | Signal | Effect |
 |---|---|
@@ -429,19 +432,28 @@ shown menu falls back to exiting on close, like plain `start-menu`.
 | `SIGTERM`, `SIGINT` | Clean exit; a wedged event loop is force-exited after 2 s. |
 
 Signals are blocked in every thread, read by one thread and handled on the UI
-event loop. While the compositor sends no frame callbacks (outputs off or
-being reconfigured), a pending vsync'd frame blocks that loop; queued requests
-run once rendering resumes. If a request stays unhandled for 20 s, the
-resident exits so the next launch replaces it. Otherwise a resident never
-exits on its own: Escape, a compositor close, launching an app or pin, Web App
-Center, Sync Center and power actions do their work and then hide. Hiding
-resets the view to its startup state: no search or category, empty list,
-nothing selected, menus closed, list at the top; hover and held-modifier state
-are cleared too. Each show re-reads `~/.cache/smplos/app_index` if its size,
-mtime or inode changed, then rebuilds categories and clears icon caches. A
-missing index keeps the last list. Pins and usage reload the same way; the
-search field gets focus. The theme watcher keeps running; hidden, the process
-only wakes for it every two seconds.
+event loop. Every process the menu starts (apps, actions, `rebuild-app-cache`)
+gets an empty signal mask and the default action for these six signals, even
+if the menu itself was started with SIGINT ignored, as a script's background
+jobs are. Without this, `std::process::Command` would pass the blocked mask
+on, and launched apps would ignore Ctrl+C and SIGTERM. `signals::command` is
+the only way to build such a process in start-menu; `start-menu/clippy.toml`
+rejects `std::process::Command::new` elsewhere.
+
+While the compositor sends no frame callbacks (outputs off or being
+reconfigured), a pending vsync'd frame blocks the UI loop; queued requests run
+once rendering resumes. If a toggle, show or hide request stays unhandled for
+20 s, the resident exits so the next launch replaces it. Reaping exited apps
+never counts toward that limit, and termination has its own 2 s limit.
+Otherwise a resident never exits on its own: Escape, a compositor close,
+launching an app or pin, Web App Center, Sync Center and power actions do
+their work and then hide. Hiding resets the view to its startup state: no
+search or category, empty list, nothing selected, menus closed, list at the
+top; hover and held-modifier state are cleared too. Each show re-reads
+`~/.cache/smplos/app_index` if its size, mtime or inode changed, then rebuilds
+categories and clears icon caches. A missing index keeps the last list. Pins
+and usage reload the same way; the search field gets focus. The theme watcher
+keeps running; hidden, the process only wakes for it every two seconds.
 
 Wayland cannot unmap a window, so Slint destroys it on hide and recreates it on
 show. Fonts and loaded GL libraries stay in the process, and the resident
@@ -461,8 +473,10 @@ Hidden, it used no measurable CPU over 10 s. `SMPL_START_MENU_TRACE=1` prints
 `CLOCK_MONOTONIC` timestamps for signals, show/hide and frames to stderr.
 
 Headless checks: `cargo test -p start-menu --bin start-menu`. These cover the
-pidfile and instance detection (temporary directories and a fake `/proc`), reload
-decisions, signal mapping, view reset and version text.
+pidfile and instance detection (temporary directories and a fake `/proc`),
+reload decisions, signal mapping, view reset, version text, the stall
+watchdog's accounting, and the signal state of launched processes (in a
+separate test process).
 
 ## Releases
 

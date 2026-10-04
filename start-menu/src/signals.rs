@@ -3,9 +3,16 @@
 //! The handled signals are blocked in every thread and consumed synchronously
 //! by one waiting thread, so no async-signal handler runs and no other thread
 //! is interrupted. Requests are then executed on the Slint event loop.
-//! Rust's `Command` clears the blocked mask in launched children.
+//!
+//! A blocked mask survives `fork` and `exec`, and `std::process::Command`
+//! keeps it: a launched app (and everything it starts) would ignore Ctrl+C,
+//! SIGTERM and logout. Every process the menu starts must therefore be built
+//! with [`command`]; clippy rejects `Command::new` elsewhere in this crate.
 
+use std::ffi::OsStr;
 use std::io;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -19,6 +26,14 @@ pub enum Request {
     Quit,
     /// SIGCHLD: reap launched children.
     Reap,
+}
+
+impl Request {
+    /// Toggle, show and hide are what users wait for. Reaping is invisible
+    /// housekeeping, and quitting has its own deadline.
+    pub fn is_user_request(self) -> bool {
+        matches!(self, Self::Toggle | Self::Show | Self::Hide)
+    }
 }
 
 pub fn show_signal() -> libc::c_int {
@@ -50,7 +65,8 @@ pub fn request_for(signal: libc::c_int) -> Option<Request> {
 pub struct Blocked(libc::sigset_t);
 
 /// Block the handled signals in the calling thread, and therefore in every
-/// thread it creates afterwards. Call before any thread is spawned.
+/// thread it creates afterwards. Call before any thread is spawned. Child
+/// processes would inherit the mask as well; start them with [`command`].
 pub fn block() -> io::Result<Blocked> {
     // SAFETY: the set is initialised by sigemptyset before any other use.
     unsafe {
@@ -65,6 +81,36 @@ pub fn block() -> io::Result<Blocked> {
             error => Err(io::Error::from_raw_os_error(error)),
         }
     }
+}
+
+/// `Command::new` for every process the menu starts. The child begins with
+/// an empty signal mask, and with the default action for the signals this
+/// module handles (the menu may itself have been started with SIGINT ignored,
+/// as background jobs of scripts are). Other dispositions are inherited as
+/// usual; std resets SIGPIPE itself.
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    // Resolved here: only async-signal-safe calls may run in the child.
+    let signals = handled();
+    #[allow(clippy::disallowed_methods)] // The one sanctioned constructor.
+    let mut command = Command::new(program);
+    // SAFETY: the closure runs in the child between fork and exec and only
+    // calls async-signal-safe functions (signal, sigemptyset, pthread_sigmask).
+    unsafe {
+        command.pre_exec(move || {
+            for signal in signals {
+                if libc::signal(signal, libc::SIG_DFL) == libc::SIG_ERR {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            let mut empty = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            libc::sigemptyset(empty.as_mut_ptr());
+            match libc::pthread_sigmask(libc::SIG_SETMASK, empty.as_ptr(), std::ptr::null_mut()) {
+                0 => Ok(()),
+                error => Err(io::Error::from_raw_os_error(error)),
+            }
+        });
+    }
+    command
 }
 
 /// Wait for the blocked signals on a dedicated thread. `deliver` runs on that
@@ -119,6 +165,16 @@ mod tests {
         assert_eq!(request_for(libc::SIGCHLD), Some(Request::Reap));
         for other in [libc::SIGHUP, libc::SIGPIPE, libc::SIGRTMIN() + 1] {
             assert_eq!(request_for(other), None, "signal {other}");
+        }
+    }
+
+    #[test]
+    fn only_toggle_show_and_hide_are_user_requests() {
+        for request in [Request::Toggle, Request::Show, Request::Hide] {
+            assert!(request.is_user_request(), "{request:?}");
+        }
+        for request in [Request::Quit, Request::Reap] {
+            assert!(!request.is_user_request(), "{request:?}");
         }
     }
 

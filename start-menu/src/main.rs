@@ -79,7 +79,7 @@ fn read_app_index(
         Ok(content) => content,
         Err(_) if rebuild_if_missing => {
             // Try rebuilding the cache if it doesn't exist
-            let _ = std::process::Command::new("rebuild-app-cache").status();
+            let _ = signals::command("rebuild-app-cache").status();
             stamp = FileStamp::of(path);
             std::fs::read_to_string(path).unwrap_or_default()
         }
@@ -578,6 +578,13 @@ impl Children {
     }
 }
 
+/// `sh -c <command>`, as desktop entries and the toolbar actions are run.
+fn shell(command: &str) -> std::process::Command {
+    let mut shell = signals::command("sh");
+    shell.arg("-c").arg(command);
+    shell
+}
+
 struct Launcher {
     ui: slint::Weak<MainWindow>,
     lifetime: Cell<Lifetime>,
@@ -759,11 +766,13 @@ impl Launcher {
     }
 
     fn spawn_shell(&self, command: &str) {
-        match std::process::Command::new("sh").arg("-c").arg(command).spawn() {
+        trace("spawn");
+        match shell(command).spawn() {
             Ok(child) if self.lifetime.get() == Lifetime::Resident => self.children.adopt(child),
             Ok(_) => {}
             Err(error) => eprintln!("start-menu: cannot run {command:?}: {error}"),
         }
+        trace("spawned");
     }
 
     /// Escape, compositor close, launching and the toolbar actions end here.
@@ -1102,18 +1111,9 @@ fn run_resident(hidden: bool) -> Result<(), slint::PlatformError> {
             let _ = instance::remove_pidfile_if_ours(&signal_pidfile, pid);
             exit_if_stuck(signal_pidfile.clone(), pid);
         }
-        let sequence = progress.forwarded();
-        let ui_progress = progress.clone();
-        let forwarded = slint::invoke_from_event_loop(move || {
-            if let Some(launcher) = RESIDENT.with(|resident| resident.borrow().clone()) {
-                launcher.handle(request);
-            }
-            ui_progress.handled(sequence);
+        forward_request(request, &progress, |job| {
+            slint::invoke_from_event_loop(job).is_ok()
         });
-        if forwarded.is_err() {
-            // The loop has stopped; nothing is left to wait for.
-            progress.handled(sequence);
-        }
     })
     .map_err(|error| slint::PlatformError::Other(format!("cannot listen for signals: {error}")))?;
 
@@ -1162,7 +1162,7 @@ const UI_STALL_LIMIT: Duration = Duration::from_secs(20);
 /// Set by the signal thread once SIGTERM/SIGINT arrives.
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
-/// Requests forwarded to the UI thread and how many of them it has handled.
+/// User requests forwarded to the UI thread and how many it has handled.
 #[derive(Default)]
 struct Progress {
     counts: Mutex<(u64, u64)>,
@@ -1205,20 +1205,46 @@ impl Progress {
     }
 }
 
-/// A UI thread that stops handling requests (e.g. a frame blocked because the
-/// compositor no longer renders the window) would ignore every later toggle.
-/// Exit instead, so the next launch replaces this process.
+/// A UI thread that stops handling user requests (e.g. a frame blocked because
+/// the compositor no longer renders the window) would ignore every later
+/// toggle. Exit instead, so the next launch replaces this process.
 fn exit_when_stalled(progress: Arc<Progress>, pidfile: PathBuf, pid: u32) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("ui-watchdog".into())
         .spawn(move || {
             progress.wait_for_stall(UI_STALL_LIMIT);
-            eprintln!("start-menu: no request handled for {UI_STALL_LIMIT:?}; exiting");
+            eprintln!("start-menu: no user request handled for {UI_STALL_LIMIT:?}; exiting");
             let _ = instance::remove_pidfile_if_ours(&pidfile, pid);
             // SAFETY: terminates immediately without running other threads' code.
             unsafe { libc::_exit(1) }
         })
         .map(drop)
+}
+
+/// Queue `request` for the UI thread through `invoke` (false: the event loop
+/// has stopped). Only user requests count toward the stall watchdog: while the
+/// outputs are off, the UI thread may wait in a frame swap for a long time,
+/// and an app exiting meanwhile (SIGCHLD) must not make the menu exit with it.
+/// Quitting has its own deadline.
+fn forward_request(
+    request: Request,
+    progress: &Arc<Progress>,
+    invoke: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool,
+) {
+    let sequence = request.is_user_request().then(|| progress.forwarded());
+    let ui_progress = progress.clone();
+    let queued = invoke(Box::new(move || {
+        if let Some(launcher) = RESIDENT.with(|resident| resident.borrow().clone()) {
+            launcher.handle(request);
+        }
+        if let Some(sequence) = sequence {
+            ui_progress.handled(sequence);
+        }
+    }));
+    if let (false, Some(sequence)) = (queued, sequence) {
+        // Nothing will run it; don't wait for it.
+        progress.handled(sequence);
+    }
 }
 
 /// Termination signals are blocked, so a wedged event loop would otherwise
@@ -1792,10 +1818,10 @@ mod tests {
             }
         };
         let children = Children::default();
-        let exited = std::process::Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let exited = shell("exit 0").spawn().unwrap();
         let exited_pid = exited.id();
         children.adopt(exited);
-        children.adopt(std::process::Command::new("sleep").arg("30").spawn().unwrap());
+        children.adopt(signals::command("sleep").arg("30").spawn().unwrap());
 
         wait_until(&|| children.reap() == 1);
         assert_eq!(children.reap(), 1, "the running launch is kept");
@@ -1843,5 +1869,135 @@ mod tests {
         let at = detected.recv_timeout(Duration::from_secs(5)).expect("stall detected");
         assert!(at.duration_since(started) >= limit);
         watcher.join().unwrap();
+    }
+
+    /// Runs `wait_for_stall` on a thread; the receiver gets a message once
+    /// the watchdog would exit.
+    fn watch_for_stall(
+        progress: &Arc<Progress>,
+        limit: Duration,
+    ) -> (std::thread::JoinHandle<()>, std::sync::mpsc::Receiver<()>) {
+        let (stalled, detected) = std::sync::mpsc::channel();
+        let progress = progress.clone();
+        let watcher = std::thread::spawn(move || {
+            progress.wait_for_stall(limit);
+            stalled.send(()).unwrap();
+        });
+        (watcher, detected)
+    }
+
+    #[test]
+    fn only_user_requests_count_toward_a_ui_stall() {
+        let limit = Duration::from_millis(100);
+        // A UI thread blocked in a frame swap (outputs off) never runs these.
+        let blocked_ui = RefCell::new(Vec::new());
+        let park = |job: Box<dyn FnOnce() + Send>| {
+            blocked_ui.borrow_mut().push(job);
+            true
+        };
+
+        let progress = Arc::new(Progress::default());
+        let (watcher, detected) = watch_for_stall(&progress, limit);
+        // Launched apps exiting and a quit request pile up unhandled...
+        for request in [Request::Reap, Request::Reap, Request::Quit, Request::Reap] {
+            forward_request(request, &progress, park);
+        }
+        assert_eq!(blocked_ui.borrow().len(), 4, "every request is still queued");
+        // ...but the menu is not considered stuck.
+        assert!(detected.recv_timeout(limit * 4).is_err());
+
+        // A request that never runs because the loop has stopped is not
+        // waited for either, and a handled one is done.
+        forward_request(Request::Toggle, &progress, |_| false);
+        forward_request(Request::Show, &progress, |job| {
+            job();
+            true
+        });
+        assert!(detected.recv_timeout(limit * 4).is_err());
+
+        // A user request the UI thread does not get to is a stall.
+        forward_request(Request::Hide, &progress, park);
+        detected.recv_timeout(Duration::from_secs(5)).expect("stall detected");
+        watcher.join().unwrap();
+
+        // Each kind of user request counts on its own.
+        for request in [Request::Toggle, Request::Show, Request::Hide] {
+            let progress = Arc::new(Progress::default());
+            let (watcher, detected) = watch_for_stall(&progress, limit);
+            forward_request(request, &progress, park);
+            detected
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("{request:?} must count"));
+            watcher.join().unwrap();
+        }
+    }
+
+    /// Set in the separate test process below.
+    const SIGNAL_PROBE: &str = "SMPL_START_MENU_SIGNAL_PROBE";
+
+    #[test]
+    fn launched_processes_start_with_default_signal_handling() {
+        if std::env::var_os(SIGNAL_PROBE).is_some() {
+            // A separate process, because this changes process-wide state:
+            // a resident started as a script's background job (SIGINT
+            // ignored) that has blocked its signals.
+            // SAFETY: plain disposition change in this single-purpose process.
+            unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+            let _blocked = signals::block().unwrap();
+            // Launch from a thread created afterwards, like the UI thread.
+            std::thread::spawn(|| {
+                // libtest may have started a "test ... " line.
+                println!();
+                let own = std::fs::read_to_string("/proc/thread-self/status").unwrap();
+                for line in own.lines().filter(|line| line.starts_with("Sig")) {
+                    println!("menu {line}");
+                }
+                let child = shell("grep '^Sig' /proc/self/status").output().unwrap();
+                for line in String::from_utf8_lossy(&child.stdout).lines() {
+                    println!("child {line}");
+                }
+            })
+            .join()
+            .unwrap();
+            return;
+        }
+
+        let output = signals::command(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::launched_processes_start_with_default_signal_handling",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(SIGNAL_PROBE, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{output:?}");
+        let mask = |field: &str| -> u64 {
+            let line = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix(field))
+                .unwrap_or_else(|| panic!("no {field:?} in {stdout}"));
+            u64::from_str_radix(line.trim(), 16).unwrap()
+        };
+        let bit = |signal: libc::c_int| 1u64 << (signal - 1);
+        let taken = [
+            libc::SIGUSR1,
+            libc::SIGUSR2,
+            libc::SIGTERM,
+            libc::SIGINT,
+            libc::SIGCHLD,
+            libc::SIGRTMIN(),
+        ]
+        .into_iter()
+        .fold(0, |set, signal| set | bit(signal));
+
+        // The launching thread really had them blocked, and SIGINT ignored...
+        assert_eq!(mask("menu SigBlk:") & taken, taken, "{stdout}");
+        assert_ne!(mask("menu SigIgn:") & bit(libc::SIGINT), 0, "{stdout}");
+        // ...yet the launched app blocks nothing and takes them by default.
+        assert_eq!(mask("child SigBlk:"), 0, "{stdout}");
+        assert_eq!(mask("child SigIgn:") & taken, 0, "{stdout}");
     }
 }
