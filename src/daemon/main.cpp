@@ -3,9 +3,11 @@
 #include "config.h"
 #include "configwatcher.h"
 #include "engine.h"
+#include "inputmonitor.h"
 #include "kdenlivedbusclient.h"
 #include "learn.h"
 #include "paddevice.h"
+#include "settingsservice.h"
 #include "uinputsink.h"
 #include "windowtracker.h"
 
@@ -14,6 +16,7 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -22,6 +25,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QSocketNotifier>
 #include <QTextStream>
 #include <QTimer>
@@ -319,7 +323,7 @@ int main(int argc, char **argv)
     QCommandLineParser p;
     p.setApplicationDescription(QStringLiteral(
         "Per-application control surface for the CH552 macro pad (1189:8890).\n"
-        "Commands: run (default) | simulate [FILE|-] | verify | list-devices | list-capabilities | check-config | example-config | bench-dbus [N]"));
+        "Commands: run (default) | simulate [FILE|-] | verify | monitor | list-devices | list-capabilities | check-config | example-config | bench-dbus [N]"));
     p.addHelpOption();
     p.addVersionOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
@@ -334,7 +338,11 @@ int main(int argc, char **argv)
     QCommandLineOption quietOpt({QStringLiteral("q"), QStringLiteral("quiet")}, QStringLiteral("log only problems"));
     QCommandLineOption traceOpt(QStringLiteral("trace"), QStringLiteral("log every Kdenlive call, reply, ack and epoch change"));
     QCommandLineOption jsonOpt(QStringLiteral("json"), QStringLiteral("list-capabilities: machine-readable output"));
-    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt});
+    QCommandLineOption noApiOpt(QStringLiteral("no-settings-api"), QStringLiteral("do not offer org.smplos.ControlSurface1 on the session bus"));
+    QCommandLineOption allowFlashOpt(QStringLiteral("allow-flash"), QStringLiteral("settings API: allow real firmware flashing (dry runs are always allowed)"));
+    QCommandLineOption flashToolOpt(QStringLiteral("flash-tool"), QStringLiteral("settings API: wchisp binary (default: wchisp in PATH)"), QStringLiteral("path"));
+    QCommandLineOption imageDirOpt(QStringLiteral("firmware-dir"), QStringLiteral("settings API: directory of flashable images (repeatable)"), QStringLiteral("dir"));
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt});
     p.process(app);
     const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
     const bool explicitConfig = p.isSet(configOpt);
@@ -395,6 +403,39 @@ int main(int argc, char **argv)
             say(QStringLiteral("%1 interface %2 serial %3 (%4)").arg(n.devnode).arg(n.interfaceNumber).arg(n.serial, n.usbPath));
         }
         return nodes.isEmpty() ? 1 : 0;
+    }
+    if (cmd == QLatin1String("monitor")) {
+        // Live input, one line per event. Follows a running daemon (or the mock)
+        // over D-Bus; without one, reads the pad itself (grabbed, nothing dispatched).
+        const bool asJson = p.isSet(jsonOpt);
+        auto print = [asJson](const QString &slot, const QString &event, int delta) {
+            say(asJson ? InputMonitor::jsonLine(slot, event, delta, QDateTime::currentMSecsSinceEpoch()) : InputMonitor::textLine(slot, event, delta));
+        };
+        InputMonitor mon;
+        if (mon.attach(QDBusConnection::sessionBus())) {
+            std::fprintf(stderr, "following %s on the session bus\n", SettingsService::kService);
+            QObject::connect(&mon, &InputMonitor::input, print);
+            QObject::connect(&mon, &InputMonitor::daemonGone, &app, [&app] {
+                std::fprintf(stderr, "the daemon left the bus\n");
+                app.exit(4);
+            });
+            return app.exec();
+        }
+        std::fprintf(stderr, "no daemon on the session bus; reading the pad directly\n");
+        PadDevice dev(cfg->device);
+        dev.setHardwareMap(cfg->hardware);
+        dev.setGrab(!p.isSet(noGrabOpt));
+        QObject::connect(&dev, &PadDevice::message, [](const QString &m) { std::fprintf(stderr, "(%s)\n", qPrintable(m)); });
+        QObject::connect(&dev, &PadDevice::padEvent, [print](const PadEvent &e) {
+            QString slot, event;
+            int delta = 0;
+            SettingsService::inputEventFor(e, &slot, &event, &delta);
+            print(slot, event, delta);
+        });
+        dev.start();
+        const int rc = app.exec();
+        dev.stop();
+        return rc;
     }
     if (cmd == QLatin1String("verify")) {
         PadDevice dev(cfg->device);
@@ -582,6 +623,7 @@ int main(int argc, char **argv)
         }
     });
 
+    SettingsService *settingsRef = nullptr;  // set once the settings API exists (below)
     std::unique_ptr<WindowTracker> tracker;
     if (p.isSet(forceWindowOpt)) {
         auto st = std::make_unique<StaticWindowTracker>();
@@ -592,8 +634,12 @@ int main(int argc, char **argv)
         tracker = createWindowTracker(p.value(backendOpt));
     }
     QObject::connect(tracker.get(), &WindowTracker::message, log);
-    QObject::connect(tracker.get(), &WindowTracker::activeWindowChanged, &engine, [&engine, log](const WindowInfo &w) {
+    QObject::connect(tracker.get(), &WindowTracker::activeWindowChanged, &engine, [&engine, log, &settingsRef](const WindowInfo &w) {
         engine.setActiveWindow(w);
+        if (settingsRef) {
+            settingsRef->setActiveWindow(w.cls, w.title);
+            settingsRef->setActiveProfile(engine.activeProfile() ? engine.activeProfile()->name : QString());
+        }
         log(QStringLiteral("focus: %1 \"%2\" pid %3").arg(w.cls, w.title.left(60)).arg(w.pid));
     });
     log(QStringLiteral("window backend: %1, hardware map: %2").arg(tracker->backendName(), cfg->hardwareSource));
@@ -612,14 +658,112 @@ int main(int argc, char **argv)
             say(QStringLiteral("  %1 -> %2%3").arg(slot, binding, layer.isEmpty() ? QString() : QStringLiteral(" [layer %1]").arg(layer)));
         });
     }
-    QObject::connect(&dev, &PadDevice::padEvent, &engine, &Engine::handle);
+    // Settings API (org.smplos.ControlSurface1): device state, press to identify,
+    // config get/validate/set, plugins and the guarded flash job.
+    SettingsService settings(p.value(configOpt));
+    settingsRef = &settings;
+    settings.setActiveProfile(engine.activeProfile() ? engine.activeProfile()->name : QString());
+    settings.setMode(dry ? QStringLiteral("dry-run") : QStringLiteral("run"));
+    settings.setDaemonVersion(QCoreApplication::applicationVersion());
+    {
+        FlashSettings fs;
+        fs.allowed = p.isSet(allowFlashOpt) && !dry;
+        fs.tool = p.isSet(flashToolOpt) ? p.value(flashToolOpt) : QStandardPaths::findExecutable(QStringLiteral("wchisp"));
+        fs.imageDirs = p.isSet(imageDirOpt) ? p.values(imageDirOpt) : FlashSettings::defaultImageDirs();
+        settings.setFlashSettings(fs);
+    }
+    auto controlsOf = [](const Config &c) {
+        QStringList controls;
+        for (const KeyChord &k : c.hardware.chords()) {
+            if (auto t = c.hardware.lookup(k)) {
+                controls << t->control;
+            }
+        }
+        return controls;
+    };
+    settings.setFallbackLayout(profileForControls(controlsOf(*cfg), QStringLiteral("config")));
+    settings.setConfigState(ConfigStore::hashOf(ConfigStore(p.value(configOpt)).read().text), QString(), cfg->warnings);
+    auto publishPlugins = [&settings, &engine, &kd, dry] {
+        static const char *states[] = {"detached", "pending", "absent", "available"};
+        QStringList kdApps;
+        for (const Profile &pr : engine.config().profiles) {
+            if (pr.kdenlive && pr.hasMatch) {
+                kdApps << pr.matchClass.pattern();
+            }
+        }
+        const qint64 pid = kd->attachedPid();
+        settings.setPlugins({
+            PluginInfo{QStringLiteral("keys"), QStringLiteral("Keys and shortcuts"), QStringLiteral("keys"), dry ? QStringLiteral("dry-run") : QStringLiteral("ready"),
+                       dry ? QStringLiteral("keys are printed, not sent") : QStringLiteral("virtual keyboard via /dev/uinput"), {}, {}},
+            PluginInfo{QStringLiteral("command"), QStringLiteral("Run a program"), QStringLiteral("command"), dry ? QStringLiteral("dry-run") : QStringLiteral("ready"), QString(), {}, {}},
+            PluginInfo{QStringLiteral("kdenlive"), QStringLiteral("Kdenlive"), QStringLiteral("api"), QLatin1String(states[int(kd->state())]),
+                       pid ? QStringLiteral("attached to pid %1").arg(pid) : QStringLiteral("not attached"), kdApps,
+                       QJsonObject{{QStringLiteral("contract"), QStringLiteral("org.kde.kdenlive.ControlSurface1")}, {QStringLiteral("pid"), pid}}},
+        });
+    };
+    publishPlugins();
+    QObject::connect(kd.get(), &KdenliveClient::stateChanged, &settings, [publishPlugins] { publishPlugins(); });
+    settings.setConfigApplier([&engine, &dev, publishPlugins, &settings, controlsOf](const Config &c) {
+        engine.setConfig(c);
+        dev.setHardwareMap(c.hardware);
+        settings.setFallbackLayout(profileForControls(controlsOf(c), QStringLiteral("config")));
+        publishPlugins();
+        return QString();
+    });
+    auto publishDevice = [&settings, &dev, &cfg] {
+        DeviceState d;
+        const auto nodes = findPadInputNodes(cfg->device);
+        if (dev.isConnected() && !nodes.isEmpty()) {
+            d.present = true;
+            if (auto u = usbDeviceAt(nodes.first().usbPath)) {
+                d.usb = *u;
+                d.firmware = classifyFirmware(*u);
+            }
+            d.devnodes = dev.devnodes();
+            d.inputMode = QStringLiteral("evdev-chords");
+        }
+        settings.setDevice(d);
+    };
+    QObject::connect(&dev, &PadDevice::connected, &settings, [publishDevice] { publishDevice(); });
+    QObject::connect(&dev, &PadDevice::disconnected, &settings, [publishDevice] { publishDevice(); });
+    QObject::connect(&settings, &SettingsService::releaseDeviceRequested, &dev, [&dev, log, publishDevice] {
+        log(QStringLiteral("flash: releasing the pad"));
+        dev.stop();
+        publishDevice();
+    });
+    QObject::connect(&settings, &SettingsService::reacquireDeviceRequested, &dev, [&dev, log] {
+        log(QStringLiteral("flash: grabbing the pad again"));
+        dev.start();
+    });
+    QObject::connect(&settings, &SettingsService::FlashProgress, [log](const QString &id, const QString &phase, const QString &msg) {
+        log(QStringLiteral("flash %1: %2: %3").arg(id, phase, msg));
+    });
+    QObject::connect(&engine, &Engine::dispatched, &settings, [&settings](const QString &, const QString &, const QString &layer) { settings.setActiveLayer(layer); });
+    if (!p.isSet(noApiOpt)) {
+        QString err;
+        if (settings.registerOn(QDBusConnection::sessionBus(), true, &err)) {
+            log(QStringLiteral("settings API on the session bus: %1").arg(QLatin1String(SettingsService::kService)));
+        } else {
+            say(QStringLiteral("settings API unavailable: %1").arg(err));
+        }
+    }
+    QObject::connect(&dev, &PadDevice::padEvent, &engine, [&engine, &settings](const PadEvent &e) {
+        if (!settings.filterPadEvent(e)) {
+            engine.handle(e);
+        }
+    });
     // Hot reload: a valid edit replaces the config (pending knob motion is
     // dropped); an invalid one is reported and the running config stays.
     ConfigWatcher watcher(p.value(configOpt));
     watcher.setExtraFiles({defaultHardwareMapPath()});
     const DeviceMatch startedWith = cfg->device;
     QObject::connect(&watcher, &ConfigWatcher::reloaded, &engine, [&](const Config &c) {
+        // Also after SetConfig wrote the file: applying the same config twice is harmless.
+        const QString hash = ConfigStore::hashOf(ConfigStore(watcher.path()).read().text);
         engine.setConfig(c);
+        settings.setFallbackLayout(profileForControls(controlsOf(c), QStringLiteral("config")));
+        settings.setConfigState(hash, QString(), c.warnings);
+        publishPlugins();
         dev.setHardwareMap(c.hardware);
         say(QStringLiteral("config reloaded from %1 (%2 profiles, hardware map %3)").arg(watcher.path()).arg(c.profiles.size()).arg(c.hardwareSource));
         for (const QString &w : c.warnings) {
@@ -629,6 +773,7 @@ int main(int argc, char **argv)
             say(QStringLiteral("config: device changes take effect after a restart"));
         }
     });
+    QObject::connect(&watcher, &ConfigWatcher::failed, &settings, [&settings](const QString &e) { settings.setConfigState(settings.configHash(), e, {}); });
     QObject::connect(&watcher, &ConfigWatcher::failed, [dry](const QString &e) {
         std::fprintf(stderr, "config not reloaded: %s\n", qPrintable(e));
         if (!dry) {
@@ -637,6 +782,7 @@ int main(int argc, char **argv)
     });
     watcher.start();
     dev.start();
+    publishDevice();
     const int rc = app.exec();
     dev.stop();
     return rc;

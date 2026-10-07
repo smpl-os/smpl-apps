@@ -49,6 +49,12 @@ add_library(cs_core STATIC
     src/daemon/kdenliveclient.cpp
     src/daemon/kdenlivedbusclient.cpp
     src/daemon/learn.cpp
+    src/daemon/usbinfo.cpp
+    src/daemon/boardprofile.cpp
+    src/daemon/configstore.cpp
+    src/daemon/flashjob.cpp
+    src/daemon/settingsservice.cpp
+    src/daemon/inputmonitor.cpp
 )
 target_include_directories(cs_core PUBLIC src/daemon src/proto)
 target_link_libraries(cs_core PUBLIC cs_proto Qt6::Core Qt6::Network Qt6::DBus PkgConfig::UDEV)
@@ -64,6 +70,14 @@ target_link_libraries(cs_mock PUBLIC Qt6::Core Qt6::DBus)
 
 add_executable(mock-kdenlive src/mock/main.cpp)
 target_link_libraries(mock-kdenlive PRIVATE cs_mock)
+
+# Simulated control-surfaced for the smplOS Settings app (docs/dbus-settings-api.md)
+add_library(cs_mocksurface STATIC src/mock/mocksurface.cpp)
+target_include_directories(cs_mocksurface PUBLIC src/mock)
+target_link_libraries(cs_mocksurface PUBLIC cs_core)
+add_executable(mock-control-surfaced src/mock/surface_main.cpp)
+target_link_libraries(mock-control-surfaced PRIVATE cs_mocksurface)
+qt_add_resources(mock-control-surfaced "mockdefaults" PREFIX "/control-surface" BASE data FILES data/config.example.jsonc)
 
 install(TARGETS control-surfaced ch552-padprog RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -93,4 +107,8 @@ if(BUILD_TESTING)
     # Multi-subscriber and ownership tests need a real bus: always a private one.
     find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
     add_test(NAME kdenlive_bus COMMAND ${CMAKE_COMMAND} -E env CS_PRIVATE_BUS=1 ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_kdenlive_bus>)
+    # Settings API, its building blocks and the mock; bus parts on a private bus.
+    add_executable(tst_settings tests/tst_settings.cpp)
+    target_link_libraries(tst_settings PRIVATE cs_core cs_mocksurface Qt6::Test)
+    add_test(NAME settings COMMAND ${CMAKE_COMMAND} -E env CS_PRIVATE_BUS=1 ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_settings>)
 endif()
