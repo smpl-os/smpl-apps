@@ -35,11 +35,13 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
             }
         });
         connect(m_kd, &KdenliveClient::actionFailed, this, [this](const QString &id) {
-            const auto fb = m_actionFallback.value(id);
-            if (!fb.isEmpty()) {
-                Q_EMIT message(QStringLiteral("action %1 unavailable, sending fallback keys").arg(id));
-                enqueueTaps(QStringLiteral("action:") + id, 0, fb, 1);
+            const Fallback fb = m_actionFallback.take(id);
+            // Type fallback keys only into the same Kdenlive window that was asked.
+            if (fb.keys.isEmpty() || !m_profile || !m_profile->kdenlive || fb.pid != m_window.pid || fb.address != m_window.address) {
+                return;
             }
+            Q_EMIT message(QStringLiteral("action %1 unavailable, sending fallback keys").arg(id));
+            enqueueTaps(QStringLiteral("action:") + id, 0, fb.keys, 1);
         });
         connect(m_kd, &KdenliveClient::availabilityChanged, this, [this](bool) { m_coalescer.clear(); m_inflight.clear(); });
     }
@@ -62,17 +64,27 @@ void Engine::setConfig(const Config &cfg)
 void Engine::setActiveWindow(const WindowInfo &w)
 {
     const Profile *before = m_profile;
+    const bool sameWindow = w.cls == m_window.cls && w.pid == m_window.pid && w.address == m_window.address;
     m_window = w;
     m_profile = m_cfg.profileFor(w.cls, w.title);
-    if (m_profile != before) {
-        // Never deliver a knob's leftover motion to the next application.
+    if (m_profile != before || !sameWindow) {
+        // Never deliver a knob's leftover motion to the next window, even when
+        // both windows share a profile. Title-only changes keep it.
         m_coalescer.clear();
         m_inflight.clear();
         m_tapQueue.clear();
+    }
+    if (m_profile != before) {
         Q_EMIT message(QStringLiteral("profile %1 for %2").arg(m_profile ? m_profile->name : QStringLiteral("(none)"), w.cls.isEmpty() ? QStringLiteral("(no window)") : w.cls));
     }
     if (m_kd) {
-        m_kd->attachToPid(m_profile && m_profile->kdenlive ? w.pid : 0);
+        if (!m_profile || !m_profile->kdenlive) {
+            m_kd->attachToPid(0);
+        } else if (w.pid > 0) {
+            m_kd->attachToPid(w.pid);
+        }
+        // pid 0 for a Kdenlive window is a provisional focus event; keep the
+        // current attachment until the window query reports the real pid.
     }
 }
 
@@ -81,7 +93,12 @@ bool Engine::kdenliveActive() const
     return m_kd && m_profile && m_profile->kdenlive && m_kd->isAvailable();
 }
 
-std::optional<Engine::Resolution> Engine::resolve(const QString &slot) const
+QStringList Engine::turnSlots(const QString &control, int delta)
+{
+    return {control + QStringLiteral(".turn"), control + (delta > 0 ? QStringLiteral(".cw") : QStringLiteral(".ccw"))};
+}
+
+std::optional<Engine::Resolution> Engine::resolve(const QStringList &candidates) const
 {
     const QVariantMap ctx = kdenliveActive() ? m_kd->context() : QVariantMap{};
     QList<const Profile *> chain;
@@ -94,12 +111,19 @@ std::optional<Engine::Resolution> Engine::resolve(const QString &slot) const
     }
     for (const Profile *p : chain) {
         for (const Layer &l : p->layers) {
-            if (l.bindings.contains(slot) && conditionMatches(l.when, ctx)) {
-                return Resolution{l.bindings.value(slot), p->name, l.name};
+            if (!conditionMatches(l.when, ctx)) {
+                continue;
+            }
+            for (const QString &slot : candidates) {
+                if (l.bindings.contains(slot)) {
+                    return Resolution{l.bindings.value(slot), p->name, l.name, slot};
+                }
             }
         }
-        if (p->bindings.contains(slot)) {
-            return Resolution{p->bindings.value(slot), p->name, QString()};
+        for (const QString &slot : candidates) {
+            if (p->bindings.contains(slot)) {
+                return Resolution{p->bindings.value(slot), p->name, QString(), slot};
+            }
         }
     }
     return std::nullopt;
@@ -166,14 +190,15 @@ void Engine::handle(const PadEvent &e)
             accel = m_cfg.settings.accelFactor;
         }
         t.start();
-        const QString turnSlot = e.control + QStringLiteral(".turn");
-        if (auto r = resolve(turnSlot); r && r->binding.isValid()) {
-            execute(*r, turnSlot, e.delta, true, accel);
-            return;
+        const QStringList candidates = turnSlots(e.control, e.delta);
+        const auto r = resolve(candidates);
+        if (!r || !r->binding.isValid()) {
+            return;  // unbound, or explicitly "none" at the winning level
         }
-        const QString dirSlot = e.control + (e.delta > 0 ? QStringLiteral(".cw") : QStringLiteral(".ccw"));
-        if (auto r = resolve(dirSlot)) {
-            execute(*r, dirSlot, std::abs(e.delta), true, accel);
+        if (r->slot == candidates.first()) {
+            execute(*r, r->slot, e.delta, true, accel);
+        } else {
+            execute(*r, r->slot, std::abs(e.delta), true, accel);
         }
         return;
     }
@@ -196,7 +221,7 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
     case Binding::Action:
         if (kdenliveActive()) {
             if (!b.keys.isEmpty()) {
-                m_actionFallback.insert(b.name, b.keys);
+                m_actionFallback.insert(b.name, Fallback{b.keys, m_window.pid, m_window.address});
             }
             for (int i = 0; i < (isTurn ? count : 1); ++i) {
                 m_kd->triggerAction(b.name);

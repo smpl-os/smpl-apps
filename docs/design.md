@@ -25,8 +25,10 @@ For an event on slot `knob1.turn` (or `key5`, `knob2.press`, …):
    Kdenlive context and that binds the slot wins. Then the profile's base
    bindings. If the profile has `fallthrough`, the global profile follows.
    `"none"` ends the search.
-3. For turns, a `turn` binding (signed detents, best for continuous controls)
-   takes precedence over `ccw`/`cw`.
+3. For turns, the slots `knobN.turn` and `knobN.cw`/`ccw` are tried together
+   at each level, so a layer's `ccw`/`cw` beats a base `turn`, and an app's
+   `cw` beats the global `turn`. Within one level `turn` wins. An explicit
+   `"none"` at the winning level stops the search.
 
 `when` matches dotted paths in the context (`effect.id`, `param.name`,
 `focus`, `tool`). Values are exact strings, `/regex/`, `!negation`, lists
@@ -50,14 +52,24 @@ expands to the current value. Cycling also calls `Notify` so Kdenlive shows
   e.g. volume keys, stay one per detent.
 * **Key taps** are paced at `keyRateHz` (first tap immediate), capped at 48
   queued. Reversing a knob drops queued taps in the old direction.
-* A focus change to another app drops all pending motion. It is never
-  delivered to the next window.
+* A change of focused window (class, pid or address, even with the same
+  profile) drops all pending motion. It is never delivered to the next window.
+  A late `j/activewindow` answer that a newer focus event made stale is
+  discarded.
 
 ## Safety
 
-* Device matching: sysfs walk to the USB parent (VID, PID, serial), then
-  `EVIOCGID` on the opened node before `EVIOCGRAB`. The uinput keyboard has its
-  own IDs (`1d6b:0cf1`, `BUS_VIRTUAL`), so the daemon can never grab it.
+* Device matching: the pad identity `1189:8890` is a compile-time constant
+  (`kPadVendor`/`kPadProduct`). A config naming any other vendor/product is
+  rejected, and only the serial is configurable. Discovery walks sysfs to the
+  USB parent (VID, PID, serial), then checks `EVIOCGID` against the constants on
+  the opened node before `EVIOCGRAB`. The uinput keyboard has its own IDs
+  (`1d6b:0cf1`, `BUS_VIRTUAL`), so the daemon can never grab it.
+* Kdenlive action fallbacks: keys are typed only for a definite "not
+  triggered" answer or an absent interface. A timeout never counts, because the
+  action may still run late. They also go only into the same Kdenlive window
+  (pid and address) that was asked. Stale replies after a re-attach are
+  ignored.
 * The virtual keyboard does not advertise power, sleep, wakeup, suspend,
   rfkill, battery or coffee keys, so the kernel drops those codes even if a
   config names them.

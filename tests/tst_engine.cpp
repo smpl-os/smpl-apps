@@ -178,6 +178,99 @@ private Q_SLOTS:
         QCOMPARE(e.resolve(QStringLiteral("knob1.cw"))->profile, QStringLiteral("global"));
     }
 
+    void provisionalFocusKeepsAttachment()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(m_cfg);
+        e.setActiveWindow(kKdenlive);
+        QCOMPARE(kd.attachedPid(), 4242);
+        WindowInfo provisional = kKdenlive;
+        provisional.pid = 0;  // Hyprland "activewindow>>" before the query answers
+        provisional.title = QStringLiteral("other title");
+        e.setActiveWindow(provisional);
+        QCOMPARE(kd.attachedPid(), 4242);
+        e.setActiveWindow(kFirefox);
+        QCOMPARE(kd.attachedPid(), 0);
+    }
+
+    void staleActionFailureNeverTypesElsewhere()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(m_cfg);
+        e.setActiveWindow(kKdenlive);
+        e.handle(key(14));  // edit_undo, fallback ctrl+z
+        e.setActiveWindow(kFirefox);
+        Q_EMIT kd.actionFailed(QStringLiteral("edit_undo"));
+        QTest::qWait(30);
+        QVERIFY(keys.taps.isEmpty());
+        // Another Kdenlive window (different instance) does not get it either.
+        e.setActiveWindow(kKdenlive);
+        e.handle(key(14));
+        e.setActiveWindow(WindowInfo{kKdenlive.cls, kKdenlive.title, 5555, QStringLiteral("0x9")});
+        Q_EMIT kd.actionFailed(QStringLiteral("edit_undo"));
+        QTest::qWait(30);
+        QVERIFY(keys.taps.isEmpty());
+    }
+
+    void turnPrecedencePerLevel()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        QString err;
+        auto c = parseConfig("{\"profiles\":["
+                             "{\"name\":\"kd\",\"match\":{\"class\":\"^kd$\"},\"kdenlive\":true,"
+                             " \"layers\":[{\"name\":\"l\",\"when\":{\"focus\":\"x\"},\"bindings\":{\"knob2\":{\"ccw\":\"a\",\"cw\":\"b\"}}}],"
+                             " \"bindings\":{\"knob2\":{\"turn\":{\"control\":\"playhead.shuttle\"}}}},"
+                             "{\"name\":\"term\",\"match\":{\"class\":\"^term$\"},\"bindings\":{\"knob1\":{\"cw\":\"ctrl+tab\"},\"knob3\":{\"turn\":\"none\"}}},"
+                             "{\"name\":\"global\",\"bindings\":{\"knob1\":{\"turn\":{\"control\":\"x\",\"fallback\":[\"volumedown\",\"volumeup\"]}},"
+                             " \"knob3\":{\"ccw\":\"volumedown\",\"cw\":\"volumeup\"}}}]}",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 1, QStringLiteral("0x1")});
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("x")}});
+        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob2"), 1))->slot, QStringLiteral("knob2.cw"));  // layer beats base turn
+        kd.setContext({});
+        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob2"), 1))->slot, QStringLiteral("knob2.turn"));
+        e.setActiveWindow(WindowInfo{QStringLiteral("term"), {}, 2, QStringLiteral("0x2")});
+        e.handle(turn(1, 1));   // app cw beats global turn
+        e.handle(turn(3, 1));   // explicit none: global volume never fires
+        e.handle(turn(3, -1));
+        QTRY_COMPARE(keys.taps, QStringList{QStringLiteral("ctrl+TAB")});
+        QTest::qWait(30);
+        QCOMPARE(keys.taps.size(), 1);
+    }
+
+    void windowSwitchWithinSameProfileDropsTaps()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        Config c = m_cfg;
+        c.settings.keyRateHz = 20;
+        e.setConfig(c);
+        e.setActiveWindow(kFirefox);
+        for (int i = 0; i < 6; ++i) {
+            e.handle(turn(1, 1));
+        }
+        QCOMPARE(keys.taps.size(), 1);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kitty"), QStringLiteral("shell"), 88, QStringLiteral("0x3")});  // also "global"
+        QCOMPARE(e.pendingTaps(), 0);
+        QTest::qWait(150);
+        QCOMPARE(keys.taps.size(), 1);
+        // A title-only change of the same window keeps queued motion.
+        for (int i = 0; i < 3; ++i) {
+            e.handle(turn(1, 1));
+        }
+        e.setActiveWindow(WindowInfo{QStringLiteral("kitty"), QStringLiteral("shell 2"), 88, QStringLiteral("0x3")});
+        QVERIFY(e.pendingTaps() > 0);
+    }
+
     void failedActionFallsBackToKeys()
     {
         RecordingKeySink keys;

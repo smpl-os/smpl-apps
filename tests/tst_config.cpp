@@ -82,6 +82,10 @@ private Q_SLOTS:
         QVERIFY(!parseConfig("{\"profiles\":[{\"name\":\"x\",\"modes\":{\"m\":[]}}]}", {}, &err));
         QVERIFY(parseConfig("{\"profiles\":[{\"name\":\"x\",\"bindings\":{\"knob1.cw\":\"right\",\"knob2\":{\"press\":\"a\"}}}]}", {}, &err));
         QVERIFY(parseConfig("{\"hardware\":\"default:vendor-twelve\"}", {}, &err));
+        // Only the pad may be configured: another id would grab another keyboard.
+        QVERIFY(!parseConfig("{\"device\":{\"vendor\":\"0c45\",\"product\":\"760a\"}}", {}, &err));
+        QVERIFY(err.contains(QStringLiteral("refused")));
+        QVERIFY(parseConfig("{\"device\":{\"vendor\":\"1189\",\"product\":\"8890\",\"serial\":\"x\"}}", {}, &err));
     }
     void conditions()
     {

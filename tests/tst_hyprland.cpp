@@ -8,6 +8,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 using namespace cs;
 
@@ -31,9 +32,13 @@ public:
                     const QByteArray req = s->readAll();
                     ++queries;
                     lastRequest = req;
-                    s->write(QJsonDocument(active).toJson(QJsonDocument::Compact));
-                    s->flush();
-                    s->disconnectFromServer();
+                    // Answer with the window focused when the request arrived, optionally late.
+                    const QByteArray answer = QJsonDocument(active).toJson(QJsonDocument::Compact);
+                    QTimer::singleShot(replyDelayMs, s, [s, answer] {
+                        s->write(answer);
+                        s->flush();
+                        s->disconnectFromServer();
+                    });
                 });
             }
         });
@@ -56,6 +61,7 @@ public:
     QList<QLocalSocket *> clients;
     QJsonObject active;
     int queries = 0;
+    int replyDelayMs = 0;
     QByteArray lastRequest;
 };
 
@@ -95,6 +101,28 @@ private Q_SLOTS:
         QTRY_COMPARE(t.current().cls, QString());
         QCOMPARE(t.current().pid, qint64(0));
     }
+    void staleQueryReplyIsDropped()
+    {
+        QTemporaryDir dir;
+        FakeHyprland hypr(dir.path());
+        hypr.active = QJsonObject{{QStringLiteral("class"), QStringLiteral("a")}, {QStringLiteral("pid"), 1}, {QStringLiteral("address"), QStringLiteral("0x1")}};
+        HyprlandTracker t(dir.path());
+        t.start();
+        QTRY_COMPARE(t.current().cls, QStringLiteral("a"));
+        QTRY_COMPARE(hypr.clients.size(), 1);
+        QStringList seen;
+        connect(&t, &WindowTracker::activeWindowChanged, this, [&seen](const WindowInfo &w) { seen << w.cls; });
+        hypr.replyDelayMs = 150;
+        hypr.active = QJsonObject{{QStringLiteral("class"), QStringLiteral("b")}, {QStringLiteral("pid"), 2}, {QStringLiteral("address"), QStringLiteral("0x2")}};
+        hypr.push("activewindow>>b,B");
+        QTRY_COMPARE(hypr.queries, 2);  // query for b in flight (answers late with b)
+        hypr.active = QJsonObject{{QStringLiteral("class"), QStringLiteral("c")}, {QStringLiteral("pid"), 3}, {QStringLiteral("address"), QStringLiteral("0x3")}};
+        hypr.push("activewindow>>c,C");
+        QTRY_COMPARE_WITH_TIMEOUT(t.current().pid, qint64(3), 2000);
+        // After c was reported, the late answer for b must not flip focus back.
+        QCOMPARE(seen.mid(seen.indexOf(QStringLiteral("c"))).count(QStringLiteral("b")), 0);
+    }
+
     void provisionalEventCarriesNoStalePid()
     {
         HyprlandTracker t(QStringLiteral("/nonexistent"));

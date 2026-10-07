@@ -162,6 +162,21 @@ private Q_SLOTS:
         QDBusConnection::disconnectFromPeer(QStringLiteral("c2"));
     }
 
+    void staleActionReplyIsIgnored()
+    {
+        auto conn = connectClient(QStringLiteral("c5"));
+        KdenliveDBusClient client(conn);
+        client.setServiceOverride(QString());
+        client.attachToPid(1);
+        QTRY_VERIFY(client.isAvailable());
+        QSignalSpy failed(&client, &KdenliveClient::actionFailed);
+        client.triggerAction(QStringLiteral("no_such_action"));  // answers false...
+        client.attachToPid(0);                                    // ...but focus left first
+        QTest::qWait(100);
+        QCOMPARE(failed.size(), 0);
+        QDBusConnection::disconnectFromPeer(QStringLiteral("c5"));
+    }
+
     void listActionsAndCapabilitiesOnTheWire()
     {
         auto conn = connectClient(QStringLiteral("c3"));

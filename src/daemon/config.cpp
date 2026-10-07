@@ -339,8 +339,16 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
     const QJsonObject root = doc.object();
     Config cfg;
     const QJsonObject dev = root.value(QStringLiteral("device")).toObject();
-    cfg.device.vendor = dev.value(QStringLiteral("vendor")).toString(cfg.device.vendor).toLower();
-    cfg.device.product = dev.value(QStringLiteral("product")).toString(cfg.device.product).toLower();
+    // vendor/product may be stated for documentation but must be the CH552 pad:
+    // a different id would make the daemon grab (and swallow) another device.
+    const QString vendor = dev.value(QStringLiteral("vendor")).toString(cfg.device.vendor).toLower();
+    const QString product = dev.value(QStringLiteral("product")).toString(cfg.device.product).toLower();
+    if (vendor != cfg.device.vendor || product != cfg.device.product) {
+        if (error) {
+            *error = QStringLiteral("device %1:%2 refused: this daemon only drives the 1189:8890 pad").arg(vendor, product);
+        }
+        return std::nullopt;
+    }
     cfg.device.serial = dev.value(QStringLiteral("serial")).toString();
 
     const QJsonValue hw = root.value(QStringLiteral("hardware"));

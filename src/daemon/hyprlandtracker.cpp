@@ -141,7 +141,9 @@ void HyprlandTracker::queryActive()
     connect(s, &QLocalSocket::disconnected, this, [this, s, buf, done] {
         buf->append(s->readAll());
         const QJsonDocument doc = QJsonDocument::fromJson(*buf);
-        if (doc.isObject()) {  // "{}" means no focused window
+        // A newer focus event arrived while this query ran: its answer may describe
+        // the previous window, so skip it and let the follow-up query decide.
+        if (doc.isObject() && !m_queryDirty) {  // "{}" means no focused window
             const QJsonObject o = doc.object();
             WindowInfo w;
             w.cls = o.value(QStringLiteral("class")).toString();

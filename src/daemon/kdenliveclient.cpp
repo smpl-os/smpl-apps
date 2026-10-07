@@ -16,6 +16,9 @@ FakeKdenliveClient::FakeKdenliveClient(bool print, QObject *parent)
 
 void FakeKdenliveClient::record(const QString &line)
 {
+    if (calls.size() >= 10000) {
+        calls.removeFirst();  // long --dry-run sessions
+    }
     calls << line;
     if (m_print) {
         std::printf("  -> kdenlive %s\n", qPrintable(line));

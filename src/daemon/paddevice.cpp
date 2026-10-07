@@ -52,7 +52,9 @@ QList<InputNodeInfo> findPadInputNodes(const DeviceMatch &m, const QString &sysR
             }
             dir = QFileInfo(dir).path();
         }
-        if (info.usbPath.isEmpty() || info.vendor != m.vendor || info.product != m.product) {
+        if (info.usbPath.isEmpty() || info.vendor != m.vendor || info.product != m.product
+            || info.vendor != QStringLiteral("%1").arg(kPadVendor, 4, 16, QLatin1Char('0'))
+            || info.product != QStringLiteral("%1").arg(kPadProduct, 4, 16, QLatin1Char('0'))) {
             continue;
         }
         if (!m.serial.isEmpty() && info.serial != m.serial) {
@@ -188,8 +190,7 @@ void PadDevice::openNode(const InputNodeInfo &info)
     }
     // Second, independent identity check right before grabbing.
     input_id id{};
-    if (::ioctl(fd, EVIOCGID, &id) < 0 || QString::asprintf("%04x", id.vendor) != m_match.vendor
-        || QString::asprintf("%04x", id.product) != m_match.product) {
+    if (::ioctl(fd, EVIOCGID, &id) < 0 || id.vendor != kPadVendor || id.product != kPadProduct) {
         Q_EMIT message(QStringLiteral("refusing %1: evdev id %2:%3 does not match").arg(info.devnode).arg(id.vendor, 4, 16, QLatin1Char('0')).arg(id.product, 4, 16, QLatin1Char('0')));
         ::close(fd);
         return;

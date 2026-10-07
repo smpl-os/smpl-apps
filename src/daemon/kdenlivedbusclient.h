@@ -4,6 +4,7 @@
 #include "kdenliveclient.h"
 
 #include <QDBusConnection>
+#include <QElapsedTimer>
 #include <QHash>
 
 class QDBusServiceWatcher;
@@ -54,6 +55,7 @@ private:
     qint64 m_contextSerial = -1;
     uint m_seq = 0;
     quint64 m_generation = 0;
+    QElapsedTimer m_lastAttempt;
     QDBusServiceWatcher *m_watcher = nullptr;
 };
 

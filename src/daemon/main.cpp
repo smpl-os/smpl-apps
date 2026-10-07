@@ -373,9 +373,11 @@ int main(int argc, char **argv)
     QObject::connect(&dev, &PadDevice::unmappedChord, [log](const KeyChord &c) { log(QStringLiteral("unmapped chord %1 (run 'control-surfaced verify')").arg(chordName(c))); });
     QObject::connect(&dev, &PadDevice::padEvent, &engine, [&engine, dry](const PadEvent &e) {
         if (dry) {
-            const auto slot = e.type == PadEvent::Turn ? e.control + QStringLiteral(".turn") : e.type == PadEvent::PressDown ? e.control + QStringLiteral(".press") : e.control;
+            const QStringList candidates = e.type == PadEvent::Turn ? Engine::turnSlots(e.control, e.delta)
+                : e.type == PadEvent::PressDown                  ? QStringList{e.control + QStringLiteral(".press")}
+                                                                 : QStringList{e.control};
             if (e.type != PadEvent::KeyUp && e.type != PadEvent::PressUp) {
-                const auto r = engine.resolve(slot);
+                const auto r = engine.resolve(candidates);
                 say(QStringLiteral("%1 -> %2%3").arg(e.describe(), r ? r->binding.describe() : QStringLiteral("(unbound)"),
                                                       r && !r->layer.isEmpty() ? QStringLiteral(" [layer %1]").arg(r->layer) : QString()));
             }

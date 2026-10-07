@@ -35,8 +35,13 @@ public:
         Binding binding;
         QString profile;
         QString layer;  // empty: profile base bindings
+        QString slot;   // which of the requested slots matched
     };
-    std::optional<Resolution> resolve(const QString &slot) const;
+    // Slots are tried in order at each precedence level (layer, base, next
+    // profile); the first hit wins, and an explicit "none" ends the search.
+    std::optional<Resolution> resolve(const QStringList &candidates) const;
+    std::optional<Resolution> resolve(const QString &slot) const { return resolve(QStringList{slot}); }
+    static QStringList turnSlots(const QString &control, int delta);
     const Profile *activeProfile() const { return m_profile; }
     bool kdenliveActive() const;
     QString modeValue(const QString &mode) const;
@@ -68,7 +73,12 @@ private:
     QHash<QString, QSet<QString>> m_inflight;  // control name -> coalescer keys
     QHash<QString, int> m_modeIndex;            // "profile/mode" -> index
     QHash<QString, QElapsedTimer> m_lastTurn;
-    QHash<QString, QList<KeyChord>> m_actionFallback;
+    struct Fallback {
+        QList<KeyChord> keys;
+        qint64 pid = 0;
+        QString address;
+    };
+    QHash<QString, Fallback> m_actionFallback;
     QList<Tap> m_tapQueue;
     QTimer *m_tapTimer;
 };

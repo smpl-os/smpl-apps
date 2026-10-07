@@ -108,6 +108,11 @@ void KdenliveDBusClient::attachToPid(qint64 pid)
         return;
     }
     if (pid == m_pid && m_attached) {
+        // Kdenlive may still have been starting when we first asked: retry
+        // when its window is focused again.
+        if (!m_available && pid > 0 && m_lastAttempt.isValid() && m_lastAttempt.elapsed() > 3000) {
+            attachToService(m_service);
+        }
         return;
     }
     m_pid = pid;
@@ -144,6 +149,7 @@ void KdenliveDBusClient::attachToService(const QString &service)
     detach();
     m_service = service;
     m_attached = true;
+    m_lastAttempt.start();
     const quint64 gen = ++m_generation;
     m_conn.connect(m_service, contract::kPath, contract::kInterface, QStringLiteral("ContextChanged"), this, SLOT(onContextChanged(QVariantMap)));
     m_conn.connect(m_service, contract::kPath, contract::kInterface, QStringLiteral("ControlAck"), this,
@@ -209,12 +215,30 @@ void KdenliveDBusClient::triggerAction(const QString &id)
     }
     auto msg = call(QStringLiteral("TriggerAction"));
     msg << id;
+    const quint64 gen = m_generation;
     auto *w = new QDBusPendingCallWatcher(m_conn.asyncCall(msg, 1000), this);
-    connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, id] {
+    connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, id, gen] {
         w->deleteLater();
+        if (gen != m_generation) {
+            return;  // focus/instance changed meanwhile: never act on a stale reply
+        }
         QDBusPendingReply<bool> r = *w;
-        if (r.isError() || !r.value()) {
-            Q_EMIT message(QStringLiteral("action %1 not triggered%2").arg(id, r.isError() ? QStringLiteral(": ") + r.error().message() : QString()));
+        if (!r.isError()) {
+            if (!r.value()) {
+                Q_EMIT message(QStringLiteral("action %1 not triggered (unknown, disabled or dialog open)").arg(id));
+                Q_EMIT actionFailed(id);
+            }
+            return;
+        }
+        // Only a definitely absent interface justifies typing fallback keys. A
+        // timeout may still execute later in Kdenlive, so it must not double up.
+        static const QStringList absent{QStringLiteral("org.freedesktop.DBus.Error.ServiceUnknown"),
+                                        QStringLiteral("org.freedesktop.DBus.Error.NameHasNoOwner"),
+                                        QStringLiteral("org.freedesktop.DBus.Error.UnknownObject"),
+                                        QStringLiteral("org.freedesktop.DBus.Error.UnknownInterface"),
+                                        QStringLiteral("org.freedesktop.DBus.Error.UnknownMethod")};
+        Q_EMIT message(QStringLiteral("action %1: %2").arg(id, r.error().message()));
+        if (absent.contains(r.error().name())) {
             Q_EMIT actionFailed(id);
         }
     });

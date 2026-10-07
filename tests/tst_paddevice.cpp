@@ -62,8 +62,10 @@ private Q_SLOTS:
         QCOMPARE(nodes[2].interfaceNumber, 2);
         m.serial.clear();
         QCOMPARE(findPadInputNodes(m, root.path()).size(), 5);  // no serial: both pads, never the keyboard
+        // Even a tampered match never selects another device.
         m.vendor = QStringLiteral("0c45");
         m.product = QStringLiteral("760a");
+        QCOMPARE(findPadInputNodes(m, root.path()).size(), 0);
         QCOMPARE(findPadInputNodes(DeviceMatch{}, QStringLiteral("/nonexistent")).size(), 0);
     }
 
