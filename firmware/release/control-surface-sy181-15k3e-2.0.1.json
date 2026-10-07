@@ -18,7 +18,19 @@
   "source": "firmware/ at commit b53446a",
   "toolchain": "SDCC 4.5.0 #15242",
   "flash": "wchisp flash <file> (ROM bootloader 4348:55e0; config registers untouched)",
-  "verifiedOnHardware": false,
+  "verifiedOnHardware": true,
   "knownIssues": [],
-  "notes": "Built reproducibly and host-tested (fw_logic, fw_store); not yet flashed to a pad."
+  "notes": "Built reproducibly, host-tested (fw_logic, fw_store) and verified on hardware.",
+  "hardwareVerification": {
+    "date": "2026-10-07",
+    "flashed": true,
+    "flashMethod": "CMD_BOOTLOADER from 2.0.0 (no key hold), wchisp Verify OK",
+    "protocolChecks": true,
+    "keymapSurvivedReflash": true,
+    "keys": true,
+    "knobPress": true,
+    "slowRotation": true,
+    "fastRotation": true,
+    "details": "Top knob, one revolution each: slow cw 20, fast cw 20, fast ccw 20 in the capture; GET_STATS cw 40 / ccw 20, missed states 0, overruns 0, tap-queue drops 0, deepest queue 1. Keys and knob presses were verified on 2.0.0; their code path is unchanged in 2.0.1."
+  }
 }

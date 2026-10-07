@@ -233,7 +233,15 @@ The service stays disabled until the user enables it.
   * **Defect:** a fast revolution gave 10–11 of about 20 detents (slow: 19).
 * **2.0.1** fixes it (§7.2): interrupt-sampled encoders, a full-cycle
   decoder, non-blocking ordered tap output, 1 ms endpoints, a raw `count`
-  byte, and `CMD_GET_STATS`. Not flashed yet.
+  byte, and `CMD_GET_STATS`.
+* **15:05 2.0.1 flashed and verified** by the parent:
+  * `ENTER_BOOTLOADER=1`: `CMD_BOOTLOADER` was answered, so no key hold was
+    needed;
+  * Verify OK, `GET_INFO` 2.0.1, and the keymap survived.
+  * Top knob, one revolution each: slow cw 20, fast cw 20, fast ccw 20.
+  * `stats`: cw 40, ccw 20, missed states 0, overruns 0, drops 0, deepest
+    queue 1.
+  * The release JSON records `verifiedOnHardware: true`.
 
 ## 7. The fork as built: control-surface firmware 2.0.0
 
