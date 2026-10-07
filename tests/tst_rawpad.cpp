@@ -2,12 +2,18 @@
 // Raw input backend against a simulated control-surface firmware on a
 // socketpair (SOCK_SEQPACKET keeps report boundaries, like hidraw).
 #include "padfwproto.h"
+#include "hidrawdev.h"
 #include "rawpaddevice.h"
 
+#include <QDir>
+#include <QFile>
+#include <QRegularExpression>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QSocketNotifier>
 #include <QTest>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
 
 // Protocol constants must match the firmware's own headers.
@@ -257,6 +263,91 @@ private Q_SLOTS:
         fw->closeLink();
         QTRY_VERIFY(!dev.isActive());
         QCOMPARE(active.count(), 2);
+    }
+
+    void findsOnlyTheControlSurfaceFirmware()
+    {
+        // The firmware's real report descriptor, read from usb_descr.c.
+        QFile src(QStringLiteral(CS_SOURCE_DIR "/firmware/src/usb_descr.c"));
+        QVERIFY(src.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(src.readAll());
+        const int from = text.indexOf(QStringLiteral("ReportDescr[] ="));
+        const int to = text.indexOf(QStringLiteral("};"), from);
+        QVERIFY(from > 0 && to > from);
+        QByteArray fwDesc;
+        const QRegularExpression hex(QStringLiteral("0x([0-9a-fA-F]{2})"));
+        // Comments carry no 0x.. bytes; take each line's code part only.
+        for (const QString &line : text.mid(from, to - from).split(QLatin1Char('\n'))) {
+            auto it = hex.globalMatch(line.section(QStringLiteral("//"), 0, 0));
+            while (it.hasNext()) {
+                fwDesc.append(char(it.next().captured(1).toInt(nullptr, 16)));
+            }
+        }
+        const auto info = ch552::parseDescriptor(std::vector<std::uint8_t>(fwDesc.begin(), fwDesc.end()));
+        QVERIFY(info.ok);
+        QCOMPARE(info.reportIds, (std::vector<int>{1, 2, 4, 3, 5}));
+        // Stock-like: a vendor report 3 but no raw report 5.
+        const QByteArray stockDesc = QByteArray::fromHex("0600ff0901a101850375089510090281029510090391020c0");
+
+        QTemporaryDir root;
+        auto pad = [&](const QString &port, const QByteArray &serial, const QByteArray &desc, int n) {
+            const QString usb = root.path() + QStringLiteral("/devices/usb1/") + port;
+            const QString hid = usb + QLatin1Char('/') + port + QStringLiteral(":1.0/0003:1189:8890.000%1").arg(n);
+            QDir().mkpath(hid);
+            auto put = [](const QString &f, const QByteArray &d) {
+                QFile o(f);
+                QVERIFY(o.open(QIODevice::WriteOnly));
+                o.write(d);
+            };
+            put(usb + QStringLiteral("/idVendor"), "1189\n");
+            put(usb + QStringLiteral("/idProduct"), "8890\n");
+            put(usb + QStringLiteral("/serial"), serial + "\n");
+            put(usb + QLatin1Char('/') + port + QStringLiteral(":1.0/bInterfaceNumber"), "00\n");
+            put(hid + QStringLiteral("/report_descriptor"), desc);
+            const QString cls = root.path() + QStringLiteral("/sys/class/hidraw/hidraw%1").arg(n);
+            QDir().mkpath(cls);
+            QVERIFY(QFile::link(hid, cls + QStringLiteral("/device")));
+        };
+        pad(QStringLiteral("1-7"), "key153", stockDesc, 3);
+        pad(QStringLiteral("1-5"), "key153", fwDesc, 4);
+        QCOMPARE(findControlSurfaceHidraw(DeviceMatch{}, {}, root.path()), QStringLiteral("/dev/hidraw4"));
+        QCOMPARE(findControlSurfaceHidraw(DeviceMatch{}, QStringLiteral("/sys/devices/pci0000:00/usb1/1-5"), root.path()), QStringLiteral("/dev/hidraw4"));
+        QVERIFY(findControlSurfaceHidraw(DeviceMatch{}, QStringLiteral("/sys/bus/usb/devices/1-7"), root.path()).isEmpty());  // stock: never
+        DeviceMatch other;
+        other.serial = QStringLiteral("CH552GPAD");
+        QVERIFY(findControlSurfaceHidraw(other, {}, root.path()).isEmpty());
+        QVERIFY(findControlSurfaceHidraw(DeviceMatch{}, {}, QStringLiteral("/nonexistent")).isEmpty());
+    }
+
+    void blockingExchange()
+    {
+        int sv[2];
+        QVERIFY(::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) == 0);
+        std::thread pad([fd = sv[1]] {
+            char req[64];
+            if (::read(fd, req, sizeof req) != 16) {
+                return;
+            }
+            const char kbd[] = {1, 0, 0, 0x69, 0, 0, 0, 0, 0};  // a key report arrives first
+            ::send(fd, kbd, sizeof kbd, MSG_NOSIGNAL);
+            const char other[] = {3, 8, 0, 0, 0, 0, 0, 1};       // a reply to another command
+            ::send(fd, other, sizeof other, MSG_NOSIGNAL);
+            const char info[] = {3, 1, 'C', 'S', 3, 24, char(128), 1, 2, 0, 0, 2, 0, 0, 0, 0};
+            ::send(fd, info, sizeof info, MSG_NOSIGNAL);
+        });
+        std::string err;
+        const auto reply = padfw::exchange(sv[0], padfw::getInfo(), 2000, &err);
+        pad.join();
+        QVERIFY2(reply, err.c_str());
+        QVERIFY(padfw::parseInfo(reply->data(), reply->size()));
+        // Nobody answers: a timeout, not a hang.
+        const auto none = padfw::exchange(sv[0], padfw::bootloader(), 150, &err);
+        QVERIFY(!none);
+        QCOMPARE(err, std::string("no reply"));
+        ::close(sv[0]);
+        ::close(sv[1]);
+        QVERIFY(!padfw::queryInfo("/nonexistent/hidraw9", &err));
+        QVERIFY(!padfw::requestBootloader("/nonexistent/hidraw9", &err));
     }
 };
 

@@ -476,6 +476,53 @@ private Q_SLOTS:
         }
     }
 
+    void flashAsksOpenFirmwareForTheBootloader()
+    {
+        {  // the firmware switches: no boot key needed
+            FlashFixture f;
+            std::unique_ptr<FlashJob> j(f.job(false));
+            int asked = 0;
+            j->setBootloaderRequest([&](QString *) {
+                ++asked;
+                f.devices = {usb(QStringLiteral("4348"), QStringLiteral("55e0"))};
+                return true;
+            });
+            QSignalSpy prog(j.get(), &FlashJob::progress);
+            j->start();
+            QCOMPARE(asked, 0);  // the pad is released first
+            QTRY_COMPARE(j->phase(), QStringLiteral("flashing"));
+            QCOMPARE(asked, 1);
+            QVERIFY(prog.at(2).at(2).toString().contains(QStringLiteral("asking the firmware")));
+            f.devices = {usb(QStringLiteral("1189"), QStringLiteral("8890"), QStringLiteral("OpenMacroPad"), QStringLiteral("Control Surface 15+3"), QStringLiteral("0200"))};
+            f.pending(0, QString());
+            QTRY_VERIFY(j->succeeded());
+        }
+        {  // it does not: fall back to the boot key
+            FlashFixture f;
+            std::unique_ptr<FlashJob> j(f.job(false));
+            j->setBootloaderRequest([](QString *why) {
+                *why = QStringLiteral("no reply");
+                return false;
+            });
+            QSignalSpy prog(j.get(), &FlashJob::progress);
+            j->start();
+            QTRY_VERIFY(prog.last().at(2).toString().contains(QStringLiteral("hold the top-left key")));
+            QCOMPARE(j->phase(), QStringLiteral("waiting-bootloader"));
+            f.devices = {usb(QStringLiteral("4348"), QStringLiteral("55e0"))};
+            QTRY_COMPARE(j->phase(), QStringLiteral("flashing"));
+            j.reset();  // destroyed mid-job: the pending tool callback must not crash
+            f.pending(0, QString());
+        }
+        {  // a dry run says which way it would go
+            FlashFixture f;
+            std::unique_ptr<FlashJob> j(f.job(true));
+            j->setBootloaderRequest([](QString *) { return true; });
+            QSignalSpy prog(j.get(), &FlashJob::progress);
+            j->start();
+            QVERIFY(prog.at(2).at(2).toString().contains(QStringLiteral("would ask the firmware")));
+        }
+    }
+
     void flashProcessRunner()
     {
         FlashFixture f;
@@ -698,8 +745,12 @@ private Q_SLOTS:
             // A dry-run flash: the reply carries the job id before any progress.
             FlashFixture f;
             s.setFlashSettings(f.settings);
+            writeFile(f.dir.path() + QStringLiteral("/fw/pad.json"), QJsonDocument(QJsonObject{{QStringLiteral("version"), QStringLiteral("2.0.0")}, {QStringLiteral("sha256"), f.imageSha}}).toJson());
             const QJsonObject fw = r.json(QStringLiteral("GetFirmwareStatus"));
-            QCOMPARE(fw.value(QStringLiteral("images")).toArray().first().toObject().value(QStringLiteral("sha256")).toString(), f.imageSha);
+            const QJsonObject img = fw.value(QStringLiteral("images")).toArray().first().toObject();
+            QCOMPARE(img.value(QStringLiteral("sha256")).toString(), f.imageSha);
+            QCOMPARE(img.value(QStringLiteral("meta")).toObject().value(QStringLiteral("version")).toString(), QStringLiteral("2.0.0"));
+            QCOMPARE(img.value(QStringLiteral("metaMatches")).toBool(), true);
             QCOMPARE(fw.value(QStringLiteral("flash")).toObject().value(QStringLiteral("toolFound")).toBool(), true);
             res = r.json(QStringLiteral("StartFlash"), {f.image, f.imageSha, true});
             QVERIFY(res.value(QStringLiteral("ok")).toBool());

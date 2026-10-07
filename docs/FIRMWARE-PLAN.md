@@ -357,6 +357,24 @@ Two independent builds produce the same hash.
   release, the expiry clean-up, the validity check or the start-layer check,
   or moving the keymap, each makes a suite fail.
 
+### 7.5a Releases and host commands
+
+* `firmware/make-release.sh` builds twice, requires identical images, and
+  writes `firmware/release/<name>.bin` and `<name>.json` (name, version, board,
+  licence, SHA-256, size, source commit, toolchain, `verifiedOnHardware`) next
+  to the CC BY-SA 3.0 `LICENSE`. smplOS installs them to
+  `/usr/share/control-surface/firmware/`; `scripts/install-user.sh` copies them
+  to `~/.local/share/control-surface/firmware/`. Both are the settings API's
+  default image directories.
+* `control-surfaced firmware-info [--json]`: `GET_INFO` (version, slots,
+  layers, active and start layer, raw mode) from a pad running this firmware.
+* `control-surfaced enter-bootloader --yes`: `CMD_BOOTLOADER`; the pad then
+  shows as 4348:55e0 until it is flashed or replugged. The settings API's flash
+  job does the same by itself when the pad runs this firmware, so the wizard
+  only needs the top-left key for other firmware (or if the request fails).
+* Both talk only to a hidraw node whose report descriptor has reports 3 and 5;
+  stock or other firmware is never written to.
+
 ### 7.6 Recovery
 
 * **Top-left key held while plugging in**: the CH552 ROM's own P1.5 check,

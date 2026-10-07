@@ -19,6 +19,11 @@ namespace cs {
 // daemon keeps raw mode alive with heartbeats; if it stops (crash, hang,
 // unplug), the firmware falls back to its own keymap by itself. The evdev
 // grab stays in place as a second line of defence.
+// The hidraw node of a pad running the control-surface firmware (report IDs 3
+// and 5 in its descriptor), optionally only the pad at usbPath. Empty if none.
+// Only sysfs is read; sysRoot lets tests point at a fake tree.
+QString findControlSurfaceHidraw(const DeviceMatch &match, const QString &usbPath = {}, const QString &sysRoot = {});
+
 class RawPadDevice : public QObject
 {
     Q_OBJECT

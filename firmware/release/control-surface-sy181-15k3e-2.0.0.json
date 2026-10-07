@@ -1,0 +1,23 @@
+{
+  "name": "control-surface-sy181-15k3e-2.0.0",
+  "version": "2.0.0",
+  "board": "sy181-15k3e",
+  "boardName": "CH552G + TM1650, 15 keys, 3 knobs (SY181 style)",
+  "usb": "1189:8890",
+  "serial": "key153",
+  "protocol": 3,
+  "slots": 24,
+  "layers": 2,
+  "license": "CC-BY-SA-3.0",
+  "licenseFile": "LICENSE",
+  "attribution": "Fork of EpicLPer's CH552-OpenMacroPad, on Stefan Wagner's (wagiminator) CH55x USB HID code",
+  "sha256": "af866d807e9c95f11483fe937d225b0645f75b50dda8ee0cd5f45fb7f52343e9",
+  "size": 10744,
+  "codeBytes": 10740,
+  "codeFlashBytes": 14336,
+  "source": "firmware/ at commit f9d7525",
+  "toolchain": "SDCC 4.5.0 #15242",
+  "flash": "wchisp flash <file> (ROM bootloader 4348:55e0; config registers untouched)",
+  "verifiedOnHardware": false,
+  "notes": "Built reproducibly and host-tested (fw_logic, fw_store); not yet flashed to a pad."
+}

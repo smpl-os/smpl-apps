@@ -433,9 +433,16 @@ QString SettingsService::GetFirmwareStatus()
             if (!f.open(QIODevice::ReadOnly)) {
                 continue;
             }
-            images.append(QJsonObject{{QStringLiteral("path"), fi.absoluteFilePath()},
-                                      {QStringLiteral("size"), fi.size()},
-                                      {QStringLiteral("sha256"), QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex())}});
+            const QString sha = QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex());
+            QJsonObject img{{QStringLiteral("path"), fi.absoluteFilePath()}, {QStringLiteral("size"), fi.size()}, {QStringLiteral("sha256"), sha}};
+            // firmware/release/<name>.json next to the image: name, version, board, licence ...
+            QFile meta(fi.absolutePath() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral(".json"));
+            if (meta.size() < 65536 && meta.open(QIODevice::ReadOnly)) {
+                const QJsonObject m = QJsonDocument::fromJson(meta.readAll()).object();
+                img.insert(QStringLiteral("meta"), m);
+                img.insert(QStringLiteral("metaMatches"), m.value(QStringLiteral("sha256")).toString() == sha);
+            }
+            images.append(img);
         }
     }
     const QFileInfo tool(m_flash.tool);
@@ -473,6 +480,9 @@ QString SettingsService::StartFlash(const QString &image, const QString &sha256,
     connect(job, &FlashJob::progress, this, &SettingsService::FlashProgress);
     connect(job, &FlashJob::releaseDevice, this, &SettingsService::releaseDeviceRequested);
     connect(job, &FlashJob::reacquireDevice, this, &SettingsService::reacquireDeviceRequested);
+    if (m_bootloaderRequest && m_device.present && m_device.firmware.type == QLatin1String("control-surface")) {
+        job->setBootloaderRequest(m_bootloaderRequest);
+    }
     if (m_jobSetup) {
         m_jobSetup(job);
     }

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Offline CLI commands of control-surfaced, run as a process. None of them
 // opens an input device; ctest runs this on a private D-Bus.
+#include <QCryptographicHash>
 #include <QDir>
+#include <QFileInfo>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -152,6 +154,44 @@ private Q_SLOTS:
         QCOMPARE(r.code, 0);
         QVERIFY(r.out.contains("[editing]"));
         QVERIFY(r.out.contains("playhead.jog"));
+    }
+
+    void firmwareCommandsNeedTheOpenFirmware()
+    {
+        // A fake, empty /sys: no device is ever opened by these checks.
+        const QString sys = m_home.path() + QStringLiteral("/fake-sys");
+        QDir().mkpath(sys);
+        Run r = run({QStringLiteral("firmware-info"), QStringLiteral("--json"), QStringLiteral("--sys-root"), sys}, m_home.path());
+        QCOMPARE(r.code, 1);
+        QCOMPARE(r.json().value(QStringLiteral("ok")).toBool(), false);
+        QVERIFY(r.json().value(QStringLiteral("error")).toString().contains(QStringLiteral("protocol v3")));
+        r = run({QStringLiteral("enter-bootloader"), QStringLiteral("--json"), QStringLiteral("--yes"), QStringLiteral("--sys-root"), sys}, m_home.path());
+        QCOMPARE(r.code, 1);
+        QCOMPARE(r.json().value(QStringLiteral("ok")).toBool(), false);
+    }
+
+    void releaseMetadataMatchesTheImage()
+    {
+        const QString dir = QStringLiteral(CS_SOURCE_DIR "/firmware/release");
+        const QStringList bins = QDir(dir).entryList({QStringLiteral("*.bin")}, QDir::Files);
+        QVERIFY(!bins.isEmpty());
+        QVERIFY(QFile::exists(dir + QStringLiteral("/LICENSE")));
+        for (const QString &b : bins) {
+            QFile img(dir + QLatin1Char('/') + b);
+            QVERIFY(img.open(QIODevice::ReadOnly));
+            const QByteArray data = img.readAll();
+            QFile meta(dir + QLatin1Char('/') + QFileInfo(b).completeBaseName() + QStringLiteral(".json"));
+            QVERIFY2(meta.open(QIODevice::ReadOnly), qPrintable(meta.fileName()));
+            const QJsonObject m = QJsonDocument::fromJson(meta.readAll()).object();
+            for (const char *k : {"name", "version", "board", "license", "sha256"}) {
+                QVERIFY2(!m.value(QLatin1String(k)).toString().isEmpty(), k);
+            }
+            QCOMPARE(m.value(QStringLiteral("name")).toString() + QStringLiteral(".bin"), b);
+            QCOMPARE(m.value(QStringLiteral("sha256")).toString(), QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex()));
+            QCOMPARE(m.value(QStringLiteral("size")).toInt(), data.size());
+            QVERIFY(data.size() <= 14336);
+            QCOMPARE(m.value(QStringLiteral("license")).toString(), QStringLiteral("CC-BY-SA-3.0"));
+        }
     }
 };
 

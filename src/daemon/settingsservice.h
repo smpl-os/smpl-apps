@@ -88,6 +88,8 @@ public:
     void setFlashSettings(const FlashSettings &s) { m_flash = s; }
     using JobSetup = std::function<void(FlashJob *)>;  // install probe and runner (mock, tests)
     void setJobSetup(JobSetup f) { m_jobSetup = std::move(f); }
+    // Lets real jobs switch open firmware to the bootloader (no boot key needed).
+    void setBootloaderRequest(FlashJob::BootloaderRequest r) { m_bootloaderRequest = std::move(r); }
 
     // Pad input from the daemon: always published as InputEvent. Returns true
     // while identify mode suppresses actions; the caller must then not dispatch it.
@@ -156,6 +158,7 @@ private:
     ConfigApplier m_apply;
     FlashSettings m_flash;
     JobSetup m_jobSetup;
+    FlashJob::BootloaderRequest m_bootloaderRequest;
     QPointer<FlashJob> m_job;
     int m_jobCounter = 0;
     QTimer *m_identifyTimer;

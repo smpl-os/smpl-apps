@@ -10,6 +10,7 @@
 #include "learn.h"
 #include "paddevice.h"
 #include "rawpaddevice.h"
+#include "padfwproto.h"
 #include "settingsservice.h"
 #include "uinputsink.h"
 #include "usbinfo.h"
@@ -105,7 +106,8 @@ std::optional<Config> obtainConfig(const QString &path, bool explicitPath)
     if (!c) {
         std::fprintf(stderr, "built-in config: %s\n", qPrintable(err));
     } else {
-        say(QStringLiteral("no %1, using the built-in example config").arg(path));
+        // stderr: stdout stays clean for --json output.
+        std::fprintf(stderr, "no %s, using the built-in example config\n", qPrintable(path));
     }
     return c;
 }
@@ -329,7 +331,8 @@ int main(int argc, char **argv)
     QCommandLineParser p;
     p.setApplicationDescription(QStringLiteral(
         "Per-application control surface for the CH552 macro pad (1189:8890).\n"
-        "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | list-actions | check-config | example-config | bench-dbus [N]"));
+        "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | list-actions |\n"
+        "          firmware-info | enter-bootloader --yes | check-config | example-config | bench-dbus [N]"));
     p.addHelpOption();
     p.addVersionOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
@@ -347,8 +350,11 @@ int main(int argc, char **argv)
     QCommandLineOption noApiOpt(QStringLiteral("no-settings-api"), QStringLiteral("do not offer org.smplos.ControlSurface1 on the session bus"));
     QCommandLineOption allowFlashOpt(QStringLiteral("allow-flash"), QStringLiteral("settings API: allow real firmware flashing (dry runs are always allowed)"));
     QCommandLineOption flashToolOpt(QStringLiteral("flash-tool"), QStringLiteral("settings API: wchisp binary (default: wchisp in PATH)"), QStringLiteral("path"));
+    QCommandLineOption sysRootOpt(QStringLiteral("sys-root"), QStringLiteral("tests: a fake /sys for firmware-info and enter-bootloader"), QStringLiteral("dir"));
+    sysRootOpt.setFlags(QCommandLineOption::HiddenFromHelp);
+    QCommandLineOption yesOpt(QStringLiteral("yes"), QStringLiteral("enter-bootloader: really do it"));
     QCommandLineOption imageDirOpt(QStringLiteral("firmware-dir"), QStringLiteral("settings API: directory of flashable images (repeatable)"), QStringLiteral("dir"));
-    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt});
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt});
     p.process(app);
     const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
     const bool explicitConfig = p.isSet(configOpt);
@@ -559,6 +565,58 @@ int main(int argc, char **argv)
             say(QStringLiteral("no running Kdenlive on the session bus (looked for org.kde.kdenlive-<pid>; use --kdenlive-service NAME)"));
         }
         return anyAvailable ? 0 : 3;
+    }
+    if (cmd == QLatin1String("firmware-info") || cmd == QLatin1String("enter-bootloader")) {
+        // Protocol v3 over hidraw (the control-surface firmware only); other
+        // firmware is never written to.
+        const QString node = findControlSurfaceHidraw(cfg->device, {}, p.value(sysRootOpt));
+        QJsonObject out{{QStringLiteral("node"), node}};
+        int rc = 0;
+        if (node.isEmpty()) {
+            out.insert(QStringLiteral("ok"), false);
+            out.insert(QStringLiteral("error"), QStringLiteral("no pad running the control-surface firmware (protocol v3) found"));
+            rc = 1;
+        } else if (cmd == QLatin1String("firmware-info")) {
+            std::string err;
+            const auto info = padfw::queryInfo(node.toStdString(), &err);
+            if (info) {
+                out.insert(QStringLiteral("ok"), true);
+                out.insert(QStringLiteral("version"), QString::fromStdString(info->version()));
+                out.insert(QStringLiteral("format"), info->format);
+                out.insert(QStringLiteral("slots"), info->slotCount);
+                out.insert(QStringLiteral("layers"), info->layers);
+                out.insert(QStringLiteral("activeLayer"), info->activeLayer);
+                out.insert(QStringLiteral("startLayer"), info->startLayer);
+                out.insert(QStringLiteral("rawActive"), info->rawActive != 0);
+                out.insert(QStringLiteral("eepromBytes"), info->eepromBytes);
+            } else {
+                out.insert(QStringLiteral("ok"), false);
+                out.insert(QStringLiteral("error"), QString::fromStdString(err));
+                rc = 1;
+            }
+        } else if (!p.isSet(yesOpt)) {
+            out.insert(QStringLiteral("ok"), false);
+            out.insert(QStringLiteral("error"), QStringLiteral("add --yes: the pad leaves normal operation until it is flashed or replugged"));
+            rc = 2;
+        } else {
+            std::string err;
+            const bool ok = padfw::requestBootloader(node.toStdString(), &err);
+            out.insert(QStringLiteral("ok"), ok);
+            if (!ok) {
+                out.insert(QStringLiteral("error"), QString::fromStdString(err));
+                rc = 1;
+            } else {
+                out.insert(QStringLiteral("next"), QStringLiteral("the pad is in the CH552 ROM bootloader (4348:55e0): flash it, or replug to leave"));
+            }
+        }
+        if (p.isSet(jsonOpt)) {
+            say(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact)));
+        } else {
+            for (auto it = out.begin(); it != out.end(); ++it) {
+                say(QStringLiteral("%1: %2").arg(it.key(), it.value().isString() ? it.value().toString() : QString::fromUtf8(QJsonDocument(QJsonArray{it.value()}).toJson(QJsonDocument::Compact)).mid(1).chopped(1)));
+            }
+        }
+        return rc;
     }
     if (cmd == QLatin1String("list-devices")) {
         const auto nodes = findPadInputNodes(cfg->device);
@@ -923,6 +981,17 @@ int main(int argc, char **argv)
     QObject::connect(&settings, &SettingsService::reacquireDeviceRequested, &dev, [&dev, log] {
         log(QStringLiteral("flash: grabbing the pad again"));
         dev.start();
+    });
+    settings.setBootloaderRequest([&cfg, &dev](QString *why) {
+        const QString node = findControlSurfaceHidraw(cfg->device, dev.usbPath());
+        if (node.isEmpty()) {
+            *why = QStringLiteral("not the control-surface firmware");
+            return false;
+        }
+        std::string err;
+        const bool ok = padfw::requestBootloader(node.toStdString(), &err);
+        *why = QString::fromStdString(err);
+        return ok;
     });
     QObject::connect(&settings, &SettingsService::FlashProgress, [log](const QString &id, const QString &phase, const QString &msg) {
         log(QStringLiteral("flash %1: %2: %3").arg(id, phase, msg));

@@ -59,4 +59,9 @@ std::optional<RawEvent> parseRaw(const std::uint8_t *data, std::size_t len);
 // matching reply (other reports, e.g. keyboard input, are skipped).
 std::optional<std::vector<std::uint8_t>> exchange(int fd, const Request &req, int timeoutMs, std::string *error);
 
+// One-shot helpers on a hidraw node (opened and closed here).
+std::optional<Info> queryInfo(const std::string &devnode, std::string *error, int timeoutMs = 1000);
+// Asks the firmware to jump to the CH552 ROM bootloader (nothing is written).
+bool requestBootloader(const std::string &devnode, std::string *error, int timeoutMs = 1000);
+
 } // namespace padfw

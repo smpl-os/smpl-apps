@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
 
@@ -138,6 +139,55 @@ std::optional<std::vector<std::uint8_t>> exchange(int fd, const Request &req, in
             return std::vector<std::uint8_t>(buf, buf + n);
         }
     }
+}
+
+namespace {
+int openNode(const std::string &devnode, std::string *error)
+{
+    const int fd = ::open(devnode.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0 && error) {
+        *error = devnode + ": " + std::strerror(errno);
+    }
+    return fd;
+}
+} // namespace
+
+std::optional<Info> queryInfo(const std::string &devnode, std::string *error, int timeoutMs)
+{
+    const int fd = openNode(devnode, error);
+    if (fd < 0) {
+        return std::nullopt;
+    }
+    const auto reply = exchange(fd, getInfo(), timeoutMs, error);
+    ::close(fd);
+    if (!reply) {
+        return std::nullopt;
+    }
+    auto info = parseInfo(reply->data(), reply->size());
+    if (!info && error) {
+        *error = "not the control-surface firmware (protocol v3)";
+    }
+    return info;
+}
+
+bool requestBootloader(const std::string &devnode, std::string *error, int timeoutMs)
+{
+    const int fd = openNode(devnode, error);
+    if (fd < 0) {
+        return false;
+    }
+    const auto reply = exchange(fd, bootloader(), timeoutMs, error);
+    ::close(fd);
+    if (!reply) {
+        return false;
+    }
+    if (replyStatus(reply->data(), reply->size()) != Ok) {
+        if (error) {
+            *error = "the firmware refused";
+        }
+        return false;
+    }
+    return true;
 }
 
 } // namespace padfw

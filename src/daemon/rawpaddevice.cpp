@@ -2,6 +2,7 @@
 #include "rawpaddevice.h"
 #include "hidrawdev.h"
 
+#include <QFile>
 #include <QSocketNotifier>
 #include <QTimer>
 #include <algorithm>
@@ -59,12 +60,9 @@ void RawPadDevice::rebuildSlots()
     }
 }
 
-bool RawPadDevice::start(const QString &usbPath)
+QString findControlSurfaceHidraw(const DeviceMatch &match, const QString &usbPath, const QString &sysRoot)
 {
-    if (m_fd >= 0) {
-        return true;
-    }
-    const auto nodes = ch552::findPadHidraw(m_match.vendor.toStdString(), m_match.product.toStdString(), m_match.serial.toStdString());
+    const auto nodes = ch552::findPadHidraw(match.vendor.toStdString(), match.product.toStdString(), match.serial.toStdString(), sysRoot.toStdString());
     const QString port = usbPath.section(QLatin1Char('/'), -1);  // "1-5": sysfs paths differ, the port name does not
     for (const auto &n : nodes) {
         if (!port.isEmpty() && QString::fromStdString(n.usbPath).section(QLatin1Char('/'), -1) != port) {
@@ -73,17 +71,28 @@ bool RawPadDevice::start(const QString &usbPath)
         const auto d = ch552::parseDescriptor(n.descriptor);
         const bool hasCfg = std::find(d.reportIds.begin(), d.reportIds.end(), int(padfw::kCfgReport)) != d.reportIds.end();
         const bool hasRaw = std::find(d.reportIds.begin(), d.reportIds.end(), int(padfw::kRawReport)) != d.reportIds.end();
-        if (!d.ok || !hasCfg || !hasRaw) {
-            continue;  // stock or older firmware: keep using evdev
+        if (d.ok && hasCfg && hasRaw) {
+            return QString::fromStdString(n.devnode);  // stock or older firmware lacks report 5
         }
-        const int fd = ::open(n.devnode.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0) {
-            Q_EMIT message(QStringLiteral("raw input: cannot open %1: %2").arg(QString::fromStdString(n.devnode), QString::fromLocal8Bit(std::strerror(errno))));
-            continue;
-        }
-        return startOnFd(fd);
     }
-    return false;
+    return {};
+}
+
+bool RawPadDevice::start(const QString &usbPath)
+{
+    if (m_fd >= 0) {
+        return true;
+    }
+    const QString node = findControlSurfaceHidraw(m_match, usbPath);
+    if (node.isEmpty()) {
+        return false;
+    }
+    const int fd = ::open(QFile::encodeName(node).constData(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) {
+        Q_EMIT message(QStringLiteral("raw input: cannot open %1: %2").arg(node, QString::fromLocal8Bit(std::strerror(errno))));
+        return false;
+    }
+    return startOnFd(fd);
 }
 
 bool RawPadDevice::startOnFd(int fd)

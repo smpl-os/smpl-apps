@@ -41,6 +41,10 @@ public:
     FlashJob(const QString &id, const FlashSettings &settings, const QString &image, const QString &sha256, bool dryRun, QObject *parent = nullptr);
     void setProbe(Probe p) { m_probe = std::move(p); }
     void setRunner(Runner r) { m_runner = std::move(r); }
+    // Open firmware can switch to the ROM bootloader on request, so the user
+    // need not hold the boot key. Returns false (with a reason) otherwise.
+    using BootloaderRequest = std::function<bool(QString *error)>;
+    void setBootloaderRequest(BootloaderRequest r) { m_requestBootloader = std::move(r); }
     static Runner processRunner(const QString &tool, int timeoutMs = 120000);
 
     void start();
@@ -78,6 +82,7 @@ private:
     QSet<QString> m_oldBootloaders;
     Probe m_probe;
     Runner m_runner;
+    BootloaderRequest m_requestBootloader;
     QTimer *m_timer;
     qint64 m_deadline = 0;
 };

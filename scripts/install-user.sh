@@ -23,5 +23,9 @@ elif grep -qx "$(sha256sum "$cfg" | cut -d' ' -f1)" "$src/data/config.example.pr
 else
     echo "kept your config; compare with $src/data/config.example.jsonc for new options"
 fi
+# Firmware images for the settings API's flash job (never flashed by this script).
+fw="${XDG_DATA_HOME:-$HOME/.local/share}/control-surface/firmware"
+install -d "$fw"
+install -m644 "$src"/firmware/release/*.bin "$src"/firmware/release/*.json "$src/firmware/release/LICENSE" "$src/firmware/release/README.md" "$fw/"
 echo "installed ~/.local/bin/control-surfaced, ~/.local/bin/ch552-padprog and the (disabled) user unit."
 echo "next: $src/scripts/verify-pad.sh, then: systemctl --user enable --now control-surface.service"

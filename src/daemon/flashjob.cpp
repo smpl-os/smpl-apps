@@ -170,7 +170,8 @@ void FlashJob::start()
         }
         m_result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(notes));
         step(QStringLiteral("release-grab"), QStringLiteral("dry run: would release the pad"));
-        step(QStringLiteral("waiting-bootloader"), QStringLiteral("dry run: would wait for the user to hold the top-left key while plugging the pad in"));
+        step(QStringLiteral("waiting-bootloader"), m_requestBootloader ? QStringLiteral("dry run: would ask the firmware to switch to the bootloader")
+                                                                      : QStringLiteral("dry run: would wait for the user to hold the top-left key while plugging the pad in"));
         step(QStringLiteral("flashing"), QStringLiteral("dry run: would run %1 flash %2").arg(m_s.tool, m_image));
         step(QStringLiteral("waiting-device"), QStringLiteral("dry run: would wait for 1189:8890"));
         step(QStringLiteral("verifying"), QStringLiteral("dry run: would compare the firmware reported by the pad"));
@@ -189,9 +190,25 @@ void FlashJob::start()
     m_released = true;
     Q_EMIT releaseDevice();
     step(QStringLiteral("release-grab"), QStringLiteral("released the pad"));
-    step(QStringLiteral("waiting-bootloader"), QStringLiteral("unplug the pad, hold the top-left key, plug it in, then let go"));
     m_deadline = QDateTime::currentMSecsSinceEpoch() + m_s.bootloaderTimeoutMs;
-    m_timer->start();
+    if (!m_requestBootloader) {
+        step(QStringLiteral("waiting-bootloader"), QStringLiteral("unplug the pad, hold the top-left key, plug it in, then let go"));
+        m_timer->start();
+        return;
+    }
+    step(QStringLiteral("waiting-bootloader"), QStringLiteral("asking the firmware to switch to the bootloader"));
+    // Give the daemon a moment to let go of the pad before the request.
+    QTimer::singleShot(300, this, [this] {
+        if (m_finished) {
+            return;
+        }
+        QString why;
+        if (!m_requestBootloader(&why)) {
+            step(QStringLiteral("waiting-bootloader"),
+                 QStringLiteral("the firmware did not switch (%1): unplug the pad, hold the top-left key, plug it in, then let go").arg(why));
+        }
+        m_timer->start();
+    });
 }
 
 void FlashJob::poll()
