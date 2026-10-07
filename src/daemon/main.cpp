@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "capabilities.h"
 #include "config.h"
+#include "configstore.h"
 #include "configwatcher.h"
 #include "engine.h"
 #include "inputmonitor.h"
@@ -355,6 +356,47 @@ int main(int argc, char **argv)
         }
         std::fwrite(f.readAll().constData(), 1, size_t(f.size()), stdout);
         return 0;
+    }
+    if (cmd == QLatin1String("check-config") && p.isSet(jsonOpt)) {
+        // {ok, path, source, error: {message, profile, layer, slot} | null, warnings: [...],
+        //  warningDetails: [{message, profile, layer, slot}], profiles: [...]}; exit 0 ok, 2 invalid.
+        const QString path = p.value(configOpt);
+        QByteArray text;
+        QString source = QStringLiteral("file");
+        QString readError;
+        QFile f(path);
+        if (f.exists()) {
+            if (f.open(QIODevice::ReadOnly)) {
+                text = f.readAll();
+            } else {
+                readError = QStringLiteral("cannot read %1").arg(path);
+            }
+        } else if (explicitConfig) {
+            readError = QStringLiteral("config %1 not found").arg(path);
+        } else {
+            QFile builtIn(QStringLiteral(":/control-surface/config.example.jsonc"));
+            source = QStringLiteral("built-in");
+            text = builtIn.open(QIODevice::ReadOnly) ? builtIn.readAll() : QByteArray();
+        }
+        QJsonObject out;
+        if (!readError.isEmpty()) {
+            out = QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("warnings"), QJsonArray()}, {QStringLiteral("warningDetails"), QJsonArray()},
+                              {QStringLiteral("profiles"), QJsonArray()}, {QStringLiteral("error"), describeConfigIssue(readError).toJson()}};
+        } else {
+            const auto v = ConfigStore(path).validate(text);
+            out = v.toJson();
+            out.remove(QStringLiteral("errors"));
+            out.insert(QStringLiteral("error"), v.ok ? QJsonValue() : QJsonValue(describeConfigIssue(v.errors.join(QStringLiteral("; "))).toJson()));
+            QJsonArray details;
+            for (const QString &w : v.warnings) {
+                details.append(describeConfigIssue(w).toJson());
+            }
+            out.insert(QStringLiteral("warningDetails"), details);
+        }
+        out.insert(QStringLiteral("path"), path);
+        out.insert(QStringLiteral("source"), source);
+        say(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact)));
+        return out.value(QStringLiteral("ok")).toBool() ? 0 : 2;
     }
     auto cfg = obtainConfig(p.value(configOpt), explicitConfig);
     if (!cfg) {

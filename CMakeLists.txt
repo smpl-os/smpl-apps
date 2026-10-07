@@ -110,5 +110,11 @@ if(BUILD_TESTING)
     # Settings API, its building blocks and the mock; bus parts on a private bus.
     add_executable(tst_settings tests/tst_settings.cpp)
     target_link_libraries(tst_settings PRIVATE cs_core cs_mocksurface Qt6::Test)
+    # Offline CLI commands, run as processes (no input device is opened).
+    add_executable(tst_cli tests/tst_cli.cpp)
+    target_link_libraries(tst_cli PRIVATE Qt6::Core Qt6::Test)
+    target_compile_definitions(tst_cli PRIVATE CS_DAEMON_BINARY="$<TARGET_FILE:control-surfaced>")
+    add_dependencies(tst_cli control-surfaced)
+    add_test(NAME cli COMMAND ${CMAKE_COMMAND} -E env CS_PRIVATE_BUS=1 ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_cli>)
     add_test(NAME settings COMMAND ${CMAKE_COMMAND} -E env CS_PRIVATE_BUS=1 ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_settings>)
 endif()

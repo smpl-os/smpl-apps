@@ -5,6 +5,7 @@
 #include "hardwaremap.h"
 
 #include <QHash>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QStringList>
 #include <QVariantMap>
@@ -94,6 +95,14 @@ bool checkConfig(Config &cfg, QString *error);
 QString expandHome(const QString &path);
 QString defaultConfigPath();
 QString defaultHardwareMapPath();
+
+// A config error or warning split into what an editor can point at.
+struct ConfigIssue {
+    QString message;  // the full text
+    QString profile, layer, slot;  // empty when the text does not name one
+    QJsonObject toJson() const;   // {message, profile, layer, slot}; missing parts are null
+};
+ConfigIssue describeConfigIssue(const QString &text);
 
 // Dotted-path condition matching used for Kdenlive context layers.
 bool conditionMatches(const QVariantMap &when, const QVariantMap &context);

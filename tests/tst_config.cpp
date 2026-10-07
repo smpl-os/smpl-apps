@@ -240,6 +240,56 @@ private Q_SLOTS:
         QVERIFY(conditionMatches({{QStringLiteral("axes"), true}}, three));
         QVERIFY(!conditionMatches({{QStringLiteral("colorWheels"), true}}, ctx));  // absent
     }
+
+    void configIssues()
+    {
+        // Real messages from the parser and the checker, split for an editor.
+        auto issueOf = [](const char *json) {
+            QString err;
+            auto c = parseConfig(json, {}, &err);
+            if (c) {
+                return describeConfigIssue(c->warnings.value(0));
+            }
+            return describeConfigIssue(err);
+        };
+        ConfigIssue i = issueOf(R"({"profiles":[{"name":"Kdenlive edit","bindings":{"key3":{"bogus":1}}}]})");
+        QCOMPARE(i.profile, QStringLiteral("Kdenlive edit"));
+        QCOMPARE(i.slot, QStringLiteral("key3"));
+        QVERIFY(i.layer.isEmpty());
+        QVERIFY(i.message.contains(QStringLiteral("binding object needs")));
+
+        i = issueOf(R"({"profiles":[{"name":"x","bindings":{"key99":"a"}}]})");
+        QCOMPARE(i.profile, QStringLiteral("x"));
+        QCOMPARE(i.slot, QStringLiteral("key99"));
+
+        i = issueOf(R"({"profiles":[{"name":"x","bindings":{"knob2":{"shift":{"cw":7}}}}]})");
+        QCOMPARE(i.slot, QStringLiteral("knob2.shift.cw"));
+
+        i = issueOf(R"({"profiles":[{"name":"k","kdenlive":true,"layers":[{"name":"wheels","when":{"a":1},"bindings":{"knob1.cw":{"keys":7}}}]}]})");
+        QCOMPARE(i.profile, QStringLiteral("k"));
+        QCOMPARE(i.layer, QStringLiteral("wheels"));
+        QCOMPARE(i.slot, QStringLiteral("knob1.cw"));
+
+        i = issueOf(R"({"profiles":[{"name":"k","bindings":{"key2":{"cycle":"nomode"}}}]})");  // checkConfig error
+        QCOMPARE(i.profile, QStringLiteral("k"));
+        QCOMPARE(i.slot, QStringLiteral("key2"));
+
+        i = issueOf(R"({"profiles":[{"name":"g","bindings":{"knob1.cw":{"control":"nope.x"}}}]})");  // a warning
+        QCOMPARE(i.profile, QStringLiteral("g"));
+        QCOMPARE(i.slot, QStringLiteral("knob1.cw"));
+
+        i = issueOf("{\"profiles\":[{\"name\":\"m\",\"match\":{\"class\":\"[\"}}]}");  // bad regex
+        QCOMPARE(i.profile, QStringLiteral("m"));
+        QVERIFY(i.slot.isEmpty());
+
+        i = issueOf("{oops");
+        QVERIFY(i.profile.isEmpty());
+        QVERIFY(i.message.startsWith(QStringLiteral("JSON error")));
+        const QJsonObject j = i.toJson();
+        QVERIFY(j.value(QStringLiteral("profile")).isNull());
+        QVERIFY(j.value(QStringLiteral("slot")).isNull());
+        QCOMPARE(j.value(QStringLiteral("message")).toString(), i.message);
+    }
 };
 
 QTEST_GUILESS_MAIN(TestConfig)

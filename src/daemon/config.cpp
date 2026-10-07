@@ -627,4 +627,52 @@ bool conditionMatches(const QVariantMap &when, const QVariantMap &context)
     return true;
 }
 
+QJsonObject ConfigIssue::toJson() const
+{
+    auto orNull = [](const QString &v) { return v.isEmpty() ? QJsonValue() : QJsonValue(v); };
+    return QJsonObject{{QStringLiteral("message"), message},
+                       {QStringLiteral("profile"), orNull(profile)},
+                       {QStringLiteral("layer"), orNull(layer)},
+                       {QStringLiteral("slot"), orNull(slot)}};
+}
+
+ConfigIssue describeConfigIssue(const QString &text)
+{
+    // The texts come from parseConfig/checkConfig:
+    //   "profile P: SLOT: msg", "profile P SLOT: msg", "profile P layer L: [SLOT: ]msg",
+    //   "profile P: unknown control slot 'S' (...)", "profile P: msg".
+    static const QString slot = QStringLiteral("(key\\d+|knob\\d+(?:\\.[a-z]+)*)");
+    static const QRegularExpression withLayer(QStringLiteral("^profile (.+?) layer (.+?): (?:%1: )?(.*)$").arg(slot));
+    static const QRegularExpression plainSlot(QStringLiteral("^profile (.+?): %1: (.*)$").arg(slot));
+    static const QRegularExpression spaced(QStringLiteral("^profile (.+?) %1: (.*)$").arg(slot));
+    static const QRegularExpression plain(QStringLiteral("^profile (.+?): (.*)$"));
+    static const QRegularExpression quoted(QStringLiteral("unknown control slot '([^']*)'"));
+    ConfigIssue i;
+    i.message = text;
+    QRegularExpressionMatch m = withLayer.match(text);
+    if (m.hasMatch()) {
+        i.profile = m.captured(1);
+        i.layer = m.captured(2);
+        i.slot = m.captured(3);
+        return i;
+    }
+    for (const QRegularExpression *re : {&plainSlot, &spaced}) {
+        m = re->match(text);
+        if (m.hasMatch()) {
+            i.profile = m.captured(1);
+            i.slot = m.captured(2);
+            return i;
+        }
+    }
+    m = plain.match(text);
+    if (m.hasMatch()) {
+        i.profile = m.captured(1);
+        const auto q = quoted.match(m.captured(2));
+        if (q.hasMatch()) {
+            i.slot = q.captured(1);
+        }
+    }
+    return i;
+}
+
 } // namespace cs
