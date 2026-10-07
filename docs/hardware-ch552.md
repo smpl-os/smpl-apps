@@ -308,3 +308,37 @@ wrong ID corrupted its pad's table until a reflash.
 
 The firmware itself was never touched, and no command beyond these records was
 sent.
+
+## Vendor-software research (2026-10-07 11:05, no device I/O)
+
+All downloads and decompiled output are in `/mnt/ai/keypad-lab/vendor-tools/` and were not run.
+
+| Artefact | SHA-256 | Kind | Device support |
+|---|---|---|---|
+| SikaiCase `New_English_software_is_set_in_the_upgrade_model-20250318.7z` | `701a30fe…cf03` | Qt5/MinGW `MINI_KEYBOARD.exe` with hidapi. It ships unlinked `.o` files with symbols, which made disassembly straightforward. | PIDs 8842, 8840, 8830–8833, 8850, 8851 (VID 1189 and 514C). **Not 8890.** |
+| SikaiCase `Update-20230714.zip` → `MINI KeyBoard.exe` | `f7bedb3c…5d28` | .NET (decompiled with ilspycmd 9.1) | 8890 → `mi_01`, protocol type 0 (legacy). Other PIDs → `mi_00`, Extended (`FE`). |
+| Seller V02.1.1, identical to the user's copy (Jl4cTuk `Release`, jonnytest1) | `4ae53d3a…d7b1` | .NET | 8890 legacy only |
+| Jl4cTuk `Release2` (F13–F24 patch) | `e642fd1e…ee07` | .NET | as V02.1.1 |
+
+**Every official tool for 8890 uses the legacy protocol.** It writes interrupt OUT on `mi_01`. Its report-ID probe ends at 0 on our descriptor, because Windows rejects a non-zero ID. Each frame carries 64 data bytes, of which 8 are meaningful:
+* per key, `[slot][1][n][0][mods][0]` followed by `[slot][1][n][i][mods][code]`;
+* then a save frame, `[AA AA]`, once per key.
+
+Layers (`A1 nn` and the high nibble) are used only when the report ID is not 0, so a pad with our descriptor gets no layers from these apps. Slots in the 2023 build are keys 1–15, then knobs 16–18, 19–21 and 22–24 (ccw, press, cw). That matches our KeysThenKnobs scheme.
+
+Our first flash was byte-identical to this and had no effect. The vendor apps in issue #168 also had no effect on that pad.
+
+**The 2025 app is a different family.** It is the "5 layer, 16 keys" generation and does not list 8890. Its protocol:
+* report ID 3 and 65-byte writes;
+* identify query `[FB FB FB]`, answered with the key count, knob count and type;
+* read-back `[FA n x layer]`;
+* key records `[FD keyId layer type …]`: the legacy-type device sends a count at 9 followed by (mod, key) pairs, while type 0x0A sends 64-byte records with triples;
+* all modified keys of a layer are sent back to back, then a commit `[FD FE FF]`, then a 200 ms sleep;
+* RGB `[FE B0 …]`.
+
+**EpicLPer/CH552-OpenMacroPad** (the #168 reporter) notes:
+* the factory firmware for these boards is often built for another variant;
+* it cannot be read back;
+* the CH552 data flash is only 128 bytes, at even addresses only.
+
+The factory protocol tooling was not published.
