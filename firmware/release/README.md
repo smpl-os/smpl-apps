@@ -2,14 +2,17 @@
 
 | File | What |
 |---|---|
-| `control-surface-sy181-15k3e-2.0.0.bin` | Firmware image for the CH552G + TM1650 pad with 15 keys and 3 knobs (USB 1189:8890, serial key153) |
-| `control-surface-sy181-15k3e-2.0.0.json` | Name, version, board, licence, SHA-256, size, source commit, toolchain |
+| `control-surface-sy181-15k3e-2.0.1.bin` | Firmware for the CH552G + TM1650 pad with 15 keys and 3 knobs (USB 1189:8890, serial key153). Current. |
+| `control-surface-sy181-15k3e-2.0.0.bin` | Superseded: fast knob rotation drops detents (see its JSON `knownIssues`). Kept for reference only. |
+| `<name>.json` | Name, version, board, licence, SHA-256, size, source commit, toolchain, `verifiedOnHardware`, `knownIssues`, `supersededBy` |
 | `LICENSE` | Licence notice (CC BY-SA 3.0) |
 
 These images are built from `firmware/` in this repository by
 `firmware/make-release.sh`, which builds twice and refuses to write a release
 unless both builds are byte-identical. The JSON's `verifiedOnHardware` stays
-`false` until a release has been flashed to a pad and its inputs captured.
+`false` until a release has been flashed to a pad and all its inputs captured.
+`hardwareVerification` records what was checked. A wizard should offer the
+newest image without `supersededBy`.
 
 Flash with the CH552 ROM bootloader only, for example
 `firmware/flash-and-verify.sh` (it checks the SHA-256 and never writes the

@@ -19,5 +19,19 @@
   "toolchain": "SDCC 4.5.0 #15242",
   "flash": "wchisp flash <file> (ROM bootloader 4348:55e0; config registers untouched)",
   "verifiedOnHardware": false,
-  "notes": "Built reproducibly and host-tested (fw_logic, fw_store); not yet flashed to a pad."
+  "notes": "Superseded by 2.0.1 (fast-rotation fix). Kept for reference; do not offer it for new installs.",
+  "hardwareVerification": {
+    "date": "2026-10-07",
+    "flashed": true,
+    "protocolChecks": true,
+    "keys": true,
+    "knobPress": true,
+    "slowRotation": true,
+    "fastRotation": false,
+    "details": "All 24 inputs in order; 3 ccw/3 cw/2 press exact per knob; presses give no stray rotation; key1+key15 together both register. A fast full revolution gave 10-11 of about 20 detents."
+  },
+  "knownIssues": [
+    "Fast knob rotation drops about half the detents: the encoders were sampled in the main loop, which each detent blocked for about 55 ms (four HID reports at the 10 ms poll interval plus a 15 ms tap delay)."
+  ],
+  "supersededBy": "2.0.1"
 }
