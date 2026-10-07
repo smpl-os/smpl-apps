@@ -25,6 +25,8 @@ struct KeyChord {
 
 int keyCodeFromName(const QString &name);  // -1 if unknown; accepts "F14", "key_f14", "space", "a"
 QString keyName(int code);                 // "F14", "SPACE", ... or "KEY_<n>"
+QStringList keyNames();                    // every accepted key name (canonical names, then aliases), table order
+QStringList modifierNames();               // ctrl, shift, alt, super and their aliases
 quint8 modifierBit(int code);              // 0 if not a modifier key
 int modifierKey(quint8 bit);               // left-hand key for a single modifier bit
 

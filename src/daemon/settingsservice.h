@@ -121,6 +121,7 @@ public Q_SLOTS:
     Q_SCRIPTABLE QString ReloadConfig();
     Q_SCRIPTABLE QString ListPlugins();
     Q_SCRIPTABLE QString GetCatalog(const QString &pluginId);  // offline: what bindings can name
+    Q_SCRIPTABLE QString GetFeatures();                        // binding kinds, names, slots, layouts
     Q_SCRIPTABLE QString GetFirmwareStatus();
     Q_SCRIPTABLE QString StartFlash(const QString &image, const QString &sha256, bool dryRun);
     Q_SCRIPTABLE bool CancelFlash(const QString &jobId);

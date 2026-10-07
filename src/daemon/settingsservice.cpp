@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "settingsservice.h"
+#include "featurelist.h"
 #include "kdenlivecatalog.h"
 
 #include <QCryptographicHash>
@@ -328,6 +329,13 @@ QString SettingsService::ListPlugins()
         a.append(p.toJson());
     }
     return json(QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("plugins"), a}});
+}
+
+QString SettingsService::GetFeatures()
+{
+    QJsonObject o = featuresJson();
+    o.insert(QStringLiteral("ok"), true);
+    return json(o);
 }
 
 QString SettingsService::GetCatalog(const QString &pluginId)

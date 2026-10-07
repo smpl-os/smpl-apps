@@ -193,6 +193,29 @@ private Q_SLOTS:
             QCOMPARE(m.value(QStringLiteral("license")).toString(), QStringLiteral("CC-BY-SA-3.0"));
         }
     }
+
+    void featuresJson()
+    {
+        Run r = run({QStringLiteral("features"), QStringLiteral("--json")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        const QJsonObject j = r.json();
+        QStringList kinds;
+        for (const auto &k : j.value(QStringLiteral("bindingKinds")).toArray()) {
+            kinds << k.toObject().value(QStringLiteral("kind")).toString();
+        }
+        QCOMPARE(kinds, (QStringList{QStringLiteral("keys"), QStringLiteral("mouse"), QStringLiteral("action"), QStringLiteral("control"), QStringLiteral("request"),
+                                     QStringLiteral("cycle"), QStringLiteral("command"), QStringLiteral("none")}));
+        const QJsonArray keys = j.value(QStringLiteral("keyNames")).toArray();
+        QVERIFY(keys.contains(QStringLiteral("F24")));
+        QVERIFY(keys.contains(QStringLiteral("PLAYPAUSE")));
+        QVERIFY(!keys.contains(QStringLiteral("POWER")));  // never advertised
+        QCOMPARE(j.value(QStringLiteral("mouseNames")).toArray().size(), 9);
+        QCOMPARE(j.value(QStringLiteral("slots")).toObject().value(QStringLiteral("maxKeys")).toInt(), 16);
+        QCOMPARE(j.value(QStringLiteral("slots")).toObject().value(QStringLiteral("maxKnobs")).toInt(), 3);
+        QCOMPARE(j.value(QStringLiteral("dbus")).toObject().value(QStringLiteral("interface")).toString(), QStringLiteral("org.smplos.ControlSurface1"));
+        QVERIFY(j.value(QStringLiteral("layouts")).toObject().value(QStringLiteral("builtin")).toArray().size() >= 5);
+        // (tst_config checks that every advertised name and example parses.)
+    }
 };
 
 QTEST_GUILESS_MAIN(TestCli)

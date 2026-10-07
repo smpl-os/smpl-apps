@@ -87,6 +87,21 @@ quint8 modifierFromWord(const QString &w)
 }
 } // namespace
 
+QStringList keyNames()
+{
+    QStringList l;
+    for (const auto &e : kKeys) {
+        l << QString::fromLatin1(e.name);
+    }
+    return l;
+}
+
+QStringList modifierNames()
+{
+    return {QStringLiteral("ctrl"),  QStringLiteral("control"), QStringLiteral("shift"), QStringLiteral("alt"),
+            QStringLiteral("super"), QStringLiteral("meta"),    QStringLiteral("win"),   QStringLiteral("logo")};
+}
+
 int keyCodeFromName(const QString &name)
 {
     QString n = name.trimmed().toUpper();

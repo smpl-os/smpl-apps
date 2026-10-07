@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "config.h"
+#include "featurelist.h"
 #include "learn.h"
 #include "configwatcher.h"
 
@@ -370,6 +371,29 @@ private Q_SLOTS:
         QCOMPARE(c->device.input, QStringLiteral("evdev"));
         QVERIFY(!parseConfig(R"({"device":{"input":"usb"},"profiles":[]})", {}, &err));
         QVERIFY(err.contains(QStringLiteral("device.input")));
+    }
+
+    void featuresAreAccepted()
+    {
+        // What features --json advertises must be accepted by the parser.
+        const QJsonObject f = featuresJson();
+        QString err;
+        for (const auto &k : f.value(QStringLiteral("keyNames")).toArray()) {
+            QVERIFY2(parseChord(k.toString(), &err), qPrintable(k.toString()));
+            QVERIFY2(parseChord(QStringLiteral("ctrl+") + k.toString().toLower(), &err), qPrintable(k.toString()));
+        }
+        for (const auto &m : f.value(QStringLiteral("modifierNames")).toArray()) {
+            QVERIFY2(parseChord(m.toString() + QStringLiteral("+F14"), &err), qPrintable(m.toString()));
+        }
+        for (const auto &m : f.value(QStringLiteral("mouseNames")).toArray()) {
+            QVERIFY(parseBinding(QJsonObject{{QStringLiteral("mouse"), m}}, &err));
+        }
+        for (const auto &k : f.value(QStringLiteral("bindingKinds")).toArray()) {
+            const QString example = k.toObject().value(QStringLiteral("example")).toString().section(QStringLiteral(" | "), -1);
+            const QJsonDocument d = QJsonDocument::fromJson(QByteArray("[") + example.toUtf8() + "]");
+            QVERIFY2(d.isArray(), qPrintable(example));
+            QVERIFY2(parseBinding(d.array().at(0), &err), qPrintable(example + QStringLiteral(": ") + err));
+        }
     }
 };
 

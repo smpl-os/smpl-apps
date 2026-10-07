@@ -4,6 +4,7 @@
 #include "configstore.h"
 #include "configwatcher.h"
 #include "engine.h"
+#include "featurelist.h"
 #include "inputmonitor.h"
 #include "kdenlivecatalog.h"
 #include "kdenlivedbusclient.h"
@@ -332,7 +333,7 @@ int main(int argc, char **argv)
     p.setApplicationDescription(QStringLiteral(
         "Per-application control surface for the CH552 macro pad (1189:8890).\n"
         "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | list-actions |\n"
-        "          firmware-info | enter-bootloader --yes | check-config | example-config | bench-dbus [N]"));
+        "          firmware-info | enter-bootloader --yes | features | check-config | example-config | bench-dbus [N]"));
     p.addHelpOption();
     p.addVersionOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
@@ -366,6 +367,11 @@ int main(int argc, char **argv)
             return 1;
         }
         std::fwrite(f.readAll().constData(), 1, size_t(f.size()), stdout);
+        return 0;
+    }
+    if (cmd == QLatin1String("features")) {
+        // Always JSON: binding kinds, key/modifier/mouse names, slots, layouts.
+        say(QString::fromUtf8(QJsonDocument(featuresJson()).toJson(p.isSet(jsonOpt) ? QJsonDocument::Compact : QJsonDocument::Indented)));
         return 0;
     }
     if (cmd == QLatin1String("list-actions")) {
