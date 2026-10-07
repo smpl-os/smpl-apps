@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 cmake_minimum_required(VERSION 3.22)
-project(control-surface VERSION 0.1.0 LANGUAGES CXX)
+project(control-surface VERSION 0.1.0 LANGUAGES C CXX)
 
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -75,6 +77,14 @@ if(BUILD_TESTING)
             add_test(NAME ${t} COMMAND tst_${t})
         endif()
     endforeach()
+    # Pad firmware logic (firmware/src/padlogic.c), built for the host. Plain C,
+    # no Qt: the same file is compiled by SDCC for the CH552.
+    add_executable(tst_fw_logic tests/tst_fw_logic.c firmware/src/padlogic.c)
+    target_include_directories(tst_fw_logic PRIVATE firmware/src)
+    add_test(NAME fw_logic COMMAND tst_fw_logic)
+    add_executable(tst_fw_store tests/tst_fw_store.c firmware/src/padstore.c firmware/src/padlogic.c)
+    target_include_directories(tst_fw_store PRIVATE firmware/src)
+    add_test(NAME fw_store COMMAND tst_fw_store)
     target_sources(tst_kdenlive_dbus PRIVATE tests/rawclient.h)
     target_sources(tst_kdenlive_bus PRIVATE tests/rawclient.h)
     # The pacing test runs the mock as a separate process (its own event loop).

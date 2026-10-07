@@ -186,7 +186,7 @@ measured codes.
    * a keymap change persists across a replug;
    * raw mode works and falls back to the keymap when heartbeats stop.
 9. Daemon work, which needs no device access:
-   * a raw-HID input backend (vendor report 4 plus heartbeats);
+   * a raw-HID input backend (vendor report 5 plus heartbeats);
    * a slot-based hardware map;
    * tests.
 
@@ -220,3 +220,196 @@ The service stays disabled until the user enables it.
 * The pad re-enumerated as 1189:8890 at full speed, "SY181 / Macropad 12+3 /
   CH552GPAD", with one HID interface: hidraw4, event18 (kbd), event19 (mouse).
   The discovery mapping session is next (the parent captures).
+* **Discovery captures 2–5** (parent, grab held): the definitive map in §7.1.
+  Key 1 is a GPIO key on P1.5, which is why the first pass missed it; the knob
+  switches sit on TM1650 DIG4 and also pull one encoder line low.
+* **Fork built and tested** (§7): firmware 2.0.0, host suites `fw_logic` and
+  `fw_store`. **Not flashed**: flashing waits for the user (§7.7).
+
+## 7. The fork as built: control-surface firmware 2.0.0
+
+Source: `firmware/` (CC BY-SA 3.0, see `firmware/README.md`). All input
+decoding, dispatch, raw mode, layers, keymap storage and the host protocol are
+plain C in `firmware/src/padlogic.c` and `firmware/src/padstore.c`; SDCC builds
+them for the CH552 and the host test suite builds the very same files.
+`padfw.c` and `padcfg.c` only connect them to the pins, the TM1650 and USB.
+
+### 7.1 Measured map (discovery captures 2–5, knobs on the right)
+
+| Row | Left → right | Slots |
+|---|---|---|
+| 1 | GPIO P1.5, TM `44`, `4C`, `54`, `5C` | 0–4 |
+| 2 | TM `64`, `45`, `4D`, `55`, `5D` | 5–9 |
+| 3 | TM `65`, `46`, `4E`, `56`, `5E` | 10–14 |
+
+| Knob | Press (TM) | Encoder A / B | Press also pulls | Slots ccw / press / cw |
+|---|---|---|---|---|
+| top | `67` | P3.2 / P1.4 | P1.4 low | 15 / 16 / 17 |
+| middle | `5F` | P1.7 / P1.6 | P1.6 low | 18 / 19 / 20 |
+| bottom | `57` | P3.0 / P1.1 | not observed | 21 / 22 / 23 |
+
+TM1650 bus SDA = P3.3, SCL = P3.4. P3.1 is unused. Clockwise is A falling
+first. The slot order is the daemon's keys-then-knobs order (`scheme.cpp`).
+
+### 7.2 Input decoding
+
+* **Encoders:** full quadrature decoding. Each valid one-line transition counts
+  ±1; a detent is reported only on return to rest (both high) with |count| ≥ 2.
+  A knob press pulls B low and back (−1, +1), which nets to zero, so it never
+  becomes a turn. Contact bounce cancels the same way. One missed intermediate
+  state still gives |count| ≥ 2. While the TM1650 reports that knob's switch,
+  the count is held at zero, so a half-turn made while pressing never
+  completes into a step.
+* **Keys:** a value must repeat 3 polls in a row (about 3 ms) to count. The
+  TM1650 reports one key at a time, so two TM1650 keys cannot be held together
+  (rolling from one to another releases the first). Key 1 is a GPIO and works
+  together with any TM1650 key.
+* Inputs held at power-on are treated as the resting state and send nothing
+  until released and pressed again.
+
+### 7.3 Modes
+
+* **Keymap mode** (default): each input sends its action from the active
+  layer. Keys press and release with the physical key; knob detents are taps
+  (press, 15 ms, release); wheel, pan and move actions are one-shot. A held key
+  always releases what it pressed, even if the layer changed meanwhile. A
+  modifier that another held chord still needs stays down.
+* **Raw mode**: `CMD_RAW_MODE` with a timeout of 1–10000 ms. The pad then sends
+  only report 5 events `[seq][slot][event][layer]` (1 = down, 2 = up, 3 = tap)
+  and no keyboard, consumer or mouse output. Repeating the command is the
+  heartbeat. Entering raw mode releases everything the keymap held. On
+  timeout or `CMD_RAW_MODE 0` it returns to the keymap; a key held across the
+  switch stays silent until pressed again (never a raw UP without its DOWN, no
+  stray keymap release). The timeout runs on a 1 ms Timer2 tick.
+* **Layers**: two, stored in data flash. Layer 0 is the daemon's scheme, so the
+  current daemon works unchanged. Layer 1 is standalone: keys F13–F24,
+  Play/Pause, Previous, Next; top knob Vol−/Mute/Vol+; middle knob wheel
+  −1 / middle click / wheel +1; bottom knob Left / **layer toggle** / Right.
+  Actions of type LAYER: toggle, momentary (held key, e.g. key 1 + knob
+  turns), set. The power-on layer is stored (`CMD_SET_LAYER` with persist).
+
+Layer 0 as the host sees it (Linux evdev codes in brackets):
+
+| Slots | Inputs | Chord |
+|---|---|---|
+| 0–5 | keys 1–6 | F14–F19 (184–189) |
+| 6–11 | keys 7–12 | LeftShift (42) + F14–F19 |
+| 12–17 | keys 13–15, top knob ccw / press / cw | LeftCtrl (29) + F14–F19 |
+| 18–23 | middle knob ccw / press / cw, bottom knob ccw / press / cw | LeftAlt (56) + F14–F19 |
+
+### 7.4 Protocol v3 (report ID 3, 15 bytes each way; vendor page 0xFF00)
+
+| Cmd | Request bytes 2… | Reply |
+|---|---|---|
+| `01` GET_INFO | – | `C S 3 24 128 status 2 0 0 layers active raw start` |
+| `02` GET_ACTION | slot, …, layer @7 | type, mod, code lo, code hi, status, layer |
+| `03` SET_ACTION | slot, type, mod, code lo, code hi, layer | status (1 ok, 2 index, 3 action, 4 write) |
+| `04` RESET | – | defaults for both layers, start layer 0 |
+| `05` BOOTLOADER | `'B' 'L'` | status, then jump to the ROM bootloader |
+| `06` DUMP | offset | 12 data-flash bytes @3, status @15 |
+| `07` CORRUPT | – | flips the stored CRC (recovery test) |
+| `08` RAW_MODE | timeout lo, hi (ms) | status, raw active |
+| `09` SET_LAYER | layer, persist 0/1 | status, layer |
+| other | – | status 6 (unknown) |
+
+Action types: 0 none, 1 key (HID usage ≤ 0xE7 + modifier mask, one hand only),
+2 consumer (usage ≤ 0x3FF), 3 mouse (subtype button/wheel/pan/x/y << 8 | value),
+4 layer (op toggle/momentary/set << 8 | layer). Host tool:
+`firmware/padctl.py` (`info`, `get`, `dump`, `watch` are safe; `set`,
+`layer`, `reset`, `bootloader` need `--yes`).
+
+**Storage**: data flash `C S 3 24 crc start` + 2 × 24 × 2 bytes (102 of 128).
+A boot reads only (no wear). The CRC-8 and a per-action validity check catch
+damage; anything invalid (including EpicLPer's v2 layout or stock leftovers)
+is replaced by the defaults. Full saves invalidate the magic first and write
+the header last.
+
+### 7.5 Build and tests
+
+```sh
+PATH=/mnt/ai/keypad-lab/tools/sdcc-4.5.0/bin:$PATH \
+  python3 firmware/build.py --out /mnt/ai/keypad-lab/fw/build/control-surface padfw.c
+ctest --test-dir /mnt/ai/keypad-lab/build/control-surface -R fw_
+```
+
+| Image | Size | SHA-256 |
+|---|---|---|
+| `padfw.bin` 2.0.0 | 10744 B (10740 of 14336 used; XRAM 331/768; stack 133 B free) | `af866d807e9c95f11483fe937d225b0645f75b50dda8ee0cd5f45fb7f52343e9` |
+
+Two independent builds produce the same hash.
+
+* `fw_logic` (about 316,000 checks): the measured key map, every code in
+  0x00–0xFF, the action codec over all 65,536 stored words, CRC vectors, the
+  default keymaps (layer 0 = daemon scheme), encoder sequences (clean, bounce,
+  press-without-turn on each knob, press with A chatter, turns while held,
+  missed states, reversals, long chatter, mid-detent power-on), debounce,
+  keys (GPIO + TM1650 together, roll-over, bounce, held at power-on), knobs,
+  layers (toggle, momentary, held across a change), raw mode (heartbeat,
+  expiry, explicit off, re-entry with a key held, sequence wrap, layer field),
+  and a seeded soak of 80,000 random physical operations with bounce in
+  keymap and raw mode that must reproduce exactly the presses and detents
+  performed and leave nothing held.
+* `fw_store` (about 638,000 checks): first boot on erased and random flash,
+  read-only normal boot, every protocol command and refusal, write failure,
+  every single-bit flip in header and actions, CRC-valid nonsense, power cut
+  after every write of a reset, a single change and the first boot.
+* Mutation checks: disabling the knob-hold freeze, the debounce, the raw-entry
+  release, the expiry clean-up, the validity check or the start-layer check,
+  or moving the keymap, each makes a suite fail.
+
+### 7.6 Recovery
+
+* **Top-left key held while plugging in**: the CH552 ROM's own P1.5 check,
+  independent of any firmware. Release the key once the pad shows as
+  4348:55e0, or the freshly flashed firmware will drop straight back into the
+  bootloader on its first boot.
+* Any other key or knob switch held at plug-in: this firmware jumps to the
+  bootloader itself (as discovery does).
+* `padctl.py bootloader --yes` (`CMD_BOOTLOADER` with its guard).
+* Fallback images: `discovery.bin` (diagnostic) can be rebuilt from this tree;
+  the original `6ece5ffe…` build is in `/mnt/ai/keypad-lab/fw/build/openmacropad/firmware/out/`.
+* The config registers are never written (DOWNLOAD_CFG stays P1.5).
+
+### 7.7 One-step flash and verify (needs the user)
+
+```sh
+firmware/flash-and-verify.sh /mnt/ai/keypad-lab/fw/build/control-surface/padfw.bin \
+    af866d807e9c95f11483fe937d225b0645f75b50dda8ee0cd5f45fb7f52343e9 <logdir>
+```
+
+1. The parent starts its instant-grab capture first, then the script.
+2. The user unplugs the pad, holds the **top-left** key, plugs it in, and lets
+   go after about one second.
+3. The script checks the image hash, waits for a fresh 4348:55e0 session,
+   runs `wchisp flash` once (erase, write, verify, reset; no config), waits for
+   1189:8890 serial key153 (manufacturer `OpenMacroPad`, product
+   `Control Surface 15+3`, bcdDevice 2.00), then runs the read-only checks:
+   `GET_INFO` (`CS`, format 3, 24 slots, 2 layers, firmware 2.0.0, layer 0,
+   raw off), all 48 actions, and the data-flash dump. Exit code 0 means all
+   passed.
+
+### 7.8 Verification after the flash (user present, parent grabbing)
+
+1. **Press capture**, 3 rounds: keys 1–15 in row order, then per knob top to
+   bottom: press, 3 cw, 3 ccw. Expected per round: 15 + 3 presses, each one
+   press/release of the chord in §7.3, 9 cw and 9 ccw taps, and **no** turn
+   events during the presses.
+2. **Raw mode**: `firmware/padctl.py watch --seconds 60` while the user repeats
+   one round. Expected: raw events with gap-free sequence numbers and **zero**
+   evdev events in the parent capture.
+3. **Heartbeat loss**: `kill -9` the watch process while a key is held, release
+   it, wait 2 s, press a key: the keymap chord must come back, with nothing
+   stuck.
+4. **Persistence** (writes, each needs approval): `padctl.py set 0 1 0 0x68
+   --layer 0 --yes` (key 1 → F13), replug, check key 1 = F13, then
+   `padctl.py reset --yes` and check key 1 = F14 again.
+5. **Layer 1**: `padctl.py layer 1 --yes`; check volume on the top knob and the
+   bottom-knob press toggling back to layer 0.
+
+### 7.9 Soak plan (with the user)
+
+* 10 minutes of fast knob spins in both directions, knob presses during and
+  between spins, and key mashing, under `padctl.py watch`: no sequence gaps,
+  press slots only for presses, no turn events while a knob is held.
+* A long session with the daemon in raw mode (once its raw backend lands):
+  no USB resets in `journalctl -k`, no stuck keys after the daemon is stopped.
