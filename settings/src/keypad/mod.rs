@@ -844,6 +844,156 @@ impl Identify {
     }
 }
 
+// ── Cheatsheet preview ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SheetEntry {
+    pub bound: bool,
+    pub active: bool,
+    pub label: String,
+    pub state: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SheetControl {
+    pub control: String,
+    pub row: usize,
+    pub column: usize,
+    /// Keys: one entry. Knobs: ccw, press, cw.
+    pub entries: Vec<SheetEntry>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SheetPreview {
+    pub title: String,
+    pub layers: Vec<String>,
+    pub notice: String,
+    pub keys: Vec<SheetControl>,
+    pub knobs: Vec<SheetControl>,
+}
+
+fn sheet_entry(v: Option<&Value>) -> SheetEntry {
+    let Some(v) = v else {
+        return SheetEntry::default();
+    };
+    SheetEntry {
+        bound: v.get("bound").and_then(Value::as_bool).unwrap_or(false),
+        active: v.get("active").and_then(Value::as_bool).unwrap_or(false),
+        label: text(v, "label"),
+        state: text(v, "state"),
+    }
+}
+
+/// The daemon's cheatsheet content (GetCheatsheet / cheatsheet --json).
+pub fn parse_sheet(json: &str) -> Option<SheetPreview> {
+    let v: Value = serde_json::from_str(json.trim()).ok()?;
+    if v.get("ok").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+    let place = |c: &Value| (count(c, "row"), count(c, "column"));
+    let keys = v
+        .get("keys")?
+        .as_array()?
+        .iter()
+        .map(|k| {
+            let (row, column) = place(k);
+            SheetControl { control: text(k, "control"), row, column, entries: vec![sheet_entry(Some(k))] }
+        })
+        .collect();
+    let knobs = v
+        .get("knobs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|k| {
+            let (row, column) = place(k);
+            let entries = ["ccw", "press", "cw"].iter().map(|e| sheet_entry(k.get(*e))).collect();
+            SheetControl { control: text(k, "control"), row, column, entries }
+        })
+        .collect();
+    Some(SheetPreview {
+        title: text(&v, "title"),
+        layers: v
+            .get("layers")
+            .and_then(Value::as_array)
+            .map(|l| l.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default(),
+        notice: text(&v, "notice"),
+        keys,
+        knobs,
+    })
+}
+
+/// What the cheatsheet shows for `window_class` with `config_text` (unsaved
+/// edits included): `control-surfaced cheatsheet --json --window CLASS -c FILE`
+/// on a temporary copy, else the running app's `GetCheatsheetFor` (saved
+/// config). `context` is a Kdenlive context JSON object, or "". The copy is
+/// written to `scratch` (the config's directory, so relative paths resolve).
+pub fn sheet_preview(
+    daemon: Option<&Path>,
+    scratch: &Path,
+    config_text: &str,
+    window_class: &str,
+    context: &str,
+) -> Result<SheetPreview, String> {
+    if let Some(daemon) = daemon {
+        let file = scratch.join(format!(".config.jsonc.preview-{}", std::process::id()));
+        if std::fs::create_dir_all(scratch).is_ok() && std::fs::write(&file, config_text).is_ok() {
+            let mut cmd = Command::new(daemon);
+            cmd.args(["cheatsheet", "--json", "--window", window_class]).arg("-c").arg(&file);
+            if !context.is_empty() {
+                cmd.args(["--context", context]);
+            }
+            let out = cmd.output();
+            let _ = std::fs::remove_file(&file);
+            if let Ok(out) = out {
+                if out.status.success() {
+                    if let Some(sheet) = parse_sheet(&String::from_utf8_lossy(&out.stdout)) {
+                        return Ok(sheet);
+                    }
+                } else {
+                    let err = String::from_utf8_lossy(&out.stderr);
+                    let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
+                    if line.starts_with("config ") {
+                        return Err(line.split_once(": ").map_or(line.clone(), |(_, m)| m.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    let reply = bus()
+        .ok_or("no session bus")?
+        .call_method(
+            Some(DBUS_SERVICE),
+            DBUS_PATH,
+            Some(DBUS_INTERFACE),
+            "GetCheatsheetFor",
+            &(window_class, "", context),
+        )
+        .map_err(|_| "the cheatsheet preview needs a newer keypad app".to_string())?;
+    let json: String = reply.body().deserialize().map_err(|e| e.to_string())?;
+    parse_sheet(&json).ok_or_else(|| "the keypad app sent no cheatsheet".into())
+}
+
+/// Shows the real overlay (the running keypad app draws it through the bar).
+pub fn show_sheet() -> Result<(), String> {
+    bus()
+        .ok_or("no session bus")?
+        .call_method(Some(DBUS_SERVICE), DBUS_PATH, Some(DBUS_INTERFACE), "ShowCheatsheet", &())
+        .map(|_| ())
+        .map_err(|_| "the keypad app isn't running, or is too old to show the cheatsheet".into())
+}
+
+/// Kdenlive contexts for the preview (the example config's layers).
+pub const KDENLIVE_CONTEXTS: &[(&str, &str)] = &[
+    ("No particular focus", ""),
+    ("Timeline", r#"{"focus":"timeline"}"#),
+    ("Clip monitor", r#"{"focus":"clipMonitor"}"#),
+    ("Project monitor", r#"{"focus":"projectMonitor"}"#),
+    ("Colour wheels", r#"{"colorWheels":true}"#),
+    ("Effect parameter", r#"{"focus":"effectStack","param":{"target":"1"}}"#),
+];
+
 // ── Daemon capabilities (`features`, `list-actions`) ─────────────────────────
 
 #[derive(Clone, Debug, PartialEq)]
@@ -851,6 +1001,8 @@ pub struct Features {
     pub max_keys: usize,
     pub max_knobs: usize,
     pub mouse: bool,
+    /// `{"cheatsheet": ...}` bindings, options and previews.
+    pub cheatsheet: bool,
 }
 
 pub fn parse_features(json: &str) -> Option<Features> {
@@ -860,6 +1012,7 @@ pub fn parse_features(json: &str) -> Option<Features> {
         max_keys: slots.get("maxKeys").and_then(Value::as_u64)? as usize,
         max_knobs: slots.get("maxKnobs").and_then(Value::as_u64)? as usize,
         mouse: v.get("mouseNames").and_then(Value::as_array).is_some_and(|m| !m.is_empty()),
+        cheatsheet: v.get("cheatsheet").is_some_and(Value::is_object),
     })
 }
 
@@ -1050,7 +1203,9 @@ mod tests {
             r#"{"daemonVersion":"0.2.0","slots":{"maxKeys":16,"maxKnobs":3},"mouseNames":["left","right"]}"#,
         )
         .unwrap();
-        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true });
+        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true, cheatsheet: false });
+        let with_sheet = parse_features(r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"modes":["toggle","hold"]}}"#);
+        assert!(with_sheet.unwrap().cheatsheet);
         assert!(parse_features(r#"{"slots":{}}"#).is_none());
         let mut actions = Vec::new();
         parse_actions(
@@ -1058,6 +1213,42 @@ mod tests {
             &mut actions,
         );
         assert_eq!(actions, [("mark_in".to_string(), "Set In Point".to_string())]);
+    }
+
+    #[test]
+    fn parses_the_daemons_cheatsheet() {
+        let sheet = parse_sheet(
+            r#"{"ok":true,"visible":false,"title":"Kdenlive · Wheels","layers":["color-wheels"],"notice":"",
+               "keys":[{"control":"key1","row":0,"column":0,"bound":true,"active":true,"label":"Set Zone In","state":""},
+                       {"control":"key2","row":0,"column":1,"bound":false,"active":false,"label":"","state":""}],
+               "knobs":[{"control":"knob1","row":0,"column":5,
+                         "ccw":{"bound":true,"active":false,"label":"Lift","state":"r"},
+                         "press":{"bound":true,"active":true,"label":"Lift axis","state":"r"},
+                         "cw":{"bound":true,"active":false,"label":"Lift","state":"r"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!((sheet.title.as_str(), sheet.layers.as_slice()), ("Kdenlive · Wheels", &["color-wheels".to_string()][..]));
+        assert_eq!(sheet.keys[0].entries[0], SheetEntry { bound: true, active: true, label: "Set Zone In".into(), state: String::new() });
+        assert!(!sheet.keys[1].entries[0].bound);
+        let knob = &sheet.knobs[0];
+        assert_eq!((knob.column, knob.entries.len(), knob.entries[0].state.as_str()), (5, 3, "r"));
+        assert!(parse_sheet(r#"{"ok":false}"#).is_none());
+    }
+
+    #[test]
+    fn sheet_preview_uses_the_unsaved_config_through_the_cli() {
+        let dir = temp_dir("sheet");
+        let daemon = fake_daemon(
+            &dir,
+            "case \"$*\" in *\"--window firefox\"*) ;; *) exit 9;; esac\n\
+             grep -q UNSAVED \"$6\" || exit 8\n\
+             echo '{\"ok\":true,\"title\":\"t\",\"keys\":[{\"control\":\"key1\",\"row\":0,\"column\":0,\"bound\":true,\"active\":true,\"label\":\"L\"}]}'\n",
+        );
+        let scratch = dir.join("cfg");
+        let sheet = sheet_preview(Some(&daemon), &scratch, "{\"x\": \"UNSAVED\"}", "firefox", "").unwrap();
+        assert_eq!(sheet.keys[0].entries[0].label, "L");
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0, "the copy is removed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn fake_daemon(dir: &Path, script: &str) -> PathBuf {

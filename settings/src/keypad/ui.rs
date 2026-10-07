@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use super::config::{self, ActionKind, Binding, KeypadConfig, Layout};
-use super::{FirmwareImage, InputEvent, Status, Validation, Variant};
-use crate::{KeypadBindingRow, KeypadControl, KeypadVariant, MainWindow};
+use super::config::{self, ActionKind, Binding, KeypadConfig, Layout, SheetOptions};
+use super::{FirmwareImage, InputEvent, SheetPreview, Status, Validation, Variant};
+use crate::{KeypadBindingRow, KeypadControl, KeypadSheetCell, KeypadVariant, MainWindow};
 
 const KEYPAD_TAB: i32 = 11;
 pub const SCOPE_HELP_URL: &str = "https://github.com/smpl-os/smplos/blob/main/KEYPAD.md#which-keypads-work";
@@ -72,7 +72,15 @@ struct State {
     knob_event: usize,
     editor: Binding,
     mouse: bool,
+    /// The installed keypad app supports the cheatsheet.
+    sheet: bool,
     kdenlive_actions: Vec<(String, String)>,
+    /// Kdenlive context picked for the preview (index into KDENLIVE_CONTEXTS).
+    sheet_context: usize,
+    /// The inputs of the last preview request, so unchanged state isn't refetched.
+    sheet_key: String,
+    sheet_generation: u64,
+    sheet_preview: Result<SheetPreview, String>,
     identify: bool,
     /// Identify mode as last sent to the daemon.
     identify_sent: bool,
@@ -226,10 +234,28 @@ impl State {
         if kdenlive || self.editor.kind == ActionKind::Kdenlive {
             kinds.push(ActionKind::Kdenlive);
         }
+        if (self.sheet && config::sheet_slot(&self.slot())) || self.editor.kind == ActionKind::Cheatsheet {
+            kinds.push(ActionKind::Cheatsheet);
+        }
         if self.editor.kind == ActionKind::Advanced {
             kinds.push(ActionKind::Advanced);
         }
         kinds
+    }
+
+    /// The window class and Kdenlive context the cheatsheet preview shows.
+    fn sheet_target(&self) -> (String, String) {
+        let profile = self.profiles().get(self.profile).cloned();
+        let class = match &profile {
+            Some(p) if !p.global => config::example_class(&p.class),
+            _ => "smplos-cheatsheet-preview".to_string(),
+        };
+        let context = if profile.is_some_and(|p| p.kdenlive) {
+            super::KDENLIVE_CONTEXTS[self.sheet_context.min(super::KDENLIVE_CONTEXTS.len() - 1)].1.to_string()
+        } else {
+            String::new()
+        };
+        (class, context)
     }
 
     fn choices(&self) -> Vec<(String, String)> {
@@ -237,6 +263,7 @@ impl State {
         let mut list = match self.editor.kind {
             ActionKind::Media => table(config::MEDIA_KEYS),
             ActionKind::Mouse => table(config::MOUSE_BUTTONS),
+            ActionKind::Cheatsheet => table(config::CHEATSHEET_MODES),
             ActionKind::Kdenlive if !self.kdenlive_actions.is_empty() => self.kdenlive_actions.clone(),
             ActionKind::Kdenlive => table(config::KDENLIVE_ACTIONS),
             _ => Vec::new(),
@@ -290,6 +317,146 @@ fn render(ui: &MainWindow) {
             render_state(ui, st);
         }
     });
+    refresh_sheet_preview(ui);
+}
+
+/// Auto-hide choices (milliseconds, label).
+const SHEET_HIDE: [(u32, &str); 6] = [
+    (0, "Until hidden"),
+    (3000, "After 3 s without keypad input"),
+    (5000, "After 5 s without keypad input"),
+    (10000, "After 10 s without keypad input"),
+    (30000, "After 30 s without keypad input"),
+    (60000, "After 1 min without keypad input"),
+];
+
+fn render_sheet_preview(ui: &MainWindow, st: &State) {
+    let (title, notice, cells, cols, rows) = match &st.sheet_preview {
+        Err(e) => (String::new(), e.clone(), Vec::new(), 1, 1),
+        Ok(p) => {
+            let mut cells: Vec<KeypadSheetCell> = p
+                .keys
+                .iter()
+                .map(|k| {
+                    let e = k.entries.first().cloned().unwrap_or_default();
+                    let text = if !e.bound {
+                        String::new()
+                    } else if e.state.is_empty() {
+                        e.label.clone()
+                    } else {
+                        format!("{} ({})", e.label, e.state)
+                    };
+                    KeypadSheetCell {
+                        num: s(k.control.trim_start_matches("key")),
+                        text: s(text),
+                        knob: false,
+                        col: k.column as i32,
+                        row: k.row as i32,
+                        bound: e.bound,
+                        active: e.active,
+                    }
+                })
+                .collect();
+            let key_cols = p.keys.iter().map(|k| k.column + 1).max().unwrap_or(0);
+            for k in &p.knobs {
+                let line = |glyph: &str, e: &super::SheetEntry| {
+                    let label = if e.bound { e.label.as_str() } else { "·" };
+                    let state = if e.state.is_empty() { String::new() } else { format!(" ({})", e.state) };
+                    let full = format!("{glyph} {label}{state}");
+                    // One line per direction: the cell has room for three.
+                    if full.chars().count() > 22 {
+                        format!("{}…", full.chars().take(21).collect::<String>())
+                    } else {
+                        full
+                    }
+                };
+                let lines: Vec<String> = ["<", "o", ">"].iter().zip(&k.entries).map(|(g, e)| line(g, e)).collect();
+                cells.push(KeypadSheetCell {
+                    num: s(format!("Knob {}", k.control.trim_start_matches("knob"))),
+                    text: s(lines.join("\n")),
+                    knob: true,
+                    col: key_cols as i32,
+                    row: k.row as i32,
+                    bound: k.entries.iter().any(|e| e.bound),
+                    active: k.entries.iter().any(|e| e.active),
+                });
+            }
+            let rows = cells.iter().map(|c| c.row + 1).max().unwrap_or(1);
+            let mut title = p.title.clone();
+            for layer in &p.layers {
+                if !title.contains(layer.as_str()) {
+                    title = format!("{title} · {layer}");
+                }
+            }
+            (title, p.notice.clone(), cells, key_cols.max(1) as i32, rows)
+        }
+    };
+    ui.set_kp_sheet_title(s(title));
+    ui.set_kp_sheet_notice(s(notice));
+    ui.set_kp_sheet_cells(ModelRc::from(Rc::new(VecModel::from(cells))));
+    ui.set_kp_sheet_cols(cols);
+    ui.set_kp_sheet_rows(rows);
+}
+
+/// Re-fetches the preview when the config, profile or context changed.
+fn refresh_sheet_preview(ui: &MainWindow) {
+    let request = with(|st| {
+        if !st.loaded || !st.sheet || st.wizard.is_some() {
+            return None;
+        }
+        let (class, context) = st.sheet_target();
+        let text = st.config.render();
+        let key = format!("{class}\n{context}\n{text}");
+        if key == st.sheet_key {
+            return None;
+        }
+        st.sheet_key = key;
+        st.sheet_generation += 1;
+        Some((st.sheet_generation, st.daemon.clone(), text, class, context))
+    })
+    .flatten();
+    let Some((generation, daemon, text, class, context)) = request else { return };
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let scratch = super::config_path().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let preview = super::sheet_preview(daemon.as_deref(), &scratch, &text, &class, &context);
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let current = with(|st| {
+                if st.sheet_generation != generation {
+                    return false;
+                }
+                st.sheet_preview = preview;
+                true
+            })
+            .unwrap_or(false);
+            if current {
+                STATE.with(|cell| {
+                    if let Some(st) = cell.borrow().as_ref() {
+                        render_sheet_preview(&ui, st);
+                    }
+                });
+            }
+        });
+    });
+}
+
+fn set_sheet_option(ui: &MainWindow, change: impl FnOnce(&mut SheetOptions)) {
+    with(|st| {
+        if st.config_error.is_some() {
+            return;
+        }
+        let mut o = st.config.sheet_options();
+        change(&mut o);
+        match st.config.set_sheet_options(&o) {
+            Ok(()) => {
+                st.dirty = true;
+                st.set_message("Cheatsheet options changed. Not saved yet.", false);
+            }
+            Err(e) => st.set_message(e, true),
+        }
+    });
+    render(ui);
 }
 
 fn render_state(ui: &MainWindow, st: &State) {
@@ -456,6 +623,7 @@ fn render_state(ui: &MainWindow, st: &State) {
         ActionKind::Shortcut => (1, "e.g. ctrl+shift+s, F13, super+1; a sequence: ctrl+k x"),
         ActionKind::Command => (1, "e.g. notify-send hello (runs without a shell)"),
         ActionKind::Media | ActionKind::Mouse | ActionKind::Kdenlive => (2, ""),
+        ActionKind::Cheatsheet => (2, "Shows what every key and knob does in the app you're using."),
         ActionKind::Advanced => (3, "Continuous controls, mode cycles and API requests are edited in the config file."),
     };
     ui.set_kp_editor_mode(if mappable && st.config_error.is_none() { mode } else { 0 });
@@ -467,6 +635,23 @@ fn render_state(ui: &MainWindow, st: &State) {
         hint
     }));
     ui.set_kp_advanced_text(s(if st.editor.kind == ActionKind::Advanced { st.editor.value.as_str() } else { "" }));
+    ui.set_kp_label_enabled(mappable && st.config_error.is_none() && st.editor.takes_label());
+
+    // Cheatsheet: options and the preview for the selected profile.
+    ui.set_kp_sheet_supported(st.sheet);
+    let o = st.config.sheet_options();
+    ui.set_kp_sheet_opacity(o.opacity as f32);
+    ui.set_kp_sheet_hide_index(SHEET_HIDE.iter().position(|(ms, _)| *ms == o.auto_hide_ms).map_or(-1, |i| i as i32));
+    ui.set_kp_sheet_hide_names(strings(SHEET_HIDE.iter().map(|(_, l)| l.to_string())));
+    ui.set_kp_sheet_position(config::SHEET_POSITIONS.iter().position(|p| *p == o.position).map_or(4, |i| i as i32));
+    let kdenlive = st.profiles().get(st.profile).is_some_and(|p| p.kdenlive);
+    ui.set_kp_sheet_contexts(strings(if kdenlive {
+        super::KDENLIVE_CONTEXTS.iter().map(|(l, _)| l.to_string()).collect()
+    } else {
+        Vec::new()
+    }));
+    ui.set_kp_sheet_context(st.sheet_context as i32);
+    render_sheet_preview(ui, st);
 
     let rows: Vec<KeypadBindingRow> = st
         .config
@@ -730,6 +915,7 @@ fn select_slot(st: &mut State, slot: &str) {
 
 fn apply_binding(ui: &MainWindow) {
     let text = ui.get_kp_action_text().to_string();
+    let label = ui.get_kp_label_text().to_string();
     with(|st| {
         if st.config_error.is_some() {
             return;
@@ -738,6 +924,7 @@ fn apply_binding(ui: &MainWindow) {
         if matches!(binding.kind, ActionKind::Shortcut | ActionKind::Command) {
             binding.value = text.clone();
         }
+        binding.label = if binding.takes_label() { label.trim().to_string() } else { String::new() };
         let slot = st.slot();
         match st.config.set_binding(st.profile, &slot, &binding) {
             Ok(note) => {
@@ -759,11 +946,15 @@ fn apply_binding(ui: &MainWindow) {
 
 /// Puts the editor's value into the text field (only when the selection changes).
 fn sync_editor_text(ui: &MainWindow) {
-    if let Some(text) = with(|st| match st.editor.kind {
-        ActionKind::Shortcut | ActionKind::Command => st.editor.value.clone(),
-        _ => String::new(),
+    if let Some((text, label)) = with(|st| {
+        let text = match st.editor.kind {
+            ActionKind::Shortcut | ActionKind::Command => st.editor.value.clone(),
+            _ => String::new(),
+        };
+        (text, st.editor.label.clone())
     }) {
         ui.set_kp_action_text(s(text));
+        ui.set_kp_label_text(s(label));
     }
 }
 
@@ -968,6 +1159,7 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
                 if let Some(f) = features {
                     st.max_keys = f.max_keys;
                     st.max_knobs = f.max_knobs;
+                    st.sheet = f.cheatsheet;
                 }
             });
             if let Some(ui) = weak.upgrade() {
@@ -1000,7 +1192,12 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         knob_event: 0,
         editor: Binding::new(ActionKind::Inherit, ""),
         mouse: false,
+        sheet: false,
         kdenlive_actions: Vec::new(),
+        sheet_context: 0,
+        sheet_key: String::new(),
+        sheet_generation: 0,
+        sheet_preview: Err(String::new()),
         identify: false,
         identify_sent: false,
         identify_holder: None,
@@ -1106,6 +1303,54 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
             set_layout(st, choice);
         });
         render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_sheet_opacity(move |v| {
+        if let Some(ui) = weak.upgrade() {
+            let v = (f64::from(v) * 20.0).round() / 20.0;
+            set_sheet_option(&ui, |o| o.opacity = v.clamp(0.05, 1.0));
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_sheet_hide(move |i| {
+        if let (Some(ui), Some((ms, _))) = (weak.upgrade(), SHEET_HIDE.get(i.max(0) as usize)) {
+            set_sheet_option(&ui, |o| o.auto_hide_ms = *ms);
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_sheet_position(move |i| {
+        if let (Some(ui), Some(p)) = (weak.upgrade(), config::SHEET_POSITIONS.get(i.max(0) as usize)) {
+            set_sheet_option(&ui, |o| o.position = p.to_string());
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_sheet_context(move |i| {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| st.sheet_context = i.max(0) as usize);
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_show_sheet(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let weak = ui.as_weak();
+        std::thread::spawn(move || {
+            let result = super::show_sheet();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    let message = match result {
+                        Ok(()) => ("Cheatsheet shown on screen (it uses the saved config).".to_string(), false),
+                        Err(e) => (e, true),
+                    };
+                    with(|st| st.set_message(message.0, message.1));
+                    render(&ui);
+                }
+            });
+        });
     });
 
     let weak = ui.as_weak();
@@ -1292,10 +1537,11 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                 return;
             }
             let current = st.config.binding(st.profile, &st.slot());
+            let label = st.editor.label.clone();
             st.editor = if current.kind == kind {
                 current
             } else {
-                Binding::new(kind, "")
+                Binding::new(kind, "").labelled(&label)
             };
             if let Some((first, _)) = st.choices().first().filter(|_| st.editor.value.is_empty()) {
                 st.editor.value = first.clone();

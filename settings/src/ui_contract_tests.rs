@@ -432,3 +432,27 @@ fn keypad_variant_picker_has_previews_custom_grid_and_detected_mode() {
     let ui_rs = include_str!("keypad/ui.rs");
     assert!(ui_rs.contains("menu.push(entry(\"Custom…\".into(), ck, cn, cc));"));
 }
+
+#[test]
+fn keypad_cheatsheet_card_label_and_preview_are_wired() {
+    let keypad = keypad_page();
+    for needle in [
+        "// ── Cheatsheet ──",
+        "if root.kp-label-enabled && root.kp-sheet-supported: HorizontalLayout {",
+        "text <=> root.kp-label-text;",
+        "changed(v) => { root.kp-set-sheet-opacity(v); }",
+        "selected(i) => { root.kp-set-sheet-hide(i); }",
+        "selected(i) => { root.kp-set-sheet-position(i); }",
+        "selected(i) => { root.kp-set-sheet-context(i); }",
+        "clicked => { root.kp-show-sheet(); }",
+        "if root.kp-sheet-supported: KeypadSheetPreview {",
+    ] {
+        assert!(keypad.contains(needle), "missing: {needle}");
+    }
+    let preview = UI.split("component KeypadSheetPreview").nth(1).unwrap().split("\ncomponent ").next().unwrap();
+    assert!(preview.contains("background: Theme.bg.transparentize(1 - root.sheet-opacity);"), "opacity on the background only");
+    assert!(preview.contains("font-italic: c.bound && !c.active;"), "inactive is shown by shape, not color alone");
+    let ui_rs = include_str!("keypad/ui.rs");
+    assert!(ui_rs.contains("super::sheet_preview(daemon.as_deref(), &scratch, &text, &class, &context)"));
+    assert!(ui_rs.contains("if (self.sheet && config::sheet_slot(&self.slot()))"));
+}

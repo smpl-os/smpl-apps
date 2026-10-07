@@ -40,6 +40,16 @@ All notable changes to smpl-apps are documented here.
   `keypad-ctl` for flashing; see smplOS `KEYPAD.md`. Opens with
   `settings --tab keypad`.
 
+- **settings: keypad cheatsheet.** With a keypad app that supports it, any key
+  or knob press can be mapped to "Show the cheatsheet" (toggle or hold), and
+  every binding gets an optional sheet label (`"label"`, kept with other
+  fields such as a Kdenlive action's `fallback`). A Cheatsheet card sets
+  opacity (background only), auto-hide and position, and shows a live
+  preview of the selected profile, unsaved edits included
+  (`control-surfaced cheatsheet --json --window CLASS` on a temporary copy,
+  else `GetCheatsheetFor`), with a Kdenlive context picker. Show on screen
+  calls the running app's `ShowCheatsheet`.
+
 - **start-menu: resident mode opens the menu in about 20 ms.** Each Super
   press used to start a new process, taking 260–300 ms to map, mostly for
   the system font scan and NVIDIA EGL initialization.

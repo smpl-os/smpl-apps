@@ -1,10 +1,11 @@
 //! The control-surface daemon's config, as Settings edits it.
 //!
 //! Settings edits per-profile base bindings in the simple forms (shortcut,
-//! media key, mouse, command, Kdenlive action, disabled) and the profile
-//! header (app match, Kdenlive API plugin). Everything else (layers, modes,
-//! continuous controls, cycles, requests, hardware, settings) is preserved
-//! verbatim and shown read-only as "Advanced".
+//! media key, mouse, command, Kdenlive action, cheatsheet, disabled), each
+//! with an optional cheatsheet label, the profile header (app match,
+//! Kdenlive API plugin), the layout and the cheatsheet options. Everything
+//! else (layers, modes, continuous controls, cycles, requests, hardware,
+//! settings) is preserved verbatim and shown read-only as "Advanced".
 
 use super::json::{self, Json};
 
@@ -17,6 +18,7 @@ pub enum ActionKind {
     Mouse,
     Command,
     Kdenlive,
+    Cheatsheet,
     Advanced,
 }
 
@@ -30,6 +32,7 @@ impl ActionKind {
             Self::Mouse => "Mouse button",
             Self::Command => "Run command",
             Self::Kdenlive => "Kdenlive action (API)",
+            Self::Cheatsheet => "Show the cheatsheet",
             Self::Advanced => "Advanced (edit in file)",
         }
     }
@@ -38,14 +41,26 @@ impl ActionKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub kind: ActionKind,
-    /// Shortcut text, media key, mouse button, command line, action id or,
-    /// for Advanced, the binding's JSON.
+    /// Shortcut text, media key, mouse button, command line, action id,
+    /// cheatsheet mode or, for Advanced, the binding's JSON.
     pub value: String,
+    /// The binding's own `"label"`: what the cheatsheet shows for it.
+    pub label: String,
 }
 
 impl Binding {
     pub fn new(kind: ActionKind, value: &str) -> Self {
-        Self { kind, value: value.to_string() }
+        Self { kind, value: value.to_string(), label: String::new() }
+    }
+
+    pub fn labelled(mut self, label: &str) -> Self {
+        self.label = label.trim().to_string();
+        self
+    }
+
+    /// Kinds whose label the cheatsheet can show (not "unset" or "nothing").
+    pub fn takes_label(&self) -> bool {
+        !matches!(self.kind, ActionKind::Inherit | ActionKind::Disabled | ActionKind::Advanced)
     }
 
     pub fn summary(&self) -> String {
@@ -55,6 +70,7 @@ impl Binding {
             ActionKind::Media => choice_label(MEDIA_KEYS, &self.value),
             ActionKind::Mouse => choice_label(MOUSE_BUTTONS, &self.value),
             ActionKind::Kdenlive => choice_label(KDENLIVE_ACTIONS, &self.value),
+            ActionKind::Cheatsheet => format!("cheatsheet ({})", self.value),
             ActionKind::Advanced => "advanced".into(),
             ActionKind::Shortcut | ActionKind::Command => self.value.clone(),
         }
@@ -136,6 +152,22 @@ const KEY_NAMES: &[&str] = &[
     "playpause", "nextsong", "previoussong", "stopcd", "brightnessdown", "brightnessup",
 ];
 const MODIFIERS: &[&str] = &["ctrl", "control", "shift", "alt", "super", "meta", "win", "logo"];
+
+/// `{"cheatsheet": mode}`: keys and knob presses only.
+pub const CHEATSHEET_MODES: &[(&str, &str)] = &[
+    ("toggle", "Toggle: press to show, press again to hide"),
+    ("hold", "Hold: shown while held"),
+];
+
+/// Where the cheatsheet overlay appears (the daemon's `position` values).
+pub const SHEET_POSITIONS: [&str; 9] = [
+    "top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right",
+];
+
+/// Slots that can carry a cheatsheet binding (the daemon refuses turns).
+pub fn sheet_slot(slot: &str) -> bool {
+    !slot.contains('.') || slot.ends_with(".press")
+}
 
 pub const KNOB_EVENTS: &[(&str, &str)] = &[("ccw", "Turn left"), ("cw", "Turn right"), ("press", "Press")];
 
@@ -285,28 +317,43 @@ pub fn classify(value: Option<&Json>) -> Binding {
             Binding::new(ActionKind::Shortcut, s)
         }
         Json::Obj(entries) => {
-            let only = |key: &str| entries.len() == 1 && entries[0].0 == key;
+            // A "label" is the cheatsheet's text and may accompany any form.
+            let label = match value.get("label") {
+                Some(Json::Str(l)) => l.as_str(),
+                Some(_) => return advanced(),
+                None => "",
+            };
+            let rest: Vec<&(String, Json)> = entries.iter().filter(|(k, _)| k != "label").collect();
+            let only = |key: &str| rest.len() == 1 && rest[0].0 == key;
             if only("keys") {
-                match &entries[0].1 {
-                    Json::Str(s) => return Binding::new(ActionKind::Shortcut, s),
+                match &rest[0].1 {
+                    Json::Str(s) => {
+                        let lower = s.trim().to_lowercase();
+                        if MEDIA_KEYS.iter().any(|(k, _)| *k == lower) {
+                            return Binding::new(ActionKind::Media, &lower).labelled(label);
+                        }
+                        return Binding::new(ActionKind::Shortcut, s).labelled(label);
+                    }
                     Json::Arr(items) if items.iter().all(|i| i.as_str().is_some()) => {
                         let seq: Vec<&str> = items.iter().filter_map(Json::as_str).collect();
-                        return Binding::new(ActionKind::Shortcut, &seq.join(" "));
+                        return Binding::new(ActionKind::Shortcut, &seq.join(" ")).labelled(label);
                     }
                     _ => {}
                 }
             }
             if let Some(Json::Str(action)) = value.get("action") {
-                // Keep extra fields (fallback, label) intact by treating the
-                // binding as API-only for display; editing replaces it.
-                return Binding::new(ActionKind::Kdenlive, action);
+                // Extra fields (fallback, options) are kept when it is edited.
+                return Binding::new(ActionKind::Kdenlive, action).labelled(label);
             }
             if let (true, Some(Json::Arr(argv))) = (only("command"), value.get("command")) {
                 let argv: Vec<String> = argv.iter().filter_map(|a| a.as_str().map(String::from)).collect();
-                return Binding::new(ActionKind::Command, &join_command(&argv));
+                return Binding::new(ActionKind::Command, &join_command(&argv)).labelled(label);
             }
             if let (true, Some(Json::Str(button))) = (only("mouse"), value.get("mouse")) {
-                return Binding::new(ActionKind::Mouse, button);
+                return Binding::new(ActionKind::Mouse, button).labelled(label);
+            }
+            if let (true, Some(Json::Str(mode))) = (only("cheatsheet"), value.get("cheatsheet")) {
+                return Binding::new(ActionKind::Cheatsheet, mode).labelled(label);
             }
             advanced()
         }
@@ -314,37 +361,80 @@ pub fn classify(value: Option<&Json>) -> Binding {
     }
 }
 
-/// The JSON for a binding; `None` removes the slot (inherit).
+/// The JSON for a binding; `None` removes the slot (inherit). A label turns
+/// the short string forms into objects (`{"keys": "ctrl+z", "label": "Undo"}`).
 pub fn to_json(binding: &Binding) -> Result<Option<Json>, String> {
+    let label = binding.label.trim();
+    if label.chars().count() > 40 {
+        return Err("keep the cheatsheet label under 40 characters".into());
+    }
+    let with_label = |mut entries: Vec<(String, Json)>| {
+        if !label.is_empty() {
+            entries.push(("label".into(), Json::str(label)));
+        }
+        Json::Obj(entries)
+    };
+    let keys = |text: &str| {
+        if label.is_empty() {
+            Json::str(text)
+        } else {
+            with_label(vec![("keys".into(), Json::str(text))])
+        }
+    };
     Ok(Some(match binding.kind {
         ActionKind::Inherit => return Ok(None),
         ActionKind::Advanced => return Err("advanced bindings are edited in the config file".into()),
         ActionKind::Disabled => Json::str("none"),
-        ActionKind::Shortcut => Json::Str(normalize_shortcut(&binding.value)?),
+        ActionKind::Shortcut => keys(&normalize_shortcut(&binding.value)?),
         ActionKind::Media => {
             if !MEDIA_KEYS.iter().any(|(k, _)| *k == binding.value) {
                 return Err(format!("unknown media key '{}'", binding.value));
             }
-            Json::str(&binding.value)
+            keys(&binding.value)
         }
         ActionKind::Mouse => {
             if !MOUSE_BUTTONS.iter().any(|(k, _)| *k == binding.value) {
                 return Err(format!("unknown mouse button '{}'", binding.value));
             }
-            Json::Obj(vec![("mouse".into(), Json::str(&binding.value))])
+            with_label(vec![("mouse".into(), Json::str(&binding.value))])
         }
         ActionKind::Command => {
             let argv = split_command(&binding.value)?;
-            Json::Obj(vec![("command".into(), Json::Arr(argv.into_iter().map(Json::Str).collect()))])
+            with_label(vec![("command".into(), Json::Arr(argv.into_iter().map(Json::Str).collect()))])
         }
         ActionKind::Kdenlive => {
             let id = binding.value.trim();
             if id.is_empty() || id.contains(char::is_whitespace) {
                 return Err("choose a Kdenlive action".into());
             }
-            Json::Obj(vec![("action".into(), Json::str(id))])
+            with_label(vec![("action".into(), Json::str(id))])
+        }
+        ActionKind::Cheatsheet => {
+            if !CHEATSHEET_MODES.iter().any(|(m, _)| *m == binding.value) {
+                return Err("choose toggle or hold for the cheatsheet".into());
+            }
+            with_label(vec![("cheatsheet".into(), Json::str(&binding.value))])
         }
     }))
+}
+
+/// Keeps what Settings doesn't edit (e.g. a Kdenlive action's "fallback")
+/// when a binding of the same form is replaced.
+fn merge_extras(old: Option<&Json>, new: Json) -> Json {
+    const FORMS: [&str; 5] = ["keys", "action", "command", "mouse", "cheatsheet"];
+    let (Some(Json::Obj(old)), Json::Obj(mut entries)) = (old, new.clone()) else {
+        return new;
+    };
+    let same_form = FORMS.iter().any(|f| old.iter().any(|(k, _)| k == f) && entries.iter().any(|(k, _)| k == f));
+    if !same_form {
+        return new;
+    }
+    for (k, v) in old {
+        if k != "label" && !FORMS.contains(&k.as_str()) && !entries.iter().any(|(e, _)| e == k) {
+            entries.push((k.clone(), v.clone()));
+        }
+    }
+    Json::Obj(entries)
 }
 
 // ── Profiles ─────────────────────────────────────────────────────────────────
@@ -405,6 +495,38 @@ fn pattern_covers(pattern: &str, class: &str) -> bool {
         }
     }
     !literal.is_empty() && if exact { class == literal } else { class.starts_with(&literal) }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SheetOptions {
+    pub opacity: f64,
+    /// 0: shown until hidden.
+    pub auto_hide_ms: u32,
+    pub position: String,
+}
+
+/// A literal window class that a simple `match.class` pattern matches, for
+/// previews (`^org\.kde\.kdenlive` -> `org.kde.kdenlive`, `^(a|b)$` -> `a`).
+pub fn example_class(pattern: &str) -> String {
+    let body = pattern.trim_start_matches('^').trim_end_matches('$');
+    let body = body
+        .strip_prefix('(')
+        .and_then(|b| b.strip_suffix(')'))
+        .map_or(body, |b| b.split('|').next().unwrap_or(b));
+    let mut out = String::new();
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(e) = chars.next() {
+                    out.push(e);
+                }
+            }
+            '.' | '*' | '+' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '|' | '^' | '$' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The config's `"layout"`: unset (the daemon decides), a board profile id,
@@ -503,6 +625,15 @@ impl KeypadConfig {
         self.profile_list_mut().get_mut(index).ok_or_else(|| "no such profile".to_string())
     }
 
+    fn raw_binding(&self, profile: usize, slot: &str) -> Option<&Json> {
+        let bindings = self.profile_list().get(profile)?.get("bindings")?;
+        if let Some(flat) = bindings.get(slot) {
+            return Some(flat);
+        }
+        let (knob, event) = slot.split_once('.')?;
+        bindings.get(knob)?.get(event)
+    }
+
     pub fn binding(&self, profile: usize, slot: &str) -> Binding {
         let Some(bindings) = self.profile_list().get(profile).and_then(|p| p.get("bindings")) else {
             return classify(None);
@@ -546,7 +677,12 @@ impl KeypadConfig {
     /// Sets a key ("key3") or knob event ("knob1.cw") binding. Returns a note
     /// when another binding had to change for this one to take effect.
     pub fn set_binding(&mut self, profile: usize, slot: &str, binding: &Binding) -> Result<Option<String>, String> {
+        if binding.kind == ActionKind::Cheatsheet && !sheet_slot(slot) {
+            return Err("the cheatsheet can be shown by a key or a knob press, not a turn".into());
+        }
         let value = to_json(binding)?;
+        let old = self.raw_binding(profile, slot).cloned();
+        let value = value.map(|v| merge_extras(old.as_ref(), v));
         let bindings = self.profile_mut(profile)?.object_mut("bindings");
         let mut note = None;
         match slot.split_once('.') {
@@ -634,6 +770,44 @@ impl KeypadConfig {
                 );
             }
         }
+        Ok(())
+    }
+
+    pub fn sheet_options(&self) -> SheetOptions {
+        let o = self.doc.get("cheatsheet");
+        let num = |k: &str| match o.and_then(|o| o.get(k)) {
+            Some(Json::Num(n)) => n.parse::<f64>().ok(),
+            _ => None,
+        };
+        SheetOptions {
+            opacity: num("opacity").unwrap_or(0.85),
+            auto_hide_ms: num("autoHideMs").map_or(0, |v| v.max(0.0) as u32),
+            position: o
+                .and_then(|o| o.get("position"))
+                .and_then(Json::as_str)
+                .unwrap_or("center")
+                .to_string(),
+        }
+    }
+
+    /// Sets the cheatsheet options; anything else under "cheatsheet"
+    /// (e.g. "eww") is kept.
+    pub fn set_sheet_options(&mut self, o: &SheetOptions) -> Result<(), String> {
+        if !(0.05..=1.0).contains(&o.opacity) {
+            return Err("opacity is 5% to 100%".into());
+        }
+        if o.auto_hide_ms > 600_000 {
+            return Err("hide after at most 10 minutes".into());
+        }
+        if !SHEET_POSITIONS.contains(&o.position.as_str()) {
+            return Err(format!("unknown position '{}'", o.position));
+        }
+        let sheet = self.doc.object_mut("cheatsheet");
+        let opacity = format!("{:.2}", o.opacity);
+        let opacity = opacity.trim_end_matches('0').trim_end_matches('.');
+        sheet.set("opacity", Json::Num(opacity.to_string()));
+        sheet.set("autoHideMs", Json::Num(o.auto_hide_ms.to_string()));
+        sheet.set("position", Json::str(&o.position));
         Ok(())
     }
 
@@ -885,6 +1059,77 @@ mod tests {
         }
         c.set_layout(&Layout::Auto).unwrap();
         assert!(!c.render().contains("\"layout\""));
+    }
+
+    #[test]
+    fn labels_round_trip_on_every_simple_form_and_short_forms_become_objects() {
+        let mut c = config();
+        let cases = [
+            ("key4", Binding::new(ActionKind::Shortcut, "ctrl+z").labelled("Undo"), r#"{ "keys": "ctrl+z", "label": "Undo" }"#),
+            ("key5", Binding::new(ActionKind::Media, "playpause").labelled("Music"), r#"{ "keys": "playpause", "label": "Music" }"#),
+            ("key6", Binding::new(ActionKind::Command, "notify-send hi").labelled("Hi"), r#"{ "command": ["notify-send", "hi"], "label": "Hi" }"#),
+            ("key7", Binding::new(ActionKind::Mouse, "left").labelled("Click"), r#"{ "mouse": "left", "label": "Click" }"#),
+            ("key8", Binding::new(ActionKind::Cheatsheet, "hold").labelled("Help"), r#"{ "cheatsheet": "hold", "label": "Help" }"#),
+        ];
+        for (slot, binding, json_text) in cases {
+            c.set_binding(1, slot, &binding).unwrap();
+            let raw = c.raw_binding(1, slot).unwrap();
+            assert_eq!(json::to_compact(raw), json_text);
+            assert_eq!(c.binding(1, slot), binding, "{slot}");
+        }
+        // Without a label the short forms stay short.
+        c.set_binding(1, "key4", &Binding::new(ActionKind::Shortcut, "ctrl+z")).unwrap();
+        assert_eq!(c.raw_binding(1, "key4"), Some(&Json::str("ctrl+z")));
+        assert!(to_json(&Binding::new(ActionKind::Shortcut, "a").labelled(&"x".repeat(41))).is_err());
+    }
+
+    #[test]
+    fn editing_a_kdenlive_action_keeps_its_fallback() {
+        let mut c = config();
+        c.set_binding(0, "key1", &Binding::new(ActionKind::Kdenlive, "mark_out").labelled("Out")).unwrap();
+        assert_eq!(
+            json::to_compact(c.raw_binding(0, "key1").unwrap()),
+            r#"{ "action": "mark_out", "label": "Out", "fallback": "i" }"#
+        );
+        c.set_binding(0, "key1", &Binding::new(ActionKind::Shortcut, "x")).unwrap();
+        assert_eq!(c.raw_binding(0, "key1"), Some(&Json::str("x")), "a different form starts clean");
+    }
+
+    #[test]
+    fn cheatsheet_bindings_only_on_keys_and_knob_presses() {
+        let mut c = config();
+        let sheet = Binding::new(ActionKind::Cheatsheet, "toggle");
+        c.set_binding(1, "key9", &sheet).unwrap();
+        c.set_binding(1, "knob2.press", &sheet).unwrap();
+        assert!(c.set_binding(1, "knob2.cw", &sheet).is_err());
+        assert!(c.set_binding(1, "key9", &Binding::new(ActionKind::Cheatsheet, "blink")).is_err());
+        assert_eq!(c.binding(1, "key9"), sheet);
+        assert_eq!(classify(Some(&json::parse(r#"{"cheatsheet":"hold","x":1}"#).unwrap())).kind, ActionKind::Advanced);
+    }
+
+    #[test]
+    fn sheet_options_round_trip_and_keep_the_eww_block() {
+        let mut c = KeypadConfig::parse(r#"{"cheatsheet": {"eww": {"window": "pad-cheatsheet"}}, "profiles": []}"#).unwrap();
+        assert_eq!(c.sheet_options(), SheetOptions { opacity: 0.85, auto_hide_ms: 0, position: "center".into() });
+        let o = SheetOptions { opacity: 0.6, auto_hide_ms: 5000, position: "top-right".into() };
+        c.set_sheet_options(&o).unwrap();
+        assert_eq!(c.sheet_options(), o);
+        let out = c.render();
+        assert!(out.contains(r#""opacity": 0.6"#) && out.contains(r#""eww": { "window": "pad-cheatsheet" }"#), "{out}");
+        for bad in [
+            SheetOptions { opacity: 0.01, ..o.clone() },
+            SheetOptions { auto_hide_ms: 700_000, ..o.clone() },
+            SheetOptions { position: "middle".into(), ..o.clone() },
+        ] {
+            assert!(c.set_sheet_options(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn example_classes_for_previews() {
+        assert_eq!(example_class(r"^org\.kde\.kdenlive"), "org.kde.kdenlive");
+        assert_eq!(example_class("^(fl64\\.exe|fl\\.exe)$"), "fl64.exe");
+        assert_eq!(example_class("^firefox$"), "firefox");
     }
 
     #[test]

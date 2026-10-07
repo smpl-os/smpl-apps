@@ -112,6 +112,18 @@ struct KeypadVariant {
     cols: int,
 }
 
+/// One cell of the cheatsheet preview: a key, or a knob with its three lines.
+struct KeypadSheetCell {
+    num: string,
+    text: string,
+    knob: bool,
+    col: int,
+    row: int,
+    bound: bool,
+    // Would do something now (e.g. false while Kdenlive's interface is off).
+    active: bool,
+}
+
 /// A binding of the selected keypad profile ("knob1.cw" -> "Media key").
 struct KeypadBindingRow {
     slot: string,
@@ -959,6 +971,110 @@ component KeypadStepper inherits HorizontalLayout {
     }
 }
 
+// The cheatsheet as the overlay will show it. Shape carries state: solid
+// border = does something now, thin dim border + italic = inactive now,
+// no border and a dot = unbound.
+component KeypadSheetPreview inherits Rectangle {
+    in property <[KeypadSheetCell]> cells;
+    in property <int> cols: 5;
+    in property <int> rows: 3;
+    in property <string> title;
+    in property <string> notice;
+    in property <float> sheet-opacity: 0.85;
+
+    property <length> key-w: 92px;
+    property <length> key-h: 48px;
+    property <length> knob-w: 150px;
+    property <length> knob-h: 66px;
+    property <length> gap: 6px;
+    property <length> pitch: max(root.key-h, root.knob-h) + root.gap;
+    property <length> header: root.notice != "" ? 44px : 26px;
+
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.bg_lighter;
+    // Opacity applies to the background only, as on screen.
+    background: Theme.bg.transparentize(1 - root.sheet-opacity);
+    min-width: root.cols * (root.key-w + root.gap) + root.knob-w + 20px;
+    height: root.header + root.rows * root.pitch + 8px;
+
+    Text {
+        x: 10px;
+        y: 6px;
+        text: root.title;
+        color: Theme.fg;
+        font-size: Typography.secondary;
+        font-weight: 600;
+    }
+    if root.notice != "": Text {
+        x: 10px;
+        y: 24px;
+        width: parent.width - 20px;
+        text: "! " + root.notice;
+        color: Theme.warning;
+        font-size: Typography.caption;
+        overflow: elide;
+    }
+    for c in root.cells: Rectangle {
+        x: 10px + c.col * (root.key-w + root.gap);
+        y: root.header + c.row * root.pitch;
+        width: c.knob ? root.knob-w : root.key-w;
+        height: c.knob ? root.knob-h : root.key-h;
+        border-radius: c.knob ? 12px : 5px;
+        border-width: c.bound ? 1px : 0px;
+        border-color: c.active ? Theme.accent : Theme.fg_dim;
+
+        Text {
+            x: 5px;
+            y: 2px;
+            text: c.num;
+            color: Theme.fg_dim;
+            font-size: Typography.caption;
+        }
+        Text {
+            x: 5px;
+            y: 15px;
+            width: parent.width - 10px;
+            height: parent.height - 16px;
+            text: c.knob ? c.text : (c.bound ? c.text : "·");
+            color: c.bound && c.active ? Theme.fg : Theme.fg_dim;
+            font-italic: c.bound && !c.active;
+            font-size: Typography.caption;
+            horizontal-alignment: c.knob ? left : center;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+    }
+}
+
+// Where the overlay appears: a 3x3 grid standing for the screen.
+component KeypadPositionPicker inherits Rectangle {
+    in property <int> current: 4;
+    callback selected(int);
+
+    width: 3 * 34px + 8px;
+    height: 3 * 22px + 8px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.bg_lighter;
+    background: Theme.bg;
+
+    for i in 9: Rectangle {
+        x: 4px + Math.mod(i, 3) * 34px;
+        y: 4px + Math.floor(i / 3) * 22px;
+        width: 32px;
+        height: 20px;
+        border-radius: 3px;
+        border-width: 1px;
+        border-color: i == root.current ? Theme.accent : (cell-touch.has-hover ? Theme.fg_dim : transparent);
+        background: i == root.current ? Theme.accent : Theme.panel;
+        cell-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.selected(i); }
+        }
+    }
+}
+
 component KeypadInput inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder;
@@ -1383,6 +1499,21 @@ export component MainWindow inherits Window {
     in property <[string]> kp-flash-log;
     in property <bool> kp-flash-running: false;
     in property <bool> kp-dry-run: true;
+    // Cheatsheet: per-binding label, options and preview.
+    in-out property <string> kp-label-text;
+    in property <bool> kp-label-enabled: false;
+    in property <bool> kp-sheet-supported: false;
+    in property <float> kp-sheet-opacity: 0.85;
+    in property <[string]> kp-sheet-hide-names;
+    in property <int> kp-sheet-hide-index: 0;
+    in property <int> kp-sheet-position: 4;
+    in property <[string]> kp-sheet-contexts;
+    in property <int> kp-sheet-context: 0;
+    in property <string> kp-sheet-title;
+    in property <string> kp-sheet-notice;
+    in property <[KeypadSheetCell]> kp-sheet-cells;
+    in property <int> kp-sheet-cols: 5;
+    in property <int> kp-sheet-rows: 3;
     in property <int> kp-verify-seen: 0;
     in property <int> kp-verify-total: 0;
     callback kp-refresh();
@@ -1417,6 +1548,11 @@ export component MainWindow inherits Window {
     callback kp-wizard-back();
     callback kp-close-wizard();
     callback kp-flash();
+    callback kp-set-sheet-opacity(float);
+    callback kp-set-sheet-hide(int);
+    callback kp-set-sheet-position(int);
+    callback kp-set-sheet-context(int);
+    callback kp-show-sheet();
 
     // Search
     callback filter-search(string);
@@ -8173,6 +8309,22 @@ export component MainWindow inherits Window {
                                 font-size: Typography.caption;
                                 wrap: word-wrap;
                             }
+                            if root.kp-label-enabled && root.kp-sheet-supported: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Sheet label";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                KeypadInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.kp-label-text;
+                                    placeholder: "Optional, e.g. Save; empty: made from the action";
+                                    accepted => { root.kp-apply-binding(); }
+                                }
+                            }
                             HorizontalLayout {
                                 alignment: end;
                                 if root.kp-editor-mode != 3: KeypadButton {
@@ -8180,6 +8332,130 @@ export component MainWindow inherits Window {
                                     primary: true;
                                     clicked => { root.kp-apply-binding(); }
                                 }
+                            }
+                        }
+                    }
+
+                    // ── Cheatsheet ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Cheatsheet";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                if root.kp-sheet-supported: KeypadButton {
+                                    text: "Show on screen";
+                                    clicked => { root.kp-show-sheet(); }
+                                }
+                            }
+                            if !root.kp-sheet-supported: Text {
+                                text: "The cheatsheet overlay shows what every key and knob does in the current app. It needs a newer keypad app (control-surface with cheatsheet support).";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                            if root.kp-sheet-supported: Text {
+                                text: "An overlay of what every key and knob does in the app you're using. Map a key or knob press to \"Show the cheatsheet\" to bring it up.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                            if root.kp-sheet-supported: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Opacity";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ThemeSlider {
+                                    horizontal-stretch: 1;
+                                    minimum: 0.05;
+                                    maximum: 1.0;
+                                    step: 0.05;
+                                    value: root.kp-sheet-opacity;
+                                    changed(v) => { root.kp-set-sheet-opacity(v); }
+                                }
+                                Text {
+                                    text: round(root.kp-sheet-opacity * 100) + "%";
+                                    width: 44px;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            if root.kp-sheet-supported: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Hide";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    horizontal-stretch: 1;
+                                    model: root.kp-sheet-hide-names;
+                                    current-index: root.kp-sheet-hide-index;
+                                    selected(i) => { root.kp-set-sheet-hide(i); }
+                                }
+                            }
+                            if root.kp-sheet-supported: HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                Text {
+                                    text: "Position";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                KeypadPositionPicker {
+                                    current: root.kp-sheet-position;
+                                    selected(i) => { root.kp-set-sheet-position(i); }
+                                }
+                            }
+                            if root.kp-sheet-supported && root.kp-sheet-contexts.length > 0: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Preview in";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    horizontal-stretch: 1;
+                                    model: root.kp-sheet-contexts;
+                                    current-index: root.kp-sheet-context;
+                                    selected(i) => { root.kp-set-sheet-context(i); }
+                                }
+                            }
+                            if root.kp-sheet-supported: Text {
+                                text: "Preview for the selected profile, with your unsaved changes:";
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                            }
+                            if root.kp-sheet-supported: KeypadSheetPreview {
+                                cells: root.kp-sheet-cells;
+                                cols: root.kp-sheet-cols;
+                                rows: root.kp-sheet-rows;
+                                title: root.kp-sheet-title;
+                                notice: root.kp-sheet-notice;
+                                sheet-opacity: root.kp-sheet-opacity;
                             }
                         }
                     }
