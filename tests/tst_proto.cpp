@@ -118,6 +118,37 @@ private Q_SLOTS:
         QCOMPARE(s[6].name, std::string("shift+F14"));
         QCOMPARE(s[23].name, std::string("alt+F19"));
     }
+    // blob03: padclaude's measured frames, byte for byte.
+    void blobFrames()
+    {
+        const Frame open = blob::openFrame();
+        QCOMPARE(QString::fromStdString(hex(open, 4)), QStringLiteral("03 a1 01 00"));
+        QCOMPARE(QString::fromStdString(hex(blob::closeFrame(), 4)), QStringLiteral("03 aa aa 00"));
+        const Frame f14 = blob::record(1, Chord{0, 0x69});
+        QCOMPARE(QString::fromStdString(hex(f14, 10)), QStringLiteral("03 01 00 00 69 00 00 00 00 00"));
+        QCOMPARE(QString::fromStdString(hex(blob::record(24, Chord{mod::LAlt, 0x6e}), 6)), QStringLiteral("03 18 04 00 6e 00"));
+        for (const Frame &f : {open, blob::closeFrame(), f14, blob::record(3, Chord{})}) {
+            QVERIFY(blob::isAllowedFrame(f));
+        }
+        QVERIFY_THROWS_EXCEPTION(std::invalid_argument, blob::record(0, Chord{0, 4}));
+        QVERIFY_THROWS_EXCEPTION(std::invalid_argument, blob::record(25, Chord{0, 4}));
+        QVERIFY_THROWS_EXCEPTION(std::invalid_argument, blob::record(1, Chord{0, 0xe0}));
+        auto with = [](std::initializer_list<std::pair<int, int>> bytes) {
+            Frame f{};
+            for (auto [i, v] : bytes) {
+                f[std::size_t(i)] = std::uint8_t(v);
+            }
+            return f;
+        };
+        // Bootloader/variant opcodes, a missing marker, layer/LED commands and stray bytes are refused.
+        for (const Frame &bad : {with({{0, 3}, {1, 0xfe}, {2, 1}}), with({{0, 3}, {1, 0xef}}), with({{0, 3}, {1, 0x5a}}), with({{0, 3}, {1, 0xfc}}),
+                                 with({{0, 3}, {1, 0xb0}, {2, 0x18}}), with({{0, 3}, {1, 0xaa}, {2, 0xa1}}), with({{0, 3}, {1, 0xa1}, {2, 2}}),
+                                 with({{0, 1}, {1, 1}, {4, 0x69}}), with({{0, 3}, {1, 1}, {3, 1}, {4, 0x69}}), with({{0, 3}, {1, 1}, {4, 0x69}, {9, 1}}),
+                                 with({{0, 3}, {1, 0}, {4, 0x69}}), with({{0, 3}, {1, 0xaa}, {2, 0xaa}, {5, 1}})}) {
+            QVERIFY2(!blob::isAllowedFrame(bad), hex(bad, 10).c_str());
+        }
+    }
+
     void slotRanges()
     {
         QCOMPARE(parseSlotRange("1-24"), (std::optional<std::pair<int, int>>{{1, 24}}));

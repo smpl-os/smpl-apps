@@ -1,0 +1,51 @@
+{
+    "command": "flash",
+    "device": "/dev/hidraw5",
+    "frames": [
+        {
+            "error": "",
+            "frame": "00 00 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 100,
+            "what": "ping",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "01 01 01 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 212,
+            "what": "slot 1 -> F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "01 01 01 01 00 69 00 00",
+            "replies": [
+            ],
+            "t_ms": 304,
+            "what": "slot 1 -> F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 392,
+            "what": "slot 1 -> F14 commit",
+            "written": 65
+        }
+    ],
+    "preexistingReplies": [
+    ],
+    "replies": 0,
+    "reportId": 0,
+    "serial": "key153",
+    "tool": "ch552-padprog",
+    "usb": "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-5",
+    "when": "2026-10-07T09:36:59.555",
+    "writeFailures": 0
+}

@@ -32,6 +32,10 @@ struct Step {
     int settleMs;
 };
 
+// Raw blob03 frames carry their own 0x03 marker as byte 0; vendor frames get
+// the report number prepended.
+bool g_blob = false;
+
 QString hexBytes(const unsigned char *p, int n)
 {
     QString s;
@@ -41,8 +45,29 @@ QString hexBytes(const unsigned char *p, int n)
     return s;
 }
 
+std::vector<Step> buildBlobPlan(bool blank, std::pair<int, int> slotRange, int commitSettleMs)
+{
+    // One session: open, one record per slot, close (padclaude's measured order;
+    // 3 ms between frames as padflash does).
+    std::vector<Step> plan;
+    plan.push_back({QStringLiteral("blob open"), blob::openFrame(), 3});
+    for (const auto &sc : defaultScheme()) {
+        if (sc.slot < slotRange.first || sc.slot > slotRange.second) {
+            continue;
+        }
+        const QString what = blank ? QStringLiteral("key id %1 blank").arg(sc.slot)
+                                   : QStringLiteral("key id %1 -> %2").arg(sc.slot).arg(QString::fromStdString(sc.name));
+        plan.push_back({what, blob::record(sc.slot, blank ? Chord{} : sc.chord), 3});
+    }
+    plan.push_back({QStringLiteral("blob close"), blob::closeFrame(), commitSettleMs});
+    return plan;
+}
+
 std::vector<Step> buildPlan(Generation g, bool blank, std::pair<int, int> slotRange = {1, 24}, int commitSettleMs = 120)
 {
+    if (g_blob) {
+        return buildBlobPlan(blank, slotRange, commitSettleMs);
+    }
     std::vector<Step> plan;
     plan.push_back({QStringLiteral("ping"), pingFrame(), 50});
     for (const auto &sc : defaultScheme()) {
@@ -62,6 +87,13 @@ std::vector<Step> buildPlan(Generation g, bool blank, std::pair<int, int> slotRa
 
 void printPlan(const std::vector<Step> &plan, Generation g)
 {
+    if (g_blob) {
+        std::printf("dialect blob03: %zu raw 64-byte writes, byte 0 = 0x03 (first 9 bytes shown)\n", plan.size());
+        for (const auto &s : plan) {
+            std::printf("  %-28s %s\n", qPrintable(s.what), hex(s.frame, 9).c_str());
+        }
+        return;
+    }
     std::printf("report id %d, %zu frames (first 8 of 64 data bytes shown)\n", reportIdFor(g), plan.size());
     for (const auto &s : plan) {
         std::printf("  %-28s %s\n", qPrintable(s.what), hex(s.frame).c_str());
@@ -106,8 +138,16 @@ int main(int argc, char **argv)
                                 QStringLiteral("1-24"));
     QCommandLineOption settleOpt(QStringLiteral("settle-ms"), QStringLiteral("pause after each commit frame, 0-10000 ms (default 120)"), QStringLiteral("ms"),
                                  QStringLiteral("120"));
-    p.addOptions({serialOpt, devOpt, logOpt, yesOpt, genOpt, slotsOpt, settleOpt});
+    QCommandLineOption dialectOpt(QStringLiteral("dialect"),
+                                  QStringLiteral("vendor (the vendor app's report-id-0 frames, default) or blob03 (0x03-marked raw records, see docs/hardware-ch552.md)"),
+                                  QStringLiteral("name"), QStringLiteral("vendor"));
+    p.addOptions({serialOpt, devOpt, logOpt, yesOpt, genOpt, slotsOpt, settleOpt, dialectOpt});
     p.process(app);
+    if (p.value(dialectOpt) != QLatin1String("vendor") && p.value(dialectOpt) != QLatin1String("blob03")) {
+        std::fprintf(stderr, "--dialect: expected vendor or blob03\n");
+        return 2;
+    }
+    g_blob = p.value(dialectOpt) == QLatin1String("blob03");
     const QStringList args = p.positionalArguments();
     const QString cmd = args.value(0, QStringLiteral("plan"));
     const auto slotRange = parseSlotRange(p.value(slotsOpt).toStdString());
@@ -165,10 +205,14 @@ int main(int argc, char **argv)
     }
     const auto plan = buildPlan(*gen, cmd == QLatin1String("blank"), *slotRange, settleMs);
     for (const auto &s : plan) {
-        if (!isAllowedFrame(s.frame)) {
+        if (g_blob ? !blob::isAllowedFrame(s.frame) : !isAllowedFrame(s.frame)) {
             std::fprintf(stderr, "internal error: frame not allowed: %s\n", hex(s.frame).c_str());
             return 5;
         }
+    }
+    if (g_blob && *gen != Generation::Rid0) {
+        std::fprintf(stderr, "refusing: blob03 was measured on the no-report-id descriptor only\n");
+        return 4;
     }
     std::printf("target %s (usb %s serial %s, interface 1, %s)\n", target->devnode.c_str(), target->usbPath.c_str(), target->serial.c_str(),
                 *gen == Generation::Rid0 ? "no report id" : "report id 3");
@@ -213,12 +257,19 @@ int main(int argc, char **argv)
     drain(100, preReplies);  // anything already pending is not an ack of ours
     for (const auto &s : plan) {
         unsigned char buf[1 + kFrameSize];
-        buf[0] = reportIdFor(*gen);
-        std::memcpy(buf + 1, s.frame.data(), kFrameSize);
+        std::size_t len = 0;
+        if (g_blob) {
+            std::memcpy(buf, s.frame.data(), kFrameSize);  // byte 0 = 0x03: the kernel sends all 64 bytes
+            len = kFrameSize;
+        } else {
+            buf[0] = reportIdFor(*gen);
+            std::memcpy(buf + 1, s.frame.data(), kFrameSize);
+            len = sizeof buf;
+        }
         const qint64 t0 = clock.elapsed();
-        const ssize_t w = ::write(fd, buf, sizeof buf);
+        const ssize_t w = ::write(fd, buf, len);
         const int err = w < 0 ? errno : 0;
-        if (w != ssize_t(sizeof buf)) {
+        if (w != ssize_t(len)) {
             ++failures;
         }
         QJsonArray acks;
@@ -248,7 +299,8 @@ int main(int argc, char **argv)
                          {QStringLiteral("device"), QString::fromStdString(target->devnode)},
                          {QStringLiteral("usb"), QString::fromStdString(target->usbPath)},
                          {QStringLiteral("serial"), QString::fromStdString(target->serial)},
-                         {QStringLiteral("reportId"), int(reportIdFor(*gen))},
+                         {QStringLiteral("reportId"), g_blob ? -1 : int(reportIdFor(*gen))},
+                         {QStringLiteral("dialect"), g_blob ? QStringLiteral("blob03") : QStringLiteral("vendor")},
                          {QStringLiteral("preexistingReplies"), preReplies},
                          {QStringLiteral("frames"), records},
                          {QStringLiteral("writeFailures"), failures},

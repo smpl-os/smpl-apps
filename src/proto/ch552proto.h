@@ -71,4 +71,24 @@ bool isAllowedFrame(const Frame &f);
 
 std::string hex(const Frame &f, std::size_t bytes = 8);
 
+// "blob03" dialect, measured on a low-speed 1189:8890 with this descriptor
+// family (barkleesanders/padclaude, padflash.swift): the firmware takes frames
+// whose first wire byte is 0x03 (even though the descriptor declares no report
+// ids) and stores the bytes after [0x03][keyId] verbatim as that key's 8-byte
+// boot-keyboard report. A session is bracketed once:
+//   open   [03 A1 01]
+//   record [03 keyId mods 00 usage 00 00 00 00]   (usage 0 = blank)
+//   close  [03 AA AA]
+// Frames are written to hidraw as exactly 64 raw bytes: byte 0 is 0x03, not
+// a report number, so the kernel sends all 64 on the interrupt-OUT endpoint.
+namespace blob {
+constexpr std::uint8_t kMarker = 0x03;
+Frame openFrame();
+Frame closeFrame();
+// Throws std::invalid_argument on a key id outside 1..kMaxSlot or a usage
+// outside the keyboard page range.
+Frame record(std::uint8_t keyId, const Chord &chord);
+bool isAllowedFrame(const Frame &f);
+} // namespace blob
+
 } // namespace ch552

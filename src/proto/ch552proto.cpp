@@ -133,4 +133,65 @@ std::string hex(const Frame &f, std::size_t bytes)
     return s;
 }
 
+namespace blob {
+
+Frame openFrame()
+{
+    Frame f{};
+    f[0] = kMarker;
+    f[1] = 0xA1;
+    f[2] = 0x01;
+    return f;
+}
+
+Frame closeFrame()
+{
+    Frame f{};
+    f[0] = kMarker;
+    f[1] = 0xAA;
+    f[2] = 0xAA;
+    return f;
+}
+
+Frame record(std::uint8_t keyId, const Chord &chord)
+{
+    if (keyId < 1 || keyId > kMaxSlot) {
+        throw std::invalid_argument("key id out of range");
+    }
+    if (chord.usage > 0x91) {
+        throw std::invalid_argument("usage outside the keyboard page range");
+    }
+    Frame f{};
+    f[0] = kMarker;
+    f[1] = keyId;
+    f[2] = chord.mods;
+    f[3] = 0;  // reserved byte of the boot keyboard report
+    f[4] = chord.usage;
+    return f;
+}
+
+bool isAllowedFrame(const Frame &f)
+{
+    if (f[0] != kMarker || isForbiddenOpcode(f[1])) {
+        return false;
+    }
+    auto zeroFrom = [&](std::size_t i) {
+        for (; i < f.size(); ++i) {
+            if (f[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (f[1] == 0xA1) {
+        return f[2] == 0x01 && zeroFrom(3);
+    }
+    if (f[1] == 0xAA) {
+        return f[2] == 0xAA && zeroFrom(3);
+    }
+    return f[1] >= 1 && f[1] <= kMaxSlot && f[3] == 0 && f[4] <= 0x91 && zeroFrom(5);
+}
+
+} // namespace blob
+
 } // namespace ch552

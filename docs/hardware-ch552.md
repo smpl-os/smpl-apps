@@ -191,3 +191,45 @@ Recovery steps, in order. Stop at the first one that brings reports back:
 to those slots. `--settle-ms` (0–10000, default 120) sets the pause after each
 commit frame. Every frame still passes the same allow-list: ping, binding,
 empty-key and commit frames only. No firmware or bootloader mode is ever used.
+
+## Step 2 result and the corrected write method (proposed, awaiting approval)
+
+On 2026-10-07 at 09:36:57 I ran `ch552-padprog flash --slots 1-1 --settle-ms 1500 --yes`. It sent 4 vendor-format frames (65-byte hidraw writes), with no write errors and no device replies. The log is `docs/records/flash-20261007-slot1-step2.json`. After a replug, the coordinator's capture of key 1 showed 30 reports, all zero. Neither flash changed anything.
+
+### How the tools write to this pad
+
+Facts about this pad, read from sysfs and the descriptors only:
+* It is low-speed (1.5 Mb/s) with bcdDevice 1.00.
+* Interface 1 has an interrupt OUT endpoint 0x02 and an interrupt IN endpoint 0x82, both with wMaxPacketSize 8.
+* Its report descriptor declares usage page 1, usage 0, an 8-byte input, a 64-byte output, and **no report IDs**.
+* In Linux 6.18, hidraw `write()` goes to the interrupt OUT endpoint. The kernel drops byte 0 only when it is 0x00.
+
+| Tool | Transport | Report ID / first wire byte | Frame | Result on this family |
+|---|---|---|---|---|
+| Vendor app (`HidLib.cs`, WriteMode 1) | HidLibrary WriteFile on `mi_01`, interrupt OUT | Probes 3 → 0 → 2. Windows rejects a non-zero ID on a collection without report IDs, so it uses 0 and the first byte is the slot. | 64 data bytes, only 8 meaningful: `[slot][type][n][i][mods][code]`, then `AA AA` | #168: "says uploaded, nothing changes". |
+| This tool, flashes 1 and 2 | hidraw write, interrupt OUT | 0 (stripped), so the first byte is the slot | Same as the vendor app | Nothing changed. |
+| rOzzy1987/MacroPad (lists 8890 as `Legacy`, `mi_01`) | HidLibrary, as the vendor app | Probes 0 → 2 → 3 | As the vendor app | Not reported for this revision. |
+| cho45 WebHID (8890, 3 keys + 1 knob) | `sendReport`, interrupt OUT | Probes 3, 0, 2 | **8-byte** reports, vendor layout | Its own device. |
+| kriomant ch57x (`k8890`) | libusb `write_interrupt` on EP 0x02 | **0x03** in the data | `[03][keyId][(layer<<4)\|1][n][i][mods][code]` | #168, same descriptor family: **changed the pad** (modifier garbage). |
+| barkleesanders/padclaude (`padflash.swift`) | IOHIDDeviceSetReport, report ID 3 | **0x03** | `[03 A1 01]`, then `[03][keyId][mods][00][usage][0 0 0 0]` per key, then `[03 AA AA]`, 3 ms apart | **Working.** Raw capture shows F13–F18 on keys 1–6 of a low-speed 8890 with the same 64-byte out / 8-byte EP config interface. |
+
+Three conclusions follow:
+* The only writes that ever changed an 8890 of this descriptor family put **0x03 first on the wire**, while the descriptor declares no IDs. Writes with the slot as the first byte (vendor app, MacroPad's ID-0 path, this tool) did nothing.
+* padclaude measured how this revision stores data: the 8 bytes after `[03][keyId]` are kept **verbatim** as that key's boot-keyboard report. That also explains the blank state: empty records replay as all-zero reports.
+* No tool reads a reply, waits for an ack, or sends a version query, reboot or save beyond `AA AA`. `AA A1` saves LED settings and `A1 nn` selects a layer.
+
+### Proposed method: `--dialect blob03`
+
+* Write raw 64-byte frames to the interface-1 hidraw node. There is no leading report-number byte: byte 0 is 0x03, so the kernel sends all 64 bytes on EP 0x02.
+* Use one session: `03 A1 01`, then `03 01 00 00 69 00 00 00 00` (key ID 1 → F14, no modifiers), then `03 AA AA`, 3 ms apart, with 1500 ms after the close.
+* The frames are padclaude's measured wire bytes, byte for byte.
+* A separate allow-list (`blob::isAllowedFrame`) admits only these three frame shapes, with key IDs 1–24, a usage ≤ 0x91 and zero tails. It refuses `FE`, `EF`, `5A`, `FC`, `B0`, `AA A1`, and frames without the marker.
+
+```sh
+ch552-padprog flash --dialect blob03 --slots 1-1 --settle-ms 1500                    # dry run (3 frames)
+ch552-padprog flash --dialect blob03 --slots 1-1 --settle-ms 1500 --yes --log FILE   # needs approval
+```
+
+Test it first **without** a replug, to see whether it takes effect live, then again after a replug, to see whether it persisted. Grab event18–21 during the test (for example `control-surfaced verify --no-write`) so that a mis-stored modifier cannot reach the desktop.
+
+If key 1 still sends zeros, the next candidate is the same frames over the control endpoint: SET_REPORT through usbfs, after detaching usbhid from interface 1 only. padclaude claims this is required, but its macOS path most likely used the interrupt pipe as well. That step needs its own approval.
