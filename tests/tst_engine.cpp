@@ -25,12 +25,21 @@ PadEvent press(int knob)
 const WindowInfo kKdenlive{QStringLiteral("org.kde.kdenlive"), QStringLiteral("Untitled - Kdenlive"), 4242, QStringLiteral("0x1")};
 const WindowInfo kFirefox{QStringLiteral("firefox"), QStringLiteral("x"), 77, QStringLiteral("0x2")};
 
-QVariantMap wheelContext(quint64 epoch, const QString &target = QStringLiteral("cw-1"))
+QVariantMap wheelDescriptor(const QString &prefix, const QString &wheel)
+{
+    return {{QStringLiteral("target"), prefix + QLatin1Char('-') + wheel},
+            {QStringLiteral("wheel"), wheel},
+            {QStringLiteral("axes"), QStringList{QStringLiteral("value"), QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")}}};
+}
+// MR2 shape: the focused wheel plus the three per-wheel handles of its widget.
+QVariantMap wheelContext(quint64 epoch, const QString &prefix = QStringLiteral("cw"), const QString &focused = QStringLiteral("lift"))
 {
     return {{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(epoch)},
             {QStringLiteral("focus"), QStringLiteral("effectStack")},
-            {QStringLiteral("effect"), QVariantMap{{QStringLiteral("target"), QStringLiteral("fx-1")}, {QStringLiteral("id"), QStringLiteral("lift_gamma_gain")}}},
-            {QStringLiteral("colorWheel"), QVariantMap{{QStringLiteral("target"), target}}}};
+            {QStringLiteral("effect"), QVariantMap{{QStringLiteral("id"), QStringLiteral("lift_gamma_gain")}, {QStringLiteral("ownerId"), 12}, {QStringLiteral("sequence"), QStringLiteral("s")}}},
+            {QStringLiteral("colorWheel"), wheelDescriptor(prefix, focused)},
+            {QStringLiteral("colorWheels"), QVariantList{wheelDescriptor(prefix, QStringLiteral("lift")), wheelDescriptor(prefix, QStringLiteral("gamma")),
+                                                          wheelDescriptor(prefix, QStringLiteral("gain"))}}};
 }
 const QStringList kStage1{QStringLiteral("playhead.jog"), QStringLiteral("playhead.shuttle"), QStringLiteral("timeline.zoom")};
 } // namespace
@@ -99,13 +108,17 @@ private Q_SLOTS:
         FakeKdenliveClient kd;
         kd.setAutoAck(false);
         Engine e(&keys, &kd);
-        Config c = m_cfg;
-        c.settings.ackTimeoutMs = 5000;  // no timeout releases during the test
-        e.setConfig(c);
-        e.setActiveWindow(kKdenlive);
-        kd.setContext(wheelContext(5));
-        e.handle(turn(1, 1));  // lift wheel gesture
-        e.handle(turn(2, 1));  // gamma wheel gesture: same control name, other options
+        QString err;
+        auto c = parseConfig("{\"profiles\":[{\"name\":\"kd\",\"match\":{\"class\":\"^kd$\"},\"kdenlive\":true,\"bindings\":{"
+                             "\"knob1\":{\"turn\":{\"control\":\"playhead.jog\",\"options\":{\"monitor\":\"clip\"}}},"
+                             "\"knob2\":{\"turn\":{\"control\":\"playhead.jog\",\"options\":{\"monitor\":\"project\"}}}}}]}",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        c->settings.ackTimeoutMs = 5000;  // no timeout releases during the test
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        e.handle(turn(1, 1));  // clip monitor jog
+        e.handle(turn(2, 1));  // project monitor jog: same control name, other options
         QCOMPARE(kd.controlKeys.size(), 2);
         const QString liftKey = kd.controlKeys.at(0);
         e.handle(turn(1, 1));
@@ -235,7 +248,7 @@ private Q_SLOTS:
         e.handle(turn(1, 1));
         QTRY_COMPARE(kd.controlOptions.size(), 2);
         const QVariantMap first = kd.controlOptions.at(0);
-        QCOMPARE(first.value(QStringLiteral("target")).toString(), QStringLiteral("cw-1"));
+        QCOMPARE(first.value(QStringLiteral("target")).toString(), QStringLiteral("cw-lift"));
         QCOMPARE(first.value(QStringLiteral("phase")).toString(), QStringLiteral("update"));
         QCOMPARE(first.value(QStringLiteral("wheel")).toString(), QStringLiteral("lift"));
         QCOMPARE(first.value(QStringLiteral("axis")).toString(), QStringLiteral("value"));
@@ -290,16 +303,16 @@ private Q_SLOTS:
         e.handle(turn(1, 1));
         e.handle(turn(1, 1));
         QCOMPARE(kd.controlDeltas.size(), 1);
-        kd.setContext(wheelContext(11, QStringLiteral("cw-2")));  // focus moved to another effect
+        kd.setContext(wheelContext(11, QStringLiteral("cw2")));  // focus moved to another effect
         QCOMPARE(e.activeGestures(), 0);
         kd.ackAll();
         QTest::qWait(50);
         QCOMPARE(kd.controlDeltas.size(), 1);  // the two queued detents never reach cw-2
         e.handle(turn(1, 1));
         QTRY_COMPARE(kd.controlDeltas.size(), 2);
-        QCOMPARE(kd.controlOptions.last().value(QStringLiteral("target")).toString(), QStringLiteral("cw-2"));
-        // A playhead tick (serial only) keeps the gesture.
-        QVariantMap ctx = wheelContext(11, QStringLiteral("cw-2"));
+        QCOMPARE(kd.controlOptions.last().value(QStringLiteral("target")).toString(), QStringLiteral("cw2-lift"));
+        // A context update without a new epoch (value/serial only) keeps the gesture.
+        QVariantMap ctx = wheelContext(11, QStringLiteral("cw2"));
         ctx.insert(QStringLiteral("position"), 99);
         kd.setContext(ctx);
         QCOMPARE(e.activeGestures(), 1);
@@ -349,25 +362,114 @@ private Q_SLOTS:
         e.setConfig(*c);
         e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 9, QStringLiteral("0x9")});
         QVariantMap ctx = wheelContext(4);
-        ctx.insert(QStringLiteral("hoveredColorWheel"), QVariantMap{{QStringLiteral("target"), QStringLiteral("cw-hover")}});
+        auto hover = [](const QString &target, const QString &wheel) {
+            return QVariantMap{{QStringLiteral("target"), target}, {QStringLiteral("wheel"), wheel}};
+        };
+        ctx.insert(QStringLiteral("hoveredColorWheel"), hover(QStringLiteral("cw-hover"), QStringLiteral("gain")));
         kd.setContext(ctx);
         e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 1);
+        QCOMPARE(kd.controlOptions.at(0).value(QStringLiteral("target")).toString(), QStringLiteral("cw-gain"));  // colorWheels, not hover
         e.handle(turn(2, 1));
-        QTRY_COMPARE(kd.controlOptions.size(), 2);
-        QCOMPARE(kd.controlOptions.at(0).value(QStringLiteral("target")).toString(), QStringLiteral("cw-1"));
-        QCOMPARE(kd.controlOptions.at(1).value(QStringLiteral("target")).toString(), QStringLiteral("cw-hover"));
-        // Hover moving (no epoch change) never retargets the open gesture.
-        ctx.insert(QStringLiteral("hoveredColorWheel"), QVariantMap{{QStringLiteral("target"), QStringLiteral("cw-elsewhere")}});
-        kd.setContext(ctx);
-        QCOMPARE(e.activeGestures(), 2);
-        e.handle(turn(2, 1));
+        // One active gesture per host: knob1's gesture ends before knob2's starts.
         QTRY_COMPARE(kd.controlOptions.size(), 3);
+        QCOMPARE(kd.controlOptions.at(1).value(QStringLiteral("phase")).toString(), QStringLiteral("end"));
+        QCOMPARE(kd.controlOptions.at(1).value(QStringLiteral("target")).toString(), QStringLiteral("cw-gain"));
         QCOMPARE(kd.controlOptions.at(2).value(QStringLiteral("target")).toString(), QStringLiteral("cw-hover"));
-        QCOMPARE(kd.controlOptions.at(2).value(QStringLiteral("gesture")).toString(), kd.controlOptions.at(1).value(QStringLiteral("gesture")).toString());
+        QCOMPARE(e.activeGestures(), 1);
+        // Hover moving (no epoch change) never retargets the open gesture.
+        ctx.insert(QStringLiteral("hoveredColorWheel"), hover(QStringLiteral("cw-elsewhere"), QStringLiteral("gain")));
+        kd.setContext(ctx);
+        e.handle(turn(2, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 4);
+        QCOMPARE(kd.controlOptions.at(3).value(QStringLiteral("target")).toString(), QStringLiteral("cw-hover"));
+        QCOMPARE(kd.controlOptions.at(3).value(QStringLiteral("gesture")).toString(), kd.controlOptions.at(2).value(QStringLiteral("gesture")).toString());
         // Once that gesture has ended, a new one reads the hover again.
         e.endAllGestures(false);
         e.handle(turn(2, 1));
         QTRY_VERIFY(kd.controlOptions.last().value(QStringLiteral("target")).toString() == QStringLiteral("cw-elsewhere"));
+        // A hovered wheel of another kind is not this binding's wheel: nothing is sent.
+        e.endAllGestures(false);
+        ctx.insert(QStringLiteral("hoveredColorWheel"), hover(QStringLiteral("cw-other"), QStringLiteral("lift")));
+        kd.setContext(ctx);
+        const int sent = int(kd.controlOptions.size());
+        e.handle(turn(2, 1));
+        QTest::qWait(30);
+        QCOMPARE(int(kd.controlOptions.size()), sent);
+    }
+
+    // MR2: three knobs edit the three wheels through the colorWheels handles,
+    // without moving keyboard focus; the host's single active gesture is
+    // respected by ending ours before another starts.
+    void threeKnobsUseColorWheelsHandles()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(m_cfg);
+        e.setActiveWindow(kKdenlive);
+        kd.setContext(wheelContext(2, QStringLiteral("w"), QStringLiteral("gamma")));  // gamma has keyboard focus
+        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob3"), 1))->layer, QStringLiteral("color-wheels"));
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 1);
+        e.handle(turn(2, -1));
+        QTRY_COMPARE(kd.controlOptions.size(), 3);
+        e.handle(turn(3, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 5);
+        QStringList seen;
+        for (const auto &o : std::as_const(kd.controlOptions)) {
+            seen << o.value(QStringLiteral("target")).toString() + QLatin1Char('/') + o.value(QStringLiteral("phase")).toString() + QLatin1Char('/')
+                    + o.value(QStringLiteral("wheel")).toString();
+        }
+        QCOMPARE(seen, (QStringList{QStringLiteral("w-lift/update/lift"), QStringLiteral("w-lift/end/lift"), QStringLiteral("w-gamma/update/gamma"),
+                                    QStringLiteral("w-gamma/end/gamma"), QStringLiteral("w-gain/update/gain")}));
+        QCOMPARE(e.activeGestures(), 1);
+        // Per-wheel resets use the same handles.
+        e.handle(key(8));
+        QTRY_VERIFY(kd.calls.last().startsWith(QStringLiteral("invoke colorwheel.reset")));
+        QVERIFY(kd.calls.last().contains(QStringLiteral("\"target\":\"w-gain\"")));
+        QCOMPARE(e.activeGestures(), 0);  // the reset ended the gain gesture first
+    }
+
+    // Without colorWheels (older host or no widget), only the focused wheel is
+    // addressable, and only by a binding for that wheel; a descriptor without a
+    // wheel kind is accepted as is.
+    void wheelTargetFallbacks()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        QString err;
+        auto c = parseConfig("{\"profiles\":[{\"name\":\"kd\",\"match\":{\"class\":\"^kd$\"},\"kdenlive\":true,\"bindings\":{"
+                             "\"knob1\":{\"turn\":{\"control\":\"colorwheel.nudge\",\"options\":{\"wheel\":\"lift\"}}},"
+                             "\"knob2\":{\"turn\":{\"control\":\"colorwheel.nudge\",\"options\":{\"wheel\":\"gamma\"}}},"
+                             "\"knob3\":{\"turn\":{\"control\":\"playhead.jog\"}}}}]}",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        QVariantMap ctx = wheelContext(3, QStringLiteral("f"), QStringLiteral("gamma"));
+        ctx.remove(QStringLiteral("colorWheels"));
+        kd.setContext(ctx);
+        e.handle(turn(1, 1));  // lift: not focused, no handle
+        QTest::qWait(30);
+        QVERIFY(kd.controlOptions.isEmpty());
+        e.handle(turn(2, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 1);
+        QCOMPARE(kd.controlOptions.at(0).value(QStringLiteral("target")).toString(), QStringLiteral("f-gamma"));
+        // Any other control ends the open editing gesture first (Kdenlive would).
+        e.handle(turn(3, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 3);
+        QCOMPARE(kd.controlOptions.at(1).value(QStringLiteral("phase")).toString(), QStringLiteral("end"));
+        QVERIFY(kd.calls.last().startsWith(QStringLiteral("control playhead.jog")));
+        QCOMPARE(e.activeGestures(), 0);
+        // A wheel descriptor without a kind is taken as is.
+        ctx.insert(QStringLiteral("colorWheel"), QVariantMap{{QStringLiteral("target"), QStringLiteral("legacy")}});
+        ctx.insert(QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(4));
+        kd.setContext(ctx);
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 4);
+        QCOMPARE(kd.controlOptions.at(3).value(QStringLiteral("target")).toString(), QStringLiteral("legacy"));
     }
 
     void tapPacingAndReversal()
@@ -406,7 +508,7 @@ private Q_SLOTS:
         QCOMPARE(kd.controlOptions.last().value(QStringLiteral("axis")).toString(), QStringLiteral("r"));
         e.handle(key(6));
         QTRY_VERIFY(kd.calls.last().startsWith(QStringLiteral("invoke colorwheel.reset")));
-        QVERIFY(kd.calls.last().contains(QStringLiteral("\"target\":\"cw-1\"")));
+        QVERIFY(kd.calls.last().contains(QStringLiteral("\"target\":\"cw-lift\"")));
     }
 
     void trimLayerNeedsQualifiedToolAndTarget()

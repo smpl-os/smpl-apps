@@ -498,6 +498,8 @@ bool valueMatches(const QVariant &want, const QVariant &have)
             && (have.typeId() == QMetaType::Bool ? have.toBool()
                 : have.typeId() == QMetaType::QString ? !have.toString().isEmpty()
                 : have.typeId() == QMetaType::QVariantMap ? !have.toMap().isEmpty()
+                : have.typeId() == QMetaType::QVariantList ? !have.toList().isEmpty()
+                : have.typeId() == QMetaType::QStringList ? !have.toStringList().isEmpty()
                 : true);
         return want.toBool() == truthy;
     }

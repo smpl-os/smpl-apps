@@ -316,6 +316,14 @@ int main(int argc, char **argv)
                 .arg(us.at(us.size() * 9 / 10), 0, 'f', 0)
                 .arg(us.at(qMin(us.size() - 1, us.size() * 99 / 100)), 0, 'f', 0)
                 .arg(us.last(), 0, 'f', 0));
+        QTimer::singleShot(100, &loop, &QEventLoop::quit);  // trailing limited context signal
+        loop.exec();
+        const auto timing = client.contextTiming();
+        say(QStringLiteral("context signals %1 (%2 with emittedAtMs); min spacing: emitted %3 ms, arrival %4 ms (arrival can bunch)")
+                .arg(timing.received)
+                .arg(timing.stamped)
+                .arg(timing.minEmitGapMs)
+                .arg(timing.minArrivalGapMs));
         client.attachToPid(0);
         QTimer::singleShot(100, &loop, &QEventLoop::quit);
         loop.exec();

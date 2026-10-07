@@ -51,6 +51,18 @@ public:
 
     QString session() const { return m_session; }
     QVariantMap capabilities() const { return m_caps; }
+    // ContextChanged pacing. Delivery can bunch when this thread is busy, so the
+    // host's emission spacing is measured from emittedAtMs (host-process
+    // monotonic) and never from arrival times.
+    struct ContextTiming {
+        int received = 0;           // accepted ContextChanged signals (not Subscribe/GetContext snapshots)
+        int stamped = 0;            // ... that carried emittedAtMs
+        qint64 minEmitGapMs = -1;   // smallest emittedAtMs spacing (-1: n/a)
+        qint64 minArrivalGapMs = -1;
+        quint64 lastEmittedAtMs = 0;
+    };
+    ContextTiming contextTiming() const { return m_timing; }
+    void resetContextTiming() { m_timing = {}; m_lastArrival.invalidate(); }
     int inFlightMessages() const { return int(m_sent.size()); }
     static QVariant normalize(const QVariant &v);  // QDBusArgument trees -> plain QVariant
 
@@ -65,6 +77,8 @@ private:
         QString key, control, target, gesture;
     };
     void detach();
+    void applyContext(const QVariantMap &context, bool fromSignal);
+    void noteContextTiming(const QVariantMap &context);
     void setState(State s);
     void stepCapabilities(quint64 gen);
     void stepSubscribe(quint64 gen);
@@ -93,6 +107,8 @@ private:
     QHash<quint64, QString> m_requests;  // requestId -> action id
     quint64 m_generation = 0;
     QElapsedTimer m_lastAttempt;
+    ContextTiming m_timing;
+    QElapsedTimer m_lastArrival;
     QDBusServiceWatcher *m_watcher = nullptr;
 };
 

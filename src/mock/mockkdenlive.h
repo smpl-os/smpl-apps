@@ -65,7 +65,14 @@ public:
     void setStage(int stage);
     int stage() const { return m_stage; }
     void setContextValue(const QString &key, const QVariant &value);  // bumps epoch for target keys
-    void setPosition(int frame);                                        // serial only
+    void setPosition(int frame);                                        // serial only; ends editing gestures
+    // MR2 context as Kdenlive publishes it: focused wheel + colorWheels (three
+    // explicit handles) of a Lift/Gamma/Gain widget, or a focused scalar parameter.
+    void focusWheels(const QString &focusedWheel);  // "" clears
+    void hoverWheel(const QString &wheel);           // "" clears
+    void focusParam(const QString &name);            // "" clears
+    void setGroupedPropagation(bool on) { m_grouped = on; }
+    static QString wheelTarget(const QString &wheel) { return QStringLiteral("cw-") + wheel; }
     QVariantMap context() const { return m_context; }
     QVariantMap state() const;
     void setApplyDelayMs(int ms) { m_applyDelayMs = ms; }
@@ -115,7 +122,7 @@ private:
     };
     struct Gesture {
         QString owner, control, target;
-        QString param;  // parameter captured at gesture start (param.nudge)
+        QString param;  // parameter (param.nudge) or wheel (colorwheel.nudge) captured at gesture start
         QVariantMap semantic;
         QVariant start;
         int historyAtStart = 0;
@@ -149,12 +156,17 @@ private:
     void bumpSerial(bool epoch);
     void dispatchActions();
     void record(const QString &line);
+    QVariantMap wheelDescriptor(const QString &wheel) const;
+    QVariantMap paramDescriptor(const QString &name) const;
+    QVariantMap findWheelTarget(const QString &target) const;  // descriptor or empty
+    void refreshDescriptors();
     QVariant gestureValue(const QString &control, const QVariantMap &semantic, const QString &param) const;
     void restoreGestureValue(const QString &control, const QVariantMap &semantic, const QString &param, const QVariant &v);
     QVariantMap stateCheck() const;  // ready/closing/active/modal, at admission and at dispatch
     void checkGestureIdle();
 
     int m_stage = 3;
+    bool m_grouped = false;
     QVariantMap m_context;
     quint64 m_serial = 0;
     quint64 m_epoch = 1;

@@ -59,25 +59,35 @@ struct Descriptor {
     QString unit;
     int stage;
     int maxDelta;
+    bool integral;
     bool editing;
     bool absolute;
-    QStringList options;  // semantic options besides session/epoch (and target/gesture/phase for editing)
+    QStringList options;  // semantic options (part of the pending key)
 };
+// Limits and option sets follow Kdenlive's MR2 implementation: every relative
+// delta is bounded by 10000, parameter deltas may be fractional, and all
+// parameter controls/commands accept the same option set.
 const QList<Descriptor> &descriptors()
 {
     static const QList<Descriptor> d{
-        {kJog, QStringLiteral("frames"), 1, 1000, false, false, {QStringLiteral("monitor"), QStringLiteral("scrub")}},
-        {kShuttle, QStringLiteral("shuttle index steps"), 1, 14, false, true, {QStringLiteral("monitor")}},
-        {kZoom, QStringLiteral("zoom steps"), 1, 20, false, false, {QStringLiteral("anchor")}},
-        {kParamFocus, QStringLiteral("parameters"), 2, 10, false, false, {}},
-        {kParamNudge, QStringLiteral("parameter display steps"), 2, 1000, true, false, {QStringLiteral("step"), QStringLiteral("keyframe")}},
-        {kColorWheel, QStringLiteral("wheel steps (0.01)"), 2, 1000, true, false, {QStringLiteral("wheel"), QStringLiteral("axis")}},
-        {kTrackFocus, QStringLiteral("tracks"), 3, 10, false, false, {}},
-        {kScroll, QStringLiteral("tenths of visible width"), 3, 100, false, false, {}},
-        {kAudioGain, QStringLiteral("0.1 dB"), 3, 600, true, false, {}},
-        {kTrim, QStringLiteral("frames"), 3, 1000, true, false, {QStringLiteral("edge"), QStringLiteral("mode")}},
+        {kJog, QStringLiteral("frames"), 1, 10000, true, false, false, {QStringLiteral("monitor"), QStringLiteral("scrub")}},
+        {kShuttle, QStringLiteral("shuttle index steps"), 1, 10000, true, false, true, {QStringLiteral("monitor")}},
+        {kZoom, QStringLiteral("zoom steps"), 1, 10000, true, false, false, {QStringLiteral("anchor")}},
+        {kParamFocus, QStringLiteral("parameters"), 2, 64, true, false, false, {}},
+        {kParamNudge, QStringLiteral("parameter display steps"), 2, 10000, false, true, false, {QStringLiteral("step"), QStringLiteral("keyframe"), QStringLiteral("axis")}},
+        {kColorWheel, QStringLiteral("wheel steps"), 2, 10000, false, true, false, {QStringLiteral("wheel"), QStringLiteral("axis"), QStringLiteral("step"), QStringLiteral("keyframe")}},
+        {kTrackFocus, QStringLiteral("tracks"), 3, 10, true, false, false, {}},
+        {kScroll, QStringLiteral("tenths of visible width"), 3, 100, true, false, false, {}},
+        {kAudioGain, QStringLiteral("0.1 dB"), 3, 600, true, true, false, {}},
+        {kTrim, QStringLiteral("frames"), 3, 1000, true, true, false, {QStringLiteral("edge"), QStringLiteral("mode")}},
     };
     return d;
+}
+const QStringList kParameterOptions{QStringLiteral("target"), QStringLiteral("gesture"), QStringLiteral("phase"), QStringLiteral("step"),
+                                    QStringLiteral("keyframe"), QStringLiteral("wheel"), QStringLiteral("axis")};
+bool isParameterId(const QString &id)
+{
+    return id == kParamFocus || id == kParamNudge || id == kColorWheel || id == kCmdParamReset || id == kCmdWheelReset;
 }
 const Descriptor *descriptor(const QString &id)
 {
@@ -296,7 +306,7 @@ QVariantMap MockKdenlive::capabilities() const
         }
         QVariantMap m{{QStringLiteral("id"), d.id},
                       {QStringLiteral("unit"), d.unit},
-                      {QStringLiteral("integral"), true},
+                      {QStringLiteral("integral"), d.integral},
                       {QStringLiteral("maxDelta"), d.maxDelta},
                       {QStringLiteral("editing"), d.editing},
                       {QStringLiteral("absolute"), d.absolute},
@@ -309,19 +319,29 @@ QVariantMap MockKdenlive::capabilities() const
         }
         descs << m;
     }
+    // Advertised (possible) keys, as Kdenlive does; optional ones appear only when they apply.
+    QStringList contextKeys{QStringLiteral("serial"), QStringLiteral("emittedAtMs"), QStringLiteral("epoch"), QStringLiteral("ready"),
+                            QStringLiteral("active"), QStringLiteral("dialog"), QStringLiteral("focus"), QStringLiteral("project"),
+                            QStringLiteral("sequence"), QStringLiteral("activeMonitor"), QStringLiteral("position"), QStringLiteral("fps"),
+                            QStringLiteral("playing"), QStringLiteral("speed"), QStringLiteral("tool")};
+    if (m_stage >= 2) {
+        contextKeys << QStringLiteral("effect") << QStringLiteral("param") << QStringLiteral("colorWheel") << QStringLiteral("colorWheels")
+                    << QStringLiteral("hoveredColorWheel");
+    }
+    if (m_stage >= 3) {
+        contextKeys << QStringLiteral("timeline") << QStringLiteral("audio") << QStringLiteral("edit");
+    }
     return ok({{QStringLiteral("version"), uint(kVersion)},
                {QStringLiteral("revision"), uint(kRevision)},
                {QStringLiteral("implementation"), QStringLiteral("control-surface mock (stage %1)").arg(m_stage)},
                {QStringLiteral("controls"), controlsForStage()},
                {QStringLiteral("commands"), commandsForStage()},
-               {QStringLiteral("contextKeys"), QStringList(m_context.keys())},
-               {QStringLiteral("limits"), QVariantMap{{QStringLiteral("maxLeases"), kMaxLeases},
-                                                      {QStringLiteral("maxPendingKeys"), kMaxPendingKeys},
-                                                      {QStringLiteral("maxQueuedActions"), kMaxQueuedActions},
-                                                      {QStringLiteral("maxOptions"), kMaxOptions},
-                                                      {QStringLiteral("maxStringInput"), kMaxStringInput},
-                                                      {QStringLiteral("maxNotifyText"), kMaxNotifyText},
-                                                      {QStringLiteral("maxContextRateHz"), 30}}},
+               {QStringLiteral("contextKeys"), contextKeys},
+               {QStringLiteral("limits"), QVariantMap{{QStringLiteral("subscriptions"), kMaxLeases},
+                                                      {QStringLiteral("pendingKeys"), kMaxPendingKeys},
+                                                      {QStringLiteral("queuedActions"), kMaxQueuedActions},
+                                                      {QStringLiteral("contextHz"), 30},
+                                                      {QStringLiteral("maximumDelta"), 10000}}},
                {QStringLiteral("controlDescriptors"), QVariant::fromValue(descs)}});
 }
 
@@ -461,9 +481,6 @@ QString MockKdenlive::targetFor(const QString &control) const
     if (control == kParamNudge || control == kCmdParamReset) {
         return m_context.value(QStringLiteral("param")).toMap().value(kOptTarget).toString();
     }
-    if (control == kColorWheel || control == kCmdWheelReset) {
-        return m_context.value(QStringLiteral("colorWheel")).toMap().value(kOptTarget).toString();
-    }
     if (control == kAudioGain) {
         return m_context.value(QStringLiteral("audio")).toMap().value(kOptTarget).toString();
     }
@@ -479,7 +496,7 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
     if (!std::isfinite(delta)) {
         return fail(err::InvalidArguments, QStringLiteral("delta must be finite"), QStringLiteral("delta"));
     }
-    if (delta != std::trunc(delta)) {
+    if (d->integral && delta != std::trunc(delta)) {
         return fail(err::InvalidArguments, QStringLiteral("delta must be integral"), QStringLiteral("delta"));
     }
     if (std::abs(delta) > d->maxDelta) {
@@ -513,9 +530,9 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
         if (!QStringList{QStringLiteral("value"), QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")}.contains(axis)) {
             return fail(err::InvalidArguments, QStringLiteral("unknown axis"), QStringLiteral("axis"));
         }
-        if (!options.contains(QStringLiteral("wheel"))) {
-            return fail(err::InvalidArguments, QStringLiteral("wheel is required"), QStringLiteral("wheel"));
-        }
+    }
+    if (control == kParamNudge && options.value(QStringLiteral("axis"), QStringLiteral("value")).toString() != QLatin1String("value")) {
+        return fail(err::InvalidArguments, QStringLiteral("a numeric parameter has only a value axis"), QStringLiteral("axis"));
     }
     if (control == kTrim) {
         const QString mode = options.value(QStringLiteral("mode")).toString();
@@ -527,13 +544,27 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
         }
     }
     if (d->editing) {
-        if (options.value(kOptGesture).toString().isEmpty()) {
-            return fail(err::InvalidArguments, QStringLiteral("gesture is required"), kOptGesture);
+        const QString gesture = options.value(kOptGesture).toString();
+        if (gesture.isEmpty() || gesture.size() > 128) {
+            return fail(err::InvalidArguments, QStringLiteral("an explicit bounded gesture id is required"), kOptGesture);
         }
         const QString target = options.value(kOptTarget).toString();
-        const QString hovered = m_context.value(QStringLiteral("hoveredColorWheel")).toMap().value(kOptTarget).toString();
-        if (target.isEmpty() || (target != targetFor(control) && !(control == kColorWheel && !hovered.isEmpty() && target == hovered))) {
+        if (control == kColorWheel) {
+            // Each wheel of the focused widget has its own handle (colorWheels);
+            // a hovered wheel is accepted only when the caller names its handle.
+            const QVariantMap wheel = findWheelTarget(target);
+            if (target.isEmpty() || wheel.isEmpty()) {
+                return fail(err::TargetNotFound, QStringLiteral("unknown or stale wheel target"), kOptTarget);
+            }
+            if (options.contains(QStringLiteral("wheel")) && options.value(QStringLiteral("wheel")).toString() != wheel.value(QStringLiteral("wheel")).toString()) {
+                return fail(err::UnsupportedParameter, QStringLiteral("the control does not match the bound wheel"), QStringLiteral("wheel"));
+            }
+            semantic->insert(QStringLiteral("wheel"), wheel.value(QStringLiteral("wheel")));
+        } else if (target.isEmpty() || target != targetFor(control)) {
             return fail(err::TargetNotFound, QStringLiteral("unknown or stale target"), kOptTarget);
+        }
+        if (m_grouped && (control == kParamNudge || control == kColorWheel)) {
+            return fail(err::UnsupportedGroup, QStringLiteral("grouped parameter propagation is not qualified"));
         }
     }
     for (auto o = options.begin(); o != options.end(); ++o) {
@@ -579,7 +610,9 @@ void MockKdenlive::control(const QString &control, double delta, const QVariantM
         return;
     }
     QStringList allowed = d->options;
-    if (d->editing) {
+    if (isParameterId(control)) {
+        allowed = kParameterOptions;
+    } else if (d->editing) {
         allowed << kOptTarget << kOptGesture << kOptPhase;
     }
     int budget = kMaxStringInput - int(control.size());
@@ -711,29 +744,47 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
     QString gk;
     if (d->editing) {
         gk = QStringList{p.caller.owner, p.session, p.gesture, p.target, p.control, compact(p.semantic)}.join(QLatin1Char('|'));
-        if (m_finishedGestures.contains(gk)) {
-            // The gesture already ended (idle, end, focus change, unrelated history).
+        if (!m_gestures.contains(gk) && m_finishedGestures.contains(gk)) {
+            // The gesture already ended (idle, end, focus/target or playhead change,
+            // unrelated history, another control). Cancel can no longer restore it
+            // (contract text; Kdenlive MR2 answers ok/changed:false instead). An
+            // update or end with the same id starts a new gesture, as Kdenlive does:
+            // a late end applies its delta as a one-shot and a zero-delta late end
+            // is a no-op.
             if (p.phase == QLatin1String("cancel")) {
                 return error(err::HistoryConflict, QStringLiteral("gesture already ended"));
             }
-            if (p.phase == QLatin1String("end")) {
-                return {{QStringLiteral("ended"), true}};  // idempotent end barrier
-            }
-            return error(err::StaleContext, QStringLiteral("gesture already ended"));
+            m_finishedGestures.removeAll(gk);
         }
         if (!m_gestures.contains(gk)) {
+            // One active editing gesture in the host (as Kdenlive's ParameterControl):
+            // another caller's open gesture makes this busy; the caller's own previous
+            // gesture ends first.
+            const auto open = m_gestures.keys();
+            for (const auto &k : open) {
+                if (m_gestures.value(k).owner != p.caller.owner) {
+                    return error(err::Busy, QStringLiteral("another caller owns the current editing gesture"));
+                }
+            }
+            for (const auto &k : open) {
+                finishGesture(k, false, nullptr);
+            }
             Gesture g;
             g.owner = p.caller.owner;
             g.control = p.control;
             g.target = p.target;
             g.semantic = p.semantic;
-            g.param = m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString();
+            g.param = p.control == kColorWheel ? p.semantic.value(QStringLiteral("wheel")).toString()
+                                               : m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString();
             g.start = gestureValue(p.control, p.semantic, g.param);
             g.historyAtStart = int(m_history.size());
             m_gestures.insert(gk, g);
             m_gestureTimer->start();
         }
         m_gestures[gk].last.start();
+    }
+    if (!d->editing && p.control != kParamFocus) {
+        finishAllGestures();  // as Kdenlive: any other control ends the editing gesture
     }
     QVariantMap st;
     // Net-batch semantics: the summed delta is clamped once.
@@ -742,6 +793,9 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         const int before = m_position;
         m_position = qBound(0, m_position + steps, m_duration);
         *changed = m_position != before;
+        if (*changed) {
+            finishAllGestures();  // the captured edit frame moved: editing gestures end
+        }
         m_context.insert(QStringLiteral("position"), m_position);
         bumpSerial(false);
         st = {{QStringLiteral("position"), m_position}};
@@ -773,10 +827,8 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         const int idx = qBound(0, int(m_paramOrder.indexOf(cur)) + steps, int(m_paramOrder.size()) - 1);
         *changed = m_paramOrder.value(idx) != cur;
         if (*changed) {
-            QVariantMap param = m_context.value(QStringLiteral("param")).toMap();
-            param.insert(QStringLiteral("name"), m_paramOrder.at(idx));
-            param.insert(kOptTarget, QStringLiteral("par-%1").arg(m_paramOrder.at(idx)));
-            setContextValue(QStringLiteral("param"), param);
+            finishAllGestures();
+            setContextValue(QStringLiteral("param"), paramDescriptor(m_paramOrder.at(idx)));
         }
         st = {{QStringLiteral("param"), m_paramOrder.value(idx)}};
     } else if (p.control == kParamNudge) {
@@ -793,10 +845,12 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         }
         const double step = p.semantic.value(QStringLiteral("step")).toString() == QLatin1String("fine") ? 0.1 : 1.0;
         const double before = m_params.value(name).toDouble();
-        const double v = qBound(0.0, before + p.delta * step, 100.0);
+        const double v = qBound(0.0, std::round((before + p.delta * step) * 10.0) / 10.0, 100.0);
         m_params.insert(name, v);
         *changed = v != before;
         st = {{QStringLiteral("param"), name}, {QStringLiteral("value"), v}};
+        refreshDescriptors();
+        bumpSerial(false);
     } else if (p.control == kColorWheel) {
         const QString wheel = p.semantic.value(QStringLiteral("wheel")).toString();
         const QString axis = p.semantic.value(QStringLiteral("axis"), QStringLiteral("value")).toString();
@@ -804,14 +858,17 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         const double lo = wheel == QLatin1String("lift") ? -1.0 : 0.0;
         const double hi = wheel == QLatin1String("lift") ? 1.0 : wheel == QLatin1String("gamma") ? 2.0 : 4.0;
         const QStringList channels = axis == QLatin1String("value") ? QStringList{QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")} : QStringList{axis};
+        const double step = p.semantic.value(QStringLiteral("step")).toString() == QLatin1String("fine") ? 0.001 : 0.01;
         for (const auto &ch : channels) {
             const double before = w.value(ch).toDouble();
-            const double v = qBound(lo, before + 0.01 * p.delta, hi);
+            const double v = qBound(lo, std::round((before + step * p.delta) * 1e6) / 1e6, hi);
             *changed = *changed || v != before;
             w.insert(ch, v);
         }
         m_wheels.insert(wheel, w);
         st = {{QStringLiteral("wheel"), wheel}, {QStringLiteral("axis"), axis}, {QStringLiteral("values"), w}};
+        refreshDescriptors();
+        bumpSerial(false);
     } else if (p.control == kAudioGain) {
         const double before = m_gainDb;
         m_gainDb = qBound(-60.0, m_gainDb + 0.1 * p.delta, 12.0);
@@ -829,6 +886,15 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
             finishGesture(gk, p.phase == QLatin1String("cancel"), &err);
             if (!err.isEmpty()) {
                 return error(err.value(QStringLiteral("code")).toString(), err.value(QStringLiteral("message")).toString());
+            }
+            if (p.phase == QLatin1String("cancel")) {
+                // Report the restored state, not the values before the restore.
+                *changed = false;
+                if (p.control == kColorWheel) {
+                    st.insert(QStringLiteral("values"), m_wheels.value(p.semantic.value(QStringLiteral("wheel")).toString()));
+                } else if (p.control == kParamNudge) {
+                    st.insert(QStringLiteral("value"), m_params.value(st.value(QStringLiteral("param")).toString()));
+                }
             }
             st.insert(QStringLiteral("ended"), true);
         }
@@ -855,6 +921,8 @@ void MockKdenlive::finishGesture(const QString &key, bool cancel, QVariantMap *e
     if (cancel) {
         if (int(m_history.size()) == g.historyAtStart) {
             restoreGestureValue(g.control, g.semantic, g.param, g.start);
+            refreshDescriptors();  // published values follow the restore (serial only)
+            bumpSerial(false);
             record(QStringLiteral("gesture %1 cancelled").arg(g.control));
             return;
         }
@@ -967,6 +1035,7 @@ QVariantMap MockKdenlive::setControlValue(const QString &control, double value, 
     if (!std::isfinite(value) || value != std::trunc(value) || value < -7 || value > 7) {
         return fail(err::InvalidArguments, QStringLiteral("shuttle index must be an integer in -7..7"), QStringLiteral("value"));
     }
+    finishAllGestures();
     m_shuttle = int(value);
     const double speed = (m_shuttle < 0 ? -1 : 1) * kShuttleSpeeds[std::abs(m_shuttle)];
     m_context.insert(QStringLiteral("playing"), m_shuttle != 0);
@@ -982,10 +1051,8 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
         return fail(err::UnsupportedControl, QStringLiteral("command not offered"), QStringLiteral("command"));
     }
     QStringList allowed{kOptTarget};
-    if (command == kCmdWheelReset) {
-        allowed << QStringLiteral("wheel");
-    } else if (command == kCmdParamReset) {
-        allowed << QStringLiteral("keyframe");
+    if (isParameterId(command)) {
+        allowed = kParameterOptions;
     } else if (command == kCmdTrackSet) {
         allowed << QStringLiteral("what") << QStringLiteral("value") << QStringLiteral("soloMode");
     }
@@ -995,20 +1062,29 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
         return e;
     }
     const QString target = args.value(kOptTarget).toString();
+    if (!m_actions.isEmpty()) {
+        return fail(err::Busy, QStringLiteral("a queued action must finish first"));
+    }
+    if (m_grouped && (command == kCmdWheelReset || command == kCmdParamReset)) {
+        return fail(err::UnsupportedGroup, QStringLiteral("grouped parameter propagation is not qualified"));
+    }
     finishAllGestures();  // context-changing discrete operations end gestures first
     if (command == kCmdWheelReset) {
-        const QString wheel = args.value(QStringLiteral("wheel")).toString();
-        if (target.isEmpty() || target != targetFor(kCmdWheelReset)) {
-            return fail(err::TargetNotFound, QStringLiteral("unknown or stale target"), kOptTarget);
+        const QVariantMap descriptor = findWheelTarget(target);
+        if (target.isEmpty() || descriptor.isEmpty()) {
+            return fail(err::TargetNotFound, QStringLiteral("unknown or stale wheel target"), kOptTarget);
         }
-        if (!m_wheels.contains(wheel)) {
-            return fail(err::InvalidArguments, QStringLiteral("unknown wheel"), QStringLiteral("wheel"));
+        const QString wheel = descriptor.value(QStringLiteral("wheel")).toString();
+        if (args.contains(QStringLiteral("wheel")) && args.value(QStringLiteral("wheel")).toString() != wheel) {
+            return fail(err::UnsupportedParameter, QStringLiteral("the command does not match the bound wheel"), QStringLiteral("wheel"));
         }
         const QVariant def = rgb(wheel == QLatin1String("lift") ? 0.0 : 1.0);
         const bool changed = m_wheels.value(wheel) != def;
         m_wheels.insert(wheel, def);
         if (changed) {
             m_history << QStringLiteral("reset %1").arg(wheel);
+            refreshDescriptors();
+            bumpSerial(false);
         }
         return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
     }
@@ -1021,6 +1097,8 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
         m_params.insert(name, 50.0);
         if (changed) {
             m_history << QStringLiteral("reset %1").arg(name);
+            refreshDescriptors();
+            bumpSerial(false);
         }
         return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
     }
@@ -1074,6 +1152,9 @@ void MockKdenlive::setContextValue(const QString &key, const QVariant &value)
 
 void MockKdenlive::setPosition(int frame)
 {
+    if (frame != m_position) {
+        finishAllGestures();  // the captured edit frame moved
+    }
     m_position = frame;
     m_context.insert(QStringLiteral("position"), frame);
     bumpSerial(false);
@@ -1081,8 +1162,11 @@ void MockKdenlive::setPosition(int frame)
 
 void MockKdenlive::addUnrelatedHistory(const QString &label)
 {
-    finishAllGestures();  // unrelated history ends open gestures
+    // As Kdenlive: an undo-stack change not made by the interface ends open
+    // gestures and starts a new epoch.
+    finishAllGestures();
     m_history << label;
+    bumpSerial(true);
 }
 
 void MockKdenlive::bumpSerial(bool epoch)
@@ -1110,11 +1194,151 @@ void MockKdenlive::emitContext(bool force)
         return;
     }
     m_lastContextEmit.start();
-    m_contextTimes << m_clock.elapsed();
+    const qint64 now = m_clock.elapsed();
+    m_contextTimes << now;
+    QVariantMap context = m_context;
+    context.insert(QStringLiteral("emittedAtMs"), QVariant::fromValue<qulonglong>(quint64(now)));  // process-relative monotonic
     for (const auto &l : std::as_const(m_leases)) {
         ++m_contextSent[l.caller.owner];
-        sendTo(l.caller, QStringLiteral("ContextChanged"), {QVariant::fromValue(m_context)});
+        sendTo(l.caller, QStringLiteral("ContextChanged"), {QVariant::fromValue(context)});
     }
+}
+
+QVariantMap MockKdenlive::wheelDescriptor(const QString &wheel) const
+{
+    const QVariantMap native = m_wheels.value(wheel).toMap();
+    QVariantMap values;
+    for (const auto &c : {QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")}) {
+        const double v = native.value(c).toDouble();
+        values.insert(c, wheel == QLatin1String("lift") ? (v + 1.0) / 2.0 : v);  // displayed units
+    }
+    return {{QStringLiteral("target"), wheelTarget(wheel)},
+            {QStringLiteral("wheel"), wheel},
+            {QStringLiteral("name"), wheel + QStringLiteral("_r")},
+            {QStringLiteral("axes"), QStringList{QStringLiteral("value"), QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")}},
+            {QStringLiteral("values"), values},
+            {QStringLiteral("min"), 0.0},
+            {QStringLiteral("max"), wheel == QLatin1String("lift") ? 1.0 : wheel == QLatin1String("gamma") ? 2.0 : 4.0},
+            {QStringLiteral("step"), 0.01},
+            {QStringLiteral("fineStep"), 0.001},
+            {QStringLiteral("frame"), -1},
+            {QStringLiteral("keyframed"), false},
+            {QStringLiteral("enabled"), true}};
+}
+
+QVariantMap MockKdenlive::paramDescriptor(const QString &name) const
+{
+    return {{QStringLiteral("target"), QStringLiteral("par-") + name},
+            {QStringLiteral("name"), name},
+            {QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("unit"), QStringLiteral("%")},
+            {QStringLiteral("value"), m_params.value(name)},
+            {QStringLiteral("min"), 0.0},
+            {QStringLiteral("max"), 100.0},
+            {QStringLiteral("step"), 1.0},
+            {QStringLiteral("fineStep"), 0.1},
+            {QStringLiteral("frame"), -1},
+            {QStringLiteral("keyframed"), false},
+            {QStringLiteral("enabled"), true}};
+}
+
+QVariantMap MockKdenlive::findWheelTarget(const QString &target) const
+{
+    if (target.isEmpty()) {
+        return {};
+    }
+    for (const auto &entry : m_context.value(QStringLiteral("colorWheels")).toList()) {
+        if (entry.toMap().value(kOptTarget).toString() == target) {
+            return entry.toMap();
+        }
+    }
+    for (const auto &key : {QStringLiteral("colorWheel"), QStringLiteral("hoveredColorWheel")}) {
+        const QVariantMap d = m_context.value(key).toMap();
+        if (d.value(kOptTarget).toString() == target) {
+            return d;
+        }
+    }
+    return {};
+}
+
+void MockKdenlive::refreshDescriptors()
+{
+    // Values change without changing identities: serial only, never the epoch.
+    if (m_context.contains(QStringLiteral("colorWheels"))) {
+        QVariantList list;
+        for (const auto &w : {QStringLiteral("lift"), QStringLiteral("gamma"), QStringLiteral("gain")}) {
+            list << wheelDescriptor(w);
+        }
+        m_context.insert(QStringLiteral("colorWheels"), list);
+    }
+    for (const auto &key : {QStringLiteral("colorWheel"), QStringLiteral("hoveredColorWheel")}) {
+        if (m_context.contains(key)) {
+            m_context.insert(key, wheelDescriptor(m_context.value(key).toMap().value(QStringLiteral("wheel")).toString()));
+        }
+    }
+    if (m_context.contains(QStringLiteral("param"))) {
+        const QVariantMap p = m_context.value(QStringLiteral("param")).toMap();
+        if (m_params.contains(p.value(QStringLiteral("name")).toString())) {
+            QVariantMap d = paramDescriptor(p.value(QStringLiteral("name")).toString());
+            for (const auto &k : {QStringLiteral("animated"), QStringLiteral("managed")}) {
+                if (p.contains(k)) {
+                    d.insert(k, p.value(k));
+                }
+            }
+            m_context.insert(QStringLiteral("param"), d);
+        }
+    }
+}
+
+void MockKdenlive::focusWheels(const QString &focusedWheel)
+{
+    if (!focusedWheel.isEmpty() && !m_wheels.contains(focusedWheel)) {
+        return;
+    }
+    if (focusedWheel.isEmpty()) {
+        m_context.remove(QStringLiteral("colorWheel"));
+        m_context.remove(QStringLiteral("colorWheels"));
+        m_context.remove(QStringLiteral("effect"));
+        m_context.insert(QStringLiteral("focus"), QStringLiteral("timeline"));
+    } else {
+        m_context.remove(QStringLiteral("param"));
+        m_context.insert(QStringLiteral("focus"), QStringLiteral("effectStack"));
+        m_context.insert(QStringLiteral("effect"), QVariantMap{{QStringLiteral("id"), QStringLiteral("lift_gamma_gain")}, {QStringLiteral("ownerId"), 12}, {QStringLiteral("sequence"), QStringLiteral("seq-1")}});
+        m_context.insert(QStringLiteral("colorWheel"), wheelDescriptor(focusedWheel));
+        m_context.insert(QStringLiteral("colorWheels"), QVariantList{});
+        refreshDescriptors();
+    }
+    bumpSerial(true);
+}
+
+void MockKdenlive::hoverWheel(const QString &wheel)
+{
+    // Hover is not focus: it never changes the epoch.
+    if (!wheel.isEmpty() && !m_wheels.contains(wheel)) {
+        return;
+    }
+    if (wheel.isEmpty()) {
+        m_context.remove(QStringLiteral("hoveredColorWheel"));
+    } else {
+        m_context.insert(QStringLiteral("hoveredColorWheel"), wheelDescriptor(wheel));
+    }
+    bumpSerial(false);
+}
+
+void MockKdenlive::focusParam(const QString &name)
+{
+    if (name.isEmpty()) {
+        m_context.remove(QStringLiteral("param"));
+        m_context.remove(QStringLiteral("effect"));
+        m_context.insert(QStringLiteral("focus"), QStringLiteral("timeline"));
+    } else {
+        m_context.remove(QStringLiteral("colorWheel"));
+        m_context.remove(QStringLiteral("colorWheels"));
+        m_context.insert(QStringLiteral("focus"), QStringLiteral("effectStack"));
+        m_context.insert(QStringLiteral("effect"), QVariantMap{{QStringLiteral("id"), QStringLiteral("brightness")}, {QStringLiteral("ownerId"), 12}, {QStringLiteral("sequence"), QStringLiteral("seq-1")}});
+        m_context.insert(QStringLiteral("param"), paramDescriptor(name));
+    }
+    bumpSerial(true);
 }
 
 int MockKdenlive::contextSignalsTotal() const

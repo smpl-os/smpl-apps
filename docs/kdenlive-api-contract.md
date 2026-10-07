@@ -1,12 +1,15 @@
 # Kdenlive control-surface API contract (K23, revision 2)
 
-Status: **fixed wire contract, revision 2 (2026-10-07)**. The normative text is
-MAIN's `k23-contract-revised.md`, including its clarification that ControlAck
-outcomes carry the session
-(SHA-256 `5da6dcee7e8cc0c56ded09654a49d6113ba076439cdf590c12aa14e1904cc5cf`).
-That file supersedes the first proposal in this file
+Status: **fixed wire contract, revision 2 (2026-10-07), K23-MR2 qualified**.
+The normative text is MAIN's `k23-contract-revised.md`
+(SHA-256 `e061f20cf83f2c6b3b2b3add1273c8f28f3c6138ce637978d6f3cc60312a8357`).
+It adds the `colorWheels` context array and `emittedAtMs` on context signals to
+the previous mirror (`5da6dcee…cc5cf`, which added `session` in ControlAck
+outcomes). It supersedes the first proposal in this file
 (SHA-256 `1829fbc4…fc2a`). §4 below mirrors it; where this file and MAIN's
-differ, MAIN's wins.
+differ, MAIN's wins. Behaviour that MAIN's qualified MR2 implementation shows
+but the text does not state is marked *(MR2 implementation)*; the open
+questions are in §7.
 
 This repository implements the **client** (`src/daemon/kdenlivedbusclient.*`,
 `engine.*`) and a **reference mock** (`src/mock/`). The mock is checked over
@@ -226,10 +229,28 @@ Required keys:
 | `fps: {num: i, den: i}` | |
 | `playing: b`, `speed: d`, `tool: s` | |
 
-Additive keys: `timeline`, `effect`, `param`, `colorWheel`,
+Additive keys: `timeline`, `effect`, `param`, `colorWheel`, `colorWheels`,
 `hoveredColorWheel`. `timeline.track` is an object holding the native track id
 and its sequence identity (plus the opaque `target`); its label (A1/V1) is
 display metadata only.
+
+* `colorWheels` is an array of the **three explicit wheel target descriptors**
+  of the focused Lift/Gamma/Gain widget, so three knobs can edit three wheels
+  without moving keyboard focus. `colorWheel` is the keyboard-focused wheel;
+  `hoveredColorWheel` is separate, and using it requires an explicit client
+  choice.
+* Shapes *(MR2 implementation)*:
+  * wheel descriptor (each `colorWheels[]` entry, `colorWheel`,
+    `hoveredColorWheel`): `{target, wheel: lift/gamma/gain, axes:
+    [value, r, g, b], values: {r, g, b}, name, min, max, step, fineStep,
+    frame, keyframed, enabled}`. Each wheel has its **own** target. Lift values
+    are displayed as (v + 1) / 2.
+  * `param`: `{target, name, type: "number", value (or available: false),
+    unit, min, max, step, fineStep, frame, keyframed, enabled}`.
+  * `effect`: `{id, ownerId, sequence}`; it is described, not a target.
+  * `focus` reads `effectStack` while `param` or `colorWheel` is present.
+* Undo-stack changes not made through the interface end the gesture and start
+  a new `epoch` *(MR2 implementation)*; value changes made through it do not.
 
 * A mutable target is an opaque, host-issued `target: s`. Labels, visual
   indices and asset names are not identities.
@@ -239,6 +260,11 @@ display metadata only.
 * Context signals are capped at **30 per second** with monotonic timing (a
   34 ms minimum spacing is acceptable). With no subscribers there is no
   polling or context timer.
+* Signals include an optional `emittedAtMs: t` (process-relative monotonic
+  time) for measuring emission spacing. Delivery can bunch when a client is
+  busy, so spacing is judged from `emittedAtMs`, never from arrival time. The
+  MR2 implementation stamps `ContextChanged` only, not the `Subscribe` or
+  `GetContext` snapshots, and advertises `emittedAtMs` in `contextKeys`.
 * Signals go only to current subscribers. An unsubscribed caller receives none,
   even while another caller stays subscribed.
 
@@ -267,6 +293,12 @@ display metadata only.
 * Default limits: 8 leases, 64 pending keys, 32 queued actions, 32 options, and
   4096 characters of aggregate string input per call. Bounded deltas are
   advertised. Excess queued work is refused with `resource_limit`.
+  *(MR2 implementation)* `limits` = `{subscriptions: 8, pendingKeys: 64,
+  queuedActions: 32, contextHz: 30, maximumDelta: 10000}`; no
+  `controlDescriptors`. Relative |delta| ≤ 10000; parameter nudges may be
+  fractional; transport and `param.focus` are integral (`param.focus`
+  |delta| ≤ 64); absolute shuttle is −7…7. An `end`/`cancel` barrier flushes
+  pending work, then applies its own delta.
 * Applied view state is acknowledged without waiting for decoded frames. There
   are no waits, joins or nested event loops in the adaptor.
 * Focus, project, sequence or owner changes invalidate pending work. Dropped
@@ -280,15 +312,32 @@ display metadata only.
 | MR1 | `playhead.shuttle` | integral index steps (abs −7…7 via `SetControlValue`) | `monitor` |
 | MR1 | `timeline.zoom` | integral steps, + zooms in | `anchor: playhead/mouse` |
 | MR2 | `param.focus` | integral parameters, no data change | – |
-| MR2 | `param.nudge` | steps in advertised display units | `step: normal/fine`, `keyframe: existing/create` (default `existing`) |
-| MR2 | `colorwheel.nudge` | wheel steps | `wheel: lift/gamma/gain`, `axis: value/r/g/b` (hue/saturation only if advertised) |
+| MR2 | `param.nudge` | steps in advertised display units (fractional allowed) | `step: normal/fine`, `keyframe: existing/create` (default `existing`) |
+| MR2 | `colorwheel.nudge` | wheel steps (fractional allowed) | `wheel: lift/gamma/gain`, `axis: value/r/g/b` (hue/saturation only if advertised) |
 | MR3 | `timeline.track` | integral visual steps | – |
 | MR3 | `timeline.scroll` | tenths of visible width | – |
 | MR3 | `audio.gain` | 0.1 dB | explicit target, no implicit effect creation |
 | MR3 | `edit.trim` | integral frames | `edge: start/end`, `mode: resize/ripple/roll/slip/slide` (qualified only) |
 
+*(MR2 implementation)* Every parameter control and command, including
+`param.focus`, accepts the one option set `{target, gesture, phase, step,
+keyframe, wheel, axis}`; transport accepts only its own options (others are
+`invalid_arguments`). With a wheel handle the `wheel` option is optional; one
+that contradicts the handle's wheel is `unsupported_parameter`. Numeric
+parameters have only the `value` axis (`invalid_arguments` otherwise); wheel
+axes beyond value/r/g/b are `unsupported_mode`.
+
+**K23-MR2 scope (qualified):** visible timeline-clip scalar parameters and the
+Lift/Gamma/Gain value/R/G/B axes, three wheel handles, one undo entry per
+gesture, no implicit keyframes, explicit key creation (`keyframe: create`).
+HSV (hue/saturation) and the managed automation bridge are deferred; grouped
+propagation on a multi-member group is refused. MR3 is not published yet.
+
 Commands:
-* `Invoke("param.reset")` and `Invoke("colorwheel.reset")` (MR2).
+* `Invoke("param.reset")` and `Invoke("colorwheel.reset")` (MR2). *(MR2
+  implementation)* They end the current gesture and apply as a one-shot; an
+  unknown command is `unsupported_control`; while queued actions are pending,
+  `busy`.
 * `Invoke("track.set")` (MR3), with an explicit target, `what:
   mute/hide/lock/solo/target`, `value: b` and `soloMode: exclusive/additive`.
 
@@ -302,8 +351,16 @@ Editing rules (MR2/MR3):
   Merge only the same gesture, document, target, component set and edit frame.
 * A gesture ends after 600 ms idle, an explicit end, a target or focus change,
   unrelated history, save, or undo/redo. No-op gestures make no history.
+  *(MR2 implementation)* It also ends when the playhead (monitor position)
+  moves and when any non-parameter control applies.
 * Cancel restores only while the gesture is still owned; otherwise it returns
-  `history_conflict`.
+  `history_conflict`. *(MR2 implementation differs: §7 item 12.)*
+* *(MR2 implementation)* There is **one active editing gesture per host**.
+  Another caller's update gets `busy`; the same caller's new gesture id ends
+  its previous gesture first. A continuing gesture whose target, frame, axis
+  policy or history changed gets `history_conflict`. An update or end that
+  reuses an ended gesture id starts a new gesture (a late end applies its delta
+  once). Grouped propagation is refused with `unsupported_group`.
 * Unsupported or unqualified controls and modes return `unsupported_control` or
   `unsupported_mode`. They are never mapped to another operation.
 
@@ -316,6 +373,10 @@ The optional automation bridge and all MCP additions are deferred.
 `unknown_action`, `action_disabled`, `unsupported_control`, `unsupported_mode`,
 `target_not_found`, `unsupported_parameter`, `keyframe_required`,
 `managed_parameter`, `track_locked`, `history_conflict`, `edit_failed`.
+
+*(MR2 implementation)* also returns `unsupported_group`, which is not in this
+list (§7 item 11). The daemon treats every code as a domain refusal: reported,
+never typed.
 
 ---
 
@@ -377,28 +438,45 @@ Further client rules:
 
 * Editing controls take their target from the context:
   * `param.nudge`/`param.reset` → `param.target`
-  * `colorwheel.*` → `colorWheel.target`
+  * `colorwheel.*` with a `wheel` option → the `colorWheels[]` entry of that
+    wheel; otherwise `colorWheel.target`, but only if the focused wheel is
+    that wheel (a descriptor without a `wheel` kind is taken as is)
   * `audio.gain` → `audio.target`
   * `edit.trim` → `edit.target`
   * `track.set` → `timeline.track.target`
 
-  A binding may opt into hover with `"targetFrom": "hoveredColorWheel.target"`.
-  With no target, nothing is sent.
+  A binding may opt into hover with `"targetFrom": "hoveredColorWheel.target"`;
+  a hovered wheel of another kind than the binding's `wheel` yields no target.
+  With no target, nothing is sent. The `wheel` option is still sent as a
+  cross-check (Kdenlive refuses a contradiction with `unsupported_parameter`).
 * A gesture (`cs-<pid>-<n>`) is scoped to one binding (slot, control and
   options), one target and one epoch. An open gesture keeps the target it
   captured; only a new gesture reads the target from the context, so a moving
   hover never retargets a turn in progress. It ends with an explicit `phase:"end"`
-  barrier in four cases:
+  barrier in these cases:
   * 500 ms idle (`gestureIdleMs`; the host ends at 600 ms);
   * a mode cycle;
   * before any discrete action or `Invoke`;
-  * a change of target or binding options.
+  * a change of target or binding options;
+  * before **another binding starts a gesture** (Kdenlive keeps one active
+    editing gesture per host, so turning the gamma knob ends the lift knob's
+    gesture: one undo entry each);
+  * before any **non-editing control** (jog, shuttle, zoom, `param.focus`),
+    which Kdenlive would end it for anyway.
+* `busy` (another caller holds the host's editing gesture), `unsupported_group`
+  and every other refusal are reported and never typed.
 * The end barrier is sent immediately, even with zero delta. Ordering after the
   in-flight update is guaranteed by D-Bus per-sender ordering.
 * On an `epoch` change, or a `stale_context`/`target_not_found` refusal, queued
   motion is dropped without being sent. The host has already ended those
   gestures, and queued deltas are never re-targeted.
 * A window change drops all pending work and unsubscribes.
+* Context pacing: the client keeps `contextTiming()` per lease: signals
+  received, signals stamped with `emittedAtMs`, the smallest `emittedAtMs`
+  spacing and the smallest arrival spacing. Only the former measures the host's
+  limiter; `bench-dbus` prints both. Snapshots from `Subscribe` are not
+  counted. Nothing in the daemon is paced by context arrival: control pacing
+  is ack-driven (one message in flight per key).
 
 ### 5.4 Example bindings (data/config.example.jsonc)
 
@@ -407,9 +485,9 @@ Further client rules:
   * knob 2 shuttles; its press is `monitor_pause`;
   * knob 3 zooms; its press is `zoom_fit`;
   * the keys are curated actions.
-* **MR2, when `colorWheel.target` is present:** knobs 1–3 are the
-  lift/gamma/gain wheels. A press cycles value → r → g → b, and keys 6–8 reset
-  a wheel.
+* **MR2, when `colorWheels` is present (non-empty):** knobs 1–3 are the
+  lift/gamma/gain wheels, each through its own handle, whichever wheel has
+  keyboard focus. A press cycles value → r → g → b, and keys 6–8 reset a wheel.
 * **MR2, effect stack with a `param.target`:** knob 1 nudges and its press
   toggles normal/fine; knob 3 runs `param.focus`.
 * **MR3, `ripple`/`roll` tool with an `edit.target`:** knob 2 trims, and its
@@ -429,8 +507,19 @@ implements:
 * admission order: options/size → lease → unknown options → epoch → ready,
   closing, active, modal. Ready, closing, active and modal are checked again
   at dispatch, for both control batches and queued actions;
-* per-control option allowlists;
-* integral and finite deltas within `maxDelta`;
+* per-control option allowlists; every parameter control/command shares
+  Kdenlive's MR2 option set;
+* finite deltas within `maxDelta` (10000 relative; `param.focus` 64), integral
+  except `param.nudge`/`colorwheel.nudge`;
+* MR2 context as Kdenlive publishes it (`focusWheels`, `hoverWheel`,
+  `focusParam`): `colorWheel`, the three `colorWheels` handles (`cw-lift`,
+  `cw-gamma`, `cw-gain`), `hoveredColorWheel`, `param` and `effect` with the
+  shapes in §4.4; values refresh with a serial bump, never an epoch;
+* wheel handle validation: unknown handle → `target_not_found`, contradicting
+  `wheel` → `unsupported_parameter`, numeric axis other than `value` →
+  `invalid_arguments`;
+* Kdenlive's MR2 `limits` names and advertised `contextKeys` per stage
+  (including `emittedAtMs`); `emittedAtMs` on every `ContextChanged`;
 * `stale_sequence`;
 * pending keys built from sender, session, epoch, gesture, target, control and
   options;
@@ -439,12 +528,21 @@ implements:
   on the bus, connection-scoped on peers);
 * a 34 ms monotonic context limiter that is idle without subscribers;
 * staged capabilities (`--stage 1|2|3`) and `--off`, which owns the service
-  but not the object;
+  but not the object; `--tick-ms N` simulates playback (one frame every N ms)
+  to exercise the context limiter; console commands `wheel`, `hover`, `param`,
+  `grouped`, `history`, `tool`, `dialog`, `position`, `state`;
 * one history entry per changed gesture, none for a no-op, judged on the
   gesture's own captured parameter;
 * cancel and `history_conflict`. Ended gestures are remembered: a late cancel
-  gets `history_conflict`, a late update `stale_context`, and a late end is
-  acknowledged as idempotent. Unrelated history ends open gestures;
+  gets `history_conflict` (contract text). As in Kdenlive's MR2, a late update
+  or end with an ended id starts a new gesture, so a late end applies its delta
+  once and a zero-delta late end is a no-op. Unrelated history ends open
+  gestures and starts a new epoch;
+* one active editing gesture host-wide (`busy` for another caller; the same
+  caller's new gesture commits the previous one); gestures also end on a
+  playhead move and when any other control applies; grouped propagation
+  (console `grouped on`) → `unsupported_group`; `Invoke` while actions are
+  queued → `busy`;
 * `stale_context` for batches dropped on an epoch change;
 * `TriggerAction` accepted → revalidated → `ActionFinished` invoked or
   refused;
@@ -459,46 +557,67 @@ Tests:
   sender separation, lease forgery, unsubscribe silence, owner loss, the
   ≤ 30 Hz limit, the lease limit, and client ack correlation against a scripted
   server: late, foreign, duplicate and wrong-target acks, and no reuse of
-  sequence numbers across leases. It also distinguishes absent from timeout.
+  sequence numbers across leases. It also distinguishes absent from timeout,
+  and runs the mock as a separate `--tick-ms` process while the client thread
+  is blocked: arrival bunches (minimum arrival spacing < 17 ms) while every
+  `emittedAtMs` spacing stays ≥ 34 ms.
+* MR2 regressions on the peer connection: `mr2WheelHandlesAndValidation`,
+  `singleActiveGestureAndBusy`, `gestureEndsOnPlayheadAndOtherControls`,
+  `lateCancelOfEndedGesture`, and `daemonThreeWheelKnobs` (engine + client +
+  mock: three knobs edit three wheels without a focus change, three undo
+  entries, and another caller's gesture is a reported `busy`, never keys).
 * `control-surfaced bench-dbus N --kdenlive-service NAME` measures
-  `Control`→`ControlAck` round trips against any implementation. On the mock
-  (revision 1 wire) the earlier result was p50 ≈ 110 µs and p99 ≈ 177 µs. That
-  is transport evidence only.
+  `Control`→`ControlAck` round trips against any implementation, then prints
+  the context pacing (`emittedAtMs` spacing versus arrival spacing). On the
+  mock over a private bus (revision 2 wire, MR2 mock, 2000 jogs): p50 ≈ 145 µs,
+  p99 ≈ 213 µs, `emittedAtMs` spacing ≥ 34 ms. That is transport evidence only.
 
 ---
 
 ## 7. Ambiguities and suggested clarifications (reported to the coordinator)
 
-1. **Resolved:** ControlAck outcomes now carry `session`, also on errors. The
-   daemon matches on (session, seq), covered by `lateAckFromOldLeaseIsIgnored`.
-2. **Shape of a refusal ack.** The `outcome` is assumed to be an envelope.
-   Error outcomes carry no `firstSeq`/`lastSeq`/`target`/`gesture`, so the
-   client correlates by the `seq` argument (the highest seq of the dropped
-   batch). Confirm this, or add correlation fields to errors.
-3. **Editing options on non-editing controls.** Whether MR1 controls and
-   `param.focus` must reject `target`/`gesture`/`phase` is not stated. The mock
-   rejects them as unknown options, and the daemon never sends them.
-4. **Error code for oversized input.** Not specified. The mock uses
-   `invalid_arguments` (with `field`) for too many options or strings that are
-   too long, and `resource_limit` for queue and lease limits.
-5. **Unknown `Invoke` command.** There is no `unsupported_command` code. The
-   mock uses `unsupported_control` with field `command`.
-6. **Names inside `limits` and `controlDescriptors`.** Not fixed. The mock
-   uses:
-   * `limits`: `maxLeases`, `maxPendingKeys`, `maxQueuedActions`, `maxOptions`,
-     `maxStringInput`, `maxNotifyText`, `maxContextRateHz`;
-   * `controlDescriptors`: `id`, `unit`, `integral`, `maxDelta`, `editing`,
-     `absolute`, `options`, `axes`, `modes`.
-7. **Context paths for MR3 targets.** `timeline.track` is settled as an object
-   with the native id and sequence. The daemon takes `track.set`'s target from
-   `timeline.track.target`, and the mock publishes it there. The paths for
-   `audio.gain` (`audio.target`) and `edit.trim` (`edit.target`, plus the
-   captured group/ripple scope) are still the daemon's assumption.
-8. **An `end` with a nonzero delta.** The daemon may send the last pending
-   delta together with `phase:"end"`. The mock applies it, then ends. Confirm
-   this is allowed.
-9. **End after an epoch change.** The daemon sends no `end` for gestures that
-   an epoch change invalidated, because the host has already ended them.
-   Confirm no explicit end is expected.
-10. **Revision compatibility.** The daemon treats revision < 2 as absent (stock
-    fallback) and accepts revision ≥ 2 of version 1.
+Status against contract SHA `e061f20c…a8357` and MAIN's qualified MR2
+implementation. The contract text has no clarifications section, so
+"answered" means the text now settles it; "implementation only" means MAIN's
+MR2 code settles it but the text does not (the daemon and mock follow the
+code).
+
+| # | Question | Status |
+|---|---|---|
+| 1 | ControlAck outcomes carry `session`, also on errors | **Answered** (text); daemon matches (session, seq) |
+| 2 | Correlating refusal acks (no `firstSeq`/`target` in errors) | **Answered** (text): by lease/sequence and target; the client uses the `seq` argument plus `session` |
+| 3 | Editing options on non-editing controls | **Implementation only**: transport rejects them (`invalid_arguments`); `param.focus` accepts the full parameter option set |
+| 4 | Error code for oversized input (too many options, long strings) | **Open**: text says "reject before queuing" without a code; mock uses `invalid_arguments` with `field`, `resource_limit` for queues/leases |
+| 5 | Unknown `Invoke` command | **Implementation only**: `unsupported_control` (mock agrees) |
+| 6 | Names in `limits` / `controlDescriptors` | **Implementation only**: `subscriptions`, `pendingKeys`, `queuedActions`, `contextHz`, `maximumDelta`; no `controlDescriptors` (optional). Mock now uses these names |
+| 7 | MR3 target paths (`audio.target`, `edit.target`, trim scope) | **Open**: MR3 unpublished; nothing new built for it |
+| 8 | `end` with a nonzero delta | **Implementation only**: the barrier flushes pending work, then applies its delta and ends |
+| 9 | Explicit `end` after an epoch change | **Answered** (text): the host ends gestures on target/focus change; none expected |
+| 10 | Revision compatibility (daemon: revision < 2 = absent) | **Open** |
+
+New items from MR2:
+
+11. **`unsupported_group` is not in the core code list.** The MR2 code returns
+    it for grouped propagation. Add it to the list, or map it to an existing
+    code. The daemon treats it as a domain refusal either way.
+12. **Late cancel.** The text says a cancel that no longer owns its gesture
+    returns `history_conflict`. The MR2 code returns `ok {state: "applied",
+    changed: false}` for a cancel of a non-continuing gesture (including after
+    unrelated history ended it). The mock follows the text. The daemon never
+    sends `cancel`, so it is unaffected; one of the two should change.
+13. **One active editing gesture per host** (`busy` for another caller; the same
+    caller's new gesture ends its previous one) is implemented but not stated.
+    The daemon relies on it: it ends its own gesture before starting another.
+14. **Extra gesture-ending events**: a playhead/monitor position change and any
+    non-parameter control (jog, shuttle, zoom) end the gesture in the code;
+    the text lists idle, end, target/focus change, unrelated history, save and
+    undo/redo. With playback running, a parameter gesture ends on every frame.
+15. **Reusing an ended gesture id** starts a new gesture (a late end applies
+    its delta as a one-shot entry). The text is silent; the mock follows the
+    code.
+16. **Unrelated history changes the epoch** in the code (pending work from
+    before it gets `stale_context`). The text describes the epoch as the
+    target/context generation; state that history changes count.
+17. **`wheel` with a wheel handle** is optional in the code (the handle names
+    the wheel; a contradiction is `unsupported_parameter`), but the option
+    table lists it as the control's option. Confirm that clients may omit it.

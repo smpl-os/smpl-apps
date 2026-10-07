@@ -53,9 +53,11 @@
             },
             "layers": [
                 {
-                    // Lift/Gamma/Gain effect focused: one knob per wheel, press cycles the axis.
+                    // Lift/Gamma/Gain widget focused: Kdenlive publishes one handle per
+                    // wheel (colorWheels), so each knob edits its own wheel without
+                    // moving focus; press cycles the axis, keys 6-8 reset a wheel.
                     "name": "color-wheels",
-                    "when": { "colorWheel.target": "/.+/" },
+                    "when": { "colorWheels": true },
                     "bindings": {
                         "knob1": {
                             "turn": { "control": "colorwheel.nudge", "options": { "wheel": "lift", "axis": "$liftAxis" } },

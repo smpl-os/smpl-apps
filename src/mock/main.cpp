@@ -4,14 +4,19 @@
 //   --stage 1|2|3   advertise MR1 (transport/zoom/actions), MR2 (+parameters,
 //                   wheels) or MR3 (+track, scroll, gain, trim). Default 3.
 //   --off           own the service but not the object: Kdenlive's default.
+//   --tick-ms <ms>  simulate playback: advance the playhead every <ms>
+//                   (context emission stays capped at 30 Hz).
 // Console commands on stdin:
 //   focus <timeline|clipMonitor|projectMonitor|effectStack|bin>
-//   wheel on|off        focused Lift/Gamma/Gain effect (effect, colorWheel)
-//   hover on|off        hovered colour wheel (hoveredColorWheel)
-//   param <name>|-      focused scalar parameter
+//   wheel <lift|gamma|gain>|off   focus a Lift/Gamma/Gain wheel: publishes
+//                       effect, colorWheel and the three colorWheels handles
+//   hover <lift|gamma|gain>|off   hovered colour wheel (hoveredColorWheel)
+//   param <level|opacity>|-       focused scalar parameter
+//   grouped on|off      selection is a group: parameter edits are refused
+//   history <label>     an unrelated undo entry (ends gestures, new epoch)
 //   tool <select|razor|ripple|roll|slip|slide>
 //   dialog on|off       modal dialog
-//   position <frame>    playhead (serial only)
+//   position <frame>    playhead (serial only; ends editing gestures)
 //   state               print the editing state
 #include "kdenlivecontract.h"
 #include "mockkdenlive.h"
@@ -22,6 +27,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSocketNotifier>
+#include <QTimer>
 #include <cstdio>
 #include <unistd.h>
 
@@ -37,7 +43,8 @@ int main(int argc, char **argv)
     QCommandLineOption delayOpt(QStringLiteral("apply-delay"), QStringLiteral("simulated GUI cost per apply batch in ms"), QStringLiteral("ms"), QStringLiteral("0"));
     QCommandLineOption stageOpt(QStringLiteral("stage"), QStringLiteral("advertised stage 1-3"), QStringLiteral("n"), QStringLiteral("3"));
     QCommandLineOption offOpt(QStringLiteral("off"), QStringLiteral("interface disabled (object absent), like Kdenlive's default"));
-    p.addOptions({serviceOpt, delayOpt, stageOpt, offOpt});
+    QCommandLineOption tickOpt(QStringLiteral("tick-ms"), QStringLiteral("simulate playback, one frame every <ms> (0 = stopped)"), QStringLiteral("ms"), QStringLiteral("0"));
+    p.addOptions({serviceOpt, delayOpt, stageOpt, offOpt, tickOpt});
     p.process(app);
 
     MockKdenlive mock;
@@ -54,6 +61,14 @@ int main(int argc, char **argv)
                 qPrintable(contract::kInterface), mock.stage());
     std::fflush(stdout);
 
+    QTimer playback;
+    playback.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&playback, &QTimer::timeout, &mock, [&mock] { mock.setPosition(mock.context().value(QStringLiteral("position")).toInt() + 1); });
+    if (p.value(tickOpt).toInt() > 0) {
+        mock.setContextValue(QStringLiteral("playing"), true);
+        playback.start(p.value(tickOpt).toInt());
+    }
+
     QSocketNotifier in(0, QSocketNotifier::Read);
     QObject::connect(&in, &QSocketNotifier::activated, &app, [&] {
         char buf[4096];
@@ -69,12 +84,15 @@ int main(int argc, char **argv)
             if (cmd == QLatin1String("focus") || cmd == QLatin1String("tool")) {
                 mock.setContextValue(cmd, arg);
             } else if (cmd == QLatin1String("wheel")) {
-                mock.setContextValue(QStringLiteral("effect"), on ? QVariant(QVariantMap{{QStringLiteral("target"), QStringLiteral("fx-1")}, {QStringLiteral("id"), QStringLiteral("lift_gamma_gain")}}) : QVariant());
-                mock.setContextValue(QStringLiteral("colorWheel"), on ? QVariant(QVariantMap{{QStringLiteral("target"), QStringLiteral("cw-1")}, {QStringLiteral("axes"), QStringList{QStringLiteral("value"), QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")}}}) : QVariant());
+                mock.focusWheels(arg == QLatin1String("off") || arg == QLatin1String("-") ? QString() : arg == QLatin1String("on") ? QStringLiteral("lift") : arg);
             } else if (cmd == QLatin1String("hover")) {
-                mock.setContextValue(QStringLiteral("hoveredColorWheel"), on ? QVariant(QVariantMap{{QStringLiteral("target"), QStringLiteral("cw-hover")}}) : QVariant());
+                mock.hoverWheel(arg == QLatin1String("off") || arg == QLatin1String("-") ? QString() : arg == QLatin1String("on") ? QStringLiteral("gain") : arg);
             } else if (cmd == QLatin1String("param")) {
-                mock.setContextValue(QStringLiteral("param"), arg == QLatin1String("-") ? QVariant() : QVariant(QVariantMap{{QStringLiteral("name"), arg}, {QStringLiteral("target"), QStringLiteral("par-") + arg}}));
+                mock.focusParam(arg == QLatin1String("-") || arg == QLatin1String("off") ? QString() : arg);
+            } else if (cmd == QLatin1String("grouped")) {
+                mock.setGroupedPropagation(on);
+            } else if (cmd == QLatin1String("history")) {
+                mock.addUnrelatedHistory(arg.isEmpty() ? QStringLiteral("user edit") : arg);
             } else if (cmd == QLatin1String("dialog")) {
                 mock.setContextValue(QStringLiteral("dialog"), on);
             } else if (cmd == QLatin1String("position")) {

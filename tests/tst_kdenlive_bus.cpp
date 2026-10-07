@@ -14,7 +14,9 @@
 #include <QDBusContext>
 #include <QSignalSpy>
 #include <QDBusMetaType>
+#include <QProcess>
 #include <QTest>
+#include <QThread>
 #include <QTimer>
 
 using namespace cs;
@@ -265,15 +267,47 @@ private Q_SLOTS:
         QCOMPARE(m_mock->contextSignalsTotal(), before);
     }
 
+    // Delivery can bunch while the client is busy; emission spacing is judged
+    // from emittedAtMs (host clock), never from arrival times. The host runs in
+    // its own process so its limiter keeps time while this thread is blocked.
+    void emittedAtMsPacingSurvivesBunchedDelivery()
+    {
+        const QString service = QStringLiteral("org.kde.kdenlive-ticker");
+        QProcess host;
+        host.setProgram(QStringLiteral(CS_MOCK_BINARY));
+        host.setArguments({QStringLiteral("--service"), service, QStringLiteral("--stage"), QStringLiteral("1"), QStringLiteral("--tick-ms"), QStringLiteral("4")});
+        host.setStandardOutputFile(QProcess::nullDevice());
+        host.start();
+        QVERIFY(host.waitForStarted());
+        QDBusConnection conn = client(QStringLiteral("T"));
+        QTRY_VERIFY(conn.interface()->isServiceRegistered(service));
+        KdenliveDBusClient c(conn);
+        c.setServiceOverride(service);
+        c.attachToPid(1);
+        QTRY_VERIFY(c.isAvailable());
+        QTest::qWait(200);
+        QThread::msleep(400);  // a busy client: ~12 signals queue up undelivered
+        QTest::qWait(300);
+        const auto timing = c.contextTiming();
+        host.kill();
+        host.waitForFinished();
+        QVERIFY2(timing.received >= 15, qPrintable(QString::number(timing.received)));
+        QCOMPARE(timing.stamped, timing.received);  // every ContextChanged carries emittedAtMs
+        QVERIFY2(timing.minEmitGapMs >= contract::kMinContextIntervalMs, qPrintable(QString::number(timing.minEmitGapMs)));
+        QVERIFY2(timing.minArrivalGapMs < contract::kMinContextIntervalMs / 2, qPrintable(QString::number(timing.minArrivalGapMs)));  // bunched
+        QVERIFY(c.context().value(QStringLiteral("playing")).toBool());
+    }
+
     void ownerLossDropsQueuedWorkAndEndsGesture()
     {
-        m_mock->setContextValue(QStringLiteral("colorWheel"), QVariantMap{{QStringLiteral("target"), QStringLiteral("cw-1")}});
+        m_mock->focusWheels(QStringLiteral("gain"));
         {
             RawClient b(client(QStringLiteral("B")), kService);
             b.subscribe();
-            const QVariantMap g{{QStringLiteral("target"), QStringLiteral("cw-1")}, {QStringLiteral("gesture"), QStringLiteral("b1")}, {QStringLiteral("wheel"), QStringLiteral("gain")}};
+            const QVariantMap g{{QStringLiteral("target"), MockKdenlive::wheelTarget(QStringLiteral("gain"))}, {QStringLiteral("gesture"), QStringLiteral("b1")}, {QStringLiteral("wheel"), QStringLiteral("gain")}};
             b.control(contract::kColorWheel, 10, g, 1);
             QTRY_COMPARE(b.acks.size(), 1);  // applied, gesture still open
+            QVERIFY(b.acks[0].value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
             m_mock->setApplyDelayMs(300);
             b.control(contract::kJog, 50, {}, 2);  // queued, not yet applied
         }

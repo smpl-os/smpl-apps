@@ -241,13 +241,32 @@ QVariantMap Engine::expandOptions(const QVariantMap &opts) const
     return out;
 }
 
-QString Engine::resolveTarget(const Binding &b, const QString &name) const
+QString Engine::resolveTarget(const Binding &b, const QString &name, const QVariantMap &options) const
 {
     const QString path = b.targetFrom.isEmpty() ? defaultTargetPath(name) : b.targetFrom;
     if (path.isEmpty() || !m_kd) {
         return {};
     }
-    return valueAtPath(m_kd->context(), path).toString();
+    const QVariantMap ctx = m_kd->context();
+    const bool wheelControl = name == contract::kColorWheel || name == contract::kCmdWheelReset;
+    const QString wheel = options.value(QStringLiteral("wheel")).toString();
+    auto wheelOf = [](const QVariantMap &descriptor) { return descriptor.value(QStringLiteral("wheel")).toString(); };
+    if (wheelControl && b.targetFrom.isEmpty() && !wheel.isEmpty()) {
+        // MR2: the focused Lift/Gamma/Gain widget publishes one handle per wheel.
+        for (const auto &entry : ctx.value(QStringLiteral("colorWheels")).toList()) {
+            const QVariantMap d = entry.toMap();
+            if (wheelOf(d) == wheel) {
+                return d.value(contract::kOptTarget).toString();
+            }
+        }
+    }
+    if (wheelControl && !wheel.isEmpty() && path.endsWith(QLatin1String(".target"))) {
+        const QVariantMap d = valueAtPath(ctx, path.chopped(7)).toMap();
+        if (!wheelOf(d).isEmpty() && wheelOf(d) != wheel) {
+            return {};  // e.g. the focused or hovered wheel is a different one
+        }
+    }
+    return valueAtPath(ctx, path).toString();
 }
 
 void Engine::handle(const PadEvent &e)
@@ -361,7 +380,7 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
             QVariantMap args = expandOptions(b.options);
             const QString path = b.targetFrom.isEmpty() ? defaultTargetPath(b.name) : b.targetFrom;
             if (!path.isEmpty() && !args.contains(contract::kOptTarget)) {
-                const QString target = valueAtPath(m_kd->context(), path).toString();
+                const QString target = resolveTarget(b, b.name, args);
                 if (target.isEmpty()) {
                     sayOnce(QStringLiteral("notarget|") + b.name, QStringLiteral("%1: no %2 in Kdenlive's context").arg(b.name, path));
                     return;
@@ -399,6 +418,11 @@ void Engine::executeControl(const Binding &b, const QString &slot, const QString
     const QVariantMap opts = expandOptions(b.options);
     QString key;
     QVariantMap payloadOptions = opts;
+    if (!contract::isEditingControl(b.name)) {
+        // Kdenlive ends the editing gesture when any other control applies; end
+        // ours first so a later turn starts a fresh gesture id.
+        endAllGestures(false);
+    }
     if (contract::isEditingControl(b.name)) {
         const QString bindingId = slot + QLatin1Char('|') + b.name + QLatin1Char('|') + optionsKey(opts);
         const quint64 epoch = m_kd->epoch();
@@ -409,12 +433,15 @@ void Engine::executeControl(const Binding &b, const QString &slot, const QString
         }
         // An open gesture keeps the target it captured; only a new gesture reads
         // the context (so a moving hover can never retarget a turn in progress).
-        const QString target = it != m_gestures.end() ? it->target : resolveTarget(b, b.name);
+        const QString target = it != m_gestures.end() ? it->target : resolveTarget(b, b.name, opts);
         if (target.isEmpty()) {
             sayOnce(QStringLiteral("notarget|") + b.name, QStringLiteral("%1: no editing target in Kdenlive's context").arg(b.name));
             return;
         }
         if (it == m_gestures.end()) {
+            // Kdenlive keeps one active editing gesture per host: close ours
+            // (end barriers go out first) before another binding starts one.
+            endAllGestures(false);
             Gesture g;
             g.id = QStringLiteral("cs-%1-%2").arg(QCoreApplication::applicationPid()).arg(++m_gestureCounter);
             g.key = bindingId + QStringLiteral("|") + g.id + QStringLiteral("|") + target;

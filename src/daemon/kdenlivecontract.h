@@ -73,6 +73,9 @@ inline const QString ManagedParameter = QStringLiteral("managed_parameter");
 inline const QString TrackLocked = QStringLiteral("track_locked");
 inline const QString HistoryConflict = QStringLiteral("history_conflict");
 inline const QString EditFailed = QStringLiteral("edit_failed");
+// Returned by Kdenlive's MR2 implementation for grouped parameter propagation;
+// not (yet) in the contract's error list.
+inline const QString UnsupportedGroup = QStringLiteral("unsupported_group");
 }
 
 // D-Bus errors that prove the interface (or Kdenlive's service) is absent: the

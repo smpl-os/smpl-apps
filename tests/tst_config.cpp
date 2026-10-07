@@ -105,6 +105,16 @@ private Q_SLOTS:
         QVERIFY(conditionMatches({{QStringLiteral("param.min"), 0}}, ctx));
         QVERIFY(!conditionMatches({{QStringLiteral("missing.path"), QStringLiteral("x")}}, ctx));
         QVERIFY(!conditionMatches({{QStringLiteral("param.name"), QStringLiteral("/.+/")}}, QVariantMap{}));
+        // Lists (MR2 colorWheels): an empty array is falsy, a populated one truthy.
+        const QVariantMap none{{QStringLiteral("colorWheels"), QVariantList{}}, {QStringLiteral("axes"), QStringList{}}};
+        const QVariantMap three{{QStringLiteral("colorWheels"), QVariantList{QVariantMap{{QStringLiteral("wheel"), QStringLiteral("lift")}}}},
+                                {QStringLiteral("axes"), QStringList{QStringLiteral("value")}}};
+        QVERIFY(!conditionMatches({{QStringLiteral("colorWheels"), true}}, none));
+        QVERIFY(conditionMatches({{QStringLiteral("colorWheels"), false}}, none));
+        QVERIFY(!conditionMatches({{QStringLiteral("axes"), true}}, none));
+        QVERIFY(conditionMatches({{QStringLiteral("colorWheels"), true}}, three));
+        QVERIFY(conditionMatches({{QStringLiteral("axes"), true}}, three));
+        QVERIFY(!conditionMatches({{QStringLiteral("colorWheels"), true}}, ctx));  // absent
     }
 };
 

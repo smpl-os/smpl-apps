@@ -317,7 +317,8 @@ void KdenliveDBusClient::stepSubscribe(quint64 gen)
         }
         m_session = e.result.value(QStringLiteral("session")).toString();
         m_haveSerial = false;
-        onContextChanged(e.result.value(QStringLiteral("context")).toMap());
+        resetContextTiming();  // per lease (and per host process)
+        applyContext(e.result.value(QStringLiteral("context")).toMap(), false);
         stepListActions(gen, true);
     });
 }
@@ -377,6 +378,31 @@ void KdenliveDBusClient::setState(State s)
 
 void KdenliveDBusClient::onContextChanged(const QVariantMap &context)
 {
+    applyContext(context, true);
+}
+
+void KdenliveDBusClient::noteContextTiming(const QVariantMap &ctx)
+{
+    ++m_timing.received;
+    if (m_lastArrival.isValid()) {
+        const qint64 gap = m_lastArrival.elapsed();
+        m_timing.minArrivalGapMs = m_timing.minArrivalGapMs < 0 ? gap : qMin(m_timing.minArrivalGapMs, gap);
+    }
+    m_lastArrival.start();
+    const QVariant emitted = ctx.value(QStringLiteral("emittedAtMs"));
+    if (emitted.isValid()) {
+        const quint64 at = emitted.toULongLong();
+        if (m_timing.stamped > 0 && at >= m_timing.lastEmittedAtMs) {
+            const qint64 gap = qint64(at - m_timing.lastEmittedAtMs);
+            m_timing.minEmitGapMs = m_timing.minEmitGapMs < 0 ? gap : qMin(m_timing.minEmitGapMs, gap);
+        }
+        ++m_timing.stamped;
+        m_timing.lastEmittedAtMs = at;
+    }
+}
+
+void KdenliveDBusClient::applyContext(const QVariantMap &context, bool fromSignal)
+{
     if (!m_attached) {
         return;
     }
@@ -387,6 +413,9 @@ void KdenliveDBusClient::onContextChanged(const QVariantMap &context)
     }
     m_haveSerial = true;
     m_serial = serial;
+    if (fromSignal) {
+        noteContextTiming(ctx);
+    }
     m_context = ctx;
     const quint64 epoch = ctx.value(contract::kCtxEpoch).toULongLong();
     const bool epochChangedNow = epoch != m_epoch;

@@ -75,6 +75,9 @@ if(BUILD_TESTING)
     endforeach()
     target_sources(tst_kdenlive_dbus PRIVATE tests/rawclient.h)
     target_sources(tst_kdenlive_bus PRIVATE tests/rawclient.h)
+    # The pacing test runs the mock as a separate process (its own event loop).
+    target_compile_definitions(tst_kdenlive_bus PRIVATE CS_MOCK_BINARY="$<TARGET_FILE:mock-kdenlive>")
+    add_dependencies(tst_kdenlive_bus mock-kdenlive)
     # Multi-subscriber and ownership tests need a real bus: always a private one.
     find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
     add_test(NAME kdenlive_bus COMMAND ${CMAKE_COMMAND} -E env CS_PRIVATE_BUS=1 ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_kdenlive_bus>)

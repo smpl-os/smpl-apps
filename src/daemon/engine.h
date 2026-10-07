@@ -75,7 +75,11 @@ private:
     void enqueueTaps(const QString &group, int dir, const QList<KeyChord> &chords, int count);
     void drainTap();
     QVariantMap expandOptions(const QVariantMap &opts) const;
-    QString resolveTarget(const Binding &b, const QString &name) const;
+    // Opaque target handle for an editing control/command. Colour-wheel targets
+    // are per wheel: the colorWheels entry for the requested wheel, else the
+    // focused colorWheel, and a targetFrom descriptor whose wheel differs from
+    // the requested one yields no target (Kdenlive would refuse it).
+    QString resolveTarget(const Binding &b, const QString &name, const QVariantMap &options) const;
     const QHash<QString, QStringList> *modesFor(const QString &mode, QString *owner) const;
     void onFlush(const QString &key, double delta, int merged, const QVariantMap &payload, bool isEnd);
     void endGesture(const QString &bindingId, bool dropPending);
