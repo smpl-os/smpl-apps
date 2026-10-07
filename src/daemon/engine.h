@@ -84,6 +84,7 @@ private:
     void sayOnce(const QString &key, const QString &text);
     void dropPendingWork();
     bool kdenliveProfile() const;
+    bool kdenliveAttachedToFocus() const;
 
     KeySink *m_keys;
     KdenliveClient *m_kd;

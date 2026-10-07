@@ -149,14 +149,21 @@ bool Engine::kdenliveProfile() const
     return m_profile && m_profile->kdenlive;
 }
 
+bool Engine::kdenliveAttachedToFocus() const
+{
+    // During a provisional focus event (pid unknown) or before re-attaching, the
+    // client state belongs to another instance: treat it as unanswered.
+    return m_kd && m_window.pid > 0 && m_kd->attachedPid() == m_window.pid;
+}
+
 bool Engine::kdenliveActive() const
 {
-    return kdenliveProfile() && m_kd && m_kd->isAvailable();
+    return kdenliveProfile() && kdenliveAttachedToFocus() && m_kd->isAvailable();
 }
 
 bool Engine::kdenliveStock() const
 {
-    return kdenliveProfile() && (!m_kd || m_kd->isAbsent());
+    return kdenliveProfile() && (!m_kd || (kdenliveAttachedToFocus() && m_kd->isAbsent()));
 }
 
 QStringList Engine::turnSlots(const QString &control, int delta)
@@ -393,17 +400,19 @@ void Engine::executeControl(const Binding &b, const QString &slot, const QString
     QString key;
     QVariantMap payloadOptions = opts;
     if (contract::isEditingControl(b.name)) {
-        const QString target = resolveTarget(b, b.name);
-        if (target.isEmpty()) {
-            sayOnce(QStringLiteral("notarget|") + b.name, QStringLiteral("%1: no editing target in Kdenlive's context").arg(b.name));
-            return;
-        }
         const QString bindingId = slot + QLatin1Char('|') + b.name + QLatin1Char('|') + optionsKey(opts);
         const quint64 epoch = m_kd->epoch();
         auto it = m_gestures.find(bindingId);
-        if (it != m_gestures.end() && (it->target != target || it->epoch != epoch || it->last.elapsed() > m_cfg.settings.gestureIdleMs)) {
+        if (it != m_gestures.end() && (it->epoch != epoch || it->last.elapsed() > m_cfg.settings.gestureIdleMs)) {
             endGesture(bindingId, false);
             it = m_gestures.end();
+        }
+        // An open gesture keeps the target it captured; only a new gesture reads
+        // the context (so a moving hover can never retarget a turn in progress).
+        const QString target = it != m_gestures.end() ? it->target : resolveTarget(b, b.name);
+        if (target.isEmpty()) {
+            sayOnce(QStringLiteral("notarget|") + b.name, QStringLiteral("%1: no editing target in Kdenlive's context").arg(b.name));
+            return;
         }
         if (it == m_gestures.end()) {
             Gesture g;

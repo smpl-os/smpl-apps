@@ -268,8 +268,13 @@ private Q_SLOTS:
         QTRY_COMPARE(kd.calls.size(), 3);
         QVERIFY(kd.calls.at(1).contains(QStringLiteral("(end)")));
         QCOMPARE(kd.calls.at(2), QStringLiteral("action mark_in"));
-        e.handle(press(1));  // cycle is discrete too
+        e.handle(turn(3, 1));  // a new gesture...
+        QTRY_COMPARE(kd.calls.size(), 4);
+        QCOMPARE(e.activeGestures(), 1);
+        e.handle(press(1));    // ...is closed by the (discrete) mode cycle
         QCOMPARE(e.activeGestures(), 0);
+        QVERIFY(kd.calls.at(4).contains(QStringLiteral("(end)")));
+        QCOMPARE(kd.calls.at(5), QStringLiteral("notify Lift: r"));
     }
 
     void epochChangeDropsQueuedMotion()
@@ -355,6 +360,14 @@ private Q_SLOTS:
         ctx.insert(QStringLiteral("hoveredColorWheel"), QVariantMap{{QStringLiteral("target"), QStringLiteral("cw-elsewhere")}});
         kd.setContext(ctx);
         QCOMPARE(e.activeGestures(), 2);
+        e.handle(turn(2, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 3);
+        QCOMPARE(kd.controlOptions.at(2).value(QStringLiteral("target")).toString(), QStringLiteral("cw-hover"));
+        QCOMPARE(kd.controlOptions.at(2).value(QStringLiteral("gesture")).toString(), kd.controlOptions.at(1).value(QStringLiteral("gesture")).toString());
+        // Once that gesture has ended, a new one reads the hover again.
+        e.endAllGestures(false);
+        e.handle(turn(2, 1));
+        QTRY_VERIFY(kd.controlOptions.last().value(QStringLiteral("target")).toString() == QStringLiteral("cw-elsewhere"));
     }
 
     void tapPacingAndReversal()
@@ -414,6 +427,35 @@ private Q_SLOTS:
         QCOMPARE(o.value(QStringLiteral("mode")).toString(), QStringLiteral("ripple"));
         QCOMPARE(o.value(QStringLiteral("edge")).toString(), QStringLiteral("end"));
         QCOMPARE(o.value(QStringLiteral("target")).toString(), QStringLiteral("ed-1"));
+    }
+
+    void provisionalFocusSendsAndTypesNothing()
+    {
+        for (const State st : {State::Available, State::Absent}) {
+            RecordingKeySink keys;
+            FakeKdenliveClient kd;
+            kd.setState(st);
+            Engine e(&keys, &kd);
+            e.setConfig(m_cfg);
+            e.setActiveWindow(kKdenlive);  // instance A, pid 4242
+            // Focus moves to Kdenlive instance B; its pid is not known yet.
+            e.setActiveWindow(WindowInfo{kKdenlive.cls, QStringLiteral("B"), 0, QStringLiteral("0xb")});
+            QCOMPARE(kd.attachedPid(), 4242);  // still attached to A
+            e.handle(key(1));
+            e.handle(turn(1, 1));
+            QTest::qWait(30);
+            QVERIFY2(kd.calls.isEmpty(), "nothing goes to the unfocused instance A");
+            QVERIFY2(keys.taps.isEmpty(), "A's absence says nothing about B: no keys");
+            // The query answers: B attaches, input flows normally again.
+            e.setActiveWindow(WindowInfo{kKdenlive.cls, QStringLiteral("B"), 5151, QStringLiteral("0xb")});
+            QCOMPARE(kd.attachedPid(), 5151);
+            e.handle(key(1));
+            if (st == State::Available) {
+                QTRY_COMPARE(kd.calls, QStringList{QStringLiteral("action mark_in")});
+            } else {
+                QTRY_COMPARE(keys.taps, QStringList{QStringLiteral("I")});
+            }
+        }
     }
 
     void provisionalFocusKeepsAttachment()

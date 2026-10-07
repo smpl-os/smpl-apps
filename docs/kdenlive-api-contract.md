@@ -338,6 +338,20 @@ A domain refusal (`ok:false`, in `TriggerAction` or `ActionFinished`,
 the interface vanished, the stock key goes only to the same Kdenlive window
 (same pid and address) that was asked.
 
+Further client rules:
+
+* Interface and stock decisions apply only when the focused window's pid equals
+  the attached instance's pid. During a provisional focus event (pid not known
+  yet) or before re-attaching, input is reported and dropped: it is neither
+  sent to the previous instance nor typed.
+* If a `Subscribe` reply arrives after the daemon has already detached, the
+  granted lease is returned with `Unsubscribe`. The exception is when the
+  daemon is attached to that same instance again, because `Subscribe` is
+  idempotent per sender.
+* If `ListActions` fails, the client stays Pending (absent-class errors
+  become Absent) and retries. It never becomes Available with an empty
+  allowlist. A failed refresh keeps the previous allowlist.
+
 ### 5.2 Sequences, correlation and coalescing
 
 * Acks are matched on **(session, seq)**. An outcome whose `session` is not the
@@ -371,7 +385,9 @@ the interface vanished, the stock key goes only to the same Kdenlive window
   A binding may opt into hover with `"targetFrom": "hoveredColorWheel.target"`.
   With no target, nothing is sent.
 * A gesture (`cs-<pid>-<n>`) is scoped to one binding (slot, control and
-  options), one target and one epoch. It ends with an explicit `phase:"end"`
+  options), one target and one epoch. An open gesture keeps the target it
+  captured; only a new gesture reads the target from the context, so a moving
+  hover never retargets a turn in progress. It ends with an explicit `phase:"end"`
   barrier in four cases:
   * 500 ms idle (`gestureIdleMs`; the host ends at 600 ms);
   * a mode cycle;
@@ -408,9 +424,11 @@ the interface vanished, the stock key goes only to the same Kdenlive window
 implements:
 
 * sender-bound leases (owner loss via `QDBusServiceWatcher`), with the lease
-  echoed in every ControlAck outcome;
+  echoed in every ControlAck outcome; a `Control` from a caller with no lease
+  is dropped silently, with no signal of any kind;
 * admission order: options/size → lease → unknown options → epoch → ready,
-  closing, active, modal;
+  closing, active, modal. Ready, closing, active and modal are checked again
+  at dispatch, for both control batches and queued actions;
 * per-control option allowlists;
 * integral and finite deltas within `maxDelta`;
 * `stale_sequence`;
@@ -422,8 +440,11 @@ implements:
 * a 34 ms monotonic context limiter that is idle without subscribers;
 * staged capabilities (`--stage 1|2|3`) and `--off`, which owns the service
   but not the object;
-* one history entry per changed gesture, none for a no-op;
-* cancel and `history_conflict`;
+* one history entry per changed gesture, none for a no-op, judged on the
+  gesture's own captured parameter;
+* cancel and `history_conflict`. Ended gestures are remembered: a late cancel
+  gets `history_conflict`, a late update `stale_context`, and a late end is
+  acknowledged as idempotent. Unrelated history ends open gestures;
 * `stale_context` for batches dropped on an epoch change;
 * `TriggerAction` accepted → revalidated → `ActionFinished` invoked or
   refused;

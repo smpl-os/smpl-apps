@@ -382,7 +382,10 @@ void MockKdenlive::dropLease(const QString &owner)
         }
     }
     m_actions.erase(std::remove_if(m_actions.begin(), m_actions.end(), [&](const QueuedAction &a) { return a.caller.owner == owner; }), m_actions.end());
-    delete it->watcher;
+    if (it->watcher) {
+        it->watcher->disconnect(this);
+        it->watcher->deleteLater();  // may be called from the watcher's own signal
+    }
     m_leases.erase(it);
     if (m_leases.isEmpty()) {
         m_contextTimer->stop();  // no subscribers: no context work at all
@@ -433,6 +436,11 @@ QVariantMap MockKdenlive::admit(const Caller &c, const QVariantMap &options, con
     if (options.value(kOptEpoch).toULongLong() != m_epoch) {
         return fail(err::StaleContext, QStringLiteral("context changed"), kOptEpoch);
     }
+    return stateCheck();
+}
+
+QVariantMap MockKdenlive::stateCheck() const
+{
     if (!m_context.value(QStringLiteral("ready")).toBool()) {
         return fail(err::NotReady, QStringLiteral("editor not ready"));
     }
@@ -559,6 +567,11 @@ void MockKdenlive::control(const QString &control, double delta, const QVariantM
 {
     ++m_controlMessages;
     const Caller c = currentCaller();
+    if (!leaseFor(c)) {
+        // Signals go only to current subscribers: a caller without a lease gets nothing.
+        record(QStringLiteral("Control from %1 without a lease dropped").arg(c.owner));
+        return;
+    }
     const Descriptor *d = descriptor(control);
     const QString sentSession = options.value(kOptSession).toString();
     if (!d || d->stage > m_stage) {
@@ -618,10 +631,10 @@ void MockKdenlive::control(const QString &control, double delta, const QVariantM
     }
 }
 
-QVariant MockKdenlive::gestureValue(const QString &control, const QVariantMap &semantic) const
+QVariant MockKdenlive::gestureValue(const QString &control, const QVariantMap &semantic, const QString &param) const
 {
     if (control == kParamNudge) {
-        return m_params.value(m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString());
+        return m_params.value(param);
     }
     if (control == kColorWheel) {
         return m_wheels.value(semantic.value(QStringLiteral("wheel")).toString());
@@ -635,10 +648,12 @@ QVariant MockKdenlive::gestureValue(const QString &control, const QVariantMap &s
     return {};
 }
 
-void MockKdenlive::restoreGestureValue(const QString &control, const QVariant &v)
+void MockKdenlive::restoreGestureValue(const QString &control, const QVariantMap &semantic, const QString &param, const QVariant &v)
 {
     if (control == kParamNudge) {
-        m_params.insert(m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString(), v);
+        m_params.insert(param, v);
+    } else if (control == kColorWheel) {
+        m_wheels.insert(semantic.value(QStringLiteral("wheel")).toString(), v);
     } else if (control == kAudioGain) {
         m_gainDb = v.toDouble();
     } else if (control == kTrim) {
@@ -662,8 +677,9 @@ void MockKdenlive::applyPending()
             ack(p.caller, p.session, p.lastSeq, p.control, fail(err::StaleContext, QStringLiteral("context changed before apply")));
             continue;
         }
-        if (m_context.value(QStringLiteral("dialog")).toBool()) {
-            ack(p.caller, p.session, p.lastSeq, p.control, fail(err::Modal, QStringLiteral("modal dialog open")));
+        const QVariantMap refusal = stateCheck();  // dispatch check: state may have changed since admission
+        if (!refusal.isEmpty()) {
+            ack(p.caller, p.session, p.lastSeq, p.control, refusal);
             continue;
         }
         bool changed = false;
@@ -695,13 +711,24 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
     QString gk;
     if (d->editing) {
         gk = QStringList{p.caller.owner, p.session, p.gesture, p.target, p.control, compact(p.semantic)}.join(QLatin1Char('|'));
+        if (m_finishedGestures.contains(gk)) {
+            // The gesture already ended (idle, end, focus change, unrelated history).
+            if (p.phase == QLatin1String("cancel")) {
+                return error(err::HistoryConflict, QStringLiteral("gesture already ended"));
+            }
+            if (p.phase == QLatin1String("end")) {
+                return {{QStringLiteral("ended"), true}};  // idempotent end barrier
+            }
+            return error(err::StaleContext, QStringLiteral("gesture already ended"));
+        }
         if (!m_gestures.contains(gk)) {
             Gesture g;
             g.owner = p.caller.owner;
             g.control = p.control;
             g.target = p.target;
             g.semantic = p.semantic;
-            g.start = gestureValue(p.control, p.semantic);
+            g.param = m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString();
+            g.start = gestureValue(p.control, p.semantic, g.param);
             g.historyAtStart = int(m_history.size());
             m_gestures.insert(gk, g);
             m_gestureTimer->start();
@@ -820,15 +847,14 @@ void MockKdenlive::finishGesture(const QString &key, bool cancel, QVariantMap *e
     if (m_gestures.isEmpty()) {
         m_gestureTimer->stop();
     }
-    const QVariantMap &semantic = g.semantic;
-    const bool netChanged = gestureValue(g.control, semantic) != g.start;
+    m_finishedGestures << key;
+    while (m_finishedGestures.size() > 256) {
+        m_finishedGestures.removeFirst();
+    }
+    const bool netChanged = gestureValue(g.control, g.semantic, g.param) != g.start;
     if (cancel) {
         if (int(m_history.size()) == g.historyAtStart) {
-            if (g.control == kColorWheel) {
-                m_wheels.insert(semantic.value(QStringLiteral("wheel")).toString(), g.start);
-            } else {
-                restoreGestureValue(g.control, g.start);
-            }
+            restoreGestureValue(g.control, g.semantic, g.param, g.start);
             record(QStringLiteral("gesture %1 cancelled").arg(g.control));
             return;
         }
@@ -906,10 +932,11 @@ void MockKdenlive::dispatchActions()
             continue;
         }
         QVariantMap outcome;
+        const QVariantMap refusal = stateCheck();
         if (q.epoch != m_epoch) {
             outcome = fail(err::StaleContext, QStringLiteral("context changed before invocation"));
-        } else if (m_context.value(QStringLiteral("dialog")).toBool()) {
-            outcome = fail(err::Modal, QStringLiteral("modal dialog open"));
+        } else if (!refusal.isEmpty()) {
+            outcome = refusal;
         } else {
             finishAllGestures();  // discrete operations terminate editing gestures first
             m_triggered << q.id;
@@ -1054,6 +1081,7 @@ void MockKdenlive::setPosition(int frame)
 
 void MockKdenlive::addUnrelatedHistory(const QString &label)
 {
+    finishAllGestures();  // unrelated history ends open gestures
     m_history << label;
 }
 

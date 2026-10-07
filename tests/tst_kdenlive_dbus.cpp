@@ -343,6 +343,86 @@ private Q_SLOTS:
         QTRY_COMPARE(RawClient::code(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap()), contract::err::InvalidArguments);
     }
 
+    // Review item 4: dispatch re-checks inactive/not_ready/closing/modal.
+    void dispatchRechecksEditorState()
+    {
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        m_mock->setApplyDelayMs(40);
+        const struct {
+            const char *key;
+            QVariant value;
+            QString code;
+        } cases[] = {{"active", false, contract::err::Inactive}, {"ready", false, contract::err::NotReady}, {"closing", true, contract::err::Closing}};
+        quint64 seq = 0;
+        for (const auto &c : cases) {
+            raw.control(contract::kJog, 4, {}, ++seq);  // admitted
+            QTRY_VERIFY(m_mock->controlMessages() >= int(seq));
+            m_mock->setContextValue(QString::fromLatin1(c.key), c.value);  // state changes before the apply
+            QTRY_VERIFY(!raw.ackFor(seq).isEmpty());
+            QCOMPARE(RawClient::code(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap()), c.code);
+            QCOMPARE(m_mock->state().value(QStringLiteral("position")).toInt(), 0);
+            m_mock->setContextValue(QString::fromLatin1(c.key), c.value.toBool() ? QVariant(false) : QVariant(true));
+            raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
+        }
+        // Queued actions too.
+        QVERIFY(raw.call(QStringLiteral("TriggerAction"), {QStringLiteral("mark_in"), QVariant::fromValue(raw.common())}).value(QStringLiteral("ok")).toBool());
+        m_mock->setContextValue(QStringLiteral("active"), false);
+        QTRY_COMPARE(raw.finished.size(), 1);
+        QCOMPARE(RawClient::code(raw.finished[0].value(QStringLiteral("outcome")).toMap()), contract::err::Inactive);
+        QVERIFY(!m_mock->state().value(QStringLiteral("triggered")).toStringList().contains(QStringLiteral("mark_in")));
+    }
+
+    // Review item 5: a gesture is judged on its own parameter, not the newly focused one.
+    void parameterGestureAcrossFocusChange()
+    {
+        m_mock->setContextValue(QStringLiteral("param"), QVariantMap{{QStringLiteral("name"), QStringLiteral("level")}, {QStringLiteral("target"), QStringLiteral("par-level")}});
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        const QVariantMap g{{QStringLiteral("target"), QStringLiteral("par-level")}, {QStringLiteral("gesture"), QStringLiteral("p1")}};
+        raw.control(contract::kParamNudge, 1, g, 1);
+        QTRY_VERIFY(!raw.ackFor(1).isEmpty());
+        raw.control(contract::kParamNudge, -1, g, 2);
+        QTRY_VERIFY(!raw.ackFor(2).isEmpty());
+        // Focus moves to another parameter (opacity = 100): the level gesture ends as a no-op.
+        m_mock->setContextValue(QStringLiteral("param"), QVariantMap{{QStringLiteral("name"), QStringLiteral("opacity")}, {QStringLiteral("target"), QStringLiteral("par-opacity")}});
+        QVERIFY(m_mock->history().isEmpty());
+        QCOMPARE(m_mock->state()[QStringLiteral("params")].toMap()[QStringLiteral("level")].toDouble(), 50.0);
+        // A real edit ended by a focus change makes exactly one entry.
+        raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
+        const QVariantMap g2{{QStringLiteral("target"), QStringLiteral("par-opacity")}, {QStringLiteral("gesture"), QStringLiteral("p2")}};
+        raw.control(contract::kParamNudge, -5, g2, 3);
+        QTRY_VERIFY(!raw.ackFor(3).isEmpty());
+        m_mock->setContextValue(QStringLiteral("param"), QVariantMap{{QStringLiteral("name"), QStringLiteral("level")}, {QStringLiteral("target"), QStringLiteral("par-level")}});
+        QCOMPARE(m_mock->history().size(), 1);
+        QCOMPARE(m_mock->state()[QStringLiteral("params")].toMap()[QStringLiteral("opacity")].toDouble(), 95.0);
+    }
+
+    // Review item 6: a gesture the host already ended is never "cancelled" successfully.
+    void lateCancelOfEndedGesture()
+    {
+        m_mock->setContextValue(QStringLiteral("colorWheel"), wheelCtx());
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        QVariantMap g{{QStringLiteral("target"), QStringLiteral("cw-1")}, {QStringLiteral("gesture"), QStringLiteral("idle")}, {QStringLiteral("wheel"), QStringLiteral("gain")}};
+        raw.control(contract::kColorWheel, -5, g, 1);
+        QTRY_VERIFY(!raw.ackFor(1).isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(m_mock->history().size(), 1, 2000);  // host idle end after 600 ms
+        g.insert(QStringLiteral("phase"), QStringLiteral("cancel"));
+        raw.control(contract::kColorWheel, 0, g, 2);
+        QTRY_VERIFY(!raw.ackFor(2).isEmpty());
+        QCOMPARE(RawClient::code(raw.ackFor(2).value(QStringLiteral("outcome")).toMap()), contract::err::HistoryConflict);
+        QVERIFY(qAbs(m_mock->state()[QStringLiteral("wheels")].toMap()[QStringLiteral("gain")].toMap()[QStringLiteral("r")].toDouble() - 0.95) < 1e-9);
+        g.insert(QStringLiteral("phase"), QStringLiteral("update"));
+        raw.control(contract::kColorWheel, 1, g, 3);  // late update of the ended gesture
+        QTRY_COMPARE(RawClient::code(raw.ackFor(3).value(QStringLiteral("outcome")).toMap()), contract::err::StaleContext);
+        g.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kColorWheel, 0, g, 4);  // late end barrier: idempotent
+        QTRY_VERIFY(!raw.ackFor(4).isEmpty());
+        QVERIFY(raw.ackFor(4).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QCOMPARE(m_mock->history().size(), 1);
+    }
+
     void epochChangeInvalidatesQueuedWork()
     {
         RawClient raw(connectClient(), QString());

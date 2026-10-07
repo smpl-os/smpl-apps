@@ -115,6 +115,7 @@ private:
     };
     struct Gesture {
         QString owner, control, target;
+        QString param;  // parameter captured at gesture start (param.nudge)
         QVariantMap semantic;
         QVariant start;
         int historyAtStart = 0;
@@ -148,8 +149,9 @@ private:
     void bumpSerial(bool epoch);
     void dispatchActions();
     void record(const QString &line);
-    QVariant gestureValue(const QString &control, const QVariantMap &semantic) const;
-    void restoreGestureValue(const QString &control, const QVariant &v);
+    QVariant gestureValue(const QString &control, const QVariantMap &semantic, const QString &param) const;
+    void restoreGestureValue(const QString &control, const QVariantMap &semantic, const QString &param, const QVariant &v);
+    QVariantMap stateCheck() const;  // ready/closing/active/modal, at admission and at dispatch
     void checkGestureIdle();
 
     int m_stage = 3;
@@ -163,6 +165,7 @@ private:
     bool m_applyScheduled = false;
     int m_applyDelayMs = 0;
     QHash<QString, Gesture> m_gestures;
+    QStringList m_finishedGestures;  // bounded: late cancels get history_conflict
     QTimer *m_gestureTimer;
     QList<QueuedAction> m_actions;
     quint64 m_requestCounter = 0;

@@ -185,8 +185,11 @@ void KdenliveDBusClient::detach()
                           SLOT(onActionFinished(qulonglong, QVariantMap)));
         m_conn.disconnect(m_service, contract::kPath, contract::kInterface, QStringLiteral("ActionsChanged"), this, SLOT(onActionsChanged()));
     }
-    delete m_watcher;
-    m_watcher = nullptr;
+    if (m_watcher) {
+        m_watcher->disconnect(this);
+        m_watcher->deleteLater();  // detach() may run inside the watcher's own signal
+        m_watcher = nullptr;
+    }
     m_attached = false;
     ++m_generation;
     m_session.clear();
@@ -284,12 +287,24 @@ void KdenliveDBusClient::stepCapabilities(quint64 gen)
 void KdenliveDBusClient::stepSubscribe(quint64 gen)
 {
     auto *w = new QDBusPendingCallWatcher(m_conn.asyncCall(call(QStringLiteral("Subscribe")), kCallTimeoutMs), this);
-    connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, gen] {
+    const QString service = m_service;
+    connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, gen, service] {
         w->deleteLater();
+        const QDBusMessage reply = w->reply();
         if (gen != m_generation) {
+            // We detached meanwhile, but the host may have granted a lease: give it
+            // back, unless we are attached to the same instance again (Subscribe is
+            // idempotent per sender, so that live attachment shares the session).
+            const Envelope late = Envelope::parse(reply.arguments().value(0));
+            const QString session = late.result.value(QStringLiteral("session")).toString();
+            if (reply.type() == QDBusMessage::ReplyMessage && late.ok && !session.isEmpty() && !(m_attached && m_service == service)) {
+                auto msg = QDBusMessage::createMethodCall(service, contract::kPath, contract::kInterface, QStringLiteral("Unsubscribe"));
+                msg.setAutoStartService(false);
+                msg << session;
+                m_conn.asyncCall(msg, kCallTimeoutMs);
+            }
             return;
         }
-        const QDBusMessage reply = w->reply();
         if (reply.type() == QDBusMessage::ErrorMessage) {
             handleTransportError(QStringLiteral("Subscribe"), reply.errorName(), reply.errorMessage());
             return;
@@ -316,14 +331,23 @@ void KdenliveDBusClient::stepListActions(quint64 gen, bool becomeAvailable)
             return;
         }
         const QDBusMessage reply = w->reply();
-        m_actions.clear();
-        if (reply.type() == QDBusMessage::ReplyMessage) {
-            const Envelope e = Envelope::parse(reply.arguments().value(0));
-            if (e.ok) {
-                for (const auto &a : e.result.value(QStringLiteral("actions")).toList()) {
-                    m_actions.insert(a.toMap().value(QStringLiteral("id")).toString());
-                }
+        if (reply.type() == QDBusMessage::ErrorMessage) {
+            // Absent-class errors become Absent; anything else keeps the previous
+            // allowlist (refresh) or stays Pending so the retry path asks again.
+            handleTransportError(QStringLiteral("ListActions"), reply.errorName(), reply.errorMessage());
+            return;
+        }
+        const Envelope e = Envelope::parse(reply.arguments().value(0));
+        if (!e.ok) {
+            Q_EMIT refused(QStringLiteral("ListActions"), e.code, e.message);
+            if (becomeAvailable) {
+                setState(State::Pending);
             }
+            return;
+        }
+        m_actions.clear();
+        for (const auto &a : e.result.value(QStringLiteral("actions")).toList()) {
+            m_actions.insert(a.toMap().value(QStringLiteral("id")).toString());
         }
         if (becomeAvailable) {
             Q_EMIT message(QStringLiteral("attached to %1: %2 controls, %3 actions, %4 commands")

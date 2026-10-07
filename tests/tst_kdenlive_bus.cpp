@@ -13,7 +13,9 @@
 #include <QDBusConnectionInterface>
 #include <QDBusContext>
 #include <QSignalSpy>
+#include <QDBusMetaType>
 #include <QTest>
+#include <QTimer>
 
 using namespace cs;
 using State = KdenliveClient::State;
@@ -37,6 +39,18 @@ public:
     {
         setDelayedReply(true);  // and never answer: a hung editor
     }
+    // Answer later: a slow editor.
+    void replyLater(const QVariantMap &envelope, int ms)
+    {
+        setDelayedReply(true);
+        const QDBusMessage call = message();
+        QDBusConnection conn = connection();
+        QTimer::singleShot(ms, this, [call, conn, envelope]() mutable { conn.send(call.createReply(QVariant::fromValue(envelope))); });
+    }
+    void fail()
+    {
+        sendErrorReply(QDBusError::Failed, QStringLiteral("transient failure"));
+    }
 };
 
 class ScriptedAdaptor : public QDBusAbstractAdaptor
@@ -50,6 +64,9 @@ public:
     {
     }
     bool silent = false;
+    int subscribeDelayMs = 0;
+    int failListActions = 0;
+    QStringList unsubscribed;
     int subscribes = 0;
     QList<QVariantMap> received;
 
@@ -67,18 +84,30 @@ public Q_SLOTS:
     }
     QVariantMap Subscribe()
     {
-        return {{QStringLiteral("ok"), true},
-                {QStringLiteral("result"), QVariantMap{{QStringLiteral("session"), QStringLiteral("sess-%1").arg(++subscribes)},
-                                                       {QStringLiteral("context"), QVariantMap{{QStringLiteral("serial"), QVariant::fromValue<qulonglong>(1)},
-                                                                                               {QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)}}}}}};
+        const QVariantMap env{{QStringLiteral("ok"), true},
+                              {QStringLiteral("result"), QVariantMap{{QStringLiteral("session"), QStringLiteral("sess-%1").arg(++subscribes)},
+                                                                     {QStringLiteral("context"), QVariantMap{{QStringLiteral("serial"), QVariant::fromValue<qulonglong>(1)},
+                                                                                                             {QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)}}}}}};
+        if (subscribeDelayMs > 0) {
+            m->replyLater(env, subscribeDelayMs);
+            return {};
+        }
+        return env;
     }
-    QVariantMap Unsubscribe(const QString &)
+    QVariantMap Unsubscribe(const QString &session)
     {
+        unsubscribed << session;
         return {{QStringLiteral("ok"), true}, {QStringLiteral("result"), QVariantMap{{QStringLiteral("unsubscribed"), true}}}};
     }
     QVariantMap ListActions()
     {
-        return {{QStringLiteral("ok"), true}, {QStringLiteral("result"), QVariantMap{{QStringLiteral("actions"), QVariantList{}}}}};
+        if (failListActions > 0) {
+            --failListActions;
+            m->fail();
+            return {};
+        }
+        QList<QVariantMap> actions{QVariantMap{{QStringLiteral("id"), QStringLiteral("mark_in")}, {QStringLiteral("enabled"), true}}};
+        return {{QStringLiteral("ok"), true}, {QStringLiteral("result"), QVariantMap{{QStringLiteral("actions"), QVariant::fromValue(actions)}}}};
     }
     Q_NOREPLY void Control(const QString &control, double delta, const QVariantMap &options, qulonglong seq)
     {
@@ -382,6 +411,66 @@ private Q_SLOTS:
         QTRY_COMPARE(acked.size(), 1);
         QCOMPARE(refused.size(), 1);
         QCOMPARE(kd.inFlightMessages(), 0);
+    }
+
+    // Review item 1: a lease granted after the daemon detached is given back.
+    void lateSubscribeReplyIsUnsubscribed()
+    {
+        qDBusRegisterMetaType<QList<QVariantMap>>();
+        auto *obj = new ScriptedObject(this);
+        auto *adaptor = new ScriptedAdaptor(obj);
+        adaptor->subscribeDelayMs = 300;
+        QDBusConnection srv = bus(QStringLiteral("slow"));
+        m_conns << QStringLiteral("slow");
+        QVERIFY(srv.registerObject(contract::kPath, obj, QDBusConnection::ExportAdaptors));
+        QVERIFY(srv.registerService(QStringLiteral("org.kde.kdenlive-slow")));
+        QDBusConnection cc = client(QStringLiteral("daemon4"));
+        KdenliveDBusClient kd(cc);
+        kd.setServiceOverride(QStringLiteral("org.kde.kdenlive-slow"));
+        kd.attachToPid(1);
+        QTRY_COMPARE(adaptor->subscribes, 1);  // Subscribe is in flight
+        kd.attachToPid(0);                     // user switched away before the answer
+        QTRY_COMPARE_WITH_TIMEOUT(adaptor->unsubscribed, QStringList{QStringLiteral("sess-1")}, 2000);
+        QCOMPARE(kd.state(), State::Detached);
+    }
+
+    // Review item 2: a failed ListActions does not leave an Available client with no actions.
+    void listActionsFailureIsRetried()
+    {
+        qDBusRegisterMetaType<QList<QVariantMap>>();
+        auto *obj = new ScriptedObject(this);
+        auto *adaptor = new ScriptedAdaptor(obj);
+        adaptor->failListActions = 1;
+        QDBusConnection srv = bus(QStringLiteral("flaky"));
+        m_conns << QStringLiteral("flaky");
+        QVERIFY(srv.registerObject(contract::kPath, obj, QDBusConnection::ExportAdaptors));
+        QVERIFY(srv.registerService(QStringLiteral("org.kde.kdenlive-flaky")));
+        QDBusConnection cc = client(QStringLiteral("daemon5"));
+        KdenliveDBusClient kd(cc);
+        kd.setServiceOverride(QStringLiteral("org.kde.kdenlive-flaky"));
+        kd.attachToPid(1);
+        QTest::qWait(300);
+        QCOMPARE(kd.state(), State::Pending);  // not Available with an empty allowlist
+        QVERIFY(!kd.supportsAction(QStringLiteral("mark_in")));
+        QTest::qWait(2100);
+        kd.attachToPid(1);  // refocus: retry
+        QTRY_VERIFY(kd.isAvailable());
+        QVERIFY(kd.supportsAction(QStringLiteral("mark_in")));
+    }
+
+    // Review item 3: a caller without a lease never receives signals.
+    void noAcksWithoutLease()
+    {
+        RawClient a(client(QStringLiteral("A")), kService);
+        RawClient c(client(QStringLiteral("C")), kService);
+        a.subscribe();
+        c.control(contract::kJog, 1, {}, 1);  // C never subscribed
+        c.control(QStringLiteral("rocket.launch"), 1, {}, 2);
+        QTest::qWait(100);
+        QVERIFY(c.acks.isEmpty());
+        QVERIFY(a.acks.isEmpty());
+        QCOMPARE(m_mock->state().value(QStringLiteral("position")).toInt(), 0);
+        QCOMPARE(m_mock->log.filter(QStringLiteral("without a lease dropped")).size(), 2);
     }
 
     // Item 4 support: absent vs. unanswered are different states.
