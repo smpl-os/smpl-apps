@@ -32,6 +32,8 @@ public:
     // not-yet-sent deltas (target changed). Unknown keys are ignored.
     void end(const QString &key, const QVariantMap &endPayload, bool dropPending);
     void ack(const QString &key);
+    // Forget key without sending anything (the consumer already ended it).
+    void drop(const QString &key) { removeSlot(key); }
     void clear();
     bool contains(const QString &key) const { return m_slots.contains(key); }
     double pending(const QString &key) const;

@@ -142,7 +142,9 @@ private Q_SLOTS:
             QVERIFY2(raw.context.contains(QString::fromLatin1(k)), k);
         }
         QCOMPARE(raw.context.value(QStringLiteral("fps")).toMap().value(QStringLiteral("num")).toInt(), 25);
-        QVERIFY(!raw.context.contains(QStringLiteral("timeline")));  // MR3 context absent at stage 1
+        // Before MR3 the timeline is described (native track identity) but offers no handles.
+        QCOMPARE(raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("track")).toMap().value(QStringLiteral("id")).toInt(), 7);
+        QVERIFY(!raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("track")).toMap().contains(QStringLiteral("target")));
         m_mock->setStage(3);
         const QVariantMap track = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap().value(QStringLiteral("timeline")).toMap().value(QStringLiteral("track")).toMap();
         QVERIFY(!track.value(QStringLiteral("target")).toString().isEmpty());
@@ -212,10 +214,10 @@ private Q_SLOTS:
         for (int i = 0; i < 40; ++i) {
             big.insert(QStringLiteral("o%1").arg(i), i);
         }
-        raw.control(contract::kJog, 1, big, 19);
-        expectError(19, contract::err::InvalidArguments);
-        raw.control(contract::kJog, 1, {{QStringLiteral("monitor"), QString(5000, QLatin1Char('x'))}}, 20);
-        expectError(20, contract::err::InvalidArguments);
+        raw.control(contract::kJog, 1, big, 19);  // oversized option count
+        expectError(19, contract::err::ResourceLimit);
+        raw.control(contract::kJog, 1, {{QStringLiteral("monitor"), QString(5000, QLatin1Char('x'))}}, 20);  // oversized string input
+        expectError(20, contract::err::ResourceLimit);
         // Wrong lease
         auto msg = raw.message(QStringLiteral("Control"));
         msg << contract::kJog << 1.0 << QVariant::fromValue(QVariantMap{{QStringLiteral("session"), QStringLiteral("forged")}, {QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(raw.epoch())}}) << QVariant::fromValue<qulonglong>(21);
@@ -281,7 +283,7 @@ private Q_SLOTS:
         m_mock->setContextValue(QStringLiteral("dialog"), false);
         raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
         QVERIFY(raw.call(QStringLiteral("Notify"), {QStringLiteral("Lift: r"), 1500, QVariant::fromValue(raw.common())}).value(QStringLiteral("result")).toMap().value(QStringLiteral("shown")).toBool());
-        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Notify"), {QString(257, QLatin1Char('x')), 1500, QVariant::fromValue(raw.common())})), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Notify"), {QString(257, QLatin1Char('x')), 1500, QVariant::fromValue(raw.common())})), contract::err::ResourceLimit);  // oversized text
         QCOMPARE(RawClient::code(raw.call(QStringLiteral("Notify"), {QStringLiteral("x"), 100, QVariant::fromValue(raw.common())})), contract::err::InvalidArguments);
     }
 
@@ -327,7 +329,7 @@ private Q_SLOTS:
         QCOMPARE(m_mock->history().size(), 1);
         // The cancel ack and the published context show the restored values.
         const QVariantMap cancelled = raw.ackFor(seq).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("result")).toMap();
-        QVERIFY(!cancelled.value(QStringLiteral("changed")).toBool());
+        QVERIFY(cancelled.value(QStringLiteral("changed")).toBool());  // something owned was reverted
         QCOMPARE(cancelled.value(QStringLiteral("values")).toMap().value(QStringLiteral("r")).toDouble(), 1.0);
         const QVariantMap published = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
         QCOMPARE(published.value(QStringLiteral("colorWheels")).toList().at(2).toMap().value(QStringLiteral("values")).toMap().value(QStringLiteral("r")).toDouble(), 1.0);
@@ -539,17 +541,18 @@ private Q_SLOTS:
         m_mock->focusParam(QStringLiteral("level"));
         raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
         QCOMPARE(raw.context.value(QStringLiteral("param")).toMap().value(QStringLiteral("type")).toString(), QStringLiteral("number"));
-        QVariantMap p{{QStringLiteral("target"), QStringLiteral("par-level")}, {QStringLiteral("gesture"), QStringLiteral("p1")}, {QStringLiteral("axis"), QStringLiteral("r")}};
-        raw.control(contract::kParamNudge, 1, p, 6);
+        QVariantMap p{{QStringLiteral("target"), QStringLiteral("par-level")}, {QStringLiteral("gesture"), QStringLiteral("p1")}, {QStringLiteral("axis"), QStringLiteral("value")}};
+        raw.control(contract::kParamNudge, 1, p, 6);  // param.nudge takes no axis/wheel options
         QTRY_COMPARE(RawClient::code(raw.ackFor(6).value(QStringLiteral("outcome")).toMap()), contract::err::InvalidArguments);
-        p.insert(QStringLiteral("axis"), QStringLiteral("value"));
+        p.remove(QStringLiteral("axis"));
         p.insert(QStringLiteral("step"), QStringLiteral("fine"));
         raw.control(contract::kParamNudge, 2.5, p, 7);
         QTRY_VERIFY(raw.ackFor(7).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
         QVERIFY(qAbs(m_mock->state()[QStringLiteral("params")].toMap()[QStringLiteral("level")].toDouble() - 50.3) < 1e-9);  // 2.5 x 0.1, quantised
-        raw.control(contract::kParamFocus, 1, {{QStringLiteral("step"), QStringLiteral("normal")}}, 8);  // the shared option set
-        QTRY_VERIFY(!raw.ackFor(8).isEmpty());
-        QVERIFY(raw.ackFor(8).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        raw.control(contract::kParamFocus, 1, {{QStringLiteral("step"), QStringLiteral("normal")}}, 8);  // param.focus takes no options
+        QTRY_COMPARE(RawClient::code(raw.ackFor(8).value(QStringLiteral("outcome")).toMap()), contract::err::InvalidArguments);
+        raw.control(contract::kParamFocus, 1, {}, 11);
+        QTRY_VERIFY(raw.ackFor(11).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
         raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
         raw.control(contract::kParamFocus, 0.5, {}, 9);
         QTRY_COMPARE(RawClient::code(raw.ackFor(9).value(QStringLiteral("outcome")).toMap()), contract::err::InvalidArguments);
@@ -595,32 +598,270 @@ private Q_SLOTS:
 
     // The playhead moving or another control applying ends an editing gesture
     // (its captured frame/scope changed); grouped propagation is refused.
-    void gestureEndsOnPlayheadAndOtherControls()
+    // Live grading: a whole-clip (static) gesture survives playback clock
+    // ticks and stays one undo entry; applying any non-editing control (jog,
+    // zoom) ends it, as in Kdenlive; grouped propagation is refused.
+    void liveGradingGestureSurvivesPlaybackTicks()
     {
         m_mock->focusWheels(QStringLiteral("gain"));
         RawClient raw(connectClient(), QString());
         raw.subscribe();
+        QVERIFY(raw.context.value(QStringLiteral("colorWheels")).toList().at(2).toMap().value(QStringLiteral("liveGrading")).toBool());
+        m_mock->setPlaying(true);
         QVariantMap g{{QStringLiteral("target"), cw("gain")}, {QStringLiteral("gesture"), QStringLiteral("p")}};
         raw.control(contract::kColorWheel, 4, g, 1);
-        QTRY_VERIFY(!raw.ackFor(1).isEmpty());
-        m_mock->setPosition(25);
-        QCOMPARE(m_mock->history().size(), 1);  // ended by the playhead move
-        raw.control(contract::kColorWheel, 4, g, 2);  // same id: a new gesture
+        QTRY_VERIFY(raw.ackFor(1).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        for (int f = 1; f <= 5; ++f) {
+            m_mock->setPosition(f);  // playback ticks
+        }
+        raw.control(contract::kColorWheel, 4, g, 2);
         QTRY_VERIFY(raw.ackFor(2).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
-        raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
-        raw.control(contract::kZoom, 1, {}, 3);  // any other control ends it too
+        QVERIFY(m_mock->history().isEmpty());  // still the one open gesture
+        raw.control(contract::kZoom, 1, {}, 3);  // a view/transport control ends it
         QTRY_VERIFY(!raw.ackFor(3).isEmpty());
-        QCOMPARE(m_mock->history().size(), 2);
+        QCOMPARE(m_mock->history().size(), 1);  // one entry for both updates
+        QVERIFY(qAbs(wheelValue(m_mock, "gain", "r") - 1.08) < 1e-9);
+        // The mock's wheels are static: explicit key creation is unsupported.
+        QVariantMap create{{QStringLiteral("target"), cw("gain")}, {QStringLiteral("gesture"), QStringLiteral("c")}, {QStringLiteral("keyframe"), QStringLiteral("create")}};
+        raw.control(contract::kColorWheel, 1, create, 4);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(4).value(QStringLiteral("outcome")).toMap()), contract::err::UnsupportedParameter);
+        m_mock->setPlaying(false);
         // Grouped propagation is not qualified: refused, nothing changes.
         m_mock->setGroupedPropagation(true);
         g.insert(QStringLiteral("gesture"), QStringLiteral("grp"));
-        raw.control(contract::kColorWheel, 4, g, 4);
-        QTRY_COMPARE(RawClient::code(raw.ackFor(4).value(QStringLiteral("outcome")).toMap()), contract::err::UnsupportedGroup);
+        raw.control(contract::kColorWheel, 4, g, 7);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(7).value(QStringLiteral("outcome")).toMap()), contract::err::UnsupportedGroup);
         QVariantMap reset = raw.common();
         reset.insert(QStringLiteral("target"), cw("gain"));
         QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {contract::kCmdWheelReset, QVariant::fromValue(reset)})), contract::err::UnsupportedGroup);
         QVERIFY(qAbs(wheelValue(m_mock, "gain", "r") - 1.08) < 1e-9);
-        QCOMPARE(m_mock->history().size(), 2);
+        QCOMPARE(m_mock->history().size(), 1);
+    }
+
+    // Multi-key parameters: an existing key at the captured frame or explicit
+    // create, stopped playback only, and a seek ends the gesture; cancel
+    // removes a created key; a cancel without a live gesture conflicts.
+    void multiKeyEditsNeedStoppedPlayback()
+    {
+        m_mock->focusParam(QStringLiteral("level"));
+        m_mock->setParamMultiKey(QStringLiteral("level"), true);  // keys at 0 and 100
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        const QVariantMap desc = raw.context.value(QStringLiteral("param")).toMap();
+        QVERIFY(desc.value(QStringLiteral("keyframed")).toBool());
+        QVERIFY(!desc.value(QStringLiteral("liveGrading")).toBool());
+        QCOMPARE(desc.value(QStringLiteral("frame")).toInt(), 0);
+        QVariantMap g{{QStringLiteral("target"), QStringLiteral("par-level")}, {QStringLiteral("gesture"), QStringLiteral("k1")}};
+        m_mock->setPlaying(true);
+        raw.control(contract::kParamNudge, 2, g, 1);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(1).value(QStringLiteral("outcome")).toMap()), contract::err::Busy);
+        m_mock->setPlaying(false);
+        raw.control(contract::kParamNudge, 2, g, 2);  // key at frame 0
+        QTRY_VERIFY(raw.ackFor(2).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QCOMPARE(m_mock->state()[QStringLiteral("keys")].toMap()[QStringLiteral("level")].toMap()[QStringLiteral("0")].toDouble(), 52.0);
+        m_mock->setPosition(50);  // seeking ends the multi-key gesture
+        QCOMPARE(m_mock->history().size(), 1);
+        raw.control(contract::kParamNudge, 1, g, 3);  // no key at 50, no create
+        QTRY_COMPARE(RawClient::code(raw.ackFor(3).value(QStringLiteral("outcome")).toMap()), contract::err::KeyframeRequired);
+        QVariantMap create = g;
+        create.insert(QStringLiteral("gesture"), QStringLiteral("k2"));
+        create.insert(QStringLiteral("keyframe"), QStringLiteral("create"));
+        raw.control(contract::kParamNudge, 3, create, 4);
+        QTRY_VERIFY(raw.ackFor(4).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QCOMPARE(m_mock->state()[QStringLiteral("keys")].toMap()[QStringLiteral("level")].toMap()[QStringLiteral("50")].toDouble(), 53.0);
+        create.insert(QStringLiteral("phase"), QStringLiteral("cancel"));
+        raw.control(contract::kParamNudge, 0, create, 5);  // still owned: the created key goes too
+        QTRY_VERIFY(raw.ackFor(5).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QVERIFY(!m_mock->state()[QStringLiteral("keys")].toMap()[QStringLiteral("level")].toMap().contains(QStringLiteral("50")));
+        QCOMPARE(m_mock->history().size(), 1);
+        raw.control(contract::kParamNudge, 0, create, 6);  // nothing live to cancel
+        QTRY_COMPARE(RawClient::code(raw.ackFor(6).value(QStringLiteral("outcome")).toMap()), contract::err::HistoryConflict);
+        // An oversized gesture id is a resource limit, an empty one malformed.
+        QVariantMap big = g;
+        big.insert(QStringLiteral("gesture"), QString(129, QLatin1Char('g')));
+        raw.control(contract::kParamNudge, 1, big, 7);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(7).value(QStringLiteral("outcome")).toMap()), contract::err::ResourceLimit);
+        big.insert(QStringLiteral("gesture"), QString());
+        raw.control(contract::kParamNudge, 1, big, 8);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(8).value(QStringLiteral("outcome")).toMap()), contract::err::InvalidArguments);
+    }
+
+    // MR3 handles as the contract places them: track (and its mixer gain),
+    // unique static clip gain, and the declared resize-only trim scope.
+    void mr3TimelineHandles()
+    {
+        RawClient raw(connectClient(), QString());
+        const QVariantMap caps = raw.call(QStringLiteral("Capabilities")).value(QStringLiteral("result")).toMap();
+        QCOMPARE(caps.value(QStringLiteral("limits")).toMap().value(QStringLiteral("editingWriters")).toInt(), 1);
+        QCOMPARE(caps.value(QStringLiteral("limits")).toMap().value(QStringLiteral("trimGestureSteps")).toInt(), 128);
+        raw.subscribe();
+        auto timeline = [&raw] { return raw.context.value(QStringLiteral("timeline")).toMap(); };
+        auto refresh = [&raw] { raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap(); };
+        QVariantMap track = timeline().value(QStringLiteral("track")).toMap();
+        QCOMPARE(track.value(QStringLiteral("target")).toString(), QStringLiteral("trk-7"));
+        QCOMPARE(track.value(QStringLiteral("id")).toInt(), 7);
+        QCOMPARE(track.value(QStringLiteral("gain")).toMap().value(QStringLiteral("target")).toString(), QStringLiteral("trk-7"));  // same handle
+        QVERIFY(!timeline().contains(QStringLiteral("clipGain")));
+        QVERIFY(!timeline().contains(QStringLiteral("trim")));
+        // track.set: explicit handle, typed value, applicability by track type.
+        QVariantMap set = raw.common();
+        set.insert(QStringLiteral("target"), QStringLiteral("trk-7"));
+        set.insert(QStringLiteral("what"), QStringLiteral("mute"));
+        set.insert(QStringLiteral("value"), true);
+        QVERIFY(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)}).value(QStringLiteral("result")).toMap().value(QStringLiteral("changed")).toBool());
+        QTRY_VERIFY(timeline().value(QStringLiteral("track")).toMap().value(QStringLiteral("muted")).toBool());
+        set.insert(QStringLiteral("value"), QStringLiteral("yes"));
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)})), contract::err::InvalidArguments);
+        set.insert(QStringLiteral("value"), true);
+        set.insert(QStringLiteral("what"), QStringLiteral("hide"));
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)})), contract::err::UnsupportedMode);
+        set.insert(QStringLiteral("what"), QStringLiteral("lock"));
+        set.insert(QStringLiteral("soloMode"), QStringLiteral("exclusive"));  // soloMode only with solo
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)})), contract::err::InvalidArguments);
+        set.insert(QStringLiteral("what"), QStringLiteral("solo"));
+        set.insert(QStringLiteral("soloMode"), QStringLiteral("loud"));
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)})), contract::err::UnsupportedMode);
+        set.insert(QStringLiteral("what"), QStringLiteral("blink"));
+        set.remove(QStringLiteral("soloMode"));
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)})), contract::err::UnsupportedMode);
+        set.insert(QStringLiteral("target"), QStringLiteral("trk-404"));  // never issued
+        set.insert(QStringLiteral("what"), QStringLiteral("lock"));
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)})), contract::err::TargetNotFound);
+        // Exclusive solo clears other solos and keeps manual mute states.
+        m_mock->focusTrack(QStringLiteral("trk-8"));
+        refresh();
+        set = raw.common();
+        set.insert(QStringLiteral("target"), QStringLiteral("trk-8"));
+        set.insert(QStringLiteral("what"), QStringLiteral("solo"));
+        set.insert(QStringLiteral("value"), true);
+        QVERIFY(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)}).value(QStringLiteral("ok")).toBool());
+        m_mock->focusTrack(QStringLiteral("trk-7"));
+        refresh();
+        set = raw.common();
+        set.insert(QStringLiteral("target"), QStringLiteral("trk-7"));
+        set.insert(QStringLiteral("what"), QStringLiteral("solo"));
+        set.insert(QStringLiteral("value"), true);
+        set.insert(QStringLiteral("soloMode"), QStringLiteral("exclusive"));
+        QVERIFY(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)}).value(QStringLiteral("ok")).toBool());
+        const QVariantMap tracks = m_mock->state()[QStringLiteral("tracks")].toMap();
+        QVERIFY(tracks[QStringLiteral("trk-7")].toMap()[QStringLiteral("solo")].toBool());
+        QVERIFY(!tracks[QStringLiteral("trk-8")].toMap()[QStringLiteral("solo")].toBool());
+        QVERIFY(tracks[QStringLiteral("trk-7")].toMap()[QStringLiteral("mute")].toBool());  // manual mute retained
+        // Track gain through its handle: 0.1 dB per step.
+        QVariantMap gain{{QStringLiteral("target"), QStringLiteral("trk-7")}, {QStringLiteral("gesture"), QStringLiteral("tg")}};
+        quint64 seq = 0;
+        raw.control(contract::kAudioGain, 15, gain, ++seq);
+        QTRY_VERIFY(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QCOMPARE(m_mock->state()[QStringLiteral("tracks")].toMap()[QStringLiteral("trk-7")].toMap()[QStringLiteral("gainDb")].toDouble(), 1.5);
+        gain.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kAudioGain, 0, gain, ++seq);
+        QTRY_VERIFY(!raw.ackFor(seq).isEmpty());
+        // Selecting the linked A/V pair publishes its clip gain and trim scope.
+        m_mock->selectClip(QStringLiteral("clip-22"));
+        refresh();
+        const QVariantMap clipGain = timeline().value(QStringLiteral("clipGain")).toMap();
+        QCOMPARE(clipGain.value(QStringLiteral("clip")).toInt(), 22);  // native integer ids
+        QCOMPARE(clipGain.value(QStringLiteral("unit")).toString(), QStringLiteral("dB"));
+        QCOMPARE(clipGain.value(QStringLiteral("policy")).toString(), QStringLiteral("single_keyframe_existing_effect"));
+        const QVariantMap trim = timeline().value(QStringLiteral("trim")).toMap();
+        QCOMPARE(trim.value(QStringLiteral("clip")).toInt(), 22);
+        QCOMPARE(trim.value(QStringLiteral("clips")).toList(), (QVariantList{21, 22}));
+        QCOMPARE(trim.value(QStringLiteral("tracks")).toList(), (QVariantList{3, 7}));
+        QCOMPARE(trim.value(QStringLiteral("modes")).toStringList(), QStringList{QStringLiteral("resize")});
+        QCOMPARE(timeline().value(QStringLiteral("selection")).toMap().value(QStringLiteral("count")).toInt(), 1);
+        QVariantMap cg{{QStringLiteral("target"), clipGain.value(QStringLiteral("target"))}, {QStringLiteral("gesture"), QStringLiteral("cg")}};
+        raw.control(contract::kAudioGain, -30, cg, ++seq);
+        QTRY_VERIFY(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QCOMPARE(m_mock->state()[QStringLiteral("clips")].toMap()[QStringLiteral("clip-22")].toMap()[QStringLiteral("volumeDb")].toDouble(), -3.0);
+        QCOMPARE(m_mock->state()[QStringLiteral("tracks")].toMap()[QStringLiteral("trk-7")].toMap()[QStringLiteral("gainDb")].toDouble(), 1.5);
+        // One editing writer across controls: another caller's trim is busy.
+        RawClient other(connectClient(), QString());
+        other.subscribe();
+        QVariantMap tr{{QStringLiteral("target"), trim.value(QStringLiteral("target"))}, {QStringLiteral("gesture"), QStringLiteral("t1")},
+                       {QStringLiteral("edge"), QStringLiteral("end")}, {QStringLiteral("mode"), QStringLiteral("resize")}};
+        other.control(contract::kTrim, 5, tr, 1);
+        QTRY_COMPARE(RawClient::code(other.ackFor(1).value(QStringLiteral("outcome")).toMap()), contract::err::Busy);
+        cg.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kAudioGain, 0, cg, ++seq);
+        QTRY_VERIFY(!raw.ackFor(seq).isEmpty());
+        QCOMPARE(m_mock->history().size(), 5);  // mute, two solos, track gain, clip gain
+        // Resize only: both clips of the pair, bounded, nothing downstream.
+        raw.control(contract::kTrim, 20, tr, ++seq);
+        QTRY_VERIFY(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QVariantMap startEdge = tr;
+        startEdge.insert(QStringLiteral("gesture"), QStringLiteral("t2"));
+        startEdge.insert(QStringLiteral("edge"), QStringLiteral("start"));
+        raw.control(contract::kTrim, -80, startEdge, ++seq);  // minStart is 50
+        QTRY_VERIFY(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QCOMPARE(m_mock->history().size(), 6);  // the first trim gesture ended when the second started
+        const QVariantMap clips = m_mock->state()[QStringLiteral("clips")].toMap();
+        for (const char *id : {"clip-21", "clip-22"}) {
+            QCOMPARE(clips[QString::fromLatin1(id)].toMap()[QStringLiteral("end")].toInt(), 220);
+            QCOMPARE(clips[QString::fromLatin1(id)].toMap()[QStringLiteral("start")].toInt(), 50);
+        }
+        QCOMPARE(clips[QStringLiteral("clip-31")].toMap()[QStringLiteral("start")].toInt(), 300);
+        QVariantMap bad = tr;
+        bad.insert(QStringLiteral("gesture"), QStringLiteral("t3"));
+        bad.insert(QStringLiteral("mode"), QStringLiteral("ripple"));
+        raw.control(contract::kTrim, 1, bad, ++seq);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap()), contract::err::UnsupportedMode);
+        bad.remove(QStringLiteral("mode"));  // a missing mode is not the advertised one (as Kdenlive)
+        raw.control(contract::kTrim, 1, bad, ++seq);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap()), contract::err::UnsupportedMode);
+        bad.insert(QStringLiteral("mode"), QStringLiteral("resize"));
+        bad.remove(QStringLiteral("edge"));
+        raw.control(contract::kTrim, 1, bad, ++seq);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap()), contract::err::InvalidArguments);
+        // A locked track in the declared scope refuses the trim.
+        startEdge.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kTrim, 0, startEdge, ++seq);
+        QTRY_VERIFY(!raw.ackFor(seq).isEmpty());
+        m_mock->focusTrack(QStringLiteral("trk-3"));
+        refresh();
+        set = raw.common();
+        set.insert(QStringLiteral("target"), QStringLiteral("trk-3"));
+        set.insert(QStringLiteral("what"), QStringLiteral("lock"));
+        set.insert(QStringLiteral("value"), true);
+        QVERIFY(raw.call(QStringLiteral("Invoke"), {contract::kCmdTrackSet, QVariant::fromValue(set)}).value(QStringLiteral("ok")).toBool());
+        QVERIFY(!timeline().value(QStringLiteral("track")).toMap().contains(QStringLiteral("gain")));  // a video track has no mixer gain
+        tr.insert(QStringLiteral("gesture"), QStringLiteral("t4"));
+        raw.control(contract::kTrim, 1, tr, ++seq);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap()), contract::err::TrackLocked);
+        // A clip whose volume is animated keeps its handle, but gain refuses.
+        m_mock->selectClip(QStringLiteral("clip-31"));
+        refresh();
+        QCOMPARE(timeline().value(QStringLiteral("trim")).toMap().value(QStringLiteral("clips")).toList(), QVariantList{31});
+        raw.control(contract::kAudioGain, 1, {{QStringLiteral("target"), timeline().value(QStringLiteral("clipGain")).toMap().value(QStringLiteral("target"))},
+                                              {QStringLiteral("gesture"), QStringLiteral("anim")}}, ++seq);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap()), contract::err::UnsupportedParameter);
+        // Track navigation changes the handle and the epoch.
+        const quint64 epoch = raw.epoch();
+        raw.control(contract::kTrackFocus, 1, {}, ++seq);
+        QTRY_COMPARE(timeline().value(QStringLiteral("track")).toMap().value(QStringLiteral("target")).toString(), QStringLiteral("trk-7"));
+        QVERIFY(raw.epoch() > epoch);
+    }
+
+    // limits.trimGestureSteps bounds the retained resize steps of one gesture.
+    void trimGestureStepLimit()
+    {
+        m_mock->setTrimGestureSteps(3);
+        m_mock->selectClip(QStringLiteral("clip-22"));
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        const QVariantMap tr{{QStringLiteral("target"), QStringLiteral("trim-clip-22")}, {QStringLiteral("gesture"), QStringLiteral("long")},
+                             {QStringLiteral("edge"), QStringLiteral("end")}, {QStringLiteral("mode"), QStringLiteral("resize")}};
+        for (quint64 seq = 1; seq <= 3; ++seq) {
+            raw.control(contract::kTrim, 1, tr, seq);
+            QTRY_VERIFY(raw.ackFor(seq).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        }
+        raw.control(contract::kTrim, 1, tr, 4);
+        QTRY_COMPARE(RawClient::code(raw.ackFor(4).value(QStringLiteral("outcome")).toMap()), contract::err::ResourceLimit);
+        QVariantMap end = tr;
+        end.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kTrim, 0, end, 5);
+        QTRY_VERIFY(raw.ackFor(5).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QCOMPARE(m_mock->history().size(), 1);
+        QCOMPARE(m_mock->state()[QStringLiteral("clips")].toMap()[QStringLiteral("clip-22")].toMap()[QStringLiteral("end")].toInt(), 203);
     }
 
     // Engine + client + mock: the three knobs edit the three wheels of the
@@ -661,6 +902,72 @@ private Q_SLOTS:
         QCOMPARE(refused[0][1].toString(), contract::err::Busy);
         QVERIFY(keys.taps.isEmpty());
         QCOMPARE(client.inFlightMessages(), 0);
+    }
+
+    // Engine + client + mock, MR3: the timeline page (key13) drives track
+    // focus, toggles from the published state, resize trim and both gains.
+    void daemonTimelinePage()
+    {
+        auto conn = connectClient();
+        KdenliveDBusClient client(conn);
+        client.setServiceOverride(QString());
+        RecordingKeySink keys;
+        Engine e(&keys, &client);
+        e.setConfig(m_cfg);
+        e.setActiveWindow(WindowInfo{QStringLiteral("org.kde.kdenlive"), QStringLiteral("t"), 99, QStringLiteral("0x1")});
+        QTRY_VERIFY(client.isAvailable());
+        auto pad = [&e](const QString &control, PadEvent::Type type, int delta = 0) { e.handle(PadEvent{control, type, delta, 0}); };
+        auto tracks = [this] { return m_mock->state()[QStringLiteral("tracks")].toMap(); };
+        auto clips = [this] { return m_mock->state()[QStringLiteral("clips")].toMap(); };
+        pad(QStringLiteral("key13"), PadEvent::KeyDown);
+        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob2"), 1))->layer, QStringLiteral("timeline-page"));
+        // Toggle mute twice: the second press reads the state Kdenlive published.
+        pad(QStringLiteral("key1"), PadEvent::KeyDown);
+        QTRY_VERIFY(tracks()[QStringLiteral("trk-7")].toMap()[QStringLiteral("mute")].toBool());
+        QTRY_VERIFY(client.context().value(QStringLiteral("timeline")).toMap().value(QStringLiteral("track")).toMap().value(QStringLiteral("muted")).toBool());
+        pad(QStringLiteral("key1"), PadEvent::KeyDown);
+        QTRY_VERIFY(!tracks()[QStringLiteral("trk-7")].toMap()[QStringLiteral("mute")].toBool());
+        // Track mixer gain on knob3 (no clip selected), one undo entry.
+        for (int i = 0; i < 5; ++i) {
+            pad(QStringLiteral("knob3"), PadEvent::Turn, 1);
+        }
+        QTRY_COMPARE(tracks()[QStringLiteral("trk-7")].toMap()[QStringLiteral("gainDb")].toDouble(), 0.5);
+        // Select the linked pair: knob3 becomes its clip gain, knob2 resizes it.
+        m_mock->selectClip(QStringLiteral("clip-22"));
+        QTRY_COMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob3"), 1))->layer, QStringLiteral("timeline-clip-gain"));
+        for (int i = 0; i < 4; ++i) {
+            pad(QStringLiteral("knob3"), PadEvent::Turn, -1);
+        }
+        QTRY_COMPARE(clips()[QStringLiteral("clip-22")].toMap()[QStringLiteral("volumeDb")].toDouble(), -0.4);
+        for (int i = 0; i < 6; ++i) {
+            pad(QStringLiteral("knob2"), PadEvent::Turn, 1);
+        }
+        QTRY_COMPARE(clips()[QStringLiteral("clip-21")].toMap()[QStringLiteral("end")].toInt(), 206);
+        QCOMPARE(clips()[QStringLiteral("clip-22")].toMap()[QStringLiteral("end")].toInt(), 206);
+        pad(QStringLiteral("knob2"), PadEvent::PressDown);  // start edge
+        pad(QStringLiteral("knob2"), PadEvent::Turn, 1);
+        QTRY_COMPARE(clips()[QStringLiteral("clip-22")].toMap()[QStringLiteral("start")].toInt(), 101);
+        QTRY_COMPARE_WITH_TIMEOUT(m_mock->history().size(), 6, 2000);  // mute, unmute, track gain, clip gain, two trims
+        // Track focus moves the handle (new epoch); knob3 follows it.
+        m_mock->selectClip(QString());
+        QTRY_COMPARE(client.epoch(), m_mock->context().value(QStringLiteral("epoch")).toULongLong());  // the client knows the new epoch
+        pad(QStringLiteral("knob1"), PadEvent::Turn, 1);
+        QTRY_COMPARE(m_mock->state().value(QStringLiteral("track")).toString(), QStringLiteral("trk-8"));
+        QTRY_COMPARE(client.context().value(QStringLiteral("timeline")).toMap().value(QStringLiteral("track")).toMap().value(QStringLiteral("target")).toString(), QStringLiteral("trk-8"));
+        pad(QStringLiteral("knob3"), PadEvent::Turn, 1);
+        QTRY_COMPARE(tracks()[QStringLiteral("trk-8")].toMap()[QStringLiteral("gainDb")].toDouble(), 0.1);
+        // Another caller's editing gesture: busy is reported, nothing is typed.
+        QTRY_COMPARE_WITH_TIMEOUT(e.activeGestures(), 0, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(m_mock->history().size(), 7, 2000);
+        RawClient other(connectClient(), QString());
+        other.subscribe();
+        other.control(contract::kAudioGain, 1, {{QStringLiteral("target"), QStringLiteral("trk-8")}, {QStringLiteral("gesture"), QStringLiteral("o")}}, 1);
+        QTRY_VERIFY(!other.ackFor(1).isEmpty());
+        QSignalSpy refused(&client, &KdenliveClient::refused);
+        pad(QStringLiteral("knob3"), PadEvent::Turn, 1);
+        QTRY_COMPARE(refused.size(), 1);
+        QCOMPARE(refused[0][1].toString(), contract::err::Busy);
+        QVERIFY(keys.taps.isEmpty());
     }
 
     void daemonEndToEnd()

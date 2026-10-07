@@ -12,7 +12,11 @@
 //                       effect, colorWheel and the three colorWheels handles
 //   hover <lift|gamma|gain>|off   hovered colour wheel (hoveredColorWheel)
 //   param <level|opacity>|-       focused scalar parameter
+//   keyframes <level|opacity> on|off   multi-key parameter (keys at 0 and 100)
+//   play on|off         playback state (live grading vs multi-key edits)
 //   grouped on|off      selection is a group: parameter edits are refused
+//   track <trk-4|trk-3|trk-7|trk-8>   focused track (MR3)
+//   clip <clip-21|clip-22|clip-31>|-  selected clip: clipGain and trim handles (MR3)
 //   history <label>     an unrelated undo entry (ends gestures, new epoch)
 //   tool <select|razor|ripple|roll|slip|slide>
 //   dialog on|off       modal dialog
@@ -65,7 +69,7 @@ int main(int argc, char **argv)
     playback.setTimerType(Qt::PreciseTimer);
     QObject::connect(&playback, &QTimer::timeout, &mock, [&mock] { mock.setPosition(mock.context().value(QStringLiteral("position")).toInt() + 1); });
     if (p.value(tickOpt).toInt() > 0) {
-        mock.setContextValue(QStringLiteral("playing"), true);
+        mock.setPlaying(true);
         playback.start(p.value(tickOpt).toInt());
     }
 
@@ -89,6 +93,14 @@ int main(int argc, char **argv)
                 mock.hoverWheel(arg == QLatin1String("off") || arg == QLatin1String("-") ? QString() : arg == QLatin1String("on") ? QStringLiteral("gain") : arg);
             } else if (cmd == QLatin1String("param")) {
                 mock.focusParam(arg == QLatin1String("-") || arg == QLatin1String("off") ? QString() : arg);
+            } else if (cmd == QLatin1String("keyframes")) {
+                mock.setParamMultiKey(arg.section(QLatin1Char(' '), 0, 0), arg.section(QLatin1Char(' '), 1) == QLatin1String("on"));
+            } else if (cmd == QLatin1String("play")) {
+                mock.setPlaying(on);
+            } else if (cmd == QLatin1String("track")) {
+                mock.focusTrack(arg);
+            } else if (cmd == QLatin1String("clip")) {
+                mock.selectClip(arg == QLatin1String("-") || arg == QLatin1String("off") ? QString() : arg);
             } else if (cmd == QLatin1String("grouped")) {
                 mock.setGroupedPropagation(on);
             } else if (cmd == QLatin1String("history")) {

@@ -14,6 +14,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <csignal>
+#include <functional>
 #include <memory>
 #include <cstdio>
 #include <sys/socket.h>
@@ -94,10 +96,56 @@ std::optional<Config> obtainConfig(const QString &path, bool explicitPath)
     return c;
 }
 
-// simulate: "window CLASS [TITLE]" | "pid N" | "context {json}" | "kdenlive on|off|pending"
-//           "stage 1|2|3" (advertised controls/commands)
-//           "key3" | "knob1 +3" | "knob1 -1" | "knob2 press" | "wait MS" | "# comment"
-int simulate(Engine &engine, FakeKdenliveClient &kd, StaticWindowTracker &tracker, QIODevice &in)
+struct SimEnv {
+    Engine &engine;
+    KdenliveClient &kd;
+    FakeKdenliveClient *fake;  // null when driving a real Kdenlive over D-Bus
+    StaticWindowTracker &tracker;
+    RecordingKeySink &keys;
+    QList<QPair<QString, QString>> refusals;  // (what, code) since the last check
+    int failures = 0;
+};
+
+bool waitUntil(const std::function<bool()> &done, int ms)
+{
+    QElapsedTimer t;
+    t.start();
+    while (!done()) {
+        if (t.elapsed() >= ms) {
+            return false;
+        }
+        QEventLoop loop;
+        QTimer::singleShot(10, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+    return true;
+}
+
+QVariant parseValue(const QString &text)
+{
+    // JSON scalars (true, 3, "x"); anything else is a string ("/regex/", "!x").
+    const QJsonDocument d = QJsonDocument::fromJson(QByteArray("[") + text.toUtf8() + "]");
+    return d.isArray() && d.array().size() == 1 ? d.array().at(0).toVariant() : QVariant(text);
+}
+
+QString toJson(const QVariant &v)
+{
+    return QString::fromUtf8(QJsonDocument(QJsonArray{QJsonValue::fromVariant(v)}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
+}
+
+void check(SimEnv &env, bool ok, const QString &what)
+{
+    say(QStringLiteral("  EXPECT %1: %2").arg(ok ? QStringLiteral("ok") : QStringLiteral("FAIL"), what));
+    env.failures += ok ? 0 : 1;
+}
+
+// simulate: "window CLASS [TITLE]" | "pid N" | "key3" | "knob1 +3" | "knob1 -1" |
+//           "knob2 press" | "wait MS" | "# comment"
+// Fake client only:   "context {json}" | "kdenlive on|off|pending" | "stage 1|2|3"
+// Any client:         "await available [MS]" | "await ctx PATH VALUE [MS]" |
+//                     "print ctx [PATH]" | "expect refused CODE [MS]" |
+//                     "expect no-refusal" | "expect no-keys" | "refusals clear"
+int simulate(SimEnv &env, QIODevice &in)
 {
     QTextStream ts(&in);
     int line = 0;
@@ -106,69 +154,120 @@ int simulate(Engine &engine, FakeKdenliveClient &kd, StaticWindowTracker &tracke
         ++line;
         const QString l = raw.trimmed();
         if (l.isEmpty() || l.startsWith(QLatin1Char('#'))) {
+            if (l.startsWith(QLatin1String("##"))) {
+                say(l);  // section headings in acceptance scripts
+            }
             continue;
         }
         say(QStringLiteral("> ") + l);
-        const QString cmd = l.section(QLatin1Char(' '), 0, 0);
+        const QStringList w = l.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        const QString cmd = w.value(0);
         const QString rest = l.section(QLatin1Char(' '), 1);
+        bool settle = true;
         if (cmd == QLatin1String("window")) {
-            WindowInfo w = tracker.current();
-            w.cls = rest.section(QLatin1Char(' '), 0, 0);
-            w.title = rest.section(QLatin1Char(' '), 1);
-            w.pid = w.pid ? w.pid : 4242;
-            tracker.set(w);
+            WindowInfo win = env.tracker.current();
+            win.cls = rest.section(QLatin1Char(' '), 0, 0);
+            win.title = rest.section(QLatin1Char(' '), 1);
+            win.pid = win.pid ? win.pid : 4242;
+            env.tracker.set(win);
         } else if (cmd == QLatin1String("pid")) {
-            WindowInfo w = tracker.current();
-            w.pid = rest.toLongLong();
-            tracker.set(w);
-        } else if (cmd == QLatin1String("context")) {
-            kd.setContext(QJsonDocument::fromJson(rest.toUtf8()).object().toVariantMap());
-        } else if (cmd == QLatin1String("kdenlive")) {
-            kd.setState(rest == QLatin1String("on") ? KdenliveClient::State::Available
-                        : rest == QLatin1String("pending") ? KdenliveClient::State::Pending
-                                                           : KdenliveClient::State::Absent);
-        } else if (cmd == QLatin1String("stage")) {
-            const int n = rest.toInt();
-            QStringList controls{QStringLiteral("playhead.jog"), QStringLiteral("playhead.shuttle"), QStringLiteral("timeline.zoom")};
-            QStringList commands;
-            if (n >= 2) {
-                controls << QStringLiteral("param.focus") << QStringLiteral("param.nudge") << QStringLiteral("colorwheel.nudge");
-                commands << QStringLiteral("param.reset") << QStringLiteral("colorwheel.reset");
+            WindowInfo win = env.tracker.current();
+            win.pid = rest.toLongLong();
+            env.tracker.set(win);
+        } else if (cmd == QLatin1String("context") || cmd == QLatin1String("kdenlive") || cmd == QLatin1String("stage")) {
+            if (!env.fake) {
+                std::fprintf(stderr, "line %d: '%s' needs the fake client (no --kdenlive-service)\n", line, qPrintable(cmd));
+                return 2;
             }
-            if (n >= 3) {
-                controls << QStringLiteral("timeline.track") << QStringLiteral("timeline.scroll") << QStringLiteral("audio.gain") << QStringLiteral("edit.trim");
-                commands << QStringLiteral("track.set");
+            if (cmd == QLatin1String("context")) {
+                env.fake->setContext(QJsonDocument::fromJson(rest.toUtf8()).object().toVariantMap());
+            } else if (cmd == QLatin1String("kdenlive")) {
+                env.fake->setState(rest == QLatin1String("on") ? KdenliveClient::State::Available
+                                   : rest == QLatin1String("pending") ? KdenliveClient::State::Pending
+                                                                      : KdenliveClient::State::Absent);
+            } else {
+                const int n = rest.toInt();
+                QStringList controls{QStringLiteral("playhead.jog"), QStringLiteral("playhead.shuttle"), QStringLiteral("timeline.zoom")};
+                QStringList commands;
+                if (n >= 2) {
+                    controls << QStringLiteral("param.focus") << QStringLiteral("param.nudge") << QStringLiteral("colorwheel.nudge");
+                    commands << QStringLiteral("param.reset") << QStringLiteral("colorwheel.reset");
+                }
+                if (n >= 3) {
+                    controls << QStringLiteral("timeline.track") << QStringLiteral("timeline.scroll") << QStringLiteral("audio.gain") << QStringLiteral("edit.trim");
+                    commands << QStringLiteral("track.set");
+                }
+                env.fake->setControlCapabilities(controls, commands);
             }
-            kd.setControlCapabilities(controls, commands);
+        } else if (cmd == QLatin1String("await") && w.value(1) == QLatin1String("available")) {
+            settle = false;
+            check(env, waitUntil([&] { return env.kd.isAvailable(); }, w.value(2, QStringLiteral("5000")).toInt()), QStringLiteral("interface available"));
+        } else if (cmd == QLatin1String("await") && w.value(1) == QLatin1String("ctx")) {
+            settle = false;
+            const QString path = w.value(2);
+            const QVariant want = parseValue(w.value(3));
+            const bool ok = waitUntil([&] { return conditionMatches({{path, want}}, env.kd.context()); }, w.value(4, QStringLiteral("3000")).toInt());
+            check(env, ok, QStringLiteral("context %1 = %2 (now %3)").arg(path, w.value(3), toJson(valueAtPath(env.kd.context(), path))));
+        } else if (cmd == QLatin1String("print") && w.value(1) == QLatin1String("ctx")) {
+            settle = false;
+            const QVariant v = w.size() > 2 ? valueAtPath(env.kd.context(), w.value(2)) : QVariant(env.kd.context());
+            say(QStringLiteral("  ctx %1 = %2").arg(w.value(2, QStringLiteral("(all)")), toJson(v)));
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("refused")) {
+            settle = false;
+            const QString code = w.value(2);
+            const bool ok = waitUntil([&] { return std::any_of(env.refusals.cbegin(), env.refusals.cend(), [&](const auto &r) { return r.second == code; }); },
+                                      w.value(3, QStringLiteral("2000")).toInt());
+            check(env, ok, QStringLiteral("a refusal with %1").arg(code));
+            env.refusals.clear();
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("no-refusal")) {
+            settle = false;
+            QStringList seen;
+            for (const auto &r : std::as_const(env.refusals)) {
+                seen << r.first + QLatin1Char(':') + r.second;
+            }
+            check(env, env.refusals.isEmpty(), QStringLiteral("no refusal (%1)").arg(seen.isEmpty() ? QStringLiteral("none") : seen.join(QStringLiteral(", "))));
+            env.refusals.clear();
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("no-keys")) {
+            settle = false;
+            check(env, env.keys.taps.isEmpty(), QStringLiteral("no keyboard fallback (taps: %1)").arg(env.keys.taps.isEmpty() ? QStringLiteral("none") : env.keys.taps.join(QLatin1Char(' '))));
+        } else if (cmd == QLatin1String("refusals") && w.value(1) == QLatin1String("clear")) {
+            settle = false;
+            env.refusals.clear();
         } else if (cmd == QLatin1String("wait")) {
             QEventLoop loop;
             QTimer::singleShot(rest.toInt(), &loop, &QEventLoop::quit);
             loop.exec();
         } else if (cmd.startsWith(QLatin1String("key"))) {
-            engine.handle(PadEvent{cmd, PadEvent::KeyDown, 0, 0});
+            env.engine.handle(PadEvent{cmd, PadEvent::KeyDown, 0, 0});
         } else if (cmd.startsWith(QLatin1String("knob"))) {
             if (rest == QLatin1String("press")) {
-                engine.handle(PadEvent{cmd, PadEvent::PressDown, 0, 0});
+                env.engine.handle(PadEvent{cmd, PadEvent::PressDown, 0, 0});
             } else {
                 const int n = rest.toInt();
                 for (int i = 0; i < std::abs(n); ++i) {
-                    engine.handle(PadEvent{cmd, PadEvent::Turn, n > 0 ? 1 : -1, 0});
+                    env.engine.handle(PadEvent{cmd, PadEvent::Turn, n > 0 ? 1 : -1, 0});
                 }
             }
         } else {
             std::fprintf(stderr, "line %d: unknown command '%s'\n", line, qPrintable(cmd));
             return 2;
         }
+        if (!settle) {
+            continue;
+        }
         // let coalescers, acks and tap pacing run
         QEventLoop loop;
-        QTimer::singleShot(qMax(30, engine.config().settings.coalesceMs * 3), &loop, &QEventLoop::quit);
+        QTimer::singleShot(qMax(30, env.engine.config().settings.coalesceMs * 3), &loop, &QEventLoop::quit);
         loop.exec();
-        while (engine.pendingTaps() > 0) {
+        while (env.engine.pendingTaps() > 0) {
             QTimer::singleShot(10, &loop, &QEventLoop::quit);
             loop.exec();
         }
     }
-    return 0;
+    if (env.failures > 0) {
+        say(QStringLiteral("%1 expectation(s) failed").arg(env.failures));
+    }
+    return env.failures > 0 ? 1 : 0;
 }
 
 } // namespace
@@ -195,7 +294,8 @@ int main(int argc, char **argv)
     QCommandLineOption noWriteOpt(QStringLiteral("no-write"), QStringLiteral("verify: only report"));
     QCommandLineOption forceWindowOpt(QStringLiteral("force-window"), QStringLiteral("pretend this window class is focused (testing)"), QStringLiteral("class"));
     QCommandLineOption quietOpt({QStringLiteral("q"), QStringLiteral("quiet")}, QStringLiteral("log only problems"));
-    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt});
+    QCommandLineOption traceOpt(QStringLiteral("trace"), QStringLiteral("log every Kdenlive call, reply, ack and epoch change"));
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt});
     p.process(app);
     const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
     const bool explicitConfig = p.isSet(configOpt);
@@ -237,10 +337,24 @@ int main(int argc, char **argv)
         return app.exec();
     }
     if (cmd == QLatin1String("simulate")) {
+        // No pad and no virtual keyboard: keys are only recorded and printed.
+        // With --kdenlive-service the real client talks to that Kdenlive.
         RecordingKeySink keys(true);
-        FakeKdenliveClient kd(true);
+        std::unique_ptr<FakeKdenliveClient> fake;
+        std::unique_ptr<KdenliveDBusClient> real;
+        KdenliveClient *kd = nullptr;
+        if (p.isSet(serviceOpt)) {
+            real = std::make_unique<KdenliveDBusClient>(QDBusConnection::sessionBus());
+            real->setServiceOverride(p.value(serviceOpt));
+            real->setTrace(p.isSet(traceOpt));
+            QObject::connect(real.get(), &KdenliveClient::message, [](const QString &m) { say(QStringLiteral("  [kdenlive] %1").arg(m)); });
+            kd = real.get();
+        } else {
+            fake = std::make_unique<FakeKdenliveClient>(true);
+            kd = fake.get();
+        }
         StaticWindowTracker tracker;
-        Engine engine(&keys, &kd);
+        Engine engine(&keys, kd);
         engine.setConfig(*cfg);
         QObject::connect(&tracker, &WindowTracker::activeWindowChanged, &engine, &Engine::setActiveWindow);
         QObject::connect(&engine, &Engine::message, [](const QString &m) { say(QStringLiteral("  (%1)").arg(m)); });
@@ -258,7 +372,16 @@ int main(int argc, char **argv)
                 return 2;
             }
         }
-        return simulate(engine, kd, tracker, in);
+        SimEnv env{engine, *kd, fake.get(), tracker, keys, {}, 0};
+        QObject::connect(kd, &KdenliveClient::refused, [&env](const QString &what, const QString &code, const QString &) { env.refusals.append({what, code}); });
+        const int rc = simulate(env, in);
+        if (real) {
+            real->attachToPid(0);  // Unsubscribe: release the lease
+            QEventLoop loop;
+            QTimer::singleShot(200, &loop, &QEventLoop::quit);
+            loop.exec();
+        }
+        return rc;
     }
     if (cmd == QLatin1String("bench-dbus")) {
         // Round trip Control -> ControlAck against a contract implementation.

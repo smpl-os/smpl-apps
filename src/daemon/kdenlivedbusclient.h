@@ -44,6 +44,11 @@ public:
     bool supportsControl(const QString &name) const override { return m_controls.contains(name); }
     bool supportsAction(const QString &id) const override { return m_actions.contains(id); }
     bool supportsCommand(const QString &name) const override { return m_commands.contains(name); }
+    int limit(const QString &name, int fallback) const override
+    {
+        const QVariant v = m_caps.value(QStringLiteral("limits")).toMap().value(name);
+        return v.isValid() && v.toInt() > 0 ? v.toInt() : fallback;
+    }
     void triggerAction(const QString &id) override;
     bool control(const QString &key, const QString &name, double delta, const QVariantMap &options) override;
     void invoke(const QString &command, const QVariantMap &args) override;
@@ -62,6 +67,8 @@ public:
         quint64 lastEmittedAtMs = 0;
     };
     ContextTiming contextTiming() const { return m_timing; }
+    // Log every call, reply, ack and epoch change through message() (acceptance runs).
+    void setTrace(bool on) { m_trace = on; }
     void resetContextTiming() { m_timing = {}; m_lastArrival.invalidate(); }
     int inFlightMessages() const { return int(m_sent.size()); }
     static QVariant normalize(const QVariant &v);  // QDBusArgument trees -> plain QVariant
@@ -86,6 +93,7 @@ private:
     void handleTransportError(const QString &what, const QString &errorName, const QString &errorMessage, const QString &actionId = {});
     QDBusMessage call(const QString &method) const;
     QVariantMap commonOptions() const;
+    void trace(const QString &line);
 
     QDBusConnection m_conn;
     QString m_service;
@@ -107,8 +115,13 @@ private:
     QHash<quint64, QString> m_requests;  // requestId -> action id
     quint64 m_generation = 0;
     QElapsedTimer m_lastAttempt;
+    // Services this process has sent a mutation to. An incompatible version
+    // found later counts as unavailable only before any mutation (contract
+    // preflight boundary); afterwards it is Pending, never a keyboard fallback.
+    QSet<QString> m_mutated;
     ContextTiming m_timing;
     QElapsedTimer m_lastArrival;
+    bool m_trace = false;
     QDBusServiceWatcher *m_watcher = nullptr;
 };
 

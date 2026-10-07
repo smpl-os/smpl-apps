@@ -62,6 +62,9 @@ private:
         KeyChord chord;
     };
     struct Gesture {
+        int batches = 0;          // update batches sent (edit.trim: limits.trimGestureSteps)
+        bool frameBound = false;  // edits a key at a captured frame: a seek ends it
+        QVariant position;        // playhead when the gesture started
         QString id;
         QString key;  // coalescer key
         QString control;
@@ -74,7 +77,10 @@ private:
     void executeControl(const Binding &b, const QString &slot, const QString &group, int dir, double delta);
     void enqueueTaps(const QString &group, int dir, const QList<KeyChord> &chords, int count);
     void drainTap();
-    QVariantMap expandOptions(const QVariantMap &opts) const;
+    // "$mode" and "$ctx:path" / "$!ctx:path" (negated) references. A context
+    // reference that is absent is reported through missing (nothing is guessed).
+    QVariantMap expandOptions(const QVariantMap &opts, QString *missing = nullptr) const;
+    QVariantMap modeContext() const;  // current mode values, as "$mode" in layer conditions
     // Opaque target handle for an editing control/command. Colour-wheel targets
     // are per wheel: the colorWheels entry for the requested wheel, else the
     // focused colorWheel, and a targetFrom descriptor whose wheel differs from

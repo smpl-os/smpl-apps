@@ -76,19 +76,51 @@ const QList<Descriptor> &descriptors()
         {kParamFocus, QStringLiteral("parameters"), 2, 64, true, false, false, {}},
         {kParamNudge, QStringLiteral("parameter display steps"), 2, 10000, false, true, false, {QStringLiteral("step"), QStringLiteral("keyframe"), QStringLiteral("axis")}},
         {kColorWheel, QStringLiteral("wheel steps"), 2, 10000, false, true, false, {QStringLiteral("wheel"), QStringLiteral("axis"), QStringLiteral("step"), QStringLiteral("keyframe")}},
-        {kTrackFocus, QStringLiteral("tracks"), 3, 10, true, false, false, {}},
-        {kScroll, QStringLiteral("tenths of visible width"), 3, 100, true, false, false, {}},
-        {kAudioGain, QStringLiteral("0.1 dB"), 3, 600, true, true, false, {}},
-        {kTrim, QStringLiteral("frames"), 3, 1000, true, true, false, {QStringLiteral("edge"), QStringLiteral("mode")}},
+        {kTrackFocus, QStringLiteral("tracks"), 3, 10000, true, false, false, {}},
+        {kScroll, QStringLiteral("tenths of visible width"), 3, 10000, false, false, false, {}},
+        {kAudioGain, QStringLiteral("0.1 dB"), 3, 10000, false, true, false, {}},
+        {kTrim, QStringLiteral("frames"), 3, 10000, true, true, false, {QStringLiteral("edge"), QStringLiteral("mode")}},
     };
     return d;
 }
-const QStringList kParameterOptions{QStringLiteral("target"), QStringLiteral("gesture"), QStringLiteral("phase"), QStringLiteral("step"),
-                                    QStringLiteral("keyframe"), QStringLiteral("wheel"), QStringLiteral("axis")};
-bool isParameterId(const QString &id)
+// Accepted options per control/command beyond session/epoch, as in Kdenlive's
+// qualified K23 (ControlSurface::optionsFor).
+QStringList optionsFor(const QString &id)
 {
-    return id == kParamFocus || id == kParamNudge || id == kColorWheel || id == kCmdParamReset || id == kCmdWheelReset;
+    const QString t = QStringLiteral("target"), g = QStringLiteral("gesture"), ph = QStringLiteral("phase"), k = QStringLiteral("keyframe");
+    if (id == kParamFocus || id == kTrackFocus || id == kScroll) {
+        return {};
+    }
+    if (id == kCmdParamReset) {
+        return {t, k};
+    }
+    if (id == kCmdWheelReset) {
+        return {t, QStringLiteral("wheel"), k};
+    }
+    if (id == kParamNudge) {
+        return {t, g, ph, QStringLiteral("step"), k};
+    }
+    if (id == kColorWheel) {
+        return {t, g, ph, QStringLiteral("step"), k, QStringLiteral("wheel"), QStringLiteral("axis")};
+    }
+    if (id == kAudioGain) {
+        return {t, g, ph};
+    }
+    if (id == kTrim) {
+        return {t, g, ph, QStringLiteral("edge"), QStringLiteral("mode")};
+    }
+    if (id == kCmdTrackSet) {
+        return {t, QStringLiteral("what"), QStringLiteral("value"), QStringLiteral("soloMode")};
+    }
+    if (id == kZoom) {
+        return {QStringLiteral("anchor")};
+    }
+    if (id == kJog) {
+        return {QStringLiteral("monitor"), QStringLiteral("scrub")};
+    }
+    return {QStringLiteral("monitor")};
 }
+constexpr int kMaxIdentifier = 128;
 const Descriptor *descriptor(const QString &id)
 {
     for (const auto &d : descriptors()) {
@@ -139,7 +171,25 @@ int stringSize(const QVariant &v)
 
 const QStringList kTargetKeys{QStringLiteral("focus"), QStringLiteral("project"), QStringLiteral("sequence"), QStringLiteral("activeMonitor"),
                               QStringLiteral("tool"), QStringLiteral("effect"), QStringLiteral("param"), QStringLiteral("colorWheel"),
-                              QStringLiteral("timeline"), QStringLiteral("audio"), QStringLiteral("edit")};
+                              QStringLiteral("timeline")};
+constexpr int kMaxGestureId = 128;
+const QStringList kQualifiedTrimModes{QStringLiteral("resize")};
+QVariantMap track(int id, const QString &type, const QString &label, bool targeted)
+{
+    return {{QStringLiteral("id"), id},           {QStringLiteral("type"), type},   {QStringLiteral("label"), label},
+            {QStringLiteral("mute"), false},      {QStringLiteral("hide"), false},  {QStringLiteral("lock"), false},
+            {QStringLiteral("solo"), false},      {QStringLiteral("target"), targeted}, {QStringLiteral("gainDb"), 0.0}};
+}
+QVariantMap clip(const QString &trk, int start, int end, int minStart, int maxEnd, const QString &linked, bool audio, double volumeDb, bool staticVolume)
+{
+    return {{QStringLiteral("track"), trk},        {QStringLiteral("start"), start},   {QStringLiteral("end"), end},
+            {QStringLiteral("minStart"), minStart}, {QStringLiteral("maxEnd"), maxEnd}, {QStringLiteral("linked"), linked},
+            {QStringLiteral("audio"), audio},       {QStringLiteral("volumeDb"), volumeDb}, {QStringLiteral("staticVolume"), staticVolume}};
+}
+double tenth(double v)
+{
+    return std::round(v * 10.0) / 10.0;
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -182,8 +232,14 @@ MockKdenlive::MockKdenlive(QObject *parent)
     m_wheels = {{QStringLiteral("lift"), rgb(0.0)}, {QStringLiteral("gamma"), rgb(1.0)}, {QStringLiteral("gain"), rgb(1.0)}};
     m_paramOrder = {QStringLiteral("level"), QStringLiteral("opacity")};
     m_params = {{QStringLiteral("level"), 50.0}, {QStringLiteral("opacity"), 100.0}};
-    m_tracks = {{QStringLiteral("trk-7"), QVariantMap{{QStringLiteral("type"), QStringLiteral("audio")}, {QStringLiteral("mute"), false}}},
-                {QStringLiteral("trk-3"), QVariantMap{{QStringLiteral("type"), QStringLiteral("video")}, {QStringLiteral("hide"), false}}}};
+    m_trackOrder = {QStringLiteral("trk-4"), QStringLiteral("trk-3"), QStringLiteral("trk-7"), QStringLiteral("trk-8")};
+    m_tracks = {{QStringLiteral("trk-4"), track(4, QStringLiteral("video"), QStringLiteral("V2"), false)},
+                {QStringLiteral("trk-3"), track(3, QStringLiteral("video"), QStringLiteral("V1"), true)},
+                {QStringLiteral("trk-7"), track(7, QStringLiteral("audio"), QStringLiteral("A1"), true)},
+                {QStringLiteral("trk-8"), track(8, QStringLiteral("audio"), QStringLiteral("A2"), false)}};
+    m_clips = {{QStringLiteral("clip-21"), clip(QStringLiteral("trk-3"), 100, 200, 50, 400, QStringLiteral("clip-22"), false, 0, false)},
+               {QStringLiteral("clip-22"), clip(QStringLiteral("trk-7"), 100, 200, 50, 400, QStringLiteral("clip-21"), true, 0, true)},
+               {QStringLiteral("clip-31"), clip(QStringLiteral("trk-8"), 300, 360, 300, 360, QString(), true, -3, false)}};
     m_context = {{kCtxSerial, u64(0)},
                  {kCtxEpoch, u64(m_epoch)},
                  {QStringLiteral("ready"), true},
@@ -204,17 +260,72 @@ MockKdenlive::MockKdenlive(QObject *parent)
 void MockKdenlive::setStage(int stage)
 {
     m_stage = qBound(1, stage, 3);
-    if (m_stage >= 3 && !m_context.contains(QStringLiteral("timeline"))) {
-        // timeline.track: native id and sequence identity plus the opaque target.
-        m_context.insert(QStringLiteral("timeline"),
-                         QVariantMap{{QStringLiteral("track"), QVariantMap{{QStringLiteral("target"), QStringLiteral("trk-7")},
-                                                                           {QStringLiteral("id"), 7},
-                                                                           {QStringLiteral("sequence"), QStringLiteral("seq-1")},
-                                                                           {QStringLiteral("type"), QStringLiteral("audio")},
-                                                                           {QStringLiteral("label"), QStringLiteral("A1")}}}});
-    } else if (m_stage < 3) {
-        m_context.remove(QStringLiteral("timeline"));
+    m_context.insert(QStringLiteral("timeline"), timelineDescriptor());
+}
+
+QVariantMap MockKdenlive::timelineDescriptor() const
+{
+    // Before MR3 the timeline is described (zoom, native track identity) but
+    // offers no handles. MR3 adds the handles of contract §MR3.
+    const QString trackId = m_trackOrder.value(m_track);
+    const QVariantMap t = m_tracks.value(trackId).toMap();
+    QVariantMap trackDesc{{QStringLiteral("id"), t.value(QStringLiteral("id"))}, {QStringLiteral("sequence"), QStringLiteral("seq-1")}};
+    QVariantMap timeline{{QStringLiteral("zoom"), m_zoom}, {QStringLiteral("track"), trackDesc}};
+    if (m_stage < 3) {
+        return timeline;
     }
+    // Shapes as in Kdenlive's qualified MR3 (TimelineControl::context): native
+    // integer ids, track state at the top level of timeline.track.
+    const bool audio = t.value(QStringLiteral("type")).toString() == QLatin1String("audio");
+    trackDesc.insert(kOptTarget, trackId);
+    trackDesc.insert(QStringLiteral("audio"), audio);
+    trackDesc.insert(QStringLiteral("name"), t.value(QStringLiteral("label")));
+    trackDesc.insert(QStringLiteral("locked"), t.value(QStringLiteral("lock")));
+    trackDesc.insert(QStringLiteral("muted"), audio && t.value(QStringLiteral("mute")).toBool());
+    trackDesc.insert(QStringLiteral("hidden"), !audio && t.value(QStringLiteral("hide")).toBool());
+    trackDesc.insert(QStringLiteral("targeted"), t.value(QStringLiteral("target")));
+    trackDesc.insert(QStringLiteral("solo"), audio && t.value(QStringLiteral("solo")).toBool());
+    if (audio) {
+        // Only for an available audio mixer; the same handle as the track.
+        trackDesc.insert(QStringLiteral("gain"), QVariantMap{{kOptTarget, trackId}, {QStringLiteral("value"), t.value(QStringLiteral("gainDb"))},
+                                                             {QStringLiteral("min"), -60.0}, {QStringLiteral("max"), 12.0}, {QStringLiteral("enabled"), true}});
+    }
+    timeline.insert(QStringLiteral("track"), trackDesc);
+    auto nativeId = [](const QString &key) { return key.section(QLatin1Char('-'), 1).toInt(); };
+    QVariantList selection;
+    if (!m_selectedClip.isEmpty()) {
+        selection << nativeId(m_selectedClip);
+    }
+    timeline.insert(QStringLiteral("selection"), QVariantMap{{QStringLiteral("clips"), selection}, {QStringLiteral("count"), selection.size()}});
+    if (!m_selectedClip.isEmpty()) {
+        const QVariantMap c = m_clips.value(m_selectedClip).toMap();
+        QStringList members{m_selectedClip};
+        const QString linked = c.value(QStringLiteral("linked")).toString();
+        if (!linked.isEmpty()) {  // aligned linked A/V pair
+            members << linked;
+        }
+        std::sort(members.begin(), members.end());
+        QVariantList clips, tracks;
+        int gainTargets = 0;
+        QString gainClip;
+        for (const auto &m : members) {
+            clips << nativeId(m);
+            tracks << nativeId(m_clips.value(m).toMap().value(QStringLiteral("track")).toString());
+            if (m_clips.value(m).toMap().value(QStringLiteral("audio")).toBool()) {  // an audio clip with one volume effect
+                ++gainTargets;
+                gainClip = m;
+            }
+        }
+        timeline.insert(QStringLiteral("trim"), QVariantMap{{kOptTarget, QStringLiteral("trim-") + m_selectedClip}, {QStringLiteral("clip"), nativeId(m_selectedClip)},
+                                                            {QStringLiteral("clips"), clips}, {QStringLiteral("tracks"), tracks},
+                                                            {QStringLiteral("modes"), kQualifiedTrimModes}});
+        if (gainTargets == 1) {
+            timeline.insert(QStringLiteral("clipGain"), QVariantMap{{kOptTarget, QStringLiteral("gain-") + gainClip}, {QStringLiteral("clip"), nativeId(gainClip)},
+                                                                    {QStringLiteral("unit"), QStringLiteral("dB")},
+                                                                    {QStringLiteral("policy"), QStringLiteral("single_keyframe_existing_effect")}});
+        }
+    }
+    return timeline;
 }
 
 MockKdenlive::~MockKdenlive()
@@ -315,7 +426,7 @@ QVariantMap MockKdenlive::capabilities() const
             m.insert(QStringLiteral("axes"), QStringList{QStringLiteral("value"), QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")});
         }
         if (d.id == kTrim) {
-            m.insert(QStringLiteral("modes"), QStringList{QStringLiteral("ripple"), QStringLiteral("roll")});
+            m.insert(QStringLiteral("modes"), kQualifiedTrimModes);
         }
         descs << m;
     }
@@ -323,13 +434,16 @@ QVariantMap MockKdenlive::capabilities() const
     QStringList contextKeys{QStringLiteral("serial"), QStringLiteral("emittedAtMs"), QStringLiteral("epoch"), QStringLiteral("ready"),
                             QStringLiteral("active"), QStringLiteral("dialog"), QStringLiteral("focus"), QStringLiteral("project"),
                             QStringLiteral("sequence"), QStringLiteral("activeMonitor"), QStringLiteral("position"), QStringLiteral("fps"),
-                            QStringLiteral("playing"), QStringLiteral("speed"), QStringLiteral("tool")};
+                            QStringLiteral("playing"), QStringLiteral("speed"), QStringLiteral("tool"), QStringLiteral("timeline")};
     if (m_stage >= 2) {
         contextKeys << QStringLiteral("effect") << QStringLiteral("param") << QStringLiteral("colorWheel") << QStringLiteral("colorWheels")
                     << QStringLiteral("hoveredColorWheel");
     }
+    QVariantMap limits{{QStringLiteral("subscriptions"), kMaxLeases}, {QStringLiteral("pendingKeys"), kMaxPendingKeys},
+                       {QStringLiteral("queuedActions"), kMaxQueuedActions}, {QStringLiteral("contextHz"), 30},
+                       {QStringLiteral("maximumDelta"), 10000}, {QStringLiteral("editingWriters"), 1}};
     if (m_stage >= 3) {
-        contextKeys << QStringLiteral("timeline") << QStringLiteral("audio") << QStringLiteral("edit");
+        limits.insert(QStringLiteral("trimGestureSteps"), m_trimGestureSteps);
     }
     return ok({{QStringLiteral("version"), uint(kVersion)},
                {QStringLiteral("revision"), uint(kRevision)},
@@ -337,11 +451,8 @@ QVariantMap MockKdenlive::capabilities() const
                {QStringLiteral("controls"), controlsForStage()},
                {QStringLiteral("commands"), commandsForStage()},
                {QStringLiteral("contextKeys"), contextKeys},
-               {QStringLiteral("limits"), QVariantMap{{QStringLiteral("subscriptions"), kMaxLeases},
-                                                      {QStringLiteral("pendingKeys"), kMaxPendingKeys},
-                                                      {QStringLiteral("queuedActions"), kMaxQueuedActions},
-                                                      {QStringLiteral("contextHz"), 30},
-                                                      {QStringLiteral("maximumDelta"), 10000}}},
+               {QStringLiteral("limits"), limits},
+               {QStringLiteral("trimModes"), m_stage >= 3 ? kQualifiedTrimModes : QStringList{}},
                {QStringLiteral("controlDescriptors"), QVariant::fromValue(descs)}});
 }
 
@@ -434,12 +545,14 @@ QVariantMap MockKdenlive::listActions() const
 
 QVariantMap MockKdenlive::admit(const Caller &c, const QVariantMap &options, const QStringList &allowed, int *stringBudget) const
 {
+    // Oversized counts, identifiers and strings: resource_limit; malformed or
+    // out-of-range values: invalid_arguments.
     if (options.size() > kMaxOptions) {
-        return fail(err::InvalidArguments, QStringLiteral("too many options"), QStringLiteral("options"));
+        return fail(err::ResourceLimit, QStringLiteral("too many options"), QStringLiteral("options"));
     }
     *stringBudget -= stringSize(options);
     if (*stringBudget < 0) {
-        return fail(err::InvalidArguments, QStringLiteral("input too large"), QStringLiteral("options"));
+        return fail(err::ResourceLimit, QStringLiteral("input too large"), QStringLiteral("options"));
     }
     const auto it = m_leases.constFind(c.owner);
     if (it == m_leases.constEnd() || options.value(kOptSession).toString() != it->session) {
@@ -481,11 +594,12 @@ QString MockKdenlive::targetFor(const QString &control) const
     if (control == kParamNudge || control == kCmdParamReset) {
         return m_context.value(QStringLiteral("param")).toMap().value(kOptTarget).toString();
     }
-    if (control == kAudioGain) {
-        return m_context.value(QStringLiteral("audio")).toMap().value(kOptTarget).toString();
-    }
+    const QVariantMap timeline = m_context.value(QStringLiteral("timeline")).toMap();
     if (control == kTrim) {
-        return m_context.value(QStringLiteral("edit")).toMap().value(kOptTarget).toString();
+        return timeline.value(QStringLiteral("trim")).toMap().value(kOptTarget).toString();
+    }
+    if (control == kCmdTrackSet) {
+        return timeline.value(QStringLiteral("track")).toMap().value(kOptTarget).toString();
     }
     return {};
 }
@@ -534,19 +648,13 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
     if (control == kParamNudge && options.value(QStringLiteral("axis"), QStringLiteral("value")).toString() != QLatin1String("value")) {
         return fail(err::InvalidArguments, QStringLiteral("a numeric parameter has only a value axis"), QStringLiteral("axis"));
     }
-    if (control == kTrim) {
-        const QString mode = options.value(QStringLiteral("mode")).toString();
-        if (!options.contains(QStringLiteral("edge"))) {
-            return fail(err::InvalidArguments, QStringLiteral("edge is required"), QStringLiteral("edge"));
-        }
-        if (mode != QLatin1String("ripple") && mode != QLatin1String("roll")) {
-            return fail(err::UnsupportedMode, QStringLiteral("trim mode not qualified"), QStringLiteral("mode"));
-        }
-    }
     if (d->editing) {
         const QString gesture = options.value(kOptGesture).toString();
-        if (gesture.isEmpty() || gesture.size() > 128) {
-            return fail(err::InvalidArguments, QStringLiteral("an explicit bounded gesture id is required"), kOptGesture);
+        if (gesture.isEmpty()) {
+            return fail(err::InvalidArguments, QStringLiteral("an explicit gesture id is required"), kOptGesture);
+        }
+        if (gesture.size() > kMaxGestureId) {
+            return fail(err::ResourceLimit, QStringLiteral("gesture id too long"), kOptGesture);
         }
         const QString target = options.value(kOptTarget).toString();
         if (control == kColorWheel) {
@@ -560,8 +668,22 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
                 return fail(err::UnsupportedParameter, QStringLiteral("the control does not match the bound wheel"), QStringLiteral("wheel"));
             }
             semantic->insert(QStringLiteral("wheel"), wheel.value(QStringLiteral("wheel")));
+        } else if (control == kAudioGain) {
+            if (target.isEmpty() || gainTrack(target).isEmpty()) {
+                return fail(err::TargetNotFound, QStringLiteral("unknown or stale gain target"), kOptTarget);
+            }
         } else if (target.isEmpty() || target != targetFor(control)) {
             return fail(err::TargetNotFound, QStringLiteral("unknown or stale target"), kOptTarget);
+        }
+        if (control == kTrim) {
+            // mode is required; only the scope's advertised modes are qualified.
+            const QStringList modes = m_context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap().value(QStringLiteral("modes")).toStringList();
+            if (!modes.contains(options.value(QStringLiteral("mode")).toString())) {
+                return fail(err::UnsupportedMode, QStringLiteral("only the advertised trim modes are qualified"), QStringLiteral("mode"));
+            }
+            if (!QStringList{QStringLiteral("start"), QStringLiteral("end")}.contains(options.value(QStringLiteral("edge")).toString())) {
+                return fail(err::InvalidArguments, QStringLiteral("an explicit edge (start/end) is required"), QStringLiteral("edge"));
+            }
         }
         if (m_grouped && (control == kParamNudge || control == kColorWheel)) {
             return fail(err::UnsupportedGroup, QStringLiteral("grouped parameter propagation is not qualified"));
@@ -605,16 +727,15 @@ void MockKdenlive::control(const QString &control, double delta, const QVariantM
     }
     const Descriptor *d = descriptor(control);
     const QString sentSession = options.value(kOptSession).toString();
+    if (control.size() > kMaxIdentifier) {
+        ack(c, sentSession, seq, control.left(kMaxIdentifier), fail(err::ResourceLimit, QStringLiteral("control identifier too long"), QStringLiteral("control")));
+        return;
+    }
     if (!d || d->stage > m_stage) {
         ack(c, sentSession, seq, control, fail(err::UnsupportedControl, QStringLiteral("control not offered"), QStringLiteral("control")));
         return;
     }
-    QStringList allowed = d->options;
-    if (isParameterId(control)) {
-        allowed = kParameterOptions;
-    } else if (d->editing) {
-        allowed << kOptTarget << kOptGesture << kOptPhase;
-    }
+    const QStringList allowed = optionsFor(control);
     int budget = kMaxStringInput - int(control.size());
     QVariantMap e = admit(c, options, allowed, &budget);
     QVariantMap semantic;
@@ -630,21 +751,33 @@ void MockKdenlive::control(const QString &control, double delta, const QVariantM
         return;
     }
     l->lastSeq = seq;
+    const QString session = l->session;
+    const quint64 epoch = m_epoch;  // admitted against this epoch
+    const QString phase = options.value(kOptPhase, QStringLiteral("update")).toString();
+    if (phase == QLatin1String("end") || phase == QLatin1String("cancel")) {
+        // As Kdenlive: a barrier first applies everything pending, then is
+        // queued on its own (never merged into an earlier update).
+        applyPending();
+    }
     const QString gesture = options.value(kOptGesture).toString();
     const QString target = options.value(kOptTarget).toString();
-    const QString key = QStringList{c.owner, l->session, QString::number(m_epoch), gesture, target, control, compact(semantic)}.join(QLatin1Char('|'));
+    const QString key = QStringList{c.owner, session, QString::number(epoch), gesture, target, control, compact(semantic)}.join(QLatin1Char('|'));
     if (!m_pending.contains(key) && m_pending.size() >= kMaxPendingKeys) {
-        ack(c, l->session, seq, control, fail(err::ResourceLimit, QStringLiteral("too many pending controls")));
+        ack(c, session, seq, control, fail(err::ResourceLimit, QStringLiteral("too many pending controls")));
+        return;
+    }
+    if (m_pending.contains(key) && std::abs(m_pending.value(key).delta + delta) > d->maxDelta) {
+        ack(c, session, seq, control, fail(err::ResourceLimit, QStringLiteral("accumulated delta too large")));
         return;
     }
     Pending &p = m_pending[key];
     if (p.firstSeq == 0) {
         p.caller = c;
-        p.session = l->session;
+        p.session = session;
         p.control = control;
         p.gesture = gesture;
         p.target = target;
-        p.epoch = m_epoch;
+        p.epoch = epoch;
         p.semantic = semantic;
         p.firstSeq = seq;
         p.phase = QStringLiteral("update");
@@ -652,7 +785,6 @@ void MockKdenlive::control(const QString &control, double delta, const QVariantM
     }
     p.delta += delta;
     p.lastSeq = seq;
-    const QString phase = options.value(kOptPhase, QStringLiteral("update")).toString();
     if (phase == QLatin1String("cancel") || (phase == QLatin1String("end") && p.phase != QLatin1String("cancel"))) {
         p.phase = phase;
     }
@@ -664,33 +796,176 @@ void MockKdenlive::control(const QString &control, double delta, const QVariantM
     }
 }
 
-QVariant MockKdenlive::gestureValue(const QString &control, const QVariantMap &semantic, const QString &param) const
+QVariant MockKdenlive::gestureValue(const Gesture &g) const
 {
-    if (control == kParamNudge) {
-        return m_params.value(param);
+    if (g.control == kParamNudge) {
+        if (g.frame >= 0) {
+            QVariantMap keys;  // the whole key set: cancel also removes a created key
+            const QMap<int, double> k = m_keys.value(g.param);
+            for (auto it = k.cbegin(); it != k.cend(); ++it) {
+                keys.insert(QString::number(it.key()), it.value());
+            }
+            return keys;
+        }
+        return m_params.value(g.param);
     }
-    if (control == kColorWheel) {
-        return m_wheels.value(semantic.value(QStringLiteral("wheel")).toString());
+    if (g.control == kColorWheel) {
+        return m_wheels.value(g.param);
     }
-    if (control == kAudioGain) {
-        return m_gainDb;
+    if (g.control == kAudioGain) {
+        const QString id = g.param.section(QLatin1Char(':'), 1);
+        return g.param.startsWith(QLatin1String("track:")) ? m_tracks.value(id).toMap().value(QStringLiteral("gainDb"))
+                                                           : m_clips.value(id).toMap().value(QStringLiteral("volumeDb"));
     }
-    if (control == kTrim) {
-        return m_trim;
+    if (g.control == kTrim) {
+        QVariantMap bounds;
+        for (const auto &id : g.param.split(QLatin1Char(','))) {
+            const QVariantMap c = m_clips.value(id).toMap();
+            bounds.insert(id, QVariantList{c.value(QStringLiteral("start")), c.value(QStringLiteral("end"))});
+        }
+        return bounds;
+    }
+    return {};
+}
+void MockKdenlive::restoreGestureValue(const Gesture &g, const QVariant &v)
+{
+    if (g.control == kParamNudge) {
+        if (g.frame >= 0) {
+            QMap<int, double> keys;
+            const QVariantMap m = v.toMap();
+            for (auto it = m.cbegin(); it != m.cend(); ++it) {
+                keys.insert(it.key().toInt(), it.value().toDouble());
+            }
+            m_keys.insert(g.param, keys);
+        } else {
+            m_params.insert(g.param, v);
+        }
+    } else if (g.control == kColorWheel) {
+        m_wheels.insert(g.param, v);
+    } else if (g.control == kAudioGain) {
+        const QString id = g.param.section(QLatin1Char(':'), 1);
+        const bool isTrack = g.param.startsWith(QLatin1String("track:"));
+        QVariantMap &store = isTrack ? m_tracks : m_clips;
+        QVariantMap item = store.value(id).toMap();
+        item.insert(isTrack ? QStringLiteral("gainDb") : QStringLiteral("volumeDb"), v);
+        store.insert(id, item);
+    } else if (g.control == kTrim) {
+        const QVariantMap bounds = v.toMap();
+        for (auto it = bounds.cbegin(); it != bounds.cend(); ++it) {
+            QVariantMap c = m_clips.value(it.key()).toMap();
+            c.insert(QStringLiteral("start"), it.value().toList().value(0));
+            c.insert(QStringLiteral("end"), it.value().toList().value(1));
+            m_clips.insert(it.key(), c);
+        }
+    }
+}
+
+QString MockKdenlive::gainTrack(const QString &target, QString *clipOut) const
+{
+    const QVariantMap timeline = m_context.value(QStringLiteral("timeline")).toMap();
+    const QVariantMap trackGain = timeline.value(QStringLiteral("track")).toMap().value(QStringLiteral("gain")).toMap();
+    const QVariantMap clipGain = timeline.value(QStringLiteral("clipGain")).toMap();
+    if (!target.isEmpty() && trackGain.value(kOptTarget).toString() == target) {
+        return target;  // the track handle doubles as its gain handle
+    }
+    if (!target.isEmpty() && clipGain.value(kOptTarget).toString() == target) {
+        const QString clip = QStringLiteral("clip-%1").arg(clipGain.value(QStringLiteral("clip")).toInt());
+        if (clipOut) {
+            *clipOut = clip;
+        }
+        return m_clips.value(clip).toMap().value(QStringLiteral("track")).toString();
     }
     return {};
 }
 
-void MockKdenlive::restoreGestureValue(const QString &control, const QVariantMap &semantic, const QString &param, const QVariant &v)
+QString MockKdenlive::gestureSubject(const Pending &p) const
 {
-    if (control == kParamNudge) {
-        m_params.insert(param, v);
-    } else if (control == kColorWheel) {
-        m_wheels.insert(semantic.value(QStringLiteral("wheel")).toString(), v);
-    } else if (control == kAudioGain) {
-        m_gainDb = v.toDouble();
-    } else if (control == kTrim) {
-        m_trim = v.toInt();
+    if (p.control == kParamNudge) {
+        return m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString();
+    }
+    if (p.control == kColorWheel) {
+        return p.semantic.value(QStringLiteral("wheel")).toString();
+    }
+    if (p.control == kAudioGain) {
+        QString clip;
+        const QString track = gainTrack(p.target, &clip);
+        return clip.isEmpty() ? QStringLiteral("track:") + track : QStringLiteral("clip:") + clip;
+    }
+    if (p.control == kTrim) {
+        QStringList clips;
+        for (const auto &id : m_context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap().value(QStringLiteral("clips")).toList()) {
+            clips << QStringLiteral("clip-%1").arg(id.toInt());
+        }
+        return clips.join(QLatin1Char(','));
+    }
+    return {};
+}
+
+QVariantMap MockKdenlive::preflightEdit(const Pending &p, int *frame) const
+{
+    auto refuse = [](const QString &code, const QString &message) { return QVariantMap{{QStringLiteral("code"), code}, {QStringLiteral("message"), message}}; };
+    const bool playing = m_context.value(QStringLiteral("playing")).toBool();
+    const bool create = p.semantic.value(QStringLiteral("keyframe")).toString() == QLatin1String("create");
+    if (p.control == kParamNudge) {
+        const QVariantMap param = m_context.value(QStringLiteral("param")).toMap();
+        const QString name = param.value(QStringLiteral("name")).toString();
+        if (param.value(QStringLiteral("managed")).toBool()) {
+            return refuse(err::ManagedParameter, QStringLiteral("managed automation channel"));
+        }
+        if (!m_params.contains(name)) {
+            return refuse(err::UnsupportedParameter, QStringLiteral("parameter type not supported"));
+        }
+        const bool multi = m_keys.contains(name);
+        if (!multi && create) {
+            return refuse(err::UnsupportedParameter, QStringLiteral("this parameter cannot create keyframes"));
+        }
+        if (playing && (multi || create)) {
+            // Live grading covers static/single-key values only; writing a
+            // different frame every tick would be automation recording.
+            return refuse(err::Busy, QStringLiteral("multi-key edits and key creation need stopped playback"));
+        }
+        if (multi && !create && !m_keys.value(name).contains(m_position)) {
+            return refuse(err::KeyframeRequired, QStringLiteral("no keyframe at the captured frame"));
+        }
+        *frame = multi ? m_position : -1;
+    } else if (p.control == kColorWheel) {
+        if (create) {  // the mock's wheels are static
+            return refuse(err::UnsupportedParameter, QStringLiteral("this parameter cannot create keyframes"));
+        }
+    } else if (p.control == kAudioGain) {
+        QString clip;
+        const QString track = gainTrack(p.target, &clip);
+        if (track.isEmpty()) {
+            return refuse(err::TargetNotFound, QStringLiteral("unknown or stale gain target"));
+        }
+        const bool locked = m_tracks.value(track).toMap().value(QStringLiteral("lock")).toBool();
+        if (clip.isEmpty() && locked) {
+            return refuse(err::TrackLocked, QStringLiteral("an unlocked audio track in the active mixer is required"));
+        }
+        if (!clip.isEmpty() && locked) {
+            return refuse(err::TargetNotFound, QStringLiteral("the unique unlocked clip-volume effect is no longer available"));
+        }
+        if (!clip.isEmpty() && !m_clips.value(clip).toMap().value(QStringLiteral("staticVolume")).toBool()) {
+            return refuse(err::UnsupportedParameter, QStringLiteral("clip gain requires an unmanaged single-key volume effect"));
+        }
+    } else if (p.control == kTrim) {
+        const QVariantList tracks = m_context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap().value(QStringLiteral("tracks")).toList();
+        for (const auto &t : tracks) {
+            if (m_tracks.value(QStringLiteral("trk-%1").arg(t.toInt())).toMap().value(QStringLiteral("lock")).toBool()) {
+                return refuse(err::TrackLocked, QStringLiteral("a track of the edit scope is locked"));
+            }
+        }
+    }
+    return {};
+}
+
+void MockKdenlive::finishFrameBoundGestures()
+{
+    const auto keys = m_gestures.keys();
+    for (const auto &k : keys) {
+        if (m_gestures.value(k).frame >= 0) {
+            finishGesture(k, false, nullptr);
+        }
     }
 }
 
@@ -744,47 +1019,59 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
     QString gk;
     if (d->editing) {
         gk = QStringList{p.caller.owner, p.session, p.gesture, p.target, p.control, compact(p.semantic)}.join(QLatin1Char('|'));
-        if (!m_gestures.contains(gk) && m_finishedGestures.contains(gk)) {
-            // The gesture already ended (idle, end, focus/target or playhead change,
-            // unrelated history, another control). Cancel can no longer restore it
-            // (contract text; Kdenlive MR2 answers ok/changed:false instead). An
-            // update or end with the same id starts a new gesture, as Kdenlive does:
-            // a late end applies its delta as a one-shot and a zero-delta late end
-            // is a no-op.
-            if (p.phase == QLatin1String("cancel")) {
-                return error(err::HistoryConflict, QStringLiteral("gesture already ended"));
-            }
-            m_finishedGestures.removeAll(gk);
-        }
         if (!m_gestures.contains(gk)) {
-            // One active editing gesture in the host (as Kdenlive's ParameterControl):
-            // another caller's open gesture makes this busy; the caller's own previous
-            // gesture ends first.
-            const auto open = m_gestures.keys();
-            for (const auto &k : open) {
-                if (m_gestures.value(k).owner != p.caller.owner) {
+            // One editing writer per host (limits.editingWriters = 1): another
+            // caller's open gesture makes this busy and is left untouched.
+            for (auto it = m_gestures.cbegin(); it != m_gestures.cend(); ++it) {
+                if (it->owner != p.caller.owner) {
                     return error(err::Busy, QStringLiteral("another caller owns the current editing gesture"));
                 }
             }
-            for (const auto &k : open) {
-                finishGesture(k, false, nullptr);
+            // A live gesture id cannot change its target or control.
+            const auto keys = m_gestures.keys();
+            for (const auto &k : keys) {
+                if (m_gestures.value(k).id == p.gesture) {
+                    finishGesture(k, false, nullptr);
+                    return error(err::HistoryConflict, QStringLiteral("a live gesture cannot change its target or control"));
+                }
+            }
+            // A cancel needs a live gesture it owns (contract: also after end,
+            // idle or history changes). Reusing an ended id with update/end starts
+            // a new generation.
+            if (p.phase == QLatin1String("cancel")) {
+                return error(err::HistoryConflict, QStringLiteral("no live owned gesture to cancel"));
+            }
+        }
+        int frame = -1;
+        const QVariantMap refusal = preflightEdit(p, &frame);
+        if (!refusal.isEmpty()) {
+            return error(refusal.value(QStringLiteral("code")).toString(), refusal.value(QStringLiteral("message")).toString());
+        }
+        if (!m_gestures.contains(gk)) {
+            finishAllGestures();  // the caller's own previous gesture ends first
+            if (p.delta == 0) {
+                return {};  // nothing to change: no gesture starts, nothing is owned
             }
             Gesture g;
             g.owner = p.caller.owner;
+            g.id = p.gesture;
             g.control = p.control;
             g.target = p.target;
             g.semantic = p.semantic;
-            g.param = p.control == kColorWheel ? p.semantic.value(QStringLiteral("wheel")).toString()
-                                               : m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString();
-            g.start = gestureValue(p.control, p.semantic, g.param);
+            g.param = gestureSubject(p);
+            g.frame = frame;
+            g.start = gestureValue(g);
             g.historyAtStart = int(m_history.size());
             m_gestures.insert(gk, g);
             m_gestureTimer->start();
         }
         m_gestures[gk].last.start();
     }
-    if (!d->editing && p.control != kParamFocus) {
-        finishAllGestures();  // as Kdenlive: any other control ends the editing gesture
+    if (!d->editing) {
+        // As Kdenlive: applying any non-editing control (transport, zoom,
+        // scroll, track or parameter focus) ends the editing gesture. Playback
+        // clock ticks alone do not (see setPosition).
+        finishAllGestures();
     }
     QVariantMap st;
     // Net-batch semantics: the summed delta is clamped once.
@@ -794,9 +1081,10 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         m_position = qBound(0, m_position + steps, m_duration);
         *changed = m_position != before;
         if (*changed) {
-            finishAllGestures();  // the captured edit frame moved: editing gestures end
+            finishFrameBoundGestures();  // seeking ends a multi-key edit
         }
         m_context.insert(QStringLiteral("position"), m_position);
+        refreshDescriptors();
         bumpSerial(false);
         st = {{QStringLiteral("position"), m_position}};
     } else if (p.control == kShuttle) {
@@ -813,15 +1101,23 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         m_zoom = qBound(0, m_zoom + steps, 20);
         *changed = m_zoom != before;
         st = {{QStringLiteral("zoom"), m_zoom}};
+        if (*changed) {
+            refreshDescriptors();
+            bumpSerial(false);
+        }
     } else if (p.control == kScroll) {
         m_scroll += p.delta;
         *changed = p.delta != 0;
         st = {{QStringLiteral("scroll"), m_scroll}};
     } else if (p.control == kTrackFocus) {
         const int before = m_track;
-        m_track = qBound(0, m_track + steps, 7);
+        m_track = qBound(0, m_track + steps, int(m_trackOrder.size()) - 1);
         *changed = m_track != before;
-        st = {{QStringLiteral("track"), m_track}};
+        st = {{QStringLiteral("track"), m_trackOrder.value(m_track)}};
+        if (*changed) {
+            refreshDescriptors();
+            bumpSerial(true);  // a new track handle: new epoch, gestures end
+        }
     } else if (p.control == kParamFocus) {
         const QString cur = m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString();
         const int idx = qBound(0, int(m_paramOrder.indexOf(cur)) + steps, int(m_paramOrder.size()) - 1);
@@ -832,23 +1128,27 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         }
         st = {{QStringLiteral("param"), m_paramOrder.value(idx)}};
     } else if (p.control == kParamNudge) {
-        const QVariantMap param = m_context.value(QStringLiteral("param")).toMap();
-        if (param.value(QStringLiteral("managed")).toBool()) {
-            return error(err::ManagedParameter, QStringLiteral("managed automation channel"));
-        }
-        if (param.value(QStringLiteral("animated")).toBool() && p.semantic.value(QStringLiteral("keyframe"), QStringLiteral("existing")) != QLatin1String("create")) {
-            return error(err::KeyframeRequired, QStringLiteral("no keyframe at the captured frame"));
-        }
-        const QString name = param.value(QStringLiteral("name")).toString();
-        if (!m_params.contains(name)) {
-            return error(err::UnsupportedParameter, QStringLiteral("parameter type not supported"));
-        }
+        const Gesture &g = m_gestures[gk];
+        const QString name = g.param;
         const double step = p.semantic.value(QStringLiteral("step")).toString() == QLatin1String("fine") ? 0.1 : 1.0;
-        const double before = m_params.value(name).toDouble();
-        const double v = qBound(0.0, std::round((before + p.delta * step) * 10.0) / 10.0, 100.0);
-        m_params.insert(name, v);
-        *changed = v != before;
-        st = {{QStringLiteral("param"), name}, {QStringLiteral("value"), v}};
+        double before = m_params.value(name).toDouble();
+        bool created = false;
+        if (g.frame >= 0) {
+            QMap<int, double> &keys = m_keys[name];
+            if (!keys.contains(g.frame)) {  // explicit keyframe: create (checked in preflight)
+                keys.insert(g.frame, before);
+                created = true;
+            }
+            before = keys.value(g.frame);
+        }
+        const double v = qBound(0.0, tenth(before + p.delta * step), 100.0);
+        if (g.frame >= 0) {
+            m_keys[name].insert(g.frame, v);
+        } else {
+            m_params.insert(name, v);
+        }
+        *changed = created || v != before;
+        st = {{QStringLiteral("param"), name}, {QStringLiteral("value"), v}, {QStringLiteral("frame"), g.frame}};
         refreshDescriptors();
         bumpSerial(false);
     } else if (p.control == kColorWheel) {
@@ -870,30 +1170,81 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         refreshDescriptors();
         bumpSerial(false);
     } else if (p.control == kAudioGain) {
-        const double before = m_gainDb;
-        m_gainDb = qBound(-60.0, m_gainDb + 0.1 * p.delta, 12.0);
-        *changed = m_gainDb != before;
-        st = {{QStringLiteral("gainDb"), m_gainDb}};
+        const QString subject = m_gestures[gk].param;  // track:<id> or clip:<id>
+        const bool isTrack = subject.startsWith(QLatin1String("track:"));
+        QVariantMap &store = isTrack ? m_tracks : m_clips;
+        const QString id = subject.section(QLatin1Char(':'), 1);
+        const QString field = isTrack ? QStringLiteral("gainDb") : QStringLiteral("volumeDb");
+        QVariantMap item = store.value(id).toMap();
+        const double before = item.value(field).toDouble();
+        // Track (mixer) gain rounds to 0.01 dB; clip volume keeps the raw sum.
+        const double raw = before + 0.1 * p.delta;
+        const double v = qBound(-60.0, isTrack ? std::round(raw * 100.0) / 100.0 : raw, 12.0);
+        item.insert(field, v);
+        store.insert(id, item);
+        *changed = v != before;
+        st = {{isTrack ? QStringLiteral("track") : QStringLiteral("clip"), id}, {QStringLiteral("gainDb"), v}};
+        refreshDescriptors();
+        bumpSerial(false);
     } else if (p.control == kTrim) {
-        m_trim += steps;
-        *changed = steps != 0;
-        st = {{QStringLiteral("trim"), m_trim}, {QStringLiteral("mode"), p.semantic.value(QStringLiteral("mode"))}};
+        Gesture &g = m_gestures[gk];
+        if (steps != 0 && g.steps >= m_trimGestureSteps) {
+            return error(err::ResourceLimit, QStringLiteral("trim gesture step limit reached: end it before starting a new gesture"));
+        }
+        // Resize only: the declared clip(s) change; nothing downstream moves.
+        const QStringList clips = g.param.split(QLatin1Char(','));
+        const bool atEnd = p.semantic.value(QStringLiteral("edge")).toString() == QLatin1String("end");
+        int applied = steps;
+        for (const auto &id : clips) {
+            const QVariantMap c = m_clips.value(id).toMap();
+            const int start = c.value(QStringLiteral("start")).toInt(), end = c.value(QStringLiteral("end")).toInt();
+            applied = atEnd ? qBound(start + 1 - end, applied, c.value(QStringLiteral("maxEnd")).toInt() - end)
+                            : qBound(c.value(QStringLiteral("minStart")).toInt() - start, applied, end - 1 - start);
+        }
+        for (const auto &id : clips) {
+            QVariantMap c = m_clips.value(id).toMap();
+            const QString field = atEnd ? QStringLiteral("end") : QStringLiteral("start");
+            c.insert(field, c.value(field).toInt() + applied);
+            m_clips.insert(id, c);
+        }
+        *changed = applied != 0;
+        if (*changed) {
+            ++g.steps;
+        }
+        const QVariantMap first = m_clips.value(clips.value(0)).toMap();
+        st = {{QStringLiteral("clip"), clips.value(0)},
+              {QStringLiteral("start"), first.value(QStringLiteral("start"))},
+              {QStringLiteral("end"), first.value(QStringLiteral("end"))},
+              {QStringLiteral("mode"), p.semantic.value(QStringLiteral("mode"))}};
+        refreshDescriptors();
+        bumpSerial(false);
     }
     if (d->editing) {
         m_gestures[gk].changed = m_gestures[gk].changed || *changed;
         if (p.phase != QLatin1String("update")) {
             QVariantMap err;
+            const bool owned = gestureValue(m_gestures[gk]) != m_gestures[gk].start;  // what a cancel would revert
             finishGesture(gk, p.phase == QLatin1String("cancel"), &err);
             if (!err.isEmpty()) {
                 return error(err.value(QStringLiteral("code")).toString(), err.value(QStringLiteral("message")).toString());
             }
             if (p.phase == QLatin1String("cancel")) {
-                // Report the restored state, not the values before the restore.
-                *changed = false;
+                // changed reports whether anything was reverted; values are the restored ones.
+                *changed = owned;
                 if (p.control == kColorWheel) {
                     st.insert(QStringLiteral("values"), m_wheels.value(p.semantic.value(QStringLiteral("wheel")).toString()));
                 } else if (p.control == kParamNudge) {
-                    st.insert(QStringLiteral("value"), m_params.value(st.value(QStringLiteral("param")).toString()));
+                    const QString name = st.value(QStringLiteral("param")).toString();
+                    const int frame = st.value(QStringLiteral("frame")).toInt();
+                    st.insert(QStringLiteral("value"), frame >= 0 && m_keys.value(name).contains(frame) ? QVariant(m_keys.value(name).value(frame)) : m_params.value(name));
+                } else if (p.control == kAudioGain) {
+                    const QString track = st.value(QStringLiteral("track")).toString();
+                    st.insert(QStringLiteral("gainDb"), track.isEmpty() ? m_clips.value(st.value(QStringLiteral("clip")).toString()).toMap().value(QStringLiteral("volumeDb"))
+                                                                        : m_tracks.value(track).toMap().value(QStringLiteral("gainDb")));
+                } else if (p.control == kTrim) {
+                    const QVariantMap c = m_clips.value(st.value(QStringLiteral("clip")).toString()).toMap();
+                    st.insert(QStringLiteral("start"), c.value(QStringLiteral("start")));
+                    st.insert(QStringLiteral("end"), c.value(QStringLiteral("end")));
                 }
             }
             st.insert(QStringLiteral("ended"), true);
@@ -913,14 +1264,10 @@ void MockKdenlive::finishGesture(const QString &key, bool cancel, QVariantMap *e
     if (m_gestures.isEmpty()) {
         m_gestureTimer->stop();
     }
-    m_finishedGestures << key;
-    while (m_finishedGestures.size() > 256) {
-        m_finishedGestures.removeFirst();
-    }
-    const bool netChanged = gestureValue(g.control, g.semantic, g.param) != g.start;
+    const bool netChanged = gestureValue(g) != g.start;
     if (cancel) {
         if (int(m_history.size()) == g.historyAtStart) {
-            restoreGestureValue(g.control, g.semantic, g.param, g.start);
+            restoreGestureValue(g, g.start);
             refreshDescriptors();  // published values follow the restore (serial only)
             bumpSerial(false);
             record(QStringLiteral("gesture %1 cancelled").arg(g.control));
@@ -968,6 +1315,9 @@ void MockKdenlive::invalidatePending(const QString &reason)
 QVariantMap MockKdenlive::triggerAction(const QString &id, const QVariantMap &options)
 {
     const Caller c = currentCaller();
+    if (id.size() > kMaxIdentifier) {
+        return fail(err::ResourceLimit, QStringLiteral("action identifier too long"), QStringLiteral("id"));
+    }
     int budget = kMaxStringInput - int(id.size());
     QVariantMap e = admit(c, options, {}, &budget);
     if (!e.isEmpty()) {
@@ -1047,21 +1397,24 @@ QVariantMap MockKdenlive::setControlValue(const QString &control, double value, 
 QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args)
 {
     const Caller c = currentCaller();
+    if (command.size() > kMaxIdentifier) {
+        return fail(err::ResourceLimit, QStringLiteral("command identifier too long"), QStringLiteral("command"));
+    }
     if (!commandsForStage().contains(command)) {
         return fail(err::UnsupportedControl, QStringLiteral("command not offered"), QStringLiteral("command"));
     }
-    QStringList allowed{kOptTarget};
-    if (isParameterId(command)) {
-        allowed = kParameterOptions;
-    } else if (command == kCmdTrackSet) {
-        allowed << QStringLiteral("what") << QStringLiteral("value") << QStringLiteral("soloMode");
-    }
+    const QStringList allowed = optionsFor(command);
     int budget = kMaxStringInput - int(command.size());
     QVariantMap e = admit(c, args, allowed, &budget);
     if (!e.isEmpty()) {
         return e;
     }
     const QString target = args.value(kOptTarget).toString();
+    for (auto it = m_gestures.cbegin(); it != m_gestures.cend(); ++it) {
+        if (it->owner != c.owner) {
+            return fail(err::Busy, QStringLiteral("another caller owns the editing gesture"));  // one editing writer
+        }
+    }
     if (!m_actions.isEmpty()) {
         return fail(err::Busy, QStringLiteral("a queued action must finish first"));
     }
@@ -1102,23 +1455,51 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
         }
         return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
     }
-    // track.set
-    if (!m_tracks.contains(target)) {
-        return fail(err::TargetNotFound, QStringLiteral("unknown track"), kOptTarget);
+    // track.set, validated in Kdenlive's order: a current track handle (any
+    // track's issued handle), a boolean value, soloMode only with solo, then
+    // what and its applicability.
+    if (target.isEmpty() || !m_tracks.contains(target)) {
+        return fail(err::TargetNotFound, QStringLiteral("an explicit current native track target is required"), kOptTarget);
+    }
+    if (args.value(QStringLiteral("value")).typeId() != QMetaType::Bool) {
+        return fail(err::InvalidArguments, QStringLiteral("value must be boolean"), QStringLiteral("value"));
+    }
+    const QString what = args.value(QStringLiteral("what")).toString();
+    if (what != QLatin1String("solo") && args.contains(QStringLiteral("soloMode"))) {
+        return fail(err::InvalidArguments, QStringLiteral("soloMode applies only to solo"), QStringLiteral("soloMode"));
     }
     QVariantMap t = m_tracks.value(target).toMap();
-    const QString what = args.value(QStringLiteral("what")).toString();
     const bool audio = t.value(QStringLiteral("type")).toString() == QLatin1String("audio");
+    const QString soloMode = args.value(QStringLiteral("soloMode"), QStringLiteral("exclusive")).toString();
     if (!QStringList{QStringLiteral("mute"), QStringLiteral("hide"), QStringLiteral("lock"), QStringLiteral("solo"), QStringLiteral("target")}.contains(what)) {
-        return fail(err::InvalidArguments, QStringLiteral("unknown property"), QStringLiteral("what"));
+        return fail(err::UnsupportedMode, QStringLiteral("unsupported track property"), QStringLiteral("what"));
     }
-    if ((what == QLatin1String("mute") || what == QLatin1String("solo")) != audio && what != QLatin1String("lock") && what != QLatin1String("target")) {
-        return fail(err::UnsupportedMode, QStringLiteral("not applicable to this track type"), QStringLiteral("what"));
+    if ((what == QLatin1String("mute") || what == QLatin1String("hide")) && (what == QLatin1String("mute")) != audio) {
+        return fail(err::UnsupportedMode, QStringLiteral("mute is audio-only and hide is video-only"), QStringLiteral("what"));
     }
-    t.insert(what, args.value(QStringLiteral("value")).toBool());
+    if (what == QLatin1String("solo") && (!audio || (soloMode != QLatin1String("exclusive") && soloMode != QLatin1String("additive")))) {
+        return fail(err::UnsupportedMode, QStringLiteral("use an audio mixer track and an explicit solo policy"), QStringLiteral("soloMode"));
+    }
+    const bool value = args.value(QStringLiteral("value")).toBool();
+    bool changed = t.value(what).toBool() != value;
+    t.insert(what, value);
     m_tracks.insert(target, t);
-    m_history << QStringLiteral("track %1 %2").arg(target, what);
-    return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), true}});
+    if (what == QLatin1String("solo") && value && soloMode == QLatin1String("exclusive")) {
+        for (auto it = m_tracks.begin(); it != m_tracks.end(); ++it) {
+            QVariantMap other = it.value().toMap();
+            if (it.key() != target && other.value(QStringLiteral("solo")).toBool()) {
+                other.insert(QStringLiteral("solo"), false);  // manual mute states are kept
+                it.value() = other;
+                changed = true;
+            }
+        }
+    }
+    if (changed) {
+        m_history << QStringLiteral("track %1 %2=%3").arg(target, what, value ? QStringLiteral("on") : QStringLiteral("off"));
+        refreshDescriptors();
+        bumpSerial(false);
+    }
+    return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
 }
 
 QVariantMap MockKdenlive::notify(const QString &text, int timeoutMs, const QVariantMap &options)
@@ -1130,7 +1511,10 @@ QVariantMap MockKdenlive::notify(const QString &text, int timeoutMs, const QVari
         return e;
     }
     if (text.size() > kMaxNotifyText) {
-        return fail(err::InvalidArguments, QStringLiteral("text too long"), QStringLiteral("text"));
+        return fail(err::ResourceLimit, QStringLiteral("text too long"), QStringLiteral("text"));
+    }
+    if (text.isEmpty()) {
+        return fail(err::InvalidArguments, QStringLiteral("text is empty"), QStringLiteral("text"));
     }
     if (timeoutMs < 500 || timeoutMs > 5000) {
         return fail(err::InvalidArguments, QStringLiteral("timeout out of range"), QStringLiteral("timeoutMs"));
@@ -1153,11 +1537,56 @@ void MockKdenlive::setContextValue(const QString &key, const QVariant &value)
 void MockKdenlive::setPosition(int frame)
 {
     if (frame != m_position) {
-        finishAllGestures();  // the captured edit frame moved
+        // Clock ticks and seeks leave whole-clip (live grading) gestures alone;
+        // a multi-key edit's captured frame moved, so it ends.
+        finishFrameBoundGestures();
     }
     m_position = frame;
     m_context.insert(QStringLiteral("position"), frame);
+    refreshDescriptors();
     bumpSerial(false);
+}
+
+void MockKdenlive::setPlaying(bool on)
+{
+    m_context.insert(QStringLiteral("playing"), on);
+    m_context.insert(QStringLiteral("speed"), on ? 1.0 : 0.0);
+    bumpSerial(false);
+}
+
+void MockKdenlive::setParamMultiKey(const QString &name, bool on)
+{
+    if (!m_params.contains(name)) {
+        return;
+    }
+    if (on) {
+        const double v = m_params.value(name).toDouble();
+        m_keys.insert(name, QMap<int, double>{{0, v}, {100, v}});
+    } else {
+        m_keys.remove(name);
+    }
+    refreshDescriptors();
+    bumpSerial(true);  // the parameter's editing policy changed
+}
+
+void MockKdenlive::focusTrack(const QString &trackId)
+{
+    if (!m_trackOrder.contains(trackId)) {
+        return;
+    }
+    m_track = int(m_trackOrder.indexOf(trackId));
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::selectClip(const QString &clipId)
+{
+    if (!clipId.isEmpty() && !m_clips.contains(clipId)) {
+        return;
+    }
+    m_selectedClip = clipId;
+    refreshDescriptors();
+    bumpSerial(true);
 }
 
 void MockKdenlive::addUnrelatedHistory(const QString &label)
@@ -1223,23 +1652,35 @@ QVariantMap MockKdenlive::wheelDescriptor(const QString &wheel) const
             {QStringLiteral("fineStep"), 0.001},
             {QStringLiteral("frame"), -1},
             {QStringLiteral("keyframed"), false},
+            {QStringLiteral("liveGrading"), true},
             {QStringLiteral("enabled"), true}};
 }
 
 QVariantMap MockKdenlive::paramDescriptor(const QString &name) const
 {
-    return {{QStringLiteral("target"), QStringLiteral("par-") + name},
-            {QStringLiteral("name"), name},
-            {QStringLiteral("type"), QStringLiteral("number")},
-            {QStringLiteral("unit"), QStringLiteral("%")},
-            {QStringLiteral("value"), m_params.value(name)},
-            {QStringLiteral("min"), 0.0},
-            {QStringLiteral("max"), 100.0},
-            {QStringLiteral("step"), 1.0},
-            {QStringLiteral("fineStep"), 0.1},
-            {QStringLiteral("frame"), -1},
-            {QStringLiteral("keyframed"), false},
-            {QStringLiteral("enabled"), true}};
+    // A multi-key parameter is edited at the playhead's key (frame >= 0) and
+    // only while stopped; static values are whole-clip (live grading).
+    const bool multi = m_keys.contains(name);
+    const QVariant value = multi ? (m_keys.value(name).contains(m_position) ? QVariant(m_keys.value(name).value(m_position)) : QVariant())
+                                 : m_params.value(name);
+    QVariantMap d{{QStringLiteral("target"), QStringLiteral("par-") + name},
+                  {QStringLiteral("name"), name},
+                  {QStringLiteral("type"), QStringLiteral("number")},
+                  {QStringLiteral("unit"), QStringLiteral("%")},
+                  {QStringLiteral("min"), 0.0},
+                  {QStringLiteral("max"), 100.0},
+                  {QStringLiteral("step"), 1.0},
+                  {QStringLiteral("fineStep"), 0.1},
+                  {QStringLiteral("frame"), multi ? m_position : -1},
+                  {QStringLiteral("keyframed"), multi},
+                  {QStringLiteral("liveGrading"), !multi},
+                  {QStringLiteral("enabled"), true}};
+    if (value.isValid()) {
+        d.insert(QStringLiteral("value"), value);
+    } else {
+        d.insert(QStringLiteral("available"), false);  // no key at this frame
+    }
+    return d;
 }
 
 QVariantMap MockKdenlive::findWheelTarget(const QString &target) const
@@ -1263,6 +1704,7 @@ QVariantMap MockKdenlive::findWheelTarget(const QString &target) const
 
 void MockKdenlive::refreshDescriptors()
 {
+    m_context.insert(QStringLiteral("timeline"), timelineDescriptor());
     // Values change without changing identities: serial only, never the epoch.
     if (m_context.contains(QStringLiteral("colorWheels"))) {
         QVariantList list;
@@ -1280,7 +1722,7 @@ void MockKdenlive::refreshDescriptors()
         const QVariantMap p = m_context.value(QStringLiteral("param")).toMap();
         if (m_params.contains(p.value(QStringLiteral("name")).toString())) {
             QVariantMap d = paramDescriptor(p.value(QStringLiteral("name")).toString());
-            for (const auto &k : {QStringLiteral("animated"), QStringLiteral("managed")}) {
+            for (const auto &k : {QStringLiteral("managed")}) {
                 if (p.contains(k)) {
                     d.insert(k, p.value(k));
                 }
@@ -1352,16 +1794,25 @@ int MockKdenlive::contextSignalsTotal() const
 
 QVariantMap MockKdenlive::state() const
 {
+    QVariantMap keyState;
+    for (auto it = m_keys.cbegin(); it != m_keys.cend(); ++it) {
+        QVariantMap frames;
+        for (auto k = it->cbegin(); k != it->cend(); ++k) {
+            frames.insert(QString::number(k.key()), k.value());
+        }
+        keyState.insert(it.key(), frames);
+    }
     return {{QStringLiteral("position"), m_position},
             {QStringLiteral("shuttle"), m_shuttle},
             {QStringLiteral("speed"), (m_shuttle < 0 ? -1 : 1) * kShuttleSpeeds[std::abs(m_shuttle)]},
             {QStringLiteral("zoom"), m_zoom},
             {QStringLiteral("scroll"), m_scroll},
-            {QStringLiteral("track"), m_track},
-            {QStringLiteral("trim"), m_trim},
-            {QStringLiteral("gainDb"), m_gainDb},
+            {QStringLiteral("track"), m_trackOrder.value(m_track)},
+            {QStringLiteral("selectedClip"), m_selectedClip},
+            {QStringLiteral("clips"), m_clips},
             {QStringLiteral("wheels"), m_wheels},
             {QStringLiteral("params"), m_params},
+            {QStringLiteral("keys"), keyState},
             {QStringLiteral("tracks"), m_tracks},
             {QStringLiteral("triggered"), m_triggered},
             {QStringLiteral("history"), m_history},

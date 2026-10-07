@@ -14,7 +14,9 @@
 //   {"control": "playhead.jog", "scale": 1, "options": {...}, "fallback": ["left", "right"]}
 //        continuous control (coalesced); fallback = [negative key, positive key]
 //   {"cycle": "liftAxis", "label": "Lift"}  advance a mode; "$liftAxis" in options expands,
-//        "$ctx:tool" expands to a value from Kdenlive's context
+//        "$ctx:tool" expands to a value from Kdenlive's context and "$!ctx:path"
+//        to its negation (toggles); a missing context value sends nothing.
+//        "control": "$mode" lets a mode choose the control a knob drives.
 //   {"request": "colorwheel.reset", "params": {"wheel": "lift"}}   Invoke() on Kdenlive
 //   {"command": ["notify-send", "hello"]}
 //   "none"                            explicitly unbound (stops fallthrough)
@@ -25,6 +27,7 @@
 // (stock Kdenlive), never when Kdenlive refuses or does not answer in time.
 // Editing controls target the focused item from Kdenlive's context; to aim at
 // the colour wheel under the mouse instead, add "targetFrom": "hoveredColorWheel.target".
+// Layer "when" conditions test Kdenlive's context; "$mode.<name>" tests a mode.
 {
     "device": { "vendor": "1189", "product": "8890", "serial": "key153" },
 
@@ -49,6 +52,8 @@
                 "gammaAxis": ["value", "r", "g", "b"],
                 "gainAxis": ["value", "r", "g", "b"],
                 "paramStep": ["normal", "fine"],
+                "page": ["main", "timeline"],
+                "trackKnob": ["timeline.track", "timeline.scroll"],
                 "trimEdge": ["end", "start"]
             },
             "layers": [
@@ -92,15 +97,44 @@
                     }
                 },
                 {
-                    // Qualified trim tools with a host-issued edit target: knob2 trims,
-                    // knob2 press switches the edge.
-                    "name": "trim",
-                    "when": { "tool": ["ripple", "roll"], "edit.target": "/.+/" },
+                    // Timeline page (key13 toggles it). Needs Kdenlive's MR3 track
+                    // handles; otherwise these layers never apply. A selected clip
+                    // with a unique static volume puts its gain on knob3.
+                    "name": "timeline-clip-gain",
+                    "when": { "$mode.page": "timeline", "timeline.track.target": "/.+/", "timeline.clipGain.target": "/.+/" },
                     "bindings": {
+                        "knob3": { "turn": { "control": "audio.gain" } }
+                    }
+                },
+                {
+                    // On a video track key1 hides instead of muting.
+                    "name": "timeline-video-track",
+                    "when": { "$mode.page": "timeline", "timeline.track.target": "/.+/", "timeline.track.audio": false },
+                    "bindings": {
+                        "key1": { "request": "track.set", "params": { "what": "hide", "value": "$!ctx:timeline.track.hidden" } }
+                    }
+                },
+                {
+                    "name": "timeline-page",
+                    "when": { "$mode.page": "timeline", "timeline.track.target": "/.+/" },
+                    "bindings": {
+                        // knob1: track focus or timeline scroll (press switches)
+                        "knob1": {
+                            "turn": { "control": "$trackKnob" },
+                            "press": { "cycle": "trackKnob", "label": "Knob 1" }
+                        },
+                        // knob2: resize the selected clip(s) at one edge (press switches edge)
                         "knob2": {
-                            "turn": { "control": "edit.trim", "options": { "edge": "$trimEdge", "mode": "$ctx:tool" } },
+                            "turn": { "control": "edit.trim", "options": { "edge": "$trimEdge", "mode": "resize" } },
                             "press": { "cycle": "trimEdge", "label": "Trim edge" }
-                        }
+                        },
+                        // knob3: the focused audio track's mixer gain
+                        "knob3": { "turn": { "control": "audio.gain", "targetFrom": "timeline.track.gain.target" } },
+                        // Row 1: toggles for the focused track, from the state Kdenlive publishes
+                        "key1": { "request": "track.set", "params": { "what": "mute", "value": "$!ctx:timeline.track.muted" } },
+                        "key2": { "request": "track.set", "params": { "what": "solo", "value": "$!ctx:timeline.track.solo", "soloMode": "exclusive" } },
+                        "key3": { "request": "track.set", "params": { "what": "lock", "value": "$!ctx:timeline.track.locked" } },
+                        "key4": { "request": "track.set", "params": { "what": "target", "value": "$!ctx:timeline.track.targeted" } }
                     }
                 }
             ],
@@ -120,7 +154,7 @@
                 // Row 3: tools and history
                 "key11": { "action": "select_tool", "fallback": "s" },
                 "key12": { "action": "razor_tool", "fallback": "x" },
-                "key13": { "action": "ripple_tool" },
+                "key13": { "cycle": "page", "label": "Page" },
                 "key14": { "action": "edit_undo", "fallback": "ctrl+z" },
                 "key15": { "action": "edit_redo", "fallback": "ctrl+shift+z" },
 

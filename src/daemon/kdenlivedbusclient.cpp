@@ -8,6 +8,8 @@
 #include <QDBusPendingReply>
 #include <QDBusServiceWatcher>
 #include <QDBusVariant>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 namespace cs {
 
@@ -270,7 +272,14 @@ void KdenliveDBusClient::stepCapabilities(quint64 gen)
         const uint version = e.result.value(QStringLiteral("version")).toUInt();
         const uint revision = e.result.value(QStringLiteral("revision")).toUInt();
         if (version != contract::kVersion || revision < contract::kRevision) {
-            // An incompatible interface is as good as none: behave like stock Kdenlive.
+            if (m_mutated.contains(m_service)) {
+                // Past the preflight boundary for this instance: never a fallback.
+                Q_EMIT message(QStringLiteral("incompatible %1 version %2 revision %3 after earlier mutations; input is dropped").arg(contract::kInterface).arg(version).arg(revision));
+                setState(State::Pending);
+                return;
+            }
+            // Version 1 at revision >= 2 is compatible; anything else is
+            // unavailable at negotiation, before any mutation: stock Kdenlive.
             Q_EMIT message(QStringLiteral("incompatible %1 version %2 revision %3; stock shortcuts will be used").arg(contract::kInterface).arg(version).arg(revision));
             setState(State::Absent);
             return;
@@ -376,6 +385,18 @@ void KdenliveDBusClient::setState(State s)
     }
 }
 
+void KdenliveDBusClient::trace(const QString &line)
+{
+    if (m_trace) {
+        Q_EMIT message(line);
+    }
+}
+
+static QString json(const QVariant &v)
+{
+    return QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(KdenliveDBusClient::normalize(v).toMap())).toJson(QJsonDocument::Compact));
+}
+
 void KdenliveDBusClient::onContextChanged(const QVariantMap &context)
 {
     applyContext(context, true);
@@ -419,6 +440,9 @@ void KdenliveDBusClient::applyContext(const QVariantMap &context, bool fromSigna
     m_context = ctx;
     const quint64 epoch = ctx.value(contract::kCtxEpoch).toULongLong();
     const bool epochChangedNow = epoch != m_epoch;
+    if (epochChangedNow) {
+        trace(QStringLiteral("<- context serial %1 epoch %2 %3").arg(ctx.value(contract::kCtxSerial).toULongLong()).arg(epoch).arg(json(ctx)));
+    }
     m_epoch = epoch;
     Q_EMIT contextChanged(m_context);
     if (epochChangedNow) {
@@ -431,6 +455,7 @@ bool KdenliveDBusClient::control(const QString &key, const QString &name, double
     if (m_state != State::Available || m_session.isEmpty() || !m_controls.contains(name)) {
         return false;
     }
+    m_mutated.insert(m_service);
     QVariantMap opts = options;
     opts.insert(commonOptions());
     const quint64 seq = ++m_seq;
@@ -441,6 +466,7 @@ bool KdenliveDBusClient::control(const QString &key, const QString &name, double
     }
     auto msg = call(QStringLiteral("Control"));
     msg << name << delta << QVariant::fromValue(opts) << QVariant::fromValue<qulonglong>(seq);
+    trace(QStringLiteral("-> Control %1 %2 seq %3 %4").arg(name).arg(delta).arg(seq).arg(json(opts)));
     m_conn.send(msg);  // NoReply; the outcome arrives as a directed ControlAck
     return true;
 }
@@ -450,6 +476,7 @@ void KdenliveDBusClient::onControlAck(qulonglong seq, const QString &control, co
     // Correlate on (session, seq): a late ack of an earlier lease must never
     // release a batch of the current one, whatever its sequence number.
     const Envelope e = Envelope::parse(outcome);
+    trace(QStringLiteral("<- ControlAck seq %1 %2 %3").arg(seq).arg(control, json(outcome)));
     if (m_session.isEmpty() || e.session != m_session) {
         return;
     }
@@ -485,8 +512,10 @@ void KdenliveDBusClient::triggerAction(const QString &id)
     if (m_state != State::Available || !m_actions.contains(id)) {
         return;
     }
+    m_mutated.insert(m_service);
     auto msg = call(QStringLiteral("TriggerAction"));
     msg << id << QVariant::fromValue(commonOptions());
+    trace(QStringLiteral("-> TriggerAction %1").arg(id));
     const quint64 gen = m_generation;
     auto *w = new QDBusPendingCallWatcher(m_conn.asyncCall(msg, kCallTimeoutMs), this);
     connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, id, gen] {
@@ -500,6 +529,7 @@ void KdenliveDBusClient::triggerAction(const QString &id)
             return;
         }
         const Envelope e = Envelope::parse(reply.arguments().value(0));
+        trace(QStringLiteral("<= TriggerAction %1 %2").arg(id, json(reply.arguments().value(0))));
         if (!e.ok) {
             Q_EMIT refused(id, e.code, e.message);  // e.g. modal, action_disabled: no keyboard fallback
             return;
@@ -514,6 +544,7 @@ void KdenliveDBusClient::triggerAction(const QString &id)
 
 void KdenliveDBusClient::onActionFinished(qulonglong requestId, const QVariantMap &outcome)
 {
+    trace(QStringLiteral("<- ActionFinished %1 %2").arg(requestId).arg(json(outcome)));
     const QString id = m_requests.take(requestId);
     if (id.isEmpty()) {
         return;
@@ -529,10 +560,12 @@ void KdenliveDBusClient::invoke(const QString &command, const QVariantMap &args)
     if (m_state != State::Available || !m_commands.contains(command)) {
         return;
     }
+    m_mutated.insert(m_service);
     QVariantMap a = args;
     a.insert(commonOptions());
     auto msg = call(QStringLiteral("Invoke"));
     msg << command << QVariant::fromValue(a);
+    trace(QStringLiteral("-> Invoke %1 %2").arg(command, json(a)));
     const quint64 gen = m_generation;
     auto *w = new QDBusPendingCallWatcher(m_conn.asyncCall(msg, kCallTimeoutMs), this);
     connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, command, gen] {
@@ -546,6 +579,7 @@ void KdenliveDBusClient::invoke(const QString &command, const QVariantMap &args)
             return;
         }
         const Envelope e = Envelope::parse(reply.arguments().value(0));
+        trace(QStringLiteral("<= Invoke %1 %2").arg(command, json(reply.arguments().value(0))));
         if (!e.ok) {
             Q_EMIT refused(command, e.code, e.message);
         }
@@ -559,6 +593,7 @@ void KdenliveDBusClient::notify(const QString &text)
     }
     auto msg = call(QStringLiteral("Notify"));
     msg << text.left(contract::kMaxNotifyText) << 1500 << QVariant::fromValue(commonOptions());
+    trace(QStringLiteral("-> Notify \"%1\"").arg(text));
     m_conn.asyncCall(msg, kCallTimeoutMs);  // informational only
 }
 

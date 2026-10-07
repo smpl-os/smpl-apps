@@ -38,6 +38,12 @@ public:
     virtual bool supportsControl(const QString &name) const = 0;
     virtual bool supportsAction(const QString &id) const = 0;
     virtual bool supportsCommand(const QString &name) const = 0;
+    // Capabilities.limits entry (e.g. "trimGestureSteps"), or fallback.
+    virtual int limit(const QString &name, int fallback) const
+    {
+        Q_UNUSED(name)
+        return fallback;
+    }
 
     virtual void triggerAction(const QString &id) = 0;
     // key is the caller's correlation key. The acknowledgement for the newest
@@ -74,6 +80,8 @@ public:
     bool supportsControl(const QString &name) const override { return !m_restricted || m_controls.contains(name); }
     bool supportsAction(const QString &id) const override { return !m_restrictedActions || m_actions.contains(id); }
     bool supportsCommand(const QString &name) const override { return !m_restricted || m_commands.contains(name); }
+    int limit(const QString &name, int fallback) const override { return m_limits.value(name, fallback).toInt(); }
+    void setLimits(const QVariantMap &limits) { m_limits = limits; }
     void triggerAction(const QString &id) override;
     bool control(const QString &key, const QString &name, double delta, const QVariantMap &options) override;
     void invoke(const QString &command, const QVariantMap &args) override;
@@ -104,6 +112,7 @@ private:
     QVariantMap m_context;
     QStringList m_unacked;
     QSet<QString> m_controls, m_actions, m_commands;
+    QVariantMap m_limits;
 };
 
 } // namespace cs

@@ -511,24 +511,194 @@ private Q_SLOTS:
         QVERIFY(kd.calls.last().contains(QStringLiteral("\"target\":\"cw-lift\"")));
     }
 
-    void trimLayerNeedsQualifiedToolAndTarget()
+    // MR3 timeline page: a daemon mode (key13) selects it, but only while
+    // Kdenlive publishes track handles; targets come from the MR3 locations.
+    static QVariantMap timelineContext(quint64 epoch, bool clipSelected, bool muted = false)
+    {
+        // Kdenlive's qualified MR3 shape (TimelineControl::context).
+        QVariantMap track{{QStringLiteral("target"), QStringLiteral("trk-7")}, {QStringLiteral("id"), 7}, {QStringLiteral("sequence"), QStringLiteral("s")},
+                          {QStringLiteral("audio"), true}, {QStringLiteral("name"), QStringLiteral("A1")},
+                          {QStringLiteral("muted"), muted}, {QStringLiteral("solo"), false}, {QStringLiteral("locked"), false},
+                          {QStringLiteral("hidden"), false}, {QStringLiteral("targeted"), true},
+                          {QStringLiteral("gain"), QVariantMap{{QStringLiteral("target"), QStringLiteral("trk-7")}, {QStringLiteral("value"), 0.0}}}};
+        QVariantMap timeline{{QStringLiteral("zoom"), 10}, {QStringLiteral("track"), track}};
+        if (clipSelected) {
+            timeline.insert(QStringLiteral("clipGain"), QVariantMap{{QStringLiteral("target"), QStringLiteral("gain-c")}, {QStringLiteral("clip"), 22}});
+            timeline.insert(QStringLiteral("trim"), QVariantMap{{QStringLiteral("target"), QStringLiteral("trim-c")}, {QStringLiteral("clip"), 22},
+                                                                {QStringLiteral("clips"), QVariantList{21, 22}}, {QStringLiteral("tracks"), QVariantList{3, 7}},
+                                                                {QStringLiteral("modes"), QStringList{QStringLiteral("resize")}}});
+        }
+        return {{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(epoch)}, {QStringLiteral("focus"), QStringLiteral("timeline")},
+                {QStringLiteral("position"), 0}, {QStringLiteral("timeline"), timeline}};
+    }
+
+    void timelinePageNeedsModeAndTrackHandles()
     {
         RecordingKeySink keys;
         FakeKdenliveClient kd;
         Engine e(&keys, &kd);
         e.setConfig(m_cfg);
         e.setActiveWindow(kKdenlive);
-        kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)}, {QStringLiteral("tool"), QStringLiteral("slip")}});
-        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob2"), 1))->binding.name, QStringLiteral("playhead.shuttle"));
+        kd.setContext(timelineContext(1, true));
+        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob2"), 1))->binding.name, QStringLiteral("playhead.shuttle"));  // main page
+        e.handle(key(13));
+        QCOMPARE(e.modeValue(QStringLiteral("page")), QStringLiteral("timeline"));
+        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob2"), 1))->layer, QStringLiteral("timeline-page"));
+        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob3"), 1))->layer, QStringLiteral("timeline-clip-gain"));
+        // Without MR3 track handles the page never applies.
         kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(2)},
-                       {QStringLiteral("tool"), QStringLiteral("ripple")},
-                       {QStringLiteral("edit"), QVariantMap{{QStringLiteral("target"), QStringLiteral("ed-1")}}}});
-        e.handle(turn(2, -1));
+                       {QStringLiteral("timeline"), QVariantMap{{QStringLiteral("track"), QVariantMap{{QStringLiteral("id"), 7}}}}}});
+        QCOMPARE(e.resolve(Engine::turnSlots(QStringLiteral("knob2"), 1))->binding.name, QStringLiteral("playhead.shuttle"));
+        QCOMPARE(e.resolve(QStringLiteral("key1"))->binding.name, QStringLiteral("mark_in"));
+        kd.setContext(timelineContext(3, true));
+        // knob2 resizes the declared trim scope; knob3 drives the clip gain.
+        e.handle(turn(2, 1));
         QTRY_COMPARE(kd.controlOptions.size(), 1);
-        const QVariantMap o = kd.controlOptions.first();
-        QCOMPARE(o.value(QStringLiteral("mode")).toString(), QStringLiteral("ripple"));
-        QCOMPARE(o.value(QStringLiteral("edge")).toString(), QStringLiteral("end"));
-        QCOMPARE(o.value(QStringLiteral("target")).toString(), QStringLiteral("ed-1"));
+        QCOMPARE(kd.calls.last().section(QLatin1Char(' '), 0, 1), QStringLiteral("control edit.trim"));
+        QCOMPARE(kd.controlOptions.last().value(QStringLiteral("target")).toString(), QStringLiteral("trim-c"));
+        QCOMPARE(kd.controlOptions.last().value(QStringLiteral("mode")).toString(), QStringLiteral("resize"));
+        QCOMPARE(kd.controlOptions.last().value(QStringLiteral("edge")).toString(), QStringLiteral("end"));
+        e.handle(turn(3, -1));
+        QTRY_COMPARE(kd.controlOptions.size(), 3);  // trim end barrier, then gain
+        QCOMPARE(kd.controlOptions.at(1).value(QStringLiteral("phase")).toString(), QStringLiteral("end"));
+        QCOMPARE(kd.controlOptions.last().value(QStringLiteral("target")).toString(), QStringLiteral("gain-c"));
+        // No clip selected: knob3 is the track's mixer gain; knob2 has no trim target.
+        kd.setContext(timelineContext(4, false));
+        e.handle(turn(3, 1));
+        QTRY_COMPARE(kd.controlOptions.last().value(QStringLiteral("target")).toString(), QStringLiteral("trk-7"));
+        QCOMPARE(kd.calls.last().section(QLatin1Char(' '), 0, 1), QStringLiteral("control audio.gain"));
+        const int sent = int(kd.controlOptions.size());
+        e.handle(turn(2, 1));
+        QTest::qWait(30);
+        QCOMPARE(int(kd.controlOptions.size()), sent);  // no trim target: nothing sent, the gain gesture stays open
+        QCOMPARE(e.activeGestures(), 1);
+        // knob1: track focus; its press switches it to scroll ("control": "$trackKnob").
+        e.handle(turn(1, 1));
+        QTRY_VERIFY(kd.calls.last().startsWith(QStringLiteral("control timeline.track 1")));
+        e.handle(press(1));
+        e.handle(turn(1, -1));
+        QTRY_VERIFY(kd.calls.last().startsWith(QStringLiteral("control timeline.scroll -1")));
+        QVERIFY(keys.taps.isEmpty());
+    }
+
+    void trackTogglesNeedPublishedState()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(m_cfg);
+        e.setActiveWindow(kKdenlive);
+        kd.setContext(timelineContext(1, false, true));  // the track is muted
+        e.handle(key(13));
+        e.handle(key(1));
+        QTRY_VERIFY(kd.calls.last().startsWith(QStringLiteral("invoke track.set")));
+        QVERIFY(kd.calls.last().contains(QStringLiteral("\"value\":false")));  // toggles mute off
+        QVERIFY(kd.calls.last().contains(QStringLiteral("\"target\":\"trk-7\"")));
+        e.handle(key(2));
+        QTRY_VERIFY(kd.calls.last().contains(QStringLiteral("\"what\":\"solo\"")));
+        QVERIFY(kd.calls.last().contains(QStringLiteral("\"value\":true")));
+        QVERIFY(kd.calls.last().contains(QStringLiteral("\"soloMode\":\"exclusive\"")));
+        // A host that does not publish the state: never toggle blindly.
+        QVariantMap ctx = timelineContext(2, false);
+        QVariantMap timeline = ctx.value(QStringLiteral("timeline")).toMap();
+        QVariantMap track = timeline.value(QStringLiteral("track")).toMap();
+        track.remove(QStringLiteral("muted"));
+        timeline.insert(QStringLiteral("track"), track);
+        ctx.insert(QStringLiteral("timeline"), timeline);
+        kd.setContext(ctx);
+        const int calls = int(kd.calls.size());
+        QSignalSpy msgs(&e, &Engine::message);
+        e.handle(key(1));
+        QTest::qWait(30);
+        QCOMPARE(int(kd.calls.size()), calls);
+        QVERIFY(!msgs.isEmpty() && msgs.last().at(0).toString().contains(QStringLiteral("timeline.track.muted")));
+        // On a video track key1 hides (layer timeline-video-track).
+        ctx = timelineContext(3, false);
+        timeline = ctx.value(QStringLiteral("timeline")).toMap();
+        track = timeline.value(QStringLiteral("track")).toMap();
+        track.insert(QStringLiteral("audio"), false);
+        track.insert(QStringLiteral("hidden"), true);
+        timeline.insert(QStringLiteral("track"), track);
+        ctx.insert(QStringLiteral("timeline"), timeline);
+        kd.setContext(ctx);
+        e.handle(key(1));
+        QTRY_VERIFY(kd.calls.last().contains(QStringLiteral("\"what\":\"hide\"")));
+        QVERIFY(kd.calls.last().contains(QStringLiteral("\"value\":false")));
+        QVERIFY(keys.taps.isEmpty());
+    }
+
+    // limits.trimGestureSteps: the daemon ends a trim gesture before the host's
+    // bound and continues with a fresh one.
+    void trimGestureRespectsStepLimit()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        kd.setLimits({{QStringLiteral("trimGestureSteps"), 3}});
+        Engine e(&keys, &kd);
+        Config c = m_cfg;
+        c.settings.coalesceMs = 1;
+        e.setConfig(c);
+        e.setActiveWindow(kKdenlive);
+        kd.setContext(timelineContext(1, true));
+        e.handle(key(13));
+        for (int i = 0; i < 8; ++i) {
+            e.handle(turn(2, 1));
+            QTest::qWait(5);  // each detent is its own batch
+        }
+        e.endAllGestures(false);
+        QTRY_VERIFY(!kd.controlOptions.isEmpty() && kd.controlOptions.last().value(QStringLiteral("phase")).toString() == QStringLiteral("end"));
+        QHash<QString, int> steps;  // gesture -> batches carrying a delta (updates and ends)
+        double total = 0;
+        for (int i = 0; i < kd.controlOptions.size(); ++i) {
+            total += kd.controlDeltas.at(i);
+            if (kd.controlDeltas.at(i) != 0) {
+                ++steps[kd.controlOptions.at(i).value(QStringLiteral("gesture")).toString()];
+            }
+        }
+        QCOMPARE(total, 8.0);  // nothing lost
+        QVERIFY2(steps.size() >= 3, qPrintable(QString::number(steps.size())));
+        for (auto it = steps.cbegin(); it != steps.cend(); ++it) {
+            QVERIFY2(it.value() <= 3, qPrintable(it.key() + QLatin1Char('=') + QString::number(it.value())));
+        }
+    }
+
+    // A multi-key (frame-bound) gesture is forgotten when the playhead moves;
+    // a live-grading (whole-clip) gesture continues across playback ticks.
+    void seekEndsFrameBoundGestureOnly()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(m_cfg);
+        e.setActiveWindow(kKdenlive);
+        auto paramContext = [](int position, bool liveGrading) {
+            return QVariantMap{{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)},
+                               {QStringLiteral("focus"), QStringLiteral("effectStack")},
+                               {QStringLiteral("position"), position},
+                               {QStringLiteral("param"), QVariantMap{{QStringLiteral("target"), QStringLiteral("par-level")}, {QStringLiteral("frame"), liveGrading ? -1 : position},
+                                                                     {QStringLiteral("liveGrading"), liveGrading}}}};
+        };
+        kd.setContext(paramContext(0, false));
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 1);
+        const QString first = kd.controlOptions.at(0).value(QStringLiteral("gesture")).toString();
+        kd.setContext(paramContext(25, false));  // seek: the host ended it
+        QCOMPARE(e.activeGestures(), 0);
+        QCOMPARE(kd.controlOptions.size(), 1);  // nothing sent for it
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 2);
+        QVERIFY(kd.controlOptions.at(1).value(QStringLiteral("gesture")).toString() != first);  // a fresh id
+        e.endAllGestures(false);
+        kd.setContext(paramContext(30, true));
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 4);
+        for (int f = 31; f < 40; ++f) {
+            kd.setContext(paramContext(f, true));  // playback ticks
+        }
+        QCOMPARE(e.activeGestures(), 1);
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.controlOptions.size(), 5);
+        QCOMPARE(kd.controlOptions.at(4).value(QStringLiteral("gesture")).toString(), kd.controlOptions.at(3).value(QStringLiteral("gesture")).toString());
     }
 
     void provisionalFocusSendsAndTypesNothing()

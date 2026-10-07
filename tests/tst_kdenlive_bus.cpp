@@ -66,6 +66,7 @@ public:
     {
     }
     bool silent = false;
+    uint revision = 2;
     int subscribeDelayMs = 0;
     int failListActions = 0;
     QStringList unsubscribed;
@@ -80,7 +81,7 @@ public Q_SLOTS:
             return {};
         }
         return {{QStringLiteral("ok"), true},
-                {QStringLiteral("result"), QVariantMap{{QStringLiteral("version"), 1u}, {QStringLiteral("revision"), 2u},
+                {QStringLiteral("result"), QVariantMap{{QStringLiteral("version"), 1u}, {QStringLiteral("revision"), revision},
                                                        {QStringLiteral("controls"), QStringList{contract::kJog, contract::kColorWheel}},
                                                        {QStringLiteral("commands"), QStringList{}}}}};
     }
@@ -508,6 +509,36 @@ private Q_SLOTS:
     }
 
     // Item 4 support: absent vs. unanswered are different states.
+    // Version 1 at revision >= 2 is compatible. An incompatible interface is
+    // unavailable (stock fallback) only at negotiation before any mutation;
+    // after this daemon has sent that instance a mutation it is Pending.
+    void incompatibleRevisionOnlyBeforeMutation()
+    {
+        auto *obj = new ScriptedObject(this);
+        auto *adaptor = new ScriptedAdaptor(obj);
+        QDBusConnection srv = bus(QStringLiteral("rev"));
+        m_conns << QStringLiteral("rev");
+        QVERIFY(srv.registerObject(contract::kPath, obj, QDBusConnection::ExportAdaptors));
+        QVERIFY(srv.registerService(QStringLiteral("org.kde.kdenlive-rev")));
+        QDBusConnection cc = client(QStringLiteral("daemon3"));
+        KdenliveDBusClient kd(cc);
+        kd.setServiceOverride(QStringLiteral("org.kde.kdenlive-rev"));
+        adaptor->revision = 3;  // a later revision of version 1 is compatible
+        kd.attachToPid(1);
+        QTRY_COMPARE(kd.state(), State::Available);
+        QVERIFY(kd.control(QStringLiteral("k"), contract::kJog, 1, {}));  // a mutation reached this instance
+        kd.attachToPid(0);
+        adaptor->revision = 1;
+        kd.attachToPid(1);
+        QTRY_COMPARE(kd.state(), State::Pending);  // past the preflight boundary: no fallback
+        QTest::qWait(50);
+        QCOMPARE(kd.state(), State::Pending);
+        KdenliveDBusClient fresh(cc);  // nothing sent yet: negotiation may decide "unavailable"
+        fresh.setServiceOverride(QStringLiteral("org.kde.kdenlive-rev"));
+        fresh.attachToPid(1);
+        QTRY_COMPARE(fresh.state(), State::Absent);
+    }
+
     void absentVersusPending()
     {
         QDBusConnection cc = client(QStringLiteral("daemon2"));

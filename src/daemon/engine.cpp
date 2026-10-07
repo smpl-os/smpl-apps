@@ -28,13 +28,40 @@ QString defaultTargetPath(const QString &name)
         return QStringLiteral("colorWheel.target");
     }
     if (name == contract::kAudioGain) {
-        return QStringLiteral("audio.target");
+        return QStringLiteral("timeline.clipGain.target");  // track gain: targetFrom timeline.track.gain.target
     }
     if (name == contract::kTrim) {
-        return QStringLiteral("edit.target");
+        return QStringLiteral("timeline.trim.target");
     }
     if (name == contract::kCmdTrackSet) {
         return QStringLiteral("timeline.track.target");
+    }
+    return {};
+}
+// The descriptor (a map with this "target") anywhere in the context.
+QVariantMap descriptorFor(const QVariant &v, const QString &target, int depth = 0)
+{
+    if (depth > 4 || target.isEmpty()) {
+        return {};
+    }
+    if (v.typeId() == QMetaType::QVariantMap) {
+        const QVariantMap m = v.toMap();
+        if (m.value(contract::kOptTarget).typeId() == QMetaType::QString && m.value(contract::kOptTarget).toString() == target) {
+            return m;
+        }
+        for (auto it = m.cbegin(); it != m.cend(); ++it) {
+            const QVariantMap d = descriptorFor(it.value(), target, depth + 1);
+            if (!d.isEmpty()) {
+                return d;
+            }
+        }
+    } else if (v.typeId() == QMetaType::QVariantList) {
+        for (const auto &e : v.toList()) {
+            const QVariantMap d = descriptorFor(e, target, depth + 1);
+            if (!d.isEmpty()) {
+                return d;
+            }
+        }
     }
     return {};
 }
@@ -75,6 +102,18 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
         connect(m_kd, &KdenliveClient::stateChanged, this, [this](KdenliveClient::State) {
             dropPendingWork();
             m_said.clear();
+        });
+        connect(m_kd, &KdenliveClient::contextChanged, this, [this](const QVariantMap &ctx) {
+            // A seek ends a multi-key edit in the host (its captured frame moved):
+            // forget it here too, without sending, so the next turn uses a fresh id.
+            const auto ids = m_gestures.keys();
+            for (const auto &id : ids) {
+                const Gesture g = m_gestures.value(id);
+                if (g.frameBound && ctx.value(QStringLiteral("position")) != g.position) {
+                    m_gestures.remove(id);
+                    m_coalescer.drop(g.key);
+                }
+            }
         });
         connect(m_kd, &KdenliveClient::epochChanged, this, [this](quint64) {
             // Targets changed and the host has already invalidated pending work
@@ -173,7 +212,8 @@ QStringList Engine::turnSlots(const QString &control, int delta)
 
 std::optional<Engine::Resolution> Engine::resolve(const QStringList &candidates) const
 {
-    const QVariantMap ctx = kdenliveActive() ? m_kd->context() : QVariantMap{};
+    QVariantMap ctx = kdenliveActive() ? m_kd->context() : QVariantMap{};
+    ctx.insert(QStringLiteral("$mode"), modeContext());  // layers may depend on daemon modes
     QList<const Profile *> chain;
     if (m_profile) {
         chain << m_profile;
@@ -224,14 +264,34 @@ QString Engine::modeValue(const QString &mode) const
     return values.value(m_modeIndex.value(owner + QLatin1Char('/') + mode) % values.size());
 }
 
-QVariantMap Engine::expandOptions(const QVariantMap &opts) const
+QVariantMap Engine::modeContext() const
+{
+    QVariantMap out;
+    for (const Profile *p : {m_cfg.globalProfile(), m_profile}) {  // the active profile wins
+        if (!p) {
+            continue;
+        }
+        for (auto it = p->modes.cbegin(); it != p->modes.cend(); ++it) {
+            out.insert(it.key(), modeValue(it.key()));
+        }
+    }
+    return out;
+}
+
+QVariantMap Engine::expandOptions(const QVariantMap &opts, QString *missing) const
 {
     QVariantMap out;
     const QVariantMap ctx = kdenliveActive() ? m_kd->context() : QVariantMap{};
     for (auto it = opts.begin(); it != opts.end(); ++it) {
         const QString s = it.value().toString();
-        if (it.value().typeId() == QMetaType::QString && s.startsWith(QLatin1String("$ctx:"))) {
-            out.insert(it.key(), valueAtPath(ctx, s.mid(5)));
+        const bool negate = s.startsWith(QLatin1String("$!ctx:"));
+        if (it.value().typeId() == QMetaType::QString && (negate || s.startsWith(QLatin1String("$ctx:")))) {
+            const QString path = s.mid(negate ? 6 : 5);
+            const QVariant v = valueAtPath(ctx, path);
+            if (!v.isValid() && missing && missing->isEmpty()) {
+                *missing = path;  // e.g. a toggle whose current state is not published
+            }
+            out.insert(it.key(), negate && v.isValid() ? QVariant(!v.toBool()) : v);
         } else if (it.value().typeId() == QMetaType::QString && s.startsWith(QLatin1Char('$'))) {
             out.insert(it.key(), modeValue(s.mid(1)));
         } else {
@@ -348,9 +408,18 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
             sayOnce(QStringLiteral("pending"), QStringLiteral("Kdenlive has not answered yet; %1 dropped (no keyboard fallback)").arg(b.name));
         }
         return;
-    case Binding::Control:
-        executeControl(b, slot, group, dir, (isTurn ? detents : 1) * accel * b.scale);
+    case Binding::Control: {
+        Binding cb = b;
+        if (cb.name.startsWith(QLatin1Char('$'))) {
+            cb.name = modeValue(cb.name.mid(1));  // a mode selects which control the knob drives
+            if (cb.name.isEmpty()) {
+                sayOnce(QStringLiteral("mode|") + b.name, QStringLiteral("%1: unknown mode %2").arg(slot, b.name));
+                return;
+            }
+        }
+        executeControl(cb, slot, group, dir, (isTurn ? detents : 1) * accel * b.scale);
         return;
+    }
     case Binding::Command:
         Q_EMIT runCommand(b.argv);
         return;
@@ -377,7 +446,12 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
                 sayOnce(QStringLiteral("command|") + b.name, QStringLiteral("Kdenlive does not offer command %1").arg(b.name));
                 return;
             }
-            QVariantMap args = expandOptions(b.options);
+            QString missing;
+            QVariantMap args = expandOptions(b.options, &missing);
+            if (!missing.isEmpty()) {
+                sayOnce(QStringLiteral("ctx|") + b.name + missing, QStringLiteral("%1: %2 is not in Kdenlive's context; nothing sent").arg(b.name, missing));
+                return;
+            }
             const QString path = b.targetFrom.isEmpty() ? defaultTargetPath(b.name) : b.targetFrom;
             if (!path.isEmpty() && !args.contains(contract::kOptTarget)) {
                 const QString target = resolveTarget(b, b.name, args);
@@ -415,7 +489,12 @@ void Engine::executeControl(const Binding &b, const QString &slot, const QString
         sayOnce(QStringLiteral("control|") + b.name, QStringLiteral("Kdenlive does not offer %1 yet").arg(b.name));
         return;
     }
-    const QVariantMap opts = expandOptions(b.options);
+    QString missing;
+    const QVariantMap opts = expandOptions(b.options, &missing);
+    if (!missing.isEmpty()) {
+        sayOnce(QStringLiteral("ctx|") + b.name + missing, QStringLiteral("%1: %2 is not in Kdenlive's context; nothing sent").arg(b.name, missing));
+        return;
+    }
     QString key;
     QVariantMap payloadOptions = opts;
     if (!contract::isEditingControl(b.name)) {
@@ -428,6 +507,12 @@ void Engine::executeControl(const Binding &b, const QString &slot, const QString
         const quint64 epoch = m_kd->epoch();
         auto it = m_gestures.find(bindingId);
         if (it != m_gestures.end() && (it->epoch != epoch || it->last.elapsed() > m_cfg.settings.gestureIdleMs)) {
+            endGesture(bindingId, false);
+            it = m_gestures.end();
+        }
+        if (it != m_gestures.end() && b.name == contract::kTrim && it->batches >= m_kd->limit(QStringLiteral("trimGestureSteps"), 128) - 1) {
+            // The host retains every resize step of a gesture: end this one (its
+            // end barrier may carry one last step) before starting a new one.
             endGesture(bindingId, false);
             it = m_gestures.end();
         }
@@ -449,6 +534,11 @@ void Engine::executeControl(const Binding &b, const QString &slot, const QString
             g.target = target;
             g.epoch = epoch;
             g.options = opts;
+            const QVariantMap ctx = m_kd->context();
+            const QVariantMap desc = descriptorFor(ctx, target);
+            g.frameBound = desc.contains(QStringLiteral("liveGrading")) ? !desc.value(QStringLiteral("liveGrading")).toBool()
+                                                                        : desc.value(QStringLiteral("frame"), -1).toInt() >= 0;
+            g.position = ctx.value(QStringLiteral("position"));
             it = m_gestures.insert(bindingId, g);
             m_gestureTimer->start();
         }
@@ -504,12 +594,21 @@ void Engine::checkIdleGestures()
 void Engine::onFlush(const QString &key, double delta, int merged, const QVariantMap &payload, bool isEnd)
 {
     Q_UNUSED(merged)
-    Q_UNUSED(isEnd)
     if (!kdenliveActive()) {
         return;
     }
-    if (!m_kd->control(key, payload.value(QStringLiteral("name")).toString(), delta, payload.value(QStringLiteral("options")).toMap())) {
+    const QVariantMap options = payload.value(QStringLiteral("options")).toMap();
+    if (!m_kd->control(key, payload.value(QStringLiteral("name")).toString(), delta, options)) {
         m_coalescer.ack(key);  // not sent: do not wait for an ack that cannot come
+        return;
+    }
+    if (!isEnd && options.contains(contract::kOptGesture)) {
+        for (auto it = m_gestures.begin(); it != m_gestures.end(); ++it) {
+            if (it->key == key) {
+                ++it->batches;
+                break;
+            }
+        }
     }
 }
 

@@ -72,6 +72,16 @@ public:
     void hoverWheel(const QString &wheel);           // "" clears
     void focusParam(const QString &name);            // "" clears
     void setGroupedPropagation(bool on) { m_grouped = on; }
+    // Live grading: static/single-key parameters may be edited while playing;
+    // multi-key parameters (keys at frames 0 and 100) need stopped playback.
+    void setPlaying(bool on);
+    void setParamMultiKey(const QString &name, bool on);
+    // MR3 timeline: focused track (visual order trk-4 V2, trk-3 V1, trk-7 A1,
+    // trk-8 A2) and the selected clip (clip-21/clip-22 linked A/V pair,
+    // clip-31 with a multi-key volume). "" clears the selection.
+    void focusTrack(const QString &trackId);
+    void selectClip(const QString &clipId);
+    void setTrimGestureSteps(int n) { m_trimGestureSteps = n; }  // limits.trimGestureSteps (default 128)
     static QString wheelTarget(const QString &wheel) { return QStringLiteral("cw-") + wheel; }
     QVariantMap context() const { return m_context; }
     QVariantMap state() const;
@@ -121,10 +131,14 @@ private:
         quint64 firstSeq = 0, lastSeq = 0;
     };
     struct Gesture {
-        QString owner, control, target;
-        QString param;  // parameter (param.nudge) or wheel (colorwheel.nudge) captured at gesture start
+        QString owner, id, control, target;
+        // Subject captured at gesture start: parameter name, wheel, "track:<id>" /
+        // "clip:<id>" (gain) or the comma-joined clips of a trim scope.
+        QString param;
         QVariantMap semantic;
         QVariant start;
+        int frame = -1;  // captured edit frame of a multi-key parameter; -1: whole clip
+        int steps = 0;   // applied batches (a trim retains each one)
         int historyAtStart = 0;
         bool changed = false;
         QElapsedTimer last;
@@ -160,8 +174,13 @@ private:
     QVariantMap paramDescriptor(const QString &name) const;
     QVariantMap findWheelTarget(const QString &target) const;  // descriptor or empty
     void refreshDescriptors();
-    QVariant gestureValue(const QString &control, const QVariantMap &semantic, const QString &param) const;
-    void restoreGestureValue(const QString &control, const QVariantMap &semantic, const QString &param, const QVariant &v);
+    QVariant gestureValue(const Gesture &g) const;
+    void restoreGestureValue(const Gesture &g, const QVariant &v);
+    QVariantMap preflightEdit(const Pending &p, int *frame) const;  // {code, message} or empty
+    QString gestureSubject(const Pending &p) const;
+    QString gainTrack(const QString &target, QString *clip = nullptr) const;  // owning track of a gain handle
+    QVariantMap timelineDescriptor() const;
+    void finishFrameBoundGestures();
     QVariantMap stateCheck() const;  // ready/closing/active/modal, at admission and at dispatch
     void checkGestureIdle();
 
@@ -177,7 +196,6 @@ private:
     bool m_applyScheduled = false;
     int m_applyDelayMs = 0;
     QHash<QString, Gesture> m_gestures;
-    QStringList m_finishedGestures;  // bounded: late cancels get history_conflict
     QTimer *m_gestureTimer;
     QList<QueuedAction> m_actions;
     quint64 m_requestCounter = 0;
@@ -197,14 +215,17 @@ private:
     int m_shuttle = 0;
     int m_zoom = 10;
     double m_scroll = 0;
-    int m_track = 0;
-    int m_trim = 0;
-    double m_gainDb = 0;
     QVariantMap m_wheels;  // lift/gamma/gain -> {r,g,b}
-    QVariantMap m_params;  // name -> value
+    QVariantMap m_params;  // name -> static value
+    QHash<QString, QMap<int, double>> m_keys;  // multi-key parameter -> frame -> value
     QStringList m_paramOrder;
     QStringList m_triggered;
-    QVariantMap m_tracks;  // "trk-1" -> {mute, lock, hide, solo, target}
+    int m_track = 2;  // index into m_trackOrder
+    QStringList m_trackOrder;
+    QVariantMap m_tracks;  // id -> {id, type, label, mute, hide, lock, solo, target, gainDb}
+    QVariantMap m_clips;   // id -> {track, start, end, minStart, maxEnd, linked, audio, volumeDb, staticVolume}
+    QString m_selectedClip;
+    int m_trimGestureSteps = 128;
 
     friend class MockControlSurfaceAdaptor;
 };
