@@ -15,7 +15,12 @@ The normative texts are MAIN's:
   `1e45ae44127945221a4690b13cff4662c2f510469b9abeb80c752f6c5b0c15be`
   (mirrored verbatim in §4.9): 71 curated action candidates, context
   restrictions, and Slip-preview transport admission. MAIN has implemented it;
-  it is **not yet qualified against this daemon** (no new lease yet).
+  it is **not yet qualified against this daemon** (no new lease yet);
+* MR1a clarifications `k23-mr1a-mock-clarifications.md`, SHA-256
+  `ccb3d676d68a3b9599aec1c14691d1c3a8fa24b7b266327189a4f49811b8f4f2`
+  (mirrored verbatim in §4.10): the exact editing-action set, the trimming
+  preview in `enabled`, admission and dispatch checks, and action history
+  advancing `epoch`. No wire or pin change.
 
 Previous mirrors: `e061f20c…a8357` (MR2: `colorWheels`, `emittedAtMs`),
 `5da6dcee…cc5cf` (`session` in ControlAck outcomes); the first proposal in
@@ -170,9 +175,10 @@ what a running Kdenlive offers.
 ## 4. Revision 2 wire contract (verbatim mirror of MAIN's files)
 
 Sections 4.1–4.7 are `k23-contract-revised.md` (`39774d0c…6e8`) after its
-title and status paragraph; 4.8 is the addendum (`b2121cc0…de2`) and 4.9 the
-MR1a action contract (`1e45ae44…15be`), each in full. Only heading levels and
-numbers differ from MAIN's files.
+title and status paragraph; 4.8 is the addendum (`b2121cc0…de2`), 4.9 the
+MR1a action contract (`1e45ae44…15be`) and 4.10 its clarifications
+(`ccb3d676…f4f2`), each in full. Only heading levels and numbers differ from
+MAIN's files.
 
 ### 4.1 Availability and authorization
 
@@ -631,6 +637,55 @@ Effect/wheel parameter editing stays MR2. An effect-enable/compare command
 without a reviewed native action is not invented. Optional automation-editor
 point editing and loop/reverse/AI job bridges remain deferred.
 
+### 4.10 K23 MR1a mock clarifications E-H
+
+This clarifies the frozen MR1a product behavior, without changing its wire
+revision or the action addendum `1e45ae44127945221a4690b13cff4662c2f510469b9abeb80c752f6c5b0c15be`.
+
+**E. Editing-action set.** Exactly the following30 candidate IDs participate
+in the editing-writer and native-drag checks:
+
+```
+mark_in mark_out add_marker_guide_quickly
+add_marker_guide_1 add_marker_guide_2 add_marker_guide_3
+add_marker_guide_4 add_marker_guide_5 add_marker_guide_6
+add_marker_guide_7 add_marker_guide_8 add_marker_guide_9
+add_marker_guide_10 delete_clip_marker delete_sequence_marker
+insert_to_in_point overwrite_to_in_point remove_lift remove_extract
+extract_clip cut_timeline_clip cut_timeline_all_clips delete_timeline_clip
+resize_timeline_clip_start resize_timeline_clip_end
+delete_space delete_space_all_tracks keyframe_add edit_undo edit_redo
+```
+
+There is no per-descriptor `editing` flag in this version. An action can
+legitimately make no change; membership is not inferred from a history delta.
+Other native operations retain their existing behavior.
+
+**F. Slip/trimming and enabled.** Yes, the actual host includes the trimming
+restriction in `ListActions.enabled`. For the active project monitor in
+trimming preview, these playback actions are listed but disabled:
+`monitor_play`, `monitor_play_zone`, `monitor_play_zone_cursor`,
+`monitor_loop_zone`, `monitor_loop_clip`, `monitor_seek_backward`,
+`monitor_seek_forward`. Calling one still returns structured `busy`
+(unless an earlier admission check rejects it). Pause remains available.
+The guard is the actual native trimming-preview state, not only a tool string.
+The enabled/checked change triggers ActionsChanged. Caller-specific writer
+ownership is not encoded in the shared descriptor and is checked on invocation.
+
+**G. Synchronous context restriction.** Yes: TriggerAction checks context
+restrictions before acceptance and rechecks them at dispatch. Failure at
+admission returns the error directly, with no accepted request. Failure after
+acceptance arrives through the directed ActionFinished. There is no fallback
+permission in either case.
+
+**H. Action history and epoch.** Yes: a discrete action's native undo/history
+change advances epoch through the document history observer. It is not treated
+as another update in an owned continuous parameter/gain/trim gesture.
+TriggerAction flushes and ends editing gestures before dispatch. Clients must
+reacquire context and fresh gesture state after the action, not reuse the old
+epoch. No-op/non-history actions need not advance epoch unless they otherwise
+change the context fence.
+
 ---
 
 ## 5. How the daemon uses it (client policy)
@@ -679,9 +734,10 @@ Further client rules:
   not gate on it: the host revalidates every `TriggerAction` at dispatch, and
   a refusal (`target_not_found`, `action_disabled`, `busy`) is reported, never
   typed.
-* A `busy` refusal of `playhead.shuttle` or a playback-starting action while
-  the context's `tool` is `slip` adds a hint to switch to the Selection tool:
-  MR1a's Slip trimming preview refuses playback; it is not a writer conflict.
+* A `busy` refusal of `playhead.shuttle` or a playback action adds a hint to
+  switch to the Selection tool when the host lists `monitor_play` disabled
+  (its trimming-preview signal, §4.10 F) or the context's `tool` is `slip`.
+  The trimming preview refuses playback; it is not a writer conflict.
 
 ### 5.2 Sequences, correlation and coalescing
 
@@ -889,18 +945,21 @@ MR1a (§4.9) in the mock:
     without a target track → `target_not_found`;
   * markers in the clip monitor without a source → `target_not_found`;
   * undo/redo with nothing to undo/redo → `action_disabled`;
-* editing actions (markers, three-point, lift/extract, cut, delete, extract,
-  resize, remove space, `keyframe_add`, undo/redo) are `busy` while another
-  caller owns an editing gesture or a native drag runs (console `drag on`).
-  Each one is one history entry and starts a new epoch;
-* Slip: nonzero shuttle (`Control` or `SetControlValue`) and playback-starting
-  actions are `busy` and leave `playing` unchanged; zero shuttle and
-  `monitor_pause` still pause; `select_tool` changes the tool (a target key,
-  so a new epoch);
+* exactly the 30 editing actions of §4.10 E (including `mark_in`/`mark_out`)
+  are `busy` while another caller owns an editing gesture or a native drag
+  runs (console `drag on`); ownership is not in the descriptor. Those that
+  change history add one entry and start a new epoch (§4.10 H); marks only
+  move the zone;
+* trimming preview (a state of its own, entered with the Slip tool; console
+  `trimming on|off`): on the project monitor, the 7 playback actions of
+  §4.10 F are listed disabled (announced with `ActionsChanged`) and refused
+  `busy`, as is nonzero shuttle (`Control` or `SetControlValue`), leaving
+  `playing` unchanged; zero shuttle, `monitor_pause` and the clip monitor still
+  work; `select_tool` leaves it (the tool is a target key, so a new epoch);
 * `mark_out` at frame N stores zone out N + 1; dialog actions →
   `unknown_action`.
 
-Mock assumptions MR1a leaves open are listed in §7 (E–H).
+§4.10 settled the mock's earlier assumptions (§7 E–H).
 
 Tests:
 
@@ -963,17 +1022,11 @@ Still open, from the real-editor acceptance (none blocks the daemon):
   MR1a fixes the host's fake `playing` after a refused Play (and pause now
   always pauses). To be re-run under a new lease.
 
-MR1a assumptions the mock makes where §4.9 leaves room (none blocks the
-daemon, which never relies on them):
+MR1a points the mock had to assume, now answered by §4.10 (the mock follows):
 
-* **E. Which actions are "editing actions"** for `busy` (another caller's
-  gesture, native drag)? The mock uses the history-producing ones listed in §6.
-  A per-descriptor flag would let clients know.
-* **F. Is Slip's playback `busy` reflected in `enabled`?** The mock keeps
-  `enabled` true and refuses when invoked.
-* **G. Are context restrictions also checked synchronously in
-  `TriggerAction`?** The mock refuses there (`target_not_found`) as well as at
-  dispatch (`ActionFinished`).
-* **H. Does an editing action's own undo entry bump `epoch`?** The mock bumps
-  it, as for any history change outside a gesture, so queued edits from before
-  get `stale_context`.
+| # | Question | Answer |
+|---|---|---|
+| E | Which actions are "editing actions" (writer and drag checks)? | Exactly 30 ids, including `mark_in`/`mark_out`; no descriptor flag |
+| F | Is the trimming restriction in `enabled`? | Yes: the 7 playback actions are listed disabled and refused `busy`; the guard is the native trimming state on the project monitor, not the tool string |
+| G | Context restrictions at `TriggerAction` too? | Yes: at admission (direct error) and at dispatch (`ActionFinished`) |
+| H | Does an action's own history step bump `epoch`? | Yes, through the history observer; reacquire context afterwards |

@@ -101,20 +101,29 @@ const MockAction kActions[] = {
     {"edit_undo", "Undo", "Ctrl+Z", false},
     {"edit_redo", "Redo", "Ctrl+Shift+Z", false},
 };
-// Actions that edit the project (one native undo entry): another caller's
-// editing gesture or a native drag makes them busy. Mock classification.
+// k23-mr1a-mock-clarifications.md (ccb3d676): exactly these 30 ids take part
+// in the editing-writer and native-drag checks (no descriptor flag).
 const QStringList kEditingActions{
-    QStringLiteral("add_marker_guide_quickly"), QStringLiteral("delete_clip_marker"), QStringLiteral("delete_sequence_marker"),
+    QStringLiteral("mark_in"), QStringLiteral("mark_out"), QStringLiteral("add_marker_guide_quickly"),
+    QStringLiteral("add_marker_guide_1"), QStringLiteral("add_marker_guide_2"), QStringLiteral("add_marker_guide_3"),
+    QStringLiteral("add_marker_guide_4"), QStringLiteral("add_marker_guide_5"), QStringLiteral("add_marker_guide_6"),
+    QStringLiteral("add_marker_guide_7"), QStringLiteral("add_marker_guide_8"), QStringLiteral("add_marker_guide_9"),
+    QStringLiteral("add_marker_guide_10"), QStringLiteral("delete_clip_marker"), QStringLiteral("delete_sequence_marker"),
     QStringLiteral("insert_to_in_point"), QStringLiteral("overwrite_to_in_point"), QStringLiteral("remove_lift"), QStringLiteral("remove_extract"),
-    QStringLiteral("cut_timeline_clip"), QStringLiteral("cut_timeline_all_clips"), QStringLiteral("delete_timeline_clip"), QStringLiteral("extract_clip"),
-    QStringLiteral("resize_timeline_clip_start"), QStringLiteral("resize_timeline_clip_end"), QStringLiteral("delete_space"),
-    QStringLiteral("delete_space_all_tracks"), QStringLiteral("keyframe_add"), QStringLiteral("edit_undo"), QStringLiteral("edit_redo")};
-// Playback-starting actions, refused while Slip's monitor trimming preview is active.
+    QStringLiteral("extract_clip"), QStringLiteral("cut_timeline_clip"), QStringLiteral("cut_timeline_all_clips"), QStringLiteral("delete_timeline_clip"),
+    QStringLiteral("resize_timeline_clip_start"), QStringLiteral("resize_timeline_clip_end"),
+    QStringLiteral("delete_space"), QStringLiteral("delete_space_all_tracks"), QStringLiteral("keyframe_add"), QStringLiteral("edit_undo"),
+    QStringLiteral("edit_redo")};
+// The playback actions the project monitor's trimming preview disables (clarification F).
+const QStringList kPlaybackActions{QStringLiteral("monitor_play"),      QStringLiteral("monitor_play_zone"), QStringLiteral("monitor_play_zone_cursor"),
+                                   QStringLiteral("monitor_loop_zone"), QStringLiteral("monitor_loop_clip"), QStringLiteral("monitor_seek_backward"),
+                                   QStringLiteral("monitor_seek_forward")};
+// Playback-starting actions besides the play toggle (their effect in the mock).
 const QStringList kPlaybackStart{QStringLiteral("monitor_seek_backward"), QStringLiteral("monitor_seek_forward"), QStringLiteral("monitor_play_zone"),
                                  QStringLiteral("monitor_play_zone_cursor"), QStringLiteral("monitor_loop_zone"), QStringLiteral("monitor_loop_clip")};
 bool isEditingAction(const QString &id)
 {
-    return kEditingActions.contains(id) || id.startsWith(QLatin1String("add_marker_guide_"));
+    return kEditingActions.contains(id);
 }
 
 struct Descriptor {
@@ -632,6 +641,10 @@ QVariantMap MockKdenlive::actionRefusal(const QString &id, const Caller *caller)
     if (id == QLatin1String("edit_redo") && m_redo.isEmpty()) {
         return fail(err::ActionDisabled, QStringLiteral("nothing to redo"));
     }
+    if (kPlaybackActions.contains(id) && playbackBlocked(QString())) {
+        // Listed disabled; invoking it is busy. Pause stays available.
+        return fail(err::Busy, QStringLiteral("project monitor trimming preview refuses playback; use select_tool"));
+    }
     if (!caller) {
         return {};
     }
@@ -646,11 +659,31 @@ QVariantMap MockKdenlive::actionRefusal(const QString &id, const Caller *caller)
             return fail(err::Busy, QStringLiteral("native drag in progress"));
         }
     }
-    const bool startsPlayback = kPlaybackStart.contains(id) || (id == QLatin1String("monitor_play") && !m_context.value(QStringLiteral("playing")).toBool());
-    if (startsPlayback && m_context.value(QStringLiteral("tool")).toString() == QLatin1String("slip")) {
-        return fail(err::Busy, QStringLiteral("monitor trimming preview (Slip) refuses playback; use select_tool"));
-    }
     return {};
+}
+
+bool MockKdenlive::playbackBlocked(const QString &monitor) const
+{
+    const QString m = monitor.isEmpty() || monitor == QLatin1String("active") ? m_context.value(QStringLiteral("activeMonitor")).toString() : monitor;
+    return m_trimming && m == QLatin1String("project");
+}
+
+QStringList MockKdenlive::editingActions()
+{
+    return kEditingActions;
+}
+
+QStringList MockKdenlive::playbackActions()
+{
+    return kPlaybackActions;
+}
+
+void MockKdenlive::setTrimmingPreview(bool on)
+{
+    if (m_trimming != on) {
+        m_trimming = on;
+        bumpSerial(false);  // also announces the enabled change (ActionsChanged)
+    }
 }
 
 void MockKdenlive::applyAction(const QString &id)
@@ -1281,9 +1314,9 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         bumpSerial(false);
         st = {{QStringLiteral("position"), m_position}};
     } else if (p.control == kShuttle) {
-        if (qBound(-7, m_shuttle + steps, 7) != 0 && m_context.value(QStringLiteral("tool")).toString() == QLatin1String("slip")) {
-            // Native forward/rewind refuse Slip's monitor trimming preview; zero still pauses.
-            return error(err::Busy, QStringLiteral("monitor trimming preview (Slip) refuses playback; use select_tool"));
+        if (qBound(-7, m_shuttle + steps, 7) != 0 && playbackBlocked(p.semantic.value(QStringLiteral("monitor")).toString())) {
+            // Native forward/rewind refuse the monitor trimming preview; zero still pauses.
+            return error(err::Busy, QStringLiteral("project monitor trimming preview refuses playback; use select_tool"));
         }
         const int before = m_shuttle;
         m_shuttle = qBound(-7, m_shuttle + steps, 7);
@@ -1586,8 +1619,8 @@ QVariantMap MockKdenlive::setControlValue(const QString &control, double value, 
     if (!std::isfinite(value) || value != std::trunc(value) || value < -7 || value > 7) {
         return fail(err::InvalidArguments, QStringLiteral("shuttle index must be an integer in -7..7"), QStringLiteral("value"));
     }
-    if (value != 0 && m_context.value(QStringLiteral("tool")).toString() == QLatin1String("slip")) {
-        return fail(err::Busy, QStringLiteral("monitor trimming preview (Slip) refuses playback; use select_tool"));
+    if (value != 0 && playbackBlocked(options.value(QStringLiteral("monitor")).toString())) {
+        return fail(err::Busy, QStringLiteral("project monitor trimming preview refuses playback; use select_tool"));
     }
     finishAllGestures();
     m_shuttle = int(value);
@@ -1735,6 +1768,9 @@ QVariantMap MockKdenlive::notify(const QString &text, int timeoutMs, const QVari
 // ---------------------------------------------------------------------------
 void MockKdenlive::setContextValue(const QString &key, const QVariant &value)
 {
+    if (key == QLatin1String("tool")) {
+        m_trimming = value.toString() == QLatin1String("slip");  // the Slip tool enters the trimming preview here
+    }
     if (value.isValid()) {
         m_context.insert(key, value);
     } else {
@@ -2032,6 +2068,7 @@ QVariantMap MockKdenlive::state() const
             {QStringLiteral("zone"), QVariantMap{{QStringLiteral("in"), m_zoneIn}, {QStringLiteral("out"), m_zoneOut}}},
             {QStringLiteral("editMode"), m_editMode},
             {QStringLiteral("sourceOpen"), m_sourceOpen},
+            {QStringLiteral("trimmingPreview"), m_trimming},
             {QStringLiteral("epoch"), u64(m_epoch)}};
 }
 

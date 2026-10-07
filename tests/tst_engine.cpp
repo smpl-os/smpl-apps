@@ -364,6 +364,13 @@ private Q_SLOTS:
         Q_EMIT kd.refused(QStringLiteral("monitor_play"), contract::err::Busy, QString());
         Q_EMIT kd.refused(QStringLiteral("cut_timeline_clip"), contract::err::Busy, QString());  // editing: no hint
         QCOMPARE(hints(), 2);
+        // The host's disabled playback actions reveal a trimming preview with any tool.
+        kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(3)}, {QStringLiteral("tool"), QStringLiteral("ripple")}});
+        Q_EMIT kd.refused(QStringLiteral("monitor_loop_zone"), contract::err::Busy, QString());
+        QCOMPARE(hints(), 2);
+        kd.disabledActions << QStringLiteral("monitor_play");
+        Q_EMIT kd.refused(QStringLiteral("monitor_loop_zone"), contract::err::Busy, QString());
+        QCOMPARE(hints(), 3);
         QTest::qWait(20);
         QVERIFY(keys.taps.isEmpty());
     }

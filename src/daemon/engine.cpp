@@ -101,10 +101,12 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
         });
         connect(m_kd, &KdenliveClient::refused, this, [this](const QString &what, const QString &code, const QString &msg) {
             sayOnce(what + QLatin1Char('|') + code, QStringLiteral("Kdenlive refused %1: %2%3").arg(what, code, msg.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(msg)));
-            if (code == contract::err::Busy && m_kd->context().value(QStringLiteral("tool")).toString() == QLatin1String("slip") && startsPlayback(what)) {
-                // MR1a: Slip's monitor trimming preview refuses playback; it is not a writer conflict.
-                sayOnce(QStringLiteral("slip|") + what,
-                        QStringLiteral("%1: Kdenlive's Slip tool preview blocks playback; switch to the Selection tool (select_tool) first").arg(what));
+            const bool trimming = !m_kd->actionEnabled(QStringLiteral("monitor_play")) || m_kd->context().value(QStringLiteral("tool")).toString() == QLatin1String("slip");
+            if (code == contract::err::Busy && trimming && startsPlayback(what)) {
+                // MR1a: the project monitor's trimming preview refuses playback (Kdenlive
+                // lists the playback actions disabled); it is not a writer conflict.
+                sayOnce(QStringLiteral("trimming|") + what,
+                        QStringLiteral("%1: Kdenlive's trimming preview (Slip tool) blocks playback; switch to the Selection tool (select_tool) first").arg(what));
             }
             if (code == contract::err::StaleContext || code == contract::err::TargetNotFound) {
                 dropPendingWork();  // the host already dropped this work; resync on the next input

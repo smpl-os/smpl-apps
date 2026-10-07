@@ -38,6 +38,13 @@ public:
     virtual bool supportsControl(const QString &name) const = 0;
     virtual bool supportsAction(const QString &id) const = 0;
     virtual bool supportsCommand(const QString &name) const = 0;
+    // The host's current ListActions "enabled" (informational; the host
+    // revalidates every TriggerAction). Unknown ids are reported enabled.
+    virtual bool actionEnabled(const QString &id) const
+    {
+        Q_UNUSED(id)
+        return true;
+    }
     // Capabilities.limits entry (e.g. "trimGestureSteps"), or fallback.
     virtual int limit(const QString &name, int fallback) const
     {
@@ -80,6 +87,7 @@ public:
     bool supportsControl(const QString &name) const override { return !m_restricted || m_controls.contains(name); }
     bool supportsAction(const QString &id) const override { return !m_restrictedActions || m_actions.contains(id); }
     bool supportsCommand(const QString &name) const override { return !m_restricted || m_commands.contains(name); }
+    bool actionEnabled(const QString &id) const override { return !disabledActions.contains(id); }
     int limit(const QString &name, int fallback) const override { return m_limits.value(name, fallback).toInt(); }
     void setLimits(const QVariantMap &limits) { m_limits = limits; }
     void triggerAction(const QString &id) override;
@@ -99,6 +107,7 @@ public:
     QList<double> controlDeltas;
     QList<QVariantMap> controlOptions;
     QStringList controlKeys;
+    QStringList disabledActions;
     int retries = 0;
 
 private:

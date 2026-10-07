@@ -1084,6 +1084,14 @@ private Q_SLOTS:
                                                                   QStringLiteral("id"), QStringLiteral("shortcut"), QStringLiteral("text")}));
         }
         QVERIFY(!actions.contains(QStringLiteral("roll_tool")) && !actions.contains(QStringLiteral("slide_tool")));  // not fabricated
+        // Clarification E: exactly 30 editing actions; F: 7 playback actions.
+        QCOMPARE(MockKdenlive::editingActions().size(), 30);
+        QCOMPARE(MockKdenlive::playbackActions().size(), 7);
+        for (const QString &id : MockKdenlive::editingActions() + MockKdenlive::playbackActions()) {
+            QVERIFY2(actions.contains(id), qPrintable(id));
+        }
+        QVERIFY(MockKdenlive::editingActions().contains(QStringLiteral("mark_in")));
+        QVERIFY(!MockKdenlive::editingActions().contains(QStringLiteral("select_tool")));
         // Every action the shipped config binds is a candidate.
         QString err;
         auto def = loadConfig(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"), &err);
@@ -1149,6 +1157,8 @@ private Q_SLOTS:
         QTRY_VERIFY(!other.ackFor(1).isEmpty());
         QVERIFY(other.ackFor(1).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
         QCOMPARE(RawClient::code(trigger(QStringLiteral("cut_timeline_clip"))), contract::err::Busy);
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("mark_in"))), contract::err::Busy);  // in the set, though not history
+        QVERIFY(raw.actionMap().value(QStringLiteral("cut_timeline_clip")).toMap().value(QStringLiteral("enabled")).toBool());  // ownership is per caller, not in the descriptor
         const QVariantMap view = trigger(QStringLiteral("zoom_fit"));  // not an editing action
         QVERIFY2(view.value(QStringLiteral("ok")).toBool(), qPrintable(RawClient::code(view)));
         QTRY_COMPARE(raw.finished.size(), 2);
@@ -1160,15 +1170,35 @@ private Q_SLOTS:
         m_mock->setPosition(1040);
         QVERIFY(trigger(QStringLiteral("mark_out")).value(QStringLiteral("ok")).toBool());
         QTRY_COMPARE(m_mock->state().value(QStringLiteral("zone")).toMap().value(QStringLiteral("out")).toInt(), 1041);
-        // Slip preview: playback start is busy and leaves no fake playing state;
-        // pause still works; select_tool + fresh epoch allows playback again.
+        // Trimming preview (entered with the Slip tool): the 7 playback actions are
+        // listed disabled (announced), invoking one is busy and leaves no fake
+        // playing state, pause still works; select_tool + fresh epoch allows playback.
         const int finishedBefore = int(raw.finished.size());
+        announced = raw.actionsChanged;
         QVERIFY(trigger(QStringLiteral("slip_tool")).value(QStringLiteral("ok")).toBool());
         QTRY_COMPARE(m_mock->context().value(QStringLiteral("tool")).toString(), QStringLiteral("slip"));
-        QTRY_VERIFY(raw.actionMap().value(QStringLiteral("slip_tool")).toMap().value(QStringLiteral("checked")).toBool());
+        QTRY_VERIFY(raw.actionsChanged > announced);
+        actions = raw.actionMap();
+        QVERIFY(actions.value(QStringLiteral("slip_tool")).toMap().value(QStringLiteral("checked")).toBool());
+        for (const QString &id : MockKdenlive::playbackActions()) {
+            QVERIFY2(!actions.value(id).toMap().value(QStringLiteral("enabled")).toBool(), qPrintable(id));
+        }
+        QVERIFY(actions.value(QStringLiteral("monitor_pause")).toMap().value(QStringLiteral("enabled")).toBool());
         refresh();
         QCOMPARE(RawClient::code(trigger(QStringLiteral("monitor_play"))), contract::err::Busy);
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("monitor_loop_clip"))), contract::err::Busy);
         QVERIFY(!m_mock->context().value(QStringLiteral("playing")).toBool());
+        // The guard is the trimming state, not the tool string, and only on the project monitor.
+        m_mock->setTrimmingPreview(false);
+        QTRY_VERIFY(raw.actionMap().value(QStringLiteral("monitor_play")).toMap().value(QStringLiteral("enabled")).toBool());
+        m_mock->setTrimmingPreview(true);
+        QTRY_VERIFY(!raw.actionMap().value(QStringLiteral("monitor_play")).toMap().value(QStringLiteral("enabled")).toBool());
+        QVERIFY(raw.call(QStringLiteral("SetControlValue"), {contract::kShuttle, 2.0, QVariant::fromValue([&] {
+                           QVariantMap o = raw.common();
+                           o.insert(QStringLiteral("monitor"), QStringLiteral("clip"));
+                           return o;
+                       }())}).value(QStringLiteral("ok")).toBool());  // the clip monitor is not trimming
+        QVERIFY(raw.call(QStringLiteral("SetControlValue"), {contract::kShuttle, 0.0, QVariant::fromValue(raw.common())}).value(QStringLiteral("ok")).toBool());
         QVERIFY(trigger(QStringLiteral("monitor_pause")).value(QStringLiteral("ok")).toBool());
         QVERIFY(trigger(QStringLiteral("select_tool")).value(QStringLiteral("ok")).toBool());
         QTRY_COMPARE(m_mock->context().value(QStringLiteral("tool")).toString(), QStringLiteral("select"));

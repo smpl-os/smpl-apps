@@ -45,7 +45,7 @@ public:
     bool supportsAction(const QString &id) const override { return m_actions.contains(id); }
     // The host's current "enabled" for a listed action (informational: the
     // host revalidates every TriggerAction, so disabled ones are still sent).
-    bool actionEnabled(const QString &id) const { return m_actionEnabled.value(id, false); }
+    bool actionEnabled(const QString &id) const override { return m_actionEnabled.value(id, true); }
     int actionRefreshes() const { return m_actionRefreshes; }  // ListActions refreshes after ActionsChanged
     bool supportsCommand(const QString &name) const override { return m_commands.contains(name); }
     int limit(const QString &name, int fallback) const override

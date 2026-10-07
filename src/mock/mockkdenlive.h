@@ -86,6 +86,12 @@ public:
     // clip markers need one) and a native drag in progress (editing actions busy).
     void setSourceOpen(bool on);
     void setDragging(bool on) { m_dragging = on; }
+    // Native monitor trimming preview (entered with the Slip tool here). While
+    // the project monitor shows it, the seven playback actions are listed
+    // disabled and refused busy, and so is nonzero shuttle; pause still works.
+    void setTrimmingPreview(bool on);
+    static QStringList editingActions();   // the 30 ids of the writer/drag check
+    static QStringList playbackActions();  // the 7 ids the trimming preview disables
     static QStringList candidateActions();  // the 71 MR1a candidate ids
     void announceActionsChanged();           // test helper: ActionsChanged to every subscriber now
     static QString wheelTarget(const QString &wheel) { return QStringLiteral("cw-") + wheel; }
@@ -240,6 +246,8 @@ private:
     int m_trimGestureSteps = 128;
     bool m_sourceOpen = true;
     bool m_dragging = false;
+    bool m_trimming = false;
+    bool playbackBlocked(const QString &monitor) const;  // trimming preview on the (resolved) project monitor
     QString m_editMode = QStringLiteral("normal");
     int m_zoneIn = 0, m_zoneOut = 0;
     QStringList m_redo;

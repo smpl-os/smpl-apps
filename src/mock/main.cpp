@@ -103,6 +103,8 @@ int main(int argc, char **argv)
                 mock.selectClip(arg == QLatin1String("-") || arg == QLatin1String("off") ? QString() : arg);
             } else if (cmd == QLatin1String("source")) {
                 mock.setSourceOpen(on);
+            } else if (cmd == QLatin1String("trimming")) {
+                mock.setTrimmingPreview(on);
             } else if (cmd == QLatin1String("drag")) {
                 mock.setDragging(on);
             } else if (cmd == QLatin1String("grouped")) {
