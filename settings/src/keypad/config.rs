@@ -419,14 +419,15 @@ pub fn to_json(binding: &Binding) -> Result<Option<Json>, String> {
 }
 
 /// Keeps what Settings doesn't edit (e.g. a Kdenlive action's "fallback")
-/// when a binding of the same form is replaced.
+/// when only the label changed. Those fields belong to one specific action
+/// or command, so any other edit starts clean.
 fn merge_extras(old: Option<&Json>, new: Json) -> Json {
     const FORMS: [&str; 5] = ["keys", "action", "command", "mouse", "cheatsheet"];
     let (Some(Json::Obj(old)), Json::Obj(mut entries)) = (old, new.clone()) else {
         return new;
     };
-    let same_form = FORMS.iter().any(|f| old.iter().any(|(k, _)| k == f) && entries.iter().any(|(k, _)| k == f));
-    if !same_form {
+    let main = |e: &[(String, Json)]| e.iter().find(|(k, _)| FORMS.contains(&k.as_str())).cloned();
+    if main(old).is_none() || main(old) != main(&entries) {
         return new;
     }
     for (k, v) in old {
@@ -536,6 +537,15 @@ pub enum Layout {
     Auto,
     Board(String),
     Custom { keys: usize, knobs: usize, columns: usize },
+}
+
+/// The daemon's default when a custom layout omits "columns" (config.cpp).
+pub fn default_layout_columns(keys: usize) -> usize {
+    if keys >= 10 {
+        5
+    } else {
+        keys.clamp(1, 4)
+    }
 }
 
 pub const MAX_KEYS: usize = 16;
@@ -733,11 +743,14 @@ impl KeypadConfig {
         };
         match self.doc.get("layout") {
             Some(Json::Str(id)) => Layout::Board(id.clone()),
-            Some(o @ Json::Obj(_)) => Layout::Custom {
-                keys: num(o, "keys").unwrap_or(0),
-                knobs: num(o, "knobs").unwrap_or(0),
-                columns: num(o, "columns").unwrap_or(1),
-            },
+            Some(o @ Json::Obj(_)) => {
+                let keys = num(o, "keys").unwrap_or(0);
+                Layout::Custom {
+                    keys,
+                    knobs: num(o, "knobs").unwrap_or(0),
+                    columns: num(o, "columns").unwrap_or_else(|| default_layout_columns(keys)),
+                }
+            }
             _ => Layout::Auto,
         }
     }
@@ -755,9 +768,9 @@ impl KeypadConfig {
                 self.doc.set("layout", Json::str(id));
             }
             Layout::Custom { keys, knobs, columns } => {
-                if !(1..=MAX_KEYS).contains(keys) || *knobs > MAX_KNOBS || !(1..=MAX_COLUMNS).contains(columns) {
+                if *keys > MAX_KEYS || *knobs > MAX_KNOBS || keys + knobs == 0 || !(1..=MAX_COLUMNS).contains(columns) {
                     return Err(format!(
-                        "a custom layout needs 1-{MAX_KEYS} keys, 0-{MAX_KNOBS} knobs and 1-{MAX_COLUMNS} columns"
+                        "a custom layout needs 0-{MAX_KEYS} keys, 0-{MAX_KNOBS} knobs (at least one input) and 1-{MAX_COLUMNS} columns"
                     ));
                 }
                 self.doc.set(
@@ -1048,8 +1061,15 @@ mod tests {
         assert_eq!(reread.layout(), custom);
         let layout = reread.doc.get("layout").unwrap();
         assert_eq!(json::to_compact(layout), r#"{ "keys": 9, "knobs": 1, "columns": 3 }"#);
+        let knobs_only = Layout::Custom { keys: 0, knobs: 2, columns: 1 };
+        c.set_layout(&knobs_only).unwrap();
+        assert_eq!(KeypadConfig::parse(&c.render()).unwrap().layout(), knobs_only);
+        let no_columns = KeypadConfig::parse(r#"{"layout": {"keys": 12, "knobs": 2}}"#).unwrap();
+        assert_eq!(no_columns.layout(), Layout::Custom { keys: 12, knobs: 2, columns: 5 }, "the daemon's default");
+        let small = KeypadConfig::parse(r#"{"layout": {"keys": 3}}"#).unwrap();
+        assert_eq!(small.layout(), Layout::Custom { keys: 3, knobs: 0, columns: 3 });
         for bad in [
-            Layout::Custom { keys: 0, knobs: 1, columns: 3 },
+            Layout::Custom { keys: 0, knobs: 0, columns: 3 },
             Layout::Custom { keys: 17, knobs: 0, columns: 4 },
             Layout::Custom { keys: 4, knobs: 4, columns: 4 },
             Layout::Custom { keys: 4, knobs: 0, columns: 9 },
@@ -1084,13 +1104,16 @@ mod tests {
     }
 
     #[test]
-    fn editing_a_kdenlive_action_keeps_its_fallback() {
+    fn a_label_edit_keeps_the_fallback_but_a_new_action_drops_it() {
         let mut c = config();
-        c.set_binding(0, "key1", &Binding::new(ActionKind::Kdenlive, "mark_out").labelled("Out")).unwrap();
+        c.set_binding(0, "key1", &Binding::new(ActionKind::Kdenlive, "mark_in").labelled("In")).unwrap();
         assert_eq!(
             json::to_compact(c.raw_binding(0, "key1").unwrap()),
-            r#"{ "action": "mark_out", "label": "Out", "fallback": "i" }"#
+            r#"{ "action": "mark_in", "label": "In", "fallback": "i" }"#
         );
+        // The fallback "i" types mark_in's shortcut: it must not follow a new action.
+        c.set_binding(0, "key1", &Binding::new(ActionKind::Kdenlive, "mark_out").labelled("Out")).unwrap();
+        assert_eq!(json::to_compact(c.raw_binding(0, "key1").unwrap()), r#"{ "action": "mark_out", "label": "Out" }"#);
         c.set_binding(0, "key1", &Binding::new(ActionKind::Shortcut, "x")).unwrap();
         assert_eq!(c.raw_binding(0, "key1"), Some(&Json::str("x")), "a different form starts clean");
     }

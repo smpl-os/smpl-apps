@@ -79,6 +79,8 @@ pub struct Status {
     pub bootloaders: usize,
     pub app: AppState,
     pub layout: Option<DaemonLayout>,
+    /// The running app pushes the cheatsheet into the bar (GetStatus).
+    pub sheet_push: Option<bool>,
 }
 
 fn sysfs_root() -> PathBuf {
@@ -170,11 +172,14 @@ fn daemon_process_running(proc_root: &Path) -> bool {
         return false;
     };
     procs.flatten().any(|p| {
-        if !std::fs::read_to_string(p.path().join("comm")).is_ok_and(|c| c.trim() == "control-surfaced") {
+        // /proc/PID/comm is cut to 15 bytes ("control-surface"); match argv[0].
+        let cmdline = std::fs::read(p.path().join("cmdline")).unwrap_or_default();
+        let mut argv = cmdline.split(|b| *b == 0);
+        let program = argv.next().unwrap_or_default();
+        if program.rsplit(|b| *b == b'/').next() != Some(&b"control-surfaced"[..]) {
             return false;
         }
-        let cmdline = std::fs::read(p.path().join("cmdline")).unwrap_or_default();
-        let mut args = cmdline.split(|b| *b == 0).skip(1).filter(|a| !a.is_empty());
+        let mut args = argv.filter(|a| !a.is_empty());
         match args.find(|a| !a.starts_with(b"-")) {
             None => true,
             Some(cmd) => cmd == b"run",
@@ -214,8 +219,37 @@ pub fn load_status() -> Status {
         process: !bus
             && daemon_process_running(&std::env::var_os("SMPLOS_KEYPAD_PROC").map_or_else(|| PathBuf::from("/proc"), PathBuf::from)),
     };
-    let layout = if app.bus { daemon_layout() } else { None };
-    Status { pads, bootloaders, app, layout }
+    let mut status = Status { pads, bootloaders, app, layout: None, sheet_push: None };
+    if status.app.bus {
+        status.layout = daemon_layout();
+        if let Some(daemon) = daemon_status() {
+            apply_daemon_status(&mut status, &daemon);
+        }
+    }
+    status
+}
+
+fn daemon_status() -> Option<Value> {
+    let reply = bus()?
+        .call_method(Some(DBUS_SERVICE), DBUS_PATH, Some(DBUS_INTERFACE), "GetStatus", &())
+        .ok()?;
+    serde_json::from_str(&reply.body().deserialize::<String>().ok()?).ok()
+}
+
+/// The daemon knows the firmware's full version (GET_INFO: "2.0.1"; sysfs
+/// only has "2.0") and whether its cheatsheet push to the bar is on.
+fn apply_daemon_status(status: &mut Status, v: &Value) {
+    let version = v.get("device").and_then(|d| d.get("firmware")).map(|f| text(f, "version")).unwrap_or_default();
+    if let (Some(pad), false) = (status.pads.first_mut(), version.is_empty()) {
+        if pad.firmware == "control-surface" {
+            pad.version = version;
+        }
+    }
+    status.sheet_push = v
+        .get("cheatsheet")
+        .and_then(|c| c.get("eww"))
+        .and_then(|e| e.get("enabled"))
+        .and_then(Value::as_bool);
 }
 
 /// What to say about the keypad app, and whether to offer Start.
@@ -936,8 +970,10 @@ pub fn sheet_preview(
     window_class: &str,
     context: &str,
 ) -> Result<SheetPreview, String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(daemon) = daemon {
-        let file = scratch.join(format!(".config.jsonc.preview-{}", std::process::id()));
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file = scratch.join(format!(".config.jsonc.preview-{}-{n}", std::process::id()));
         if std::fs::create_dir_all(scratch).is_ok() && std::fs::write(&file, config_text).is_ok() {
             let mut cmd = Command::new(daemon);
             cmd.args(["cheatsheet", "--json", "--window", window_class]).arg("-c").arg(&file);
@@ -1115,6 +1151,7 @@ mod tests {
     #[test]
     fn finds_a_daemon_started_by_hand_but_not_its_one_shot_commands() {
         let dir = temp_dir("proc");
+        // The kernel keeps 15 bytes of the name in comm, as here.
         let process = |pid: &str, comm: &str, argv: &[&str]| {
             let d = dir.join(pid);
             std::fs::create_dir_all(&d).unwrap();
@@ -1122,12 +1159,13 @@ mod tests {
             std::fs::write(d.join("cmdline"), argv.iter().map(|a| format!("{a}\0")).collect::<String>()).unwrap();
         };
         process("10", "bash", &["bash"]);
-        process("11", "control-surfaced", &["control-surfaced", "monitor", "--json"]);
+        process("11", "control-surface", &["control-surfaced", "monitor", "--json"]);
+        process("14", "control-surface", &["/usr/bin/control-surfaced-old", "run"]);
         assert!(!daemon_process_running(&dir));
-        process("12", "control-surfaced", &["/home/u/.local/bin/control-surfaced", "--quiet", "run"]);
+        process("12", "control-surface", &["/home/u/.local/bin/control-surfaced", "--quiet", "run"]);
         assert!(daemon_process_running(&dir));
         std::fs::remove_dir_all(dir.join("12")).unwrap();
-        process("13", "control-surfaced", &["control-surfaced"]);
+        process("13", "control-surface", &["control-surfaced"]);
         assert!(daemon_process_running(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1213,6 +1251,23 @@ mod tests {
             &mut actions,
         );
         assert_eq!(actions, [("mark_in".to_string(), "Set In Point".to_string())]);
+    }
+
+    #[test]
+    fn daemon_status_supplies_the_full_version_and_the_push_state() {
+        let dir = fake_sysfs("status");
+        let (pads, _) = scan_sysfs(&dir);
+        let mut status = Status { pads, ..Status::default() };
+        apply_daemon_status(
+            &mut status,
+            &serde_json::json!({"device":{"firmware":{"version":"2.0.1"}},"cheatsheet":{"eww":{"enabled":true}}}),
+        );
+        assert_eq!(status.pads[0].version, "2.0.1");
+        assert_eq!(status.pads[1].version, "", "stock firmware has no version");
+        assert_eq!(status.sheet_push, Some(true));
+        apply_daemon_status(&mut status, &serde_json::json!({}));
+        assert_eq!(status.sheet_push, None, "older daemons don't say");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

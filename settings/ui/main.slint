@@ -7852,7 +7852,8 @@ export component MainWindow inherits Window {
                 tab11-flick := Flickable {
                     width: parent.width - 6px;
                     height: parent.height;
-                    viewport-width: max(self.width, 640px);
+                    // Wide previews (many columns) scroll instead of being clipped.
+                    viewport-width: max(self.width, 640px, tab11-content.min-width);
                     viewport-height: tab11-content.preferred-height;
 
                 tab11-content := VerticalLayout {
@@ -8018,14 +8019,14 @@ export component MainWindow inherits Window {
                                 KeypadStepper {
                                     label: "Keys";
                                     value: root.kp-custom-keys;
-                                    minimum: 1;
+                                    minimum: root.kp-custom-knobs > 0 ? 0 : 1;
                                     maximum: 16;
                                     changed(v) => { root.kp-set-custom(v, root.kp-custom-knobs, root.kp-custom-cols); }
                                 }
                                 KeypadStepper {
                                     label: "Knobs";
                                     value: root.kp-custom-knobs;
-                                    minimum: 0;
+                                    minimum: root.kp-custom-keys > 0 ? 0 : 1;
                                     maximum: 3;
                                     changed(v) => { root.kp-set-custom(root.kp-custom-keys, v, root.kp-custom-cols); }
                                 }

@@ -452,7 +452,10 @@ fn keypad_cheatsheet_card_label_and_preview_are_wired() {
     let preview = UI.split("component KeypadSheetPreview").nth(1).unwrap().split("\ncomponent ").next().unwrap();
     assert!(preview.contains("background: Theme.bg.transparentize(1 - root.sheet-opacity);"), "opacity on the background only");
     assert!(preview.contains("font-italic: c.bound && !c.active;"), "inactive is shown by shape, not color alone");
+    assert!(keypad.contains("viewport-width: max(self.width, 640px, tab11-content.min-width);"), "wide previews scroll");
     let ui_rs = include_str!("keypad/ui.rs");
     assert!(ui_rs.contains("super::sheet_preview(daemon.as_deref(), &scratch, &text, &class, &context)"));
+    let on_input = ui_rs.split("fn on_input(").nth(1).unwrap().split("\nfn ").next().unwrap();
+    assert!(on_input.contains("sync_editor_text(ui);"), "identify must refresh the editor's text fields");
     assert!(ui_rs.contains("if (self.sheet && config::sheet_slot(&self.slot()))"));
 }

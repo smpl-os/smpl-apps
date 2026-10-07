@@ -156,7 +156,7 @@ impl State {
                     (k, n, c)
                 }
             },
-            Layout::Custom { keys, knobs, columns } => (keys.max(1), knobs, columns.max(1)),
+            Layout::Custom { keys, knobs, columns } => (keys, knobs, columns.max(1)),
             Layout::Auto => {
                 let (_, k, n, c) = self.automatic();
                 (k, n, c)
@@ -515,11 +515,13 @@ fn render_state(ui: &MainWindow, st: &State) {
     } else {
         ui.set_kp_custom(false);
     }
+    // Newer keypad apps let the config's layout win; older ones don't.
     let override_ignored = detected.is_some()
+        && !st.dirty
         && layout_choice != Layout::Auto
         && st.status.layout.as_ref().is_some_and(|l| l.source == "firmware");
     ui.set_kp_layout_note(s(if override_ignored {
-        "Saved, but this version of the keypad app always uses the keypad's own layout, so the override has no effect yet.".to_string()
+        "This version of the keypad app always uses the keypad's own layout, so the override has no effect until it's updated.".to_string()
     } else if keys > st.max_keys || knobs > st.max_knobs {
         format!(
             "The installed keypad app maps up to {} keys and {} knobs; the others are shown but can't be mapped yet.",
@@ -844,9 +846,11 @@ fn sync_identify(st: &mut State, tab_active: bool) {
 }
 
 fn on_input(ui: &MainWindow, event: InputEvent) {
+    let mut selected = false;
     let handled = with(|st| {
         let mut handled = false;
         if st.identify {
+            selected = true;
             st.control = event.control.clone();
             if let Some(i) = knob_event_index(&event.event) {
                 if st.control.starts_with("knob") {
@@ -875,6 +879,10 @@ fn on_input(ui: &MainWindow, event: InputEvent) {
     .unwrap_or(false);
     if !handled {
         return;
+    }
+    if selected {
+        // The text fields belong to the newly selected control now.
+        sync_editor_text(ui);
     }
     render(ui);
     let weak = ui.as_weak();
@@ -1280,7 +1288,11 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                 Layout::Auto
             } else if i + 1 == menu.len() {
                 let (keys, knobs, columns) = st.layout();
-                Layout::Custom { keys: keys.clamp(1, config::MAX_KEYS), knobs: knobs.min(config::MAX_KNOBS), columns: columns.clamp(1, config::MAX_COLUMNS) }
+                Layout::Custom {
+                    keys: keys.min(config::MAX_KEYS),
+                    knobs: knobs.min(config::MAX_KNOBS),
+                    columns: columns.clamp(1, config::MAX_COLUMNS),
+                }
             } else if let Some(v) = st.variants.get(i - 1) {
                 Layout::Board(v.id.clone())
             } else {
@@ -1296,7 +1308,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         let Some(ui) = weak.upgrade() else { return };
         with(|st| {
             let choice = Layout::Custom {
-                keys: (keys.max(1) as usize).min(config::MAX_KEYS),
+                keys: (keys.max(0) as usize).min(config::MAX_KEYS),
                 knobs: (knobs.max(0) as usize).min(config::MAX_KNOBS),
                 columns: (columns.max(1) as usize).min(config::MAX_COLUMNS),
             };
@@ -1342,9 +1354,14 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
             let result = super::show_sheet();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = weak.upgrade() {
-                    let message = match result {
-                        Ok(()) => ("Cheatsheet shown on screen (it uses the saved config).".to_string(), false),
-                        Err(e) => (e, true),
+                    let push = with(|st| st.status.sheet_push).flatten();
+                    let message = match (result, push) {
+                        (Ok(()), Some(false)) => (
+                            "The keypad app isn't sending its cheatsheet to the bar. It needs to run as control-surface.service (or with --eww-window pad-cheatsheet).".to_string(),
+                            true,
+                        ),
+                        (Ok(()), _) => ("Cheatsheet shown on screen (it uses the saved config).".to_string(), false),
+                        (Err(e), _) => (e, true),
                     };
                     with(|st| st.set_message(message.0, message.1));
                     render(&ui);
