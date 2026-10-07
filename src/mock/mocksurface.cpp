@@ -22,16 +22,6 @@ Config loadOrEmpty(const QString &path, QStringList *warnings)
     return Config{};
 }
 
-QStringList controlsOf(const Config &c)
-{
-    QStringList controls;
-    for (const KeyChord &k : c.hardware.chords()) {
-        if (auto t = c.hardware.lookup(k)) {
-            controls << t->control;
-        }
-    }
-    return controls;
-}
 } // namespace
 
 MockSurface::MockSurface(const Options &o, QObject *parent)
@@ -49,11 +39,11 @@ MockSurface::MockSurface(const Options &o, QObject *parent)
     m_settings = std::make_unique<SettingsService>(o.configPath);
     m_settings->setMode(QStringLiteral("mock"));
     m_settings->setDaemonVersion(QStringLiteral("mock-") + QCoreApplication::applicationVersion());
-    m_settings->setFallbackLayout(profileForControls(controlsOf(cfg), QStringLiteral("config")));
+    m_settings->setFallbackLayout(effectiveLayout(cfg));
     m_settings->setConfigState(ConfigStore::hashOf(ConfigStore(o.configPath).read().text), problems.join(QStringLiteral("; ")), cfg.warnings);
     m_settings->setConfigApplier([this](const Config &c) {
         m_engine->setConfig(c);
-        m_settings->setFallbackLayout(profileForControls(controlsOf(c), QStringLiteral("config")));
+        m_settings->setFallbackLayout(effectiveLayout(c));
         return QString();
     });
 

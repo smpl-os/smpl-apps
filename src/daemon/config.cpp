@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "config.h"
+
+#include <QSet>
 #include "keysink.h"
 #include "kdenlivecontract.h"
 
@@ -201,9 +203,9 @@ bool parseBindings(const QJsonObject &o, BindingMap &into, QString *error)
             }
             continue;
         }
-        static const QRegularExpression slotRe(QStringLiteral("^(key([1-9]|1[0-5])|knob[1-3]\\.(turn|ccw|cw|press|shift\\.(turn|ccw|cw)))$"));
+        static const QRegularExpression slotRe(QStringLiteral("^(key([1-9]|1[0-6])|knob[1-3]\\.(turn|ccw|cw|press|shift\\.(turn|ccw|cw)))$"));
         if (!slotRe.match(slot).hasMatch()) {
-            return fail(error, QStringLiteral("unknown control slot '%1' (key1..key15, knob1..knob3 with turn/ccw/cw/press/shift)").arg(slot));
+            return fail(error, QStringLiteral("unknown control slot '%1' (key1..key16, knob1..knob3 with turn/ccw/cw/press/shift)").arg(slot));
         }
         auto b = parseBinding(it.value(), error);
         if (!b) {
@@ -390,6 +392,42 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
     }
     cfg.device.serial = dev.value(QStringLiteral("serial")).toString();
 
+    const QJsonValue layout = root.value(QStringLiteral("layout"));
+    if (layout.isString()) {
+        auto p = builtinBoardProfile(layout.toString());
+        if (!p) {
+            QStringList ids;
+            for (const BoardProfile &b : builtinBoardProfiles()) {
+                ids << b.id;
+            }
+            if (error) {
+                *error = QStringLiteral("layout: unknown board profile '%1' (known: %2)").arg(layout.toString(), ids.join(QStringLiteral(", ")));
+            }
+            return std::nullopt;
+        }
+        p->source = QStringLiteral("config");
+        cfg.layout = *p;
+    } else if (layout.isObject()) {
+        const QJsonObject l = layout.toObject();
+        const int keys = l.value(QStringLiteral("keys")).toInt(-1);
+        const int knobs = l.value(QStringLiteral("knobs")).toInt(0);
+        const int columns = l.value(QStringLiteral("columns")).toInt(keys >= 10 ? 5 : qMax(1, qMin(keys, 4)));
+        if (keys < 0 || keys > 16 || knobs < 0 || knobs > 3 || keys + knobs == 0 || columns < 1 || columns > 8) {
+            if (error) {
+                *error = QStringLiteral("layout: needs \"keys\" 0..16, \"knobs\" 0..3 (at least one input) and \"columns\" 1..8");
+            }
+            return std::nullopt;
+        }
+        BoardProfile p = gridProfile(QStringLiteral("custom-%1k%2e").arg(keys).arg(knobs), QStringLiteral("%1 keys, %2 knobs").arg(keys).arg(knobs), keys, knobs, columns);
+        p.source = QStringLiteral("config");
+        cfg.layout = p;
+    } else if (!layout.isUndefined() && !layout.isNull()) {
+        if (error) {
+            *error = QStringLiteral("layout: must be a board profile id or an object");
+        }
+        return std::nullopt;
+    }
+
     const QJsonValue hw = root.value(QStringLiteral("hardware"));
     if (hw.isString()) {
         const QString s = hw.toString();
@@ -502,6 +540,30 @@ bool checkConfig(Config &cfg, QString *error)
 {
     // Errors: references that can never work. Warnings: names this daemon does
     // not know (a newer Kdenlive may offer them) and bindings that do nothing.
+    if (cfg.layout) {
+        // Bindings for inputs this pad does not have are harmless but likely a mistake.
+        QSet<QString> present;
+        for (const BoardKey &k : cfg.layout->keys) {
+            present.insert(k.control);
+        }
+        for (const BoardKnob &k : cfg.layout->knobs) {
+            present.insert(k.control);
+        }
+        auto checkSlots = [&](const QString &where, const BindingMap &m) {
+            for (auto it = m.cbegin(); it != m.cend(); ++it) {
+                const QString control = it.key().section(QLatin1Char('.'), 0, 0);
+                if (!present.contains(control)) {
+                    cfg.warnings << QStringLiteral("%1 %2: the %3 layout has no %4").arg(where, it.key(), cfg.layout->id, control);
+                }
+            }
+        };
+        for (const Profile &p : cfg.profiles) {
+            checkSlots(QStringLiteral("profile %1").arg(p.name), p.bindings);
+            for (const Layer &l : p.layers) {
+                checkSlots(QStringLiteral("profile %1 layer %2:").arg(p.name, l.name), l.bindings);
+            }
+        }
+    }
     const Profile *global = cfg.globalProfile();
     for (const Profile &p : cfg.profiles) {
         auto modeKnown = [&](const QString &m) { return p.modes.contains(m) || (global && global->modes.contains(m)); };
@@ -685,6 +747,31 @@ ConfigIssue describeConfigIssue(const QString &text)
         }
     }
     return i;
+}
+
+QStringList hardwareControls(const Config &cfg)
+{
+    QStringList controls;
+    for (const KeyChord &k : cfg.hardware.chords()) {
+        if (auto t = cfg.hardware.lookup(k)) {
+            controls << t->control;
+        }
+    }
+    return controls;
+}
+
+BoardProfile effectiveLayout(const Config &cfg, const QString &firmwareBoard)
+{
+    if (!firmwareBoard.isEmpty()) {
+        if (auto p = builtinBoardProfile(firmwareBoard)) {
+            p->source = QStringLiteral("firmware");
+            return *p;
+        }
+    }
+    if (cfg.layout) {
+        return *cfg.layout;
+    }
+    return profileForControls(hardwareControls(cfg), QStringLiteral("hardware-map"));
 }
 
 } // namespace cs

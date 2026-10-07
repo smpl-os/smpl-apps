@@ -10,11 +10,13 @@
 #include "paddevice.h"
 #include "settingsservice.h"
 #include "uinputsink.h"
+#include "usbinfo.h"
 #include "windowtracker.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QDBusConnection>
+#include <QDBusConnectionInterface>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
 #include <QDateTime>
@@ -324,7 +326,7 @@ int main(int argc, char **argv)
     QCommandLineParser p;
     p.setApplicationDescription(QStringLiteral(
         "Per-application control surface for the CH552 macro pad (1189:8890).\n"
-        "Commands: run (default) | simulate [FILE|-] | verify | monitor | list-devices | list-capabilities | check-config | example-config | bench-dbus [N]"));
+        "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | check-config | example-config | bench-dbus [N]"));
     p.addHelpOption();
     p.addVersionOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
@@ -355,6 +357,76 @@ int main(int argc, char **argv)
             return 1;
         }
         std::fwrite(f.readAll().constData(), 1, size_t(f.size()), stdout);
+        return 0;
+    }
+    if (cmd == QLatin1String("status")) {
+        // The running daemon's GetStatus, or an offline report from sysfs and the
+        // config (nothing is opened). {ok, daemon, mode, device, layout, config, ...}
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        QJsonObject out;
+        if (bus.interface() && bus.interface()->isServiceRegistered(QLatin1String(SettingsService::kService))) {
+            auto m = QDBusMessage::createMethodCall(QLatin1String(SettingsService::kService), QLatin1String(SettingsService::kPath),
+                                                    QLatin1String(SettingsService::kInterface), QStringLiteral("GetStatus"));
+            const QDBusMessage r = bus.call(m, QDBus::Block, 3000);
+            out = QJsonDocument::fromJson(r.arguments().value(0).toString().toUtf8()).object();
+            out.insert(QStringLiteral("daemon"), r.type() == QDBusMessage::ReplyMessage);
+        }
+        if (!out.value(QStringLiteral("daemon")).toBool()) {
+            const QString path = p.value(configOpt);
+            const auto snap = ConfigStore(path).read();
+            QByteArray text = snap.text;
+            if (!snap.exists) {
+                QFile builtIn(QStringLiteral(":/control-surface/config.example.jsonc"));
+                text = builtIn.open(QIODevice::ReadOnly) ? builtIn.readAll() : QByteArray();
+            }
+            const auto v = ConfigStore(path).validate(text);
+            const Config c = v.config.value_or(Config{});
+            DeviceState d;
+            for (const UsbDeviceInfo &u : listUsbDevices()) {
+                if (u.vendor == QLatin1String("1189") && u.product == QLatin1String("8890") && (c.device.serial.isEmpty() || u.serial == c.device.serial)) {
+                    d.present = true;
+                    d.usb = u;
+                    d.firmware = classifyFirmware(u);
+                    break;
+                }
+            }
+            bool bootloader = false;
+            for (const UsbDeviceInfo &u : listUsbDevices()) {
+                bootloader = bootloader || classifyFirmware(u).type == QLatin1String("bootloader");
+            }
+            out = QJsonObject{{QStringLiteral("ok"), true},
+                              {QStringLiteral("daemon"), false},
+                              {QStringLiteral("mode"), QStringLiteral("offline")},
+                              {QStringLiteral("device"), d.toJson()},
+                              {QStringLiteral("bootloaderPresent"), bootloader},
+                              {QStringLiteral("layout"), effectiveLayout(c, d.firmware.board).toJson()},
+                              {QStringLiteral("config"), QJsonObject{{QStringLiteral("path"), path},
+                                                                     {QStringLiteral("exists"), snap.exists},
+                                                                     {QStringLiteral("hash"), snap.hash},
+                                                                     {QStringLiteral("error"), v.errors.join(QStringLiteral("; "))},
+                                                                     {QStringLiteral("warnings"), QJsonArray::fromStringList(v.warnings)}}}};
+        }
+        if (p.isSet(jsonOpt)) {
+            say(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact)));
+        } else {
+            const QJsonObject dev = out.value(QStringLiteral("device")).toObject();
+            const QJsonObject lay = out.value(QStringLiteral("layout")).toObject();
+            const QJsonObject cf = out.value(QStringLiteral("config")).toObject();
+            say(QStringLiteral("daemon:   %1").arg(out.value(QStringLiteral("daemon")).toBool() ? out.value(QStringLiteral("mode")).toString() : QStringLiteral("not running")));
+            say(QStringLiteral("pad:      %1").arg(dev.value(QStringLiteral("present")).toBool()
+                                                     ? QStringLiteral("%1 / %2, firmware %3 %4")
+                                                           .arg(dev.value(QStringLiteral("manufacturer")).toString(), dev.value(QStringLiteral("productName")).toString(),
+                                                                dev.value(QStringLiteral("firmware")).toObject().value(QStringLiteral("type")).toString(),
+                                                                dev.value(QStringLiteral("firmware")).toObject().value(QStringLiteral("version")).toString())
+                                                     : QStringLiteral("not connected")));
+            say(QStringLiteral("layout:   %1 (%2 keys, %3 knobs; from %4)")
+                    .arg(lay.value(QStringLiteral("id")).toString())
+                    .arg(lay.value(QStringLiteral("keys")).toArray().size())
+                    .arg(lay.value(QStringLiteral("knobs")).toArray().size())
+                    .arg(lay.value(QStringLiteral("source")).toString()));
+            say(QStringLiteral("config:   %1%2").arg(cf.value(QStringLiteral("path")).toString(),
+                                                    cf.value(QStringLiteral("error")).toString().isEmpty() ? QString() : QStringLiteral(" (invalid: %1)").arg(cf.value(QStringLiteral("error")).toString())));
+        }
         return 0;
     }
     if (cmd == QLatin1String("check-config") && p.isSet(jsonOpt)) {
@@ -483,7 +555,7 @@ int main(int argc, char **argv)
         PadDevice dev(cfg->device);
         dev.setGrab(true);
         QObject::connect(&dev, &PadDevice::message, [](const QString &m) { std::fprintf(stderr, "(%s)\n", qPrintable(m)); });
-        PadVerifier v(&dev, p.value(writeOpt), !p.isSet(noWriteOpt));
+        PadVerifier v(&dev, p.value(writeOpt), !p.isSet(noWriteOpt), effectiveLayout(*cfg));
         QObject::connect(&v, &PadVerifier::finished, &app, [&app](int code) { app.exit(code); });
         v.start();
         return app.exec();
@@ -714,16 +786,7 @@ int main(int argc, char **argv)
         fs.imageDirs = p.isSet(imageDirOpt) ? p.values(imageDirOpt) : FlashSettings::defaultImageDirs();
         settings.setFlashSettings(fs);
     }
-    auto controlsOf = [](const Config &c) {
-        QStringList controls;
-        for (const KeyChord &k : c.hardware.chords()) {
-            if (auto t = c.hardware.lookup(k)) {
-                controls << t->control;
-            }
-        }
-        return controls;
-    };
-    settings.setFallbackLayout(profileForControls(controlsOf(*cfg), QStringLiteral("config")));
+    settings.setFallbackLayout(effectiveLayout(*cfg));
     settings.setConfigState(ConfigStore::hashOf(ConfigStore(p.value(configOpt)).read().text), QString(), cfg->warnings);
     auto publishPlugins = [&settings, &engine, &kd, dry] {
         static const char *states[] = {"detached", "pending", "absent", "available"};
@@ -745,10 +808,10 @@ int main(int argc, char **argv)
     };
     publishPlugins();
     QObject::connect(kd.get(), &KdenliveClient::stateChanged, &settings, [publishPlugins] { publishPlugins(); });
-    settings.setConfigApplier([&engine, &dev, publishPlugins, &settings, controlsOf](const Config &c) {
+    settings.setConfigApplier([&engine, &dev, publishPlugins, &settings](const Config &c) {
         engine.setConfig(c);
         dev.setHardwareMap(c.hardware);
-        settings.setFallbackLayout(profileForControls(controlsOf(c), QStringLiteral("config")));
+        settings.setFallbackLayout(effectiveLayout(c));
         publishPlugins();
         return QString();
     });
@@ -803,7 +866,7 @@ int main(int argc, char **argv)
         // Also after SetConfig wrote the file: applying the same config twice is harmless.
         const QString hash = ConfigStore::hashOf(ConfigStore(watcher.path()).read().text);
         engine.setConfig(c);
-        settings.setFallbackLayout(profileForControls(controlsOf(c), QStringLiteral("config")));
+        settings.setFallbackLayout(effectiveLayout(c));
         settings.setConfigState(hash, QString(), c.warnings);
         publishPlugins();
         dev.setHardwareMap(c.hardware);

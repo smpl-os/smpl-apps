@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "config.h"
+#include "learn.h"
 #include "configwatcher.h"
 
 #include <QFile>
@@ -91,8 +92,9 @@ private Q_SLOTS:
     {
         QString err;
         QVERIFY(!parseConfig("{", {}, &err));
-        QVERIFY(!parseConfig("{\"profiles\":[{\"name\":\"x\",\"bindings\":{\"key16\":\"a\"}}]}", {}, &err));
-        QVERIFY(err.contains(QStringLiteral("key16")));
+        QVERIFY(parseConfig("{\"profiles\":[{\"name\":\"x\",\"bindings\":{\"key16\":\"a\"}}]}", {}, &err));  // 16-key pads
+        QVERIFY(!parseConfig("{\"profiles\":[{\"name\":\"x\",\"bindings\":{\"key17\":\"a\"}}]}", {}, &err));
+        QVERIFY(err.contains(QStringLiteral("key17")));
         QVERIFY(!parseConfig("{\"profiles\":[{\"name\":\"x\",\"bindings\":{\"knob1\":{\"spin\":\"a\"}}}]}", {}, &err));
         QVERIFY(!parseConfig("{\"profiles\":[{\"name\":\"x\",\"match\":{\"class\":\"(\"}}]}", {}, &err));
         QVERIFY(!parseConfig("{\"profiles\":[{\"name\":\"x\",\"modes\":{\"m\":[]}}]}", {}, &err));
@@ -305,6 +307,56 @@ private Q_SLOTS:
         QVERIFY(err.contains(QStringLiteral("unknown mouse action")));
         QCOMPARE(describeConfigIssue(err).slot, QStringLiteral("key1"));
         QVERIFY(!parseConfig(R"({"profiles":[{"name":"g","bindings":{"key1":{"mouse":7}}}]})", {}, &err));
+    }
+
+    void layouts()
+    {
+        QString err;
+        // Default: what the hardware map names (15 keys, 3 knobs = the measured board).
+        auto c = parseConfig(R"({"profiles":[]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QVERIFY(!c->layout);
+        BoardProfile l = effectiveLayout(*c);
+        QCOMPARE(l.id, QStringLiteral("sy181-15k3e"));
+        QCOMPARE(l.source, QStringLiteral("hardware-map"));
+        // The firmware's board wins.
+        l = effectiveLayout(*c, QStringLiteral("generic-3k1e"));
+        QCOMPARE(l.id, QStringLiteral("generic-3k1e"));
+        QCOMPARE(l.source, QStringLiteral("firmware"));
+        QCOMPARE(effectiveLayout(*c, QStringLiteral("no-such-board")).source, QStringLiteral("hardware-map"));
+
+        // A board profile by id.
+        c = parseConfig(R"({"layout":"generic-12k2e","profiles":[{"name":"g","bindings":{"key13":"a","knob3.cw":"b","key2":"c"}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(c->layout->keys.size(), 12);
+        l = effectiveLayout(*c);
+        QCOMPARE(l.source, QStringLiteral("config"));
+        QCOMPARE(l.knobs.size(), 2);
+        QCOMPARE(c->warnings.size(), 2);  // key13 and knob3 are not on this pad
+        QCOMPARE(describeConfigIssue(c->warnings.value(0)).profile, QStringLiteral("g"));
+        QVERIFY(!parseConfig(R"({"layout":"nope","profiles":[]})", {}, &err));
+        QVERIFY(err.contains(QStringLiteral("generic-3k1e")));
+
+        // A custom grid.
+        c = parseConfig(R"({"layout":{"keys":16,"knobs":0,"columns":4},"profiles":[{"name":"g","layers":[{"name":"L","when":{"a":1},"bindings":{"knob1.cw":"x"}}],"bindings":{"key16":"a"}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(c->layout->rows, 4);
+        QCOMPARE(c->layout->slotCount(), 16);
+        QCOMPARE(c->warnings.size(), 1);
+        const ConfigIssue i = describeConfigIssue(c->warnings.value(0));
+        QCOMPARE(i.layer, QStringLiteral("L"));
+        QCOMPARE(i.slot, QStringLiteral("knob1.cw"));
+        for (const char *bad : {R"({"layout":{"keys":17}})", R"({"layout":{"keys":3,"knobs":4}})", R"({"layout":{"keys":0,"knobs":0}})",
+                                R"({"layout":{"keys":4,"columns":9}})", R"({"layout":7})"}) {
+            QVERIFY2(!parseConfig(bad, {}, &err), bad);
+            QVERIFY(err.startsWith(QStringLiteral("layout")));
+        }
+        QVERIFY(parseConfig(R"({"layout":{"knobs":1,"keys":0}})", {}, &err));
+
+        // The learn walk follows the layout.
+        const auto targets = learnTargets(*builtinBoardProfile(QStringLiteral("generic-3k1e")));
+        QCOMPARE(targets.size(), 3 + 3);
+        QCOMPARE(targets.at(3).control, QStringLiteral("knob1"));
     }
 };
 

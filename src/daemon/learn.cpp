@@ -16,15 +16,13 @@
 
 namespace cs {
 
-QList<LearnTarget> learnTargets()
+QList<LearnTarget> learnTargets(const BoardProfile &layout)
 {
     QList<LearnTarget> t;
-    for (int i = 1; i <= 15; ++i) {
-        const int row = (i - 1) / 5 + 1;
-        const int col = (i - 1) % 5 + 1;
-        t << LearnTarget{QStringLiteral("key%1").arg(i), Role::Key, QStringLiteral("Press the key in row %1, column %2").arg(row).arg(col)};
+    for (const BoardKey &k : layout.keys) {
+        t << LearnTarget{k.control, Role::Key, QStringLiteral("Press the key in row %1, column %2").arg(k.row + 1).arg(k.column + 1)};
     }
-    for (int k = 1; k <= 3; ++k) {
+    for (int k = 1; k <= int(layout.knobs.size()); ++k) {
         const QString knob = QStringLiteral("knob%1").arg(k);
         t << LearnTarget{knob, Role::Ccw, QStringLiteral("Turn knob %1 ONE click counter-clockwise").arg(k)};
         t << LearnTarget{knob, Role::Cw, QStringLiteral("Turn knob %1 ONE click clockwise").arg(k)};
@@ -98,12 +96,12 @@ bool writeHardwareMap(const LearnReport &r, const QString &path, QString *error)
     return f.commit();
 }
 
-PadVerifier::PadVerifier(PadDevice *device, const QString &outPath, bool write, QObject *parent)
+PadVerifier::PadVerifier(PadDevice *device, const QString &outPath, bool write, const BoardProfile &layout, QObject *parent)
     : QObject(parent)
     , m_device(device)
     , m_outPath(outPath)
     , m_write(write)
-    , m_targets(learnTargets())
+    , m_targets(learnTargets(layout))
 {
     connect(m_device, &PadDevice::chordEvent, this, &PadVerifier::onChord);
     connect(m_device, &PadDevice::connected, this, [this] {

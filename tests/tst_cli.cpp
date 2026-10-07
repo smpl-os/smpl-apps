@@ -78,6 +78,28 @@ private Q_SLOTS:
         QCOMPARE(r.json().value(QStringLiteral("source")).toString(), QStringLiteral("built-in"));
         QVERIFY(r.json().value(QStringLiteral("profiles")).toArray().size() >= 2);
     }
+
+    void statusOffline()
+    {
+        // No daemon on this private bus: an offline report (sysfs is only read).
+        const QString cfg = m_home.path() + QStringLiteral("/layout.jsonc");
+        writeFile(cfg, R"({"layout":"generic-12k2e","profiles":[]})");
+        Run r = run({QStringLiteral("status"), QStringLiteral("--json"), QStringLiteral("-c"), cfg}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QJsonObject j = r.json();
+        QCOMPARE(j.value(QStringLiteral("daemon")).toBool(), false);
+        QCOMPARE(j.value(QStringLiteral("mode")).toString(), QStringLiteral("offline"));
+        QVERIFY(j.value(QStringLiteral("device")).toObject().contains(QStringLiteral("present")));
+        const QJsonObject layout = j.value(QStringLiteral("layout")).toObject();
+        if (!j.value(QStringLiteral("device")).toObject().value(QStringLiteral("present")).toBool()) {
+            QCOMPARE(layout.value(QStringLiteral("id")).toString(), QStringLiteral("generic-12k2e"));
+            QCOMPARE(layout.value(QStringLiteral("source")).toString(), QStringLiteral("config"));
+        }
+        QCOMPARE(j.value(QStringLiteral("config")).toObject().value(QStringLiteral("exists")).toBool(), true);
+        r = run({QStringLiteral("status")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QVERIFY(r.out.contains("layout:"));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestCli)

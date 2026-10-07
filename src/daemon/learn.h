@@ -3,6 +3,8 @@
 // the chord it emits, compares with the flashed scheme and writes the map.
 #pragma once
 
+#include "boardprofile.h"
+
 #include "decoder.h"
 #include "hardwaremap.h"
 
@@ -22,7 +24,7 @@ struct LearnTarget {
     QString prompt;
     QString name() const { return PadTarget{control, role}.name(); }
 };
-QList<LearnTarget> learnTargets();
+QList<LearnTarget> learnTargets(const BoardProfile &layout);
 
 struct LearnReport {
     HardwareMap map;
@@ -40,7 +42,7 @@ class PadVerifier : public QObject
 {
     Q_OBJECT
 public:
-    PadVerifier(PadDevice *device, const QString &outPath, bool write, QObject *parent = nullptr);
+    PadVerifier(PadDevice *device, const QString &outPath, bool write, const BoardProfile &layout, QObject *parent = nullptr);
     void start();
 
 Q_SIGNALS:

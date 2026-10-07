@@ -62,7 +62,7 @@ private Q_SLOTS:
     }
     void learnEvaluation()
     {
-        const auto targets = learnTargets();
+        const auto targets = learnTargets(*builtinBoardProfile(QStringLiteral("sy181-15k3e")));
         QCOMPARE(targets.size(), 24);
         QHash<int, KeyChord> captured;
         const auto a = HardwareMap::fromScheme(ch552::Numbering::KeysThenKnobs);

@@ -2,6 +2,7 @@
 // Configuration: JSON with // and /* */ comments and trailing commas allowed.
 #pragma once
 
+#include "boardprofile.h"
 #include "hardwaremap.h"
 
 #include <QHash>
@@ -28,7 +29,7 @@ struct Binding {
     QString describe() const;
 };
 
-// Event slots: "key1".."key15", "knobN.turn", "knobN.ccw", "knobN.cw", "knobN.press",
+// Event slots: "key1".."key16", "knobN.turn", "knobN.ccw", "knobN.cw", "knobN.press",
 // and "knobN.shift.turn|ccw|cw" (turning while the knob is held down).
 using BindingMap = QHash<QString, Binding>;
 
@@ -78,6 +79,8 @@ struct Config {
     DeviceMatch device;
     HardwareMap hardware = HardwareMap::fromScheme(ch552::Numbering::KeysThenKnobs);
     QString hardwareSource = QStringLiteral("default:keys-then-knobs");
+    // "layout": a board profile id or {"keys": 1..16, "knobs": 0..3, "columns": n}.
+    std::optional<BoardProfile> layout;
     Settings settings;
     QList<Profile> profiles;
     QStringList warnings;  // non-fatal findings of the config check
@@ -85,6 +88,13 @@ struct Config {
     const Profile *profileFor(const QString &cls, const QString &title) const;
     const Profile *globalProfile() const;
 };
+
+// The controls (key1.., knob1..) the hardware map names.
+QStringList hardwareControls(const Config &cfg);
+// The layout in effect: the firmware's board (when the descriptors name one),
+// else the config's "layout", else what the hardware map names. Source:
+// firmware | config | hardware-map.
+BoardProfile effectiveLayout(const Config &cfg, const QString &firmwareBoard = {});
 
 QByteArray stripJsonComments(const QByteArray &in);
 std::optional<Binding> parseBinding(const QJsonValue &v, QString *error);
