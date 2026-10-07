@@ -651,9 +651,15 @@ int main(int argc, char **argv)
         if (!attached) {
             return 3;
         }
+        // Showing sends both a visibility and a content signal: one line each time it changes.
+        QByteArray last = QJsonDocument(*first).toJson(QJsonDocument::Compact);
         QObject::connect(&follower, &CheatsheetFollower::changed, [&] {
             if (const auto o = fetch()) {
-                print(*o);
+                const QByteArray bytes = QJsonDocument(*o).toJson(QJsonDocument::Compact);
+                if (bytes != last) {
+                    last = bytes;
+                    print(*o);
+                }
             }
         });
         QObject::connect(&follower, &CheatsheetFollower::daemonGone, &app, [&app] { app.exit(4); });
