@@ -595,6 +595,19 @@ int main(int argc, char **argv)
                 out.insert(QStringLiteral("startLayer"), info->startLayer);
                 out.insert(QStringLiteral("rawActive"), info->rawActive != 0);
                 out.insert(QStringLiteral("eepromBytes"), info->eepromBytes);
+                // Encoder diagnostics (2.0.1+): decoded detents per knob and direction,
+                // illegal transitions (missed states) and anything dropped.
+                std::string serr;
+                if (const auto st = padfw::queryStats(node.toStdString(), false, &serr)) {
+                    QJsonArray knobs;
+                    for (int k = 0; k < 3; ++k) {
+                        knobs.append(QJsonObject{{QStringLiteral("cw"), st->cw[k]}, {QStringLiteral("ccw"), st->ccw[k]}, {QStringLiteral("illegal"), st->illegal[k]}});
+                    }
+                    out.insert(QStringLiteral("stats"), QJsonObject{{QStringLiteral("knobs"), knobs},
+                                                                    {QStringLiteral("overruns"), st->overruns},
+                                                                    {QStringLiteral("queueDrops"), st->queueDrops},
+                                                                    {QStringLiteral("maxQueue"), st->maxQueue}});
+                }
             } else {
                 out.insert(QStringLiteral("ok"), false);
                 out.insert(QStringLiteral("error"), QString::fromStdString(err));

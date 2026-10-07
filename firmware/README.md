@@ -34,6 +34,16 @@ Changes from upstream (2.0.0):
 * USB strings `OpenMacroPad` / `Control Surface 15+3` / `key153`, bcdDevice 2.00;
 * `build.py --out DIR`; the build never flashes.
 
+2.0.1:
+* encoders sampled by a 4 kHz timer interrupt with a full-cycle
+  transition-table decoder;
+* keymap detents typed from an ordered, non-blocking queue;
+* HID endpoints at 1 ms;
+* a `count` byte in raw events;
+* `CMD_GET_STATS` encoder diagnostics.
+
+This fixes the fast-rotation detent loss of 2.0.0.
+
 ## Files
 
 | File | Role |

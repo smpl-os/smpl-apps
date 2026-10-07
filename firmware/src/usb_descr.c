@@ -73,7 +73,7 @@ __code USB_CFG_DESCR_HID CfgDescr = {
     .bEndpointAddress   = USB_ENDP_ADDR_EP1_IN,   // endpoint: 1, direction: IN (0x01)
     .bmAttributes       = USB_ENDP_TYPE_INTER,    // transfer type: interrupt (0x03)
     .wMaxPacketSize     = EP1_SIZE,               // max packet size
-    .bInterval          = 10                      // polling intervall in ms
+    .bInterval          = 1                       // polling interval in ms: one report per frame
   },
 
   // Endpoint Descriptor: Endpoint 2 (OUT, Interrupt)
@@ -83,7 +83,7 @@ __code USB_CFG_DESCR_HID CfgDescr = {
     .bEndpointAddress   = USB_ENDP_ADDR_EP2_OUT,  // endpoint: 1, direction: IN (0x82)
     .bmAttributes       = USB_ENDP_TYPE_INTER,    // transfer type: interrupt (0x03)
     .wMaxPacketSize     = EP2_SIZE,               // max packet size
-    .bInterval          = 10                      // polling intervall in ms
+    .bInterval          = 1                       // polling interval in ms: one report per frame
   }
 };
 
@@ -190,9 +190,9 @@ __code uint8_t ReportDescr[] ={
     0x95, 0x0f,                    //   REPORT_COUNT (15)
     0x09, 0x03,                    //   USAGE (3)
     0x91, 0x02,                    //   OUTPUT (Data,Var,Abs)
-    // Raw input events for the control-surface daemon: [seq][slot][event][layer].
+    // Raw input events for the control-surface daemon: [seq][slot][event][layer][count].
     0x85, 0x05,                    //   REPORT_ID (5)
-    0x95, 0x04,                    //   REPORT_COUNT (4)
+    0x95, 0x05,                    //   REPORT_COUNT (5)
     0x09, 0x04,                    //   USAGE (4)
     0x81, 0x02,                    //   INPUT (Data,Var,Abs)
     0xc0                           // END_COLLECTION

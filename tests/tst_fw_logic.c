@@ -4,7 +4,10 @@
 //
 // The firmware links the same file; here the platform hooks record what the pad
 // would have sent, so decoding, dispatch, raw mode and layers can be checked
-// without hardware. Includes a seeded soak run of random physical input.
+// without hardware. A small simulator runs the encoder interrupt every 250 us
+// and the main loop every 1 ms, and can make each USB report block the main
+// loop like the real endpoint does. Includes fast-spin timing tests and a
+// seeded soak run of random physical input.
 
 #include "padlogic.h"
 
@@ -39,18 +42,24 @@ static int checks = 0;
 // Recording platform
 // ---------------------------------------------------------------------------------
 
-enum { OUT_PRESS = 1, OUT_RELEASE, OUT_WAIT, OUT_RAW };
+enum { OUT_PRESS = 1, OUT_RELEASE, OUT_RAW };
 
 typedef struct {
     int kind;
     uint16_t packed;
-    uint8_t seq, slot, event, layer;
+    uint8_t seq, slot, event, layer, count;
+    uint16_t at;  // Pad.nowMs when it went out
 } out_t;
 
-#define OUT_MAX 4096
+#define OUT_MAX 8192
 static out_t outs[OUT_MAX];
 static int outCount = 0;
 static uint16_t keymap[LAYER_COUNT][SLOT_COUNT];
+
+// USB model: each report keeps the main loop busy this many ms (0 = free).
+// The firmware polls at 1 ms (bInterval 1); 2.0.0 used 10 ms.
+static int reportMs = 0;
+static int blockedMs = 0;
 
 uint16_t PAD_keymap(uint8_t layer, uint8_t slot)
 {
@@ -59,38 +68,53 @@ uint16_t PAD_keymap(uint8_t layer, uint8_t slot)
 
 static void record(out_t o)
 {
+    o.at = Pad.nowMs;
     if (outCount < OUT_MAX) {
         outs[outCount] = o;
     }
     ++outCount;
 }
 
+static int reportsFor(uint16_t packed)
+{
+    // A key chord with modifiers goes out as two reports (modifiers, then key).
+    return ((packed >> 13) == ACT_KEY && ((packed >> 8) & 0x1F)) ? 2 : 1;
+}
+
 void PAD_hwPress(uint16_t packed)
 {
-    out_t o = {OUT_PRESS, packed, 0, 0, 0, 0};
+    out_t o = {OUT_PRESS, packed, 0, 0, 0, 0, 0, 0};
     record(o);
+    blockedMs += reportMs * reportsFor(packed);
 }
 
 void PAD_hwRelease(uint16_t packed)
 {
-    out_t o = {OUT_RELEASE, packed, 0, 0, 0, 0};
+    out_t o = {OUT_RELEASE, packed, 0, 0, 0, 0, 0, 0};
     record(o);
+    blockedMs += reportMs * reportsFor(packed);
 }
 
-void PAD_hwWait(uint8_t ms)
+void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer, uint8_t count)
 {
-    out_t o = {OUT_WAIT, ms, 0, 0, 0, 0};
+    out_t o = {OUT_RAW, 0, seq, slot, event, layer, count, 0};
     record(o);
+    blockedMs += reportMs;
 }
 
-void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer)
+static int locked = 0;
+void PAD_hwLock(void)
 {
-    out_t o = {OUT_RAW, 0, seq, slot, event, layer};
-    record(o);
+    ++locked;
+}
+
+void PAD_hwUnlock(void)
+{
+    --locked;
 }
 
 // ---------------------------------------------------------------------------------
-// Physical pad model
+// Physical pad and timing model
 // ---------------------------------------------------------------------------------
 
 #define TM_IDLE 0x2E
@@ -102,6 +126,19 @@ typedef struct {
 } phys_t;
 
 static phys_t phys;
+static long quarters = 0;               // simulated time in 250 us steps
+static int missedMs = 0;
+
+static uint8_t pins(void)
+{
+    uint8_t p = 0;
+    int k;
+    for (k = 0; k < KNOB_COUNT; ++k) {
+        p |= (uint8_t)((phys.b[k] ? 1 : 0) << (2 * k));
+        p |= (uint8_t)((phys.a[k] ? 1 : 0) << (2 * k + 1));
+    }
+    return p;
+}
 
 static void physRest(void)
 {
@@ -114,11 +151,57 @@ static void physRest(void)
     }
 }
 
-static void poll(int times)
+// One 250 us step: the timer interrupt, and every 4th step the main loop
+// (unless a report is still keeping it busy).
+static void quarter(void)
 {
-    while (times-- > 0) {
-        PAD_poll(phys.gpioKey, phys.tm, phys.a, phys.b);
+    CHECK_EQ(locked, 0);                // the interrupt never lands inside a lock here
+    PAD_encoderIsr(pins());
+    if (++quarters % 4) {
+        return;
     }
+    if (blockedMs > 0) {
+        --blockedMs;
+        ++missedMs;
+        return;
+    }
+    PAD_tick((uint16_t)(1 + missedMs));
+    missedMs = 0;
+    PAD_poll(phys.gpioKey, phys.tm);
+}
+
+static void quarters_(int n)
+{
+    while (n-- > 0) {
+        quarter();
+    }
+}
+
+// n milliseconds = n main-loop passes when nothing blocks.
+static void poll(int ms)
+{
+    quarters_(4 * ms);
+}
+
+static int idle(void)
+{
+    return PAD_queued() == 0 && Pad.tapSlot == SLOT_NONE && blockedMs == 0;
+}
+
+// Let queued detents finish typing; returns the ms it took (-1 if never).
+// Idle must hold over a few main-loop passes that really ran, so detents
+// still in the interrupt's accumulator are collected too.
+static int settle(int maxMs)
+{
+    int ms = 0, quiet = 0;
+    while (quiet < 3) {
+        if (ms++ >= maxMs) {
+            return -1;
+        }
+        poll(1);
+        quiet = (idle() && missedMs == 0) ? quiet + 1 : 0;
+    }
+    return ms - 3;
 }
 
 static void loadDefaults(void)
@@ -135,7 +218,10 @@ static void reset(void)
 {
     physRest();
     loadDefaults();
-    PAD_init(0, phys.gpioKey, phys.tm, phys.a, phys.b);
+    reportMs = 0;
+    blockedMs = 0;
+    missedMs = 0;
+    PAD_init(0, phys.gpioKey, phys.tm, pins());
     outCount = 0;
 }
 
@@ -156,13 +242,30 @@ static void setEnc(int knob, uint8_t state)
     phys.b[knob] = state & 1;
 }
 
-static void turn(int knob, int cw, int samplesPerState)
+static uint8_t encOf(int knob)
 {
-    int i;
+    return (uint8_t)((phys.a[knob] << 1) | phys.b[knob]);
+}
+
+// One detent, each of the 4 states held qPerState quarter-ms steps. With
+// bounce > 0 the changing line chatters for that many steps at each edge.
+static void turnQ(int knob, int cw, int qPerState, int bounce)
+{
+    int i, j;
     for (i = 0; i < 4; ++i) {
-        setEnc(knob, cw ? CW_PATH[i] : CCW_PATH[i]);
-        poll(samplesPerState);
+        const uint8_t from = encOf(knob), to = cw ? CW_PATH[i] : CCW_PATH[i];
+        for (j = 0; j < bounce && j < qPerState - 1; ++j) {
+            setEnc(knob, (j & 1) ? from : to);
+            quarter();
+        }
+        setEnc(knob, to);
+        quarters_(qPerState - (bounce < qPerState - 1 ? bounce : qPerState - 1));
     }
+}
+
+static void turn(int knob, int cw)
+{
+    turnQ(knob, cw, 4, 0);  // 1 ms per state
 }
 
 static int countKind(int kind)
@@ -188,6 +291,18 @@ static int countRaw(uint8_t slot, uint8_t event)
     int i, n = 0;
     for (i = 0; i < outCount && i < OUT_MAX; ++i) {
         n += outs[i].kind == OUT_RAW && outs[i].slot == slot && outs[i].event == event;
+    }
+    return n;
+}
+
+// Detents in raw TAP events for a slot (counts summed).
+static int rawDetents(uint8_t slot)
+{
+    int i, n = 0;
+    for (i = 0; i < outCount && i < OUT_MAX; ++i) {
+        if (outs[i].kind == OUT_RAW && outs[i].slot == slot && outs[i].event == RAW_EVT_TAP) {
+            n += outs[i].count;
+        }
     }
     return n;
 }
@@ -380,155 +495,141 @@ static void test_defaults(void)
     CHECK_EQ(PAD_defaultAction(0, SLOT_COUNT), 0);
 }
 
-static int8_t encRun(encstate_t *e, const uint8_t *states, int n, uint8_t held, int *steps)
+// Feeds one knob's states straight into the interrupt decoder (the other knobs at rest).
+static int encFeed(int knob, const uint8_t *states, int n, int held)
 {
-    int i;
-    int8_t last = 0;
+    int i, steps = 0;
     for (i = 0; i < n; ++i) {
-        int8_t s = PAD_encoderUpdate(e, (states[i] >> 1) & 1, states[i] & 1, held);
-        if (s) {
-            *steps += s;
-            last = s;
-        }
+        uint8_t p = 0x3F & (uint8_t)~(3 << (2 * knob));
+        p |= (uint8_t)(states[i] << (2 * knob));
+        PAD_encoderSetHeld(held ? (uint8_t)(1 << knob) : 0);
+        PAD_encoderIsr(p);
     }
-    return last;
+    {
+        const uint16_t t = PAD_encoderTake((uint8_t)knob);
+        steps = ENC_TAKE_CW(t) - ENC_TAKE_CCW(t);
+    }
+    CHECK_EQ(PAD_encoderTake((uint8_t)knob) & 0x7F7F, 0);  // taking clears
+    return steps;
 }
 
 static void test_encoder(void)
 {
-    encstate_t e;
-    int steps;
-
-    // One clean detent each way, reported on reaching rest.
-    {
+    int k;
+    for (k = 0; k < KNOB_COUNT; ++k) {
         static const uint8_t cw[] = {1, 0, 2, 3};
         static const uint8_t ccw[] = {2, 0, 1, 3};
-        PAD_encoderInit(&e, 1, 1);
-        CHECK_EQ(PAD_encoderUpdate(&e, 0, 1, 0), 0);
-        CHECK_EQ(PAD_encoderUpdate(&e, 0, 0, 0), 0);
-        CHECK_EQ(PAD_encoderUpdate(&e, 1, 0, 0), 0);
-        CHECK_EQ(PAD_encoderUpdate(&e, 1, 1, 0), 1);
-        steps = 0;
-        encRun(&e, ccw, 4, 0, &steps);
-        CHECK_EQ(steps, -1);
-        steps = 0;
-        encRun(&e, cw, 4, 0, &steps);
-        encRun(&e, cw, 4, 0, &steps);
-        CHECK_EQ(steps, 2);
+        static const uint8_t cw3[] = {1, 0, 2};
+        static const uint8_t rest[] = {3};
+        reset();
+        // One clean detent each way, complete on reaching rest.
+        CHECK_EQ(encFeed(k, cw3, 3, 0), 0);
+        CHECK_EQ(encFeed(k, rest, 1, 0), 1);
+        CHECK_EQ(encFeed(k, ccw, 4, 0), -1);
+        CHECK_EQ(encFeed(k, cw, 4, 0) + encFeed(k, cw, 4, 0), 2);
+        // Repeated samples of the same state change nothing.
+        CHECK_EQ(encFeed(k, rest, 1, 0), 0);
     }
-    // Repeated samples of the same state change nothing.
-    PAD_encoderInit(&e, 1, 1);
-    CHECK_EQ(PAD_encoderUpdate(&e, 1, 1, 0), 0);
-    CHECK_EQ(e.count, 0);
 
-    // Knob press: B low and back, alone and with contact bounce.
+    // Knob press: B low and back, alone, with contact bounce, with A chatter.
+    reset();
     {
         static const uint8_t press[] = {2, 3};
         static const uint8_t bouncy[] = {2, 3, 2, 3, 2, 2, 2, 3, 2, 3};
-        static const uint8_t pressA[] = {2, 0, 2, 0, 2, 3};      // A chatters too
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        encRun(&e, press, 2, 0, &steps);
-        encRun(&e, bouncy, 10, 0, &steps);
-        encRun(&e, pressA, 6, 0, &steps);
-        CHECK_EQ(steps, 0);
+        static const uint8_t pressA[] = {2, 0, 2, 0, 2, 3};
+        CHECK_EQ(encFeed(0, press, 2, 0), 0);
+        CHECK_EQ(encFeed(0, bouncy, 10, 0), 0);
+        CHECK_EQ(encFeed(0, pressA, 6, 0), 0);
     }
     // Rotating while the switch is held: nothing, and nothing left over after.
     {
-        static const uint8_t heldTurn[] = {2, 0, 2, 0, 1, 0, 2};
-        static const uint8_t back[] = {3};
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        encRun(&e, heldTurn, 7, 1, &steps);
-        encRun(&e, back, 1, 1, &steps);
-        CHECK_EQ(steps, 0);
-        CHECK_EQ(e.count, 0);
+        static const uint8_t heldTurn[] = {2, 0, 2, 0, 1, 0, 2, 3};
+        static const uint8_t after[] = {1, 0, 2, 3};
+        CHECK_EQ(encFeed(1, heldTurn, 8, 1), 0);
+        CHECK_EQ(encFeed(1, after, 4, 0), 1);  // the next real detent counts in full
     }
-    // Press, part of a turn while held, then the line returns with the switch
-    // still reported: the half-turn must not complete into a step.
+    // Press, a half turn while held, the line returns with the switch still held.
     {
         static const uint8_t press[] = {2};
         static const uint8_t heldHalf[] = {0, 1, 3};
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        encRun(&e, press, 1, 0, &steps);
-        encRun(&e, heldHalf, 3, 1, &steps);
-        CHECK_EQ(steps, 0);
+        CHECK_EQ(encFeed(0, press, 1, 0) + encFeed(0, heldHalf, 3, 1), 0);
     }
-    // Press seen on B before the TM1650 reports it, released after.
+    // B low before the TM1650 reports the switch, released after; and the reverse.
     {
         static const uint8_t down[] = {2};
         static const uint8_t up[] = {3};
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        encRun(&e, down, 1, 0, &steps);
-        encRun(&e, up, 1, 1, &steps);
-        CHECK_EQ(steps, 0);
-        // ... or the switch report ends first.
-        encRun(&e, down, 1, 1, &steps);
-        encRun(&e, up, 1, 0, &steps);
-        CHECK_EQ(steps, 0);
+        CHECK_EQ(encFeed(2, down, 1, 0) + encFeed(2, up, 1, 1), 0);
+        CHECK_EQ(encFeed(2, down, 1, 1) + encFeed(2, up, 1, 0), 0);
     }
     // Bounce at the leading edge still gives exactly one step.
     {
         static const uint8_t edge[] = {1, 3, 1, 3, 1, 0, 1, 0, 2, 0, 2, 3, 2, 3};
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        encRun(&e, edge, 14, 0, &steps);
-        CHECK_EQ(steps, 1);
+        CHECK_EQ(encFeed(0, edge, 14, 0), 1);
     }
-    // One skipped intermediate state (fast spin) still counts, in the right direction.
+    // One skipped state (fast spin) still counts, in the right direction.
     {
-        static const uint8_t skipMid[] = {1, 2, 3};             // 0 missed
-        static const uint8_t skipFirst[] = {0, 2, 3};           // 1 missed
-        static const uint8_t skipLastCcw[] = {2, 0, 3};         // 1 missed
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        encRun(&e, skipMid, 3, 0, &steps);
-        CHECK_EQ(steps, 1);
-        steps = 0;
-        encRun(&e, skipFirst, 3, 0, &steps);
-        CHECK_EQ(steps, 1);
-        steps = 0;
-        encRun(&e, skipLastCcw, 3, 0, &steps);
-        CHECK_EQ(steps, -1);
+        static const uint8_t skipMid[] = {1, 2, 3};
+        static const uint8_t skipFirst[] = {0, 2, 3};
+        static const uint8_t skipLastCcw[] = {2, 0, 3};
+        CHECK_EQ(encFeed(0, skipMid, 3, 0), 1);
+        CHECK_EQ(encFeed(0, skipFirst, 3, 0), 1);
+        CHECK_EQ(encFeed(0, skipLastCcw, 3, 0), -1);
     }
-    // Two states missed carries no direction: dropped, never reversed.
+    // The rest state itself missed between two detents: both still count.
+    // (2.0.0 only counted on reaching rest and lost one of these.)
+    {
+        static const uint8_t noRest[] = {1, 0, 2, 1, 0, 2, 3};
+        static const uint8_t noRestCcw[] = {2, 0, 1, 2, 0, 1, 3};
+        static const uint8_t threeNoRest[] = {1, 0, 2, 1, 0, 2, 1, 0, 2, 3};
+        CHECK_EQ(encFeed(1, noRest, 7, 0), 2);
+        CHECK_EQ(encFeed(1, noRestCcw, 7, 0), -2);
+        CHECK_EQ(encFeed(1, threeNoRest, 10, 0), 3);
+    }
+    // Two states missed carries no direction: dropped, never reversed; counted.
+    reset();
     {
         static const uint8_t jump[] = {0, 3};
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        encRun(&e, jump, 2, 0, &steps);
-        CHECK_EQ(steps, 0);
+        padstats_t st;
+        CHECK_EQ(encFeed(0, jump, 2, 0), 0);
+        PAD_getStats(&st, 1);
+        CHECK_EQ(st.illegal[0], 2);
+        CHECK_EQ(st.illegal[1], 0);
+        PAD_getStats(&st, 0);
+        CHECK_EQ(st.illegal[0], 0);  // cleared
     }
     // Starting a detent and going back is not a step.
     {
         static const uint8_t back[] = {1, 0, 1, 3, 2, 0, 2, 3};
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        encRun(&e, back, 8, 0, &steps);
-        CHECK_EQ(steps, 0);
+        CHECK_EQ(encFeed(0, back, 8, 0), 0);
     }
-    // Long chatter stays bounded and still resolves.
+    // Long runs: exact, and the accumulator saturates instead of wrapping.
+    reset();
     {
-        int i;
-        PAD_encoderInit(&e, 1, 1);
-        steps = 0;
-        for (i = 0; i < 1000; ++i) {
-            static const uint8_t cycle[] = {1, 0, 2, 3};
-            int8_t s = PAD_encoderUpdate(&e, (cycle[i % 4] >> 1) & 1, cycle[i % 4] & 1, 0);
-            steps += s;
-            CHECK(e.count <= 8 && e.count >= -8);
+        static const uint8_t cw[] = {1, 0, 2, 3};
+        int i, total = 0;
+        padstats_t st;
+        for (i = 0; i < 250; ++i) {
+            total += encFeed(2, cw, 4, 0);
         }
-        CHECK_EQ(steps, 250);
+        CHECK_EQ(total, 250);
+        for (i = 0; i < 150; ++i) {   // nobody takes them
+            uint8_t j;
+            for (j = 0; j < 4; ++j) {
+                PAD_encoderIsr((uint8_t)(0x0F | (cw[j] << 4)));
+            }
+        }
+        CHECK_EQ(ENC_TAKE_CW(PAD_encoderTake(2)), ENC_ACC_MAX);
+        PAD_getStats(&st, 0);
+        CHECK_EQ(st.overruns, 50);
+        CHECK_EQ(st.cw[2], 350);
+        CHECK_EQ(st.ccw[2], 0);
     }
     // Starting away from rest (power-on mid-detent) does not invent a step.
     {
-        static const uint8_t settle[] = {3};
-        PAD_encoderInit(&e, 0, 0);
-        steps = 0;
-        encRun(&e, settle, 1, 0, &steps);
-        CHECK_EQ(steps, 0);
+        static const uint8_t settleRest[] = {3};
+        reset();
+        PAD_encoderReset(0x00);
+        CHECK_EQ(encFeed(0, settleRest, 1, 0), 0);
     }
 }
 
@@ -653,7 +754,7 @@ static void test_keys(void)
     loadDefaults();
     phys.tm = 0x4C;
     phys.gpioKey = 1;
-    PAD_init(0, phys.gpioKey, phys.tm, phys.a, phys.b);
+    PAD_init(0, phys.gpioKey, phys.tm, pins());
     outCount = 0;
     poll(10);
     phys.tm = TM_IDLE;
@@ -687,51 +788,59 @@ static void test_knobs(void)
         int i;
         for (i = 0; i < 6; ++i) {
             phys.b[1] = (uint8_t)(i & 1);
-            poll(1);
+            quarters_(2);
         }
         phys.b[1] = 0;
         phys.tm = 0x5F;
         poll(4);
         phys.b[1] = 1;
-        poll(1);
+        quarters_(1);
         phys.b[1] = 0;
-        poll(1);
+        quarters_(1);
         phys.b[1] = 1;
         poll(2);
         phys.tm = TM_IDLE;
         poll(4);
     }
+    settle(100);
     CHECK_EQ(countKind(OUT_PRESS), 1);
     CHECK_EQ(countPacked(OUT_PRESS, key(0x04, 0x6A)), 1);   // slot 19 = alt+F15
     CHECK_EQ(countKind(OUT_RELEASE), 1);
 
-    // Turns are taps: press, gap, release, on the right slot.
+    // Turns are taps: press, at least PAD_TAP_GAP_MS, release, on the right slot.
     reset();
-    turn(0, 1, 2);
-    CHECK_EQ(outCount, 3);
+    turn(0, 1);
+    CHECK(settle(100) >= 0);
+    CHECK_EQ(outCount, 2);
     CHECK_EQ(outs[0].kind, OUT_PRESS);
     CHECK_EQ(outs[0].packed, key(0x01, 0x6E));  // slot 17 = top cw = ctrl+F19
-    CHECK_EQ(outs[1].kind, OUT_WAIT);
-    CHECK_EQ(outs[1].packed, PAD_TAP_GAP_MS);
-    CHECK_EQ(outs[2].kind, OUT_RELEASE);
+    CHECK_EQ(outs[1].kind, OUT_RELEASE);
+    CHECK_EQ(outs[1].packed, key(0x01, 0x6E));
+    CHECK((uint16_t)(outs[1].at - outs[0].at) >= PAD_TAP_GAP_MS);
     reset();
-    turn(1, 0, 2);
-    turn(2, 1, 2);
-    turn(2, 0, 2);
+    turn(1, 0);
+    turn(2, 1);
+    turn(2, 0);
+    settle(100);
     CHECK_EQ(countPacked(OUT_PRESS, key(0x04, 0x69)), 1);   // slot 18 = middle ccw
     CHECK_EQ(countPacked(OUT_PRESS, key(0x04, 0x6E)), 1);   // slot 23 = bottom cw
     CHECK_EQ(countPacked(OUT_PRESS, key(0x04, 0x6C)), 1);   // slot 21 = bottom ccw
+    CHECK_EQ(countKind(OUT_RELEASE), 3);
 
-    // Fast spin: one sample per state, 40 detents in a row.
+    // Keys keep working while detents are being typed.
     reset();
     {
         int i;
-        for (i = 0; i < 40; ++i) {
-            turn(1, 1, 1);
+        for (i = 0; i < 10; ++i) {
+            turnQ(0, 1, 2, 0);
         }
+        phys.tm = 0x44;
+        poll(4);
+        CHECK_EQ(countPacked(OUT_PRESS, key(0, 0x6A)), 1);   // within 4 ms, not after the taps
+        phys.tm = TM_IDLE;
+        CHECK(settle(500) >= 0);
+        CHECK_EQ(countPacked(OUT_PRESS, key(0x01, 0x6E)), 10);
     }
-    CHECK_EQ(countPacked(OUT_PRESS, key(0x04, 0x6B)), 40);  // slot 20 = middle cw
-    CHECK_EQ(countKind(OUT_PRESS), 40);
 
     // Turning while pressed does nothing on the turn slots.
     reset();
@@ -749,15 +858,18 @@ static void test_knobs(void)
     phys.b[0] = 1;
     phys.tm = TM_IDLE;
     poll(4);
+    settle(100);
     CHECK_EQ(countKind(OUT_PRESS), 1);
     CHECK_EQ(countPacked(OUT_PRESS, key(0x01, 0x6D)), 1);
 
-    // Mouse wheel detents are one-shot, buttons are taps.
+    // Mouse wheel detents are one-shot (no release), one per detent.
     reset();
     PAD_setLayer(1);
-    turn(1, 1, 2);
-    CHECK_EQ(outCount, 1);
-    CHECK_EQ(outs[0].kind, OUT_PRESS);
+    turn(1, 1);
+    turn(1, 1);
+    settle(100);
+    CHECK_EQ(outCount, 2);
+    CHECK_EQ(countKind(OUT_RELEASE), 0);
     {
         uint8_t type, mod;
         uint16_t code;
@@ -765,6 +877,204 @@ static void test_knobs(void)
         CHECK_EQ(type, ACT_MOUSE);
         CHECK_EQ(code, (MS_WHEEL << 8) | 0x01);
     }
+
+    // An unbound detent is consumed silently.
+    reset();
+    keymap[0][SLOT_KNOB(0, KNOB_CW)] = 0;
+    turn(0, 1);
+    turn(0, 0);
+    settle(100);
+    CHECK_EQ(countKind(OUT_PRESS), 1);
+    CHECK_EQ(outs[0].packed, key(0x01, 0x6C));  // slot 15 = top ccw
+
+    // The tap queue keeps runs in turning order; long runs merge, and only more
+    // direction changes than it has runs for are dropped (and counted).
+    reset();
+    PAD_turn(0, 1, 100);
+    PAD_turn(0, 1, 50);
+    PAD_turn(0, 1, 120);  // 270 in one direction: two runs
+    CHECK_EQ(PAD_queued(), 270);
+    CHECK_EQ(Pad.runLen, 2);
+    {
+        int i;
+        for (i = 0; i < PAD_QUEUE_RUNS; ++i) {
+            PAD_turn(1, (uint8_t)(i & 1), 1);
+        }
+    }
+    {
+        padstats_t st;
+        PAD_getStats(&st, 0);
+        // 14 new runs fit; the 15th (ccw) is dropped; the 16th (cw) still
+        // joins the cw run at the tail.
+        CHECK_EQ(st.queueDrops, 1);
+        CHECK_EQ(st.maxQueue, 270 + PAD_QUEUE_RUNS - 1);
+    }
+    CHECK(settle(20000) >= 0);
+    CHECK_EQ(countPacked(OUT_PRESS, key(0x01, 0x6E)), 270);
+    CHECK_EQ(countPacked(OUT_PRESS, key(0x04, 0x6B)), 8);  // middle cw
+    CHECK_EQ(countPacked(OUT_PRESS, key(0x04, 0x69)), 7);  // middle ccw
+    // ... in the order turned: all the top knob first, then middle alternating.
+    {
+        int i, firstMiddle = -1, ok = 1;
+        for (i = 0; i < outCount && i < OUT_MAX; ++i) {
+            if (outs[i].kind != OUT_PRESS) {
+                continue;
+            }
+            if (outs[i].packed != key(0x01, 0x6E) && firstMiddle < 0) {
+                firstMiddle = i;
+            }
+            if (firstMiddle >= 0 && outs[i].packed == key(0x01, 0x6E)) {
+                ok = 0;
+            }
+        }
+        CHECK(ok);
+    }
+}
+
+// The defect seen on hardware with 2.0.0: fast spins lost about half the detents.
+// Here: realistic speeds and bounce, the USB report pace of 2.0.1 (1 ms) and of
+// 2.0.0 (10 ms), keymap and raw mode. Every detent must come out, exactly once.
+static uint32_t rng = 0x12345678u;
+static uint32_t rnd(void)
+{
+    rng ^= rng << 13;
+    rng ^= rng >> 17;
+    rng ^= rng << 5;
+    return rng;
+}
+
+static void spin(int knob, int cw, int detents, int qMin, int qMax, int bounce)
+{
+    int i;
+    for (i = 0; i < detents; ++i) {
+        const int q = qMin + (int)(rnd() % (uint32_t)(qMax - qMin + 1));
+        turnQ(knob, cw, q, bounce);
+    }
+}
+
+static void test_fast_spin(void)
+{
+    // quarter-ms per state: 15 = 20 detents in 300 ms (3.75 ms per transition),
+    // down to 2 = 0.5 ms per transition (a very hard flick).
+    static const int speeds[][3] = {{15, 15, 2}, {12, 18, 3}, {8, 8, 2}, {5, 7, 1}, {3, 4, 1}, {2, 2, 0}};
+    static const int paces[] = {0, 1, 10};
+    unsigned s, p;
+    int knob, raw;
+    for (s = 0; s < sizeof(speeds) / sizeof(speeds[0]); ++s) {
+        for (p = 0; p < sizeof(paces) / sizeof(paces[0]); ++p) {
+            for (raw = 0; raw < 2; ++raw) {
+                for (knob = 0; knob < KNOB_COUNT; ++knob) {
+                    const int cw = (int)((s + p + (unsigned)knob) & 1);
+                    const uint8_t slot = (uint8_t)SLOT_KNOB(knob, cw ? KNOB_CW : KNOB_CCW);
+                    padstats_t st;
+                    int took;
+                    reset();
+                    reportMs = paces[p];
+                    if (raw) {
+                        PAD_setRaw(10000);
+                    }
+                    spin(knob, cw, 20, speeds[s][0], speeds[s][1], speeds[s][2]);
+                    took = settle(10000);
+                    CHECK(took >= 0);
+                    PAD_getStats(&st, 0);
+                    CHECK_EQ(st.overruns + st.queueDrops, 0);
+                    CHECK_EQ(cw ? st.cw[knob] : st.ccw[knob], 20);
+                    CHECK_EQ(cw ? st.ccw[knob] : st.cw[knob], 0);
+                    if (raw) {
+                        CHECK_EQ(rawDetents(slot), 20);
+                        CHECK(countKind(OUT_RAW) <= 20);
+                        CHECK_EQ(countKind(OUT_RAW), outCount);
+                    } else {
+                        CHECK_EQ(countPacked(OUT_PRESS, keymap[0][slot]), 20);
+                        CHECK_EQ(countPacked(OUT_RELEASE, keymap[0][slot]), 20);
+                        CHECK_EQ(outCount, 40);
+                        // At the 1 ms report pace typing keeps up with the
+                        // 300 ms spin: the last detent goes out soon after.
+                        if (paces[p] == 1 && s == 0) {
+                            CHECK(took < 60);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Raw mode coalesces: a slow main loop sends fewer, larger reports.
+    reset();
+    PAD_setRaw(10000);
+    reportMs = 10;
+    spin(2, 1, 40, 2, 2, 0);
+    settle(1000);
+    CHECK_EQ(rawDetents(SLOT_KNOB(2, KNOB_CW)), 40);
+    CHECK(countKind(OUT_RAW) < 40);
+
+    // Back and forth quickly: every detent, in order, in keymap and raw mode.
+    for (raw = 0; raw < 2; ++raw) {
+        int i;
+        reset();
+        reportMs = 1;
+        if (raw) {
+            PAD_setRaw(10000);
+        }
+        for (i = 0; i < 6; ++i) {
+            spin(0, i & 1, 1 + i, 2, 3, 0);
+        }
+        settle(2000);
+        if (raw) {
+            CHECK_EQ(rawDetents(SLOT_KNOB(0, KNOB_CCW)), 1 + 3 + 5);
+            CHECK_EQ(rawDetents(SLOT_KNOB(0, KNOB_CW)), 2 + 4 + 6);
+        } else {
+            int n = 0, runs = 0;
+            uint16_t prev = 0;
+            CHECK_EQ(countPacked(OUT_PRESS, keymap[0][SLOT_KNOB(0, KNOB_CCW)]), 1 + 3 + 5);
+            CHECK_EQ(countPacked(OUT_PRESS, keymap[0][SLOT_KNOB(0, KNOB_CW)]), 2 + 4 + 6);
+            for (i = 0; i < outCount; ++i) {
+                if (outs[i].kind == OUT_PRESS) {
+                    runs += outs[i].packed != prev;
+                    prev = outs[i].packed;
+                    ++n;
+                }
+            }
+            CHECK_EQ(n, 21);
+            CHECK_EQ(runs, 6);  // typed in the order turned
+        }
+    }
+
+    // A knob press in the middle of a fast spin: the press, and every detent
+    // before and after it.
+    reset();
+    spin(1, 1, 8, 3, 4, 1);
+    phys.b[1] = 0;
+    quarters_(2);
+    phys.tm = 0x5F;
+    poll(6);
+    phys.b[1] = 1;
+    quarters_(3);
+    phys.tm = TM_IDLE;
+    poll(5);
+    spin(1, 1, 8, 3, 4, 1);
+    settle(2000);
+    CHECK_EQ(countPacked(OUT_PRESS, keymap[0][SLOT_KNOB(1, KNOB_CW)]), 16);
+    CHECK_EQ(countPacked(OUT_PRESS, keymap[0][SLOT_KNOB(1, KNOB_PRESS)]), 1);
+    CHECK_EQ(countPacked(OUT_PRESS, keymap[0][SLOT_KNOB(1, KNOB_CCW)]), 0);
+
+    // All three knobs at once, fast, with the old 10 ms report pace.
+    reset();
+    reportMs = 10;
+    {
+        int i;
+        for (i = 0; i < 4 * 15; ++i) {
+            int k;
+            for (k = 0; k < KNOB_COUNT; ++k) {
+                setEnc(k, (k == 1 ? CCW_PATH : CW_PATH)[i % 4]);
+            }
+            quarters_(3);
+        }
+    }
+    CHECK(settle(10000) >= 0);
+    CHECK_EQ(countPacked(OUT_PRESS, keymap[0][SLOT_KNOB(0, KNOB_CW)]), 15);
+    CHECK_EQ(countPacked(OUT_PRESS, keymap[0][SLOT_KNOB(1, KNOB_CCW)]), 15);
+    CHECK_EQ(countPacked(OUT_PRESS, keymap[0][SLOT_KNOB(2, KNOB_CW)]), 15);
 }
 
 static void test_layers(void)
@@ -806,11 +1116,13 @@ static void test_layers(void)
     phys.gpioKey = 1;
     poll(3);
     CHECK_EQ(PAD_activeLayer(&Pad.layers), 1);
-    turn(0, 1, 2);                              // layer 1 top cw = volume up
+    turn(0, 1);                                 // layer 1 top cw = volume up
+    settle(100);
     phys.gpioKey = 0;
     poll(3);
     CHECK_EQ(PAD_activeLayer(&Pad.layers), 0);
-    turn(0, 1, 2);
+    turn(0, 1);
+    settle(100);
     {
         uint16_t volUp = 0;
         PAD_encode(ACT_CON, 0, 0xE9, &volUp);
@@ -821,7 +1133,8 @@ static void test_layers(void)
     // A momentary layer bound to a detent does nothing (press and release at once).
     reset();
     keymap[0][SLOT_KNOB(2, KNOB_CW)] = momentary;
-    turn(2, 1, 2);
+    turn(2, 1);
+    settle(100);
     CHECK_EQ(PAD_activeLayer(&Pad.layers), 0);
     CHECK_EQ(outCount, 0);
 
@@ -844,7 +1157,8 @@ static void test_raw_mode(void)
     poll(3);
     phys.tm = TM_IDLE;
     poll(3);
-    turn(0, 0, 2);
+    turn(0, 0);
+    settle(100);
     CHECK_EQ(countKind(OUT_PRESS), 0);
     CHECK_EQ(countKind(OUT_RELEASE), 0);
     CHECK_EQ(countKind(OUT_RAW), 3);
@@ -857,6 +1171,8 @@ static void test_raw_mode(void)
     CHECK_EQ(outs[1].seq, 2);
     CHECK_EQ(outs[2].seq, 3);
     CHECK_EQ(outs[2].layer, 0);
+    CHECK_EQ(outs[2].count, 1);
+    CHECK_EQ(outs[0].count, 1);
 
     // Knob press in raw mode: DOWN/UP on the press slot, no turn.
     outCount = 0;
@@ -957,9 +1273,10 @@ static void test_raw_mode(void)
 
     // Sequence numbers wrap without skipping.
     reset();
-    PAD_setRaw(1000);
+    PAD_setRaw(10000);
     for (i = 0; i < 300; ++i) {
-        turn(1, i & 1, 1);
+        turn(1, i & 1);
+        poll(1);
     }
     CHECK_EQ(countKind(OUT_RAW), 300);
     for (i = 1; i < 300 && i < OUT_MAX; ++i) {
@@ -970,22 +1287,26 @@ static void test_raw_mode(void)
     reset();
     PAD_setLayer(1);
     PAD_setRaw(1000);
-    turn(0, 1, 1);
+    turn(0, 1);
+    poll(1);
     CHECK_EQ(outs[0].layer, 1);
+
+    // Entering raw mode drops detents still waiting to be typed and releases
+    // the one being typed.
+    reset();
+    spin(0, 1, 6, 2, 2, 0);
+    poll(1);
+    PAD_setRaw(1000);
+    settle(100);
+    CHECK_EQ(countKind(OUT_PRESS), countKind(OUT_RELEASE));
+    CHECK(countKind(OUT_PRESS) < 6);
+    CHECK_EQ(PAD_queued(), 0);
+    CHECK_EQ(Pad.tapSlot, SLOT_NONE);
 }
 
 // ---------------------------------------------------------------------------------
 // Soak: random physical input with bounce, checked against what was performed.
 // ---------------------------------------------------------------------------------
-
-static uint32_t rng = 0x12345678u;
-static uint32_t rnd(void)
-{
-    rng ^= rng << 13;
-    rng ^= rng >> 17;
-    rng ^= rng << 5;
-    return rng;
-}
 
 // Settle at a state, chattering between the previous state and it first.
 static void moveEnc(int knob, uint8_t from, uint8_t to)
@@ -993,12 +1314,12 @@ static void moveEnc(int knob, uint8_t from, uint8_t to)
     int bounces = (int)(rnd() % 4), i;
     for (i = 0; i < bounces; ++i) {
         setEnc(knob, to);
-        poll(1);
+        quarter();
         setEnc(knob, from);
-        poll(1);
+        quarter();
     }
     setEnc(knob, to);
-    poll(1 + (int)(rnd() % 3));
+    quarters_(2 + (int)(rnd() % 12));
 }
 
 static void setTmBouncy(uint8_t code, uint8_t prev)
@@ -1011,7 +1332,41 @@ static void setTmBouncy(uint8_t code, uint8_t prev)
         poll(1);
     }
     phys.tm = code;
-    poll(4 + (int)(rnd() % 4));
+    poll(15 + (int)(rnd() % 26));  // a human press or release: 15-40 ms
+}
+
+static void tally(int raw, int *gotDown, int *gotUp, int *gotTap)
+{
+    int j;
+    for (j = 0; j < outCount && j < OUT_MAX; ++j) {
+        const out_t *o = &outs[j];
+        if (o->kind == OUT_RAW) {
+            CHECK(raw);
+            if (o->event == RAW_EVT_DOWN) ++gotDown[o->slot];
+            if (o->event == RAW_EVT_UP) ++gotUp[o->slot];
+            if (o->event == RAW_EVT_TAP) gotTap[o->slot] += o->count;
+        } else {
+            int slot;
+            CHECK(!raw);
+            for (slot = 0; slot < SLOT_COUNT; ++slot) {
+                if (keymap[0][slot] == o->packed) {
+                    break;
+                }
+            }
+            CHECK(slot < SLOT_COUNT);
+            if (slot < SLOT_COUNT) {
+                const int isTurn = slot >= 15 && (slot - 15) % 3 != KNOB_PRESS;
+                if (o->kind == OUT_PRESS) {
+                    if (isTurn) ++gotTap[slot];
+                    else ++gotDown[slot];
+                } else if (!isTurn) {
+                    ++gotUp[slot];
+                }
+            }
+        }
+    }
+    CHECK(outCount <= OUT_MAX);
+    outCount = 0;
 }
 
 static void test_soak(void)
@@ -1019,13 +1374,14 @@ static void test_soak(void)
     static const uint8_t tmKeys[14] = {0x44, 0x4C, 0x54, 0x5C, 0x64, 0x45, 0x4D,
                                        0x55, 0x5D, 0x65, 0x46, 0x4E, 0x56, 0x5E};
     static const uint8_t knobCodes[3] = {0x67, 0x5F, 0x57};
-    int expectDown[SLOT_COUNT] = {0}, expectTap[SLOT_COUNT] = {0};
-    int gotDown[SLOT_COUNT] = {0}, gotUp[SLOT_COUNT] = {0}, gotTap[SLOT_COUNT] = {0};
+    int expectDown[SLOT_COUNT], expectTap[SLOT_COUNT];
+    int gotDown[SLOT_COUNT], gotUp[SLOT_COUNT], gotTap[SLOT_COUNT];
     int round, i, rawRounds = 0;
 
     for (round = 0; round < 4; ++round) {
         const int raw = round & 1;
         reset();
+        reportMs = round >= 2 ? 1 : 0;
         memset(gotDown, 0, sizeof gotDown);
         memset(gotUp, 0, sizeof gotUp);
         memset(gotTap, 0, sizeof gotTap);
@@ -1035,8 +1391,8 @@ static void test_soak(void)
             PAD_setRaw(10000);
             ++rawRounds;
         }
-        for (i = 0; i < 20000; ++i) {
-            const uint32_t what = rnd() % 10;
+        for (i = 0; i < 8000; ++i) {
+            const uint32_t what = rnd() % 11;
             if (raw) {
                 PAD_setRaw(10000);              // heartbeat every operation
             }
@@ -1048,10 +1404,10 @@ static void test_soak(void)
                 setTmBouncy(TM_IDLE, (uint8_t)(tmKeys[k] & ~0x40));
             } else if (what == 3) {
                 phys.gpioKey = 1;
-                poll(3 + (int)(rnd() % 5));
+                poll(15 + (int)(rnd() % 26));
                 ++expectDown[0];
                 phys.gpioKey = 0;
-                poll(3 + (int)(rnd() % 5));
+                poll(15 + (int)(rnd() % 26));
             } else if (what < 6) {
                 // Knob press: B line drops first, the TM1650 reports later.
                 const int k = (int)(rnd() % 3);
@@ -1065,7 +1421,7 @@ static void test_soak(void)
                     setTmBouncy(TM_IDLE, knobCodes[k]);
                     moveEnc(k, 2, 3);
                 }
-            } else {
+            } else if (what < 10) {
                 const int k = (int)(rnd() % 3);
                 const int cw = (int)(rnd() & 1);
                 const uint8_t *path = cw ? CW_PATH : CCW_PATH;
@@ -1076,51 +1432,35 @@ static void test_soak(void)
                     from = path[s];
                 }
                 ++expectTap[SLOT_KNOB(k, cw ? KNOB_CW : KNOB_CCW)];
+            } else {
+                // A fast flick: several detents at 0.5-1.5 ms per state.
+                const int k = (int)(rnd() % 3);
+                const int cw = (int)(rnd() & 1);
+                const int n = 3 + (int)(rnd() % 12);
+                spin(k, cw, n, 2, 6, (int)(rnd() % 2));
+                expectTap[SLOT_KNOB(k, cw ? KNOB_CW : KNOB_CCW)] += n;
             }
-            // Tally and drop the log as we go.
-            {
-                int j;
-                for (j = 0; j < outCount && j < OUT_MAX; ++j) {
-                    const out_t *o = &outs[j];
-                    if (o->kind == OUT_RAW) {
-                        CHECK(raw);
-                        if (o->event == RAW_EVT_DOWN) ++gotDown[o->slot];
-                        if (o->event == RAW_EVT_UP) ++gotUp[o->slot];
-                        if (o->event == RAW_EVT_TAP) ++gotTap[o->slot];
-                    } else if (o->kind == OUT_PRESS || o->kind == OUT_RELEASE) {
-                        int slot;
-                        CHECK(!raw);
-                        for (slot = 0; slot < SLOT_COUNT; ++slot) {
-                            if (keymap[0][slot] == o->packed) {
-                                break;
-                            }
-                        }
-                        CHECK(slot < SLOT_COUNT);
-                        if (slot < SLOT_COUNT) {
-                            const int isTurn = slot >= 15 && (slot - 15) % 3 != KNOB_PRESS;
-                            if (o->kind == OUT_PRESS) {
-                                if (isTurn) ++gotTap[slot];
-                                else ++gotDown[slot];
-                            } else if (!isTurn) {
-                                ++gotUp[slot];
-                            }
-                        }
-                    }
-                }
-                CHECK(outCount <= OUT_MAX);
-                outCount = 0;
+            if (i % 50 == 49) {
+                CHECK(settle(5000) >= 0);
+                tally(raw, gotDown, gotUp, gotTap);
             }
         }
+        CHECK(settle(5000) >= 0);
+        tally(raw, gotDown, gotUp, gotTap);
         for (i = 0; i < SLOT_COUNT; ++i) {
             CHECK_EQ(gotDown[i], expectDown[i]);
             CHECK_EQ(gotUp[i], expectDown[i]);
             CHECK_EQ(gotTap[i], expectTap[i]);
         }
-        // Nothing left held at the end.
         for (i = 0; i < SLOT_COUNT; ++i) {
             CHECK_EQ(Pad.held[i], 0);
         }
         CHECK_EQ(Pad.rawHeld[0] | Pad.rawHeld[1] | Pad.rawHeld[2], 0);
+        {
+            padstats_t st;
+            PAD_getStats(&st, 0);
+            CHECK_EQ(st.overruns + st.queueDrops, 0);
+        }
     }
     CHECK_EQ(rawRounds, 2);
 }
@@ -1135,6 +1475,7 @@ int main(void)
     test_debounce();
     test_keys();
     test_knobs();
+    test_fast_spin();
     test_layers();
     test_raw_mode();
     test_soak();

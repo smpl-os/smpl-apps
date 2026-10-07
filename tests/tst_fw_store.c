@@ -66,39 +66,38 @@ uint8_t EEPROM_write(uint8_t addr, uint8_t value)
 
 void PAD_hwPress(uint16_t packed) { (void)packed; }
 void PAD_hwRelease(uint16_t packed) { (void)packed; }
-void PAD_hwWait(uint8_t ms) { (void)ms; }
-void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer)
+void PAD_hwLock(void) {}
+void PAD_hwUnlock(void) {}
+void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer, uint8_t count)
 {
-    (void)seq; (void)slot; (void)event; (void)layer;
+    (void)seq; (void)slot; (void)event; (void)layer; (void)count;
 }
 
 static uint8_t boot(void)
 {
-    static const uint8_t encA[KNOB_COUNT] = {1, 1, 1};
-    static const uint8_t encB[KNOB_COUNT] = {1, 1, 1};
     uint8_t start;
     cutAfter = -1;
     failWrites = 0;
     start = PADSTORE_init();
-    PAD_init(start, 0, 0x2E, encA, encB);
+    PAD_init(start, 0, 0x2E, 0x3F);
     return start;
 }
 
-static uint8_t rep[16];
+#define rep PADSTORE_reply
 
 static uint8_t cmd(uint8_t c, uint8_t a, uint8_t b, uint8_t d, uint8_t e, uint8_t f, uint8_t layer)
 {
-    uint8_t req[16] = {0};
-    req[0] = CFG_REPORT_ID;
-    req[1] = c;
-    req[2] = a;
-    req[3] = b;
-    req[4] = d;
-    req[5] = e;
-    req[6] = f;
-    req[7] = layer;
-    memset(rep, 0xAA, sizeof rep);
-    return PADSTORE_handle(req, rep);
+    memset(PADSTORE_req, 0, sizeof PADSTORE_req);
+    PADSTORE_req[0] = CFG_REPORT_ID;
+    PADSTORE_req[1] = c;
+    PADSTORE_req[2] = a;
+    PADSTORE_req[3] = b;
+    PADSTORE_req[4] = d;
+    PADSTORE_req[5] = e;
+    PADSTORE_req[6] = f;
+    PADSTORE_req[7] = layer;
+    memset(rep, 0xAA, 16);
+    return PADSTORE_handle();
 }
 
 static uint8_t setAction(uint8_t layer, uint8_t slot, uint8_t type, uint8_t mod, uint16_t code)
@@ -209,9 +208,9 @@ static void test_get_info(void)
     CHECK_EQ(rep[5], 24);
     CHECK_EQ(rep[6], 128);
     CHECK_EQ(rep[7], ST_OK);
-    CHECK_EQ(rep[8], FW_VERSION_MAJOR);
-    CHECK_EQ(rep[9], FW_VERSION_MINOR);
-    CHECK_EQ(rep[10], FW_VERSION_PATCH);
+    CHECK_EQ(rep[8], 2);
+    CHECK_EQ(rep[9], 0);
+    CHECK_EQ(rep[10], 1);
     CHECK_EQ(rep[11], 2);
     CHECK_EQ(rep[12], 0);
     CHECK_EQ(rep[13], 0);
@@ -348,6 +347,57 @@ static void test_reset_layer_raw_boot(void)
     CHECK_EQ(rep[7], ST_UNKNOWN);
 }
 
+static uint16_t u16at(int j)  // data word j of a GET_STATS reply
+{
+    const int lo = j * 2 < 4 ? 3 + j * 2 : 4 + j * 2;
+    const int hi = j * 2 + 1 < 4 ? 3 + j * 2 + 1 : 4 + j * 2 + 1;
+    return (uint16_t)(rep[lo] | (rep[hi] << 8));
+}
+
+static void test_stats(void)
+{
+    static const uint8_t cw[] = {1, 0, 2, 3};
+    int i, j;
+    freshFlash(0xFF);
+    boot();
+    // Middle knob: 5 clockwise detents, then a two-line jump; bottom: 2 ccw.
+    for (i = 0; i < 5; ++i) {
+        for (j = 0; j < 4; ++j) {
+            PAD_encoderIsr((uint8_t)(0x33 | (cw[j] << 2)));
+        }
+    }
+    PAD_encoderIsr(0x33);          // knob 2: 3 -> 0, both lines at once
+    PAD_encoderIsr(0x3F);
+    for (i = 0; i < 2; ++i) {
+        static const uint8_t ccw[] = {2, 0, 1, 3};
+        for (j = 0; j < 4; ++j) {
+            PAD_encoderIsr((uint8_t)(0x0F | (ccw[j] << 4)));
+        }
+    }
+    CHECK_EQ(cmd(CMD_GET_STATS, 1, 0, 0, 0, 0, 0), 0);
+    CHECK_EQ(rep[7], ST_OK);
+    CHECK_EQ(rep[2], 1);
+    CHECK_EQ(u16at(0), 0);         // knob 1 cw, ccw
+    CHECK_EQ(u16at(1), 0);
+    CHECK_EQ(u16at(2), 5);         // knob 2 cw
+    CHECK_EQ(u16at(3), 0);
+    CHECK_EQ(u16at(4), 0);         // knob 3 cw
+    CHECK_EQ(u16at(5), 2);         // knob 3 ccw
+    cmd(CMD_GET_STATS, 0, 1, 0, 0, 0, 0);   // page 0, then clear
+    CHECK_EQ(rep[7], ST_OK);
+    CHECK_EQ(u16at(0), 0);
+    CHECK_EQ(u16at(1), 2);         // knob 2: two illegal transitions
+    CHECK_EQ(u16at(2), 0);
+    CHECK_EQ(u16at(3), 0);         // overruns
+    cmd(CMD_GET_STATS, 1, 0, 0, 0, 0, 0);
+    CHECK_EQ(u16at(2), 0);         // cleared
+    CHECK_EQ(u16at(5), 0);
+    cmd(CMD_GET_STATS, 2, 0, 0, 0, 0, 0);
+    CHECK_EQ(rep[7], ST_BAD_ARG);
+    cmd(CMD_GET_STATS, 0, 2, 0, 0, 0, 0);
+    CHECK_EQ(rep[7], ST_BAD_ARG);
+}
+
 static void test_dump(void)
 {
     int off, i;
@@ -482,6 +532,7 @@ int main(void)
     test_get_set();
     test_reset_layer_raw_boot();
     test_dump();
+    test_stats();
     test_corruption();
     test_power_cuts();
     printf("tst_fw_store: %d checks, %d failures\n", checks, failures);

@@ -121,7 +121,7 @@ authoritative (`control-surfaced list-capabilities`).
 
 | Method | Returns |
 |---|---|
-| `GetFirmwareStatus() → s` | `{ok, device, images: [{path, size, sha256, meta?, metaMatches?}], imageDirs[], flash: {allowed, tool, toolFound, job}}`. `meta` is the image's `<name>.json` (name, version, board, licence, sha256, ...). |
+| `GetFirmwareStatus() → s` | `{ok, device, images: [{path, size, sha256, meta?, metaMatches?}], imageDirs[], flash: {allowed, tool, toolFound, job}}`. `meta` is the image's `<name>.json` (name, version, board, licence, sha256, `verifiedOnHardware`, `hardwareVerification`, `knownIssues`, `supersededBy`, ...). Offer the newest image without `supersededBy`. |
 | `StartFlash(s image, s sha256, b dryRun) → s` | `{ok, jobId, dryRun}`, or an error: `busy`, `invalid-arguments`, `not-allowed` |
 | `CancelFlash(s jobId) → b` | false if unknown, finished, or writing |
 
@@ -172,7 +172,7 @@ The job JSON (in `GetStatus().flash` and `GetFirmwareStatus().flash.job`) is
 | `control-surfaced check-config [-c FILE] --json` | `{ok, error: {message, profile, layer, slot} \| null, warnings[], warningDetails[], profiles[], path, source}`; exit 0 or 2 |
 | `control-surfaced list-actions [--json]` | `GetCatalog("kdenlive")` offline |
 | `control-surfaced features [--json]` | `GetFeatures` |
-| `control-surfaced firmware-info [--json]` | `GET_INFO` from a pad running the control-surface firmware: `{ok, node, version, format, slots, layers, activeLayer, startLayer, rawActive, eepromBytes}` |
+| `control-surfaced firmware-info [--json]` | `GET_INFO` from a pad running the control-surface firmware: `{ok, node, version, format, slots, layers, activeLayer, startLayer, rawActive, eepromBytes, stats?}`. From 2.0.1, `stats` is `{knobs: [{cw, ccw, illegal}], overruns, queueDrops, maxQueue}`, the encoder counters since power-on or the last clear. |
 | `control-surfaced enter-bootloader --yes [--json]` | `CMD_BOOTLOADER`; the pad shows as 4348:55e0 until flashed or replugged |
 
 `firmware-info` and `enter-bootloader` only talk to a hidraw node whose report

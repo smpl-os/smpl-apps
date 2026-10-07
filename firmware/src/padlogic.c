@@ -4,9 +4,13 @@
 #include "padlogic.h"
 
 #ifdef SDCC
-#define PAD_CODE __code
+#define PAD_CODE  __code
+#define PAD_DATA  __idata
+#define PAD_XDATA __xdata
 #else
 #define PAD_CODE
+#define PAD_DATA
+#define PAD_XDATA
 #endif
 
 // Measured with discovery.c on serial key153 (2026-10-07, captures discovery2-5),
@@ -183,7 +187,7 @@ uint8_t PAD_crc8(const uint8_t *data, uint8_t len) {
 }
 
 // -----------------------------------------------------------------------------------
-// Encoder
+// Encoders (interrupt side)
 // -----------------------------------------------------------------------------------
 
 #define ENC_REST 3                              // both lines high
@@ -197,28 +201,95 @@ static PAD_CODE const int8_t ENC_DELTA[16] = {
   /* from 3 */  0, +1, -1,  0,
 };
 
-void PAD_encoderInit(encstate_t *e, uint8_t a, uint8_t b) {
-  e->state = (uint8_t)((a ? 2 : 0) | (b ? 1 : 0));
-  e->count = 0;
+// Kept in internal RAM (indirect, beside the stack): the interrupt touches
+// these every 250 us; direct RAM is taken by parameters.
+static PAD_DATA uint8_t encState[KNOB_COUNT];   // last (A << 1) | B
+static PAD_DATA int8_t  encCount[KNOB_COUNT];   // quarter steps in the current detent
+static PAD_DATA volatile uint8_t encCw[KNOB_COUNT];   // detents not yet taken
+static PAD_DATA volatile uint8_t encCcw[KNOB_COUNT];
+static PAD_DATA volatile uint8_t encLastCw;     // bit k: knob k's latest detent was clockwise
+static PAD_DATA volatile uint8_t encHeld;       // bit k: knob k's switch is down
+
+void PAD_encoderReset(uint8_t pins) {
+  uint8_t k;
+  for(k = 0; k < KNOB_COUNT; k++) {
+    encState[k] = (uint8_t)((pins >> (2 * k)) & 3);
+    encCount[k] = 0;
+    encCw[k] = 0;
+    encCcw[k] = 0;
+  }
+  encLastCw = 0;
+  encHeld = 0;
 }
 
-int8_t PAD_encoderUpdate(encstate_t *e, uint8_t a, uint8_t b, uint8_t switchHeld) {
-  uint8_t now = (uint8_t)((a ? 2 : 0) | (b ? 1 : 0));
-  int8_t step = 0;
-  if(now == e->state) return 0;
-  if(switchHeld) e->count = 0;                  // pressing moves a line; ignore it
-  else {
-    e->count += ENC_DELTA[(e->state << 2) | now];
-    if(e->count > 8) e->count = 8;              // runaway bounce stays bounded
-    if(e->count < -8) e->count = -8;
+void PAD_encoderSetHeld(uint8_t mask) {
+  encHeld = mask;
+}
+
+#ifdef SDCC
+#pragma nooverlay
+#endif
+static void encEmit(uint8_t k, int8_t dir) {
+  if(dir > 0) {
+    if(encCw[k] >= ENC_ACC_MAX) { Pad.stats.overruns++; return; }
+    encCw[k]++;
+    encLastCw |= (uint8_t)(1 << k);
+    Pad.stats.cw[k]++;
+  } else {
+    if(encCcw[k] >= ENC_ACC_MAX) { Pad.stats.overruns++; return; }
+    encCcw[k]++;
+    encLastCw &= (uint8_t)~(1 << k);
+    Pad.stats.ccw[k]++;
   }
-  e->state = now;
-  if(now == ENC_REST) {
-    if(e->count >= 2) step = 1;
-    else if(e->count <= -2) step = -1;
-    e->count = 0;
+}
+
+// Called from the timer interrupt: its locals must not share memory with
+// main-loop functions (SDCC overlays non-reentrant locals otherwise).
+#ifdef SDCC
+#pragma nooverlay
+#endif
+void PAD_encoderIsr(uint8_t pins) {
+  uint8_t k, now, old;
+  int8_t d;
+  for(k = 0; k < KNOB_COUNT; k++, pins >>= 2) {
+    now = pins & 3;
+    old = encState[k];
+    if(now == old) continue;
+    encState[k] = now;
+    d = ENC_DELTA[(old << 2) | now];
+    if(d == 0) {
+      // Both lines changed between samples: a state was missed. Mid-rotation
+      // it is two quarter steps in the same direction; at rest it says nothing.
+      Pad.stats.illegal[k]++;
+      if(encCount[k] > 0) d = 2;
+      else if(encCount[k] < 0) d = -2;
+    }
+    if(encHeld & (1 << k)) {
+      encCount[k] = 0;                          // pressing moves a line; ignore it
+      continue;
+    }
+    encCount[k] += d;
+    if(encCount[k] >= 4)       { encCount[k] -= 4; encEmit(k, 1); }
+    else if(encCount[k] <= -4) { encCount[k] += 4; encEmit(k, -1); }
+    if(now == ENC_REST) {
+      // Back in the detent: a half-finished cycle with one skipped state still
+      // counts, anything shorter is bounce or a press.
+      if(encCount[k] >= 2) encEmit(k, 1);
+      else if(encCount[k] <= -2) encEmit(k, -1);
+      encCount[k] = 0;
+    }
   }
-  return step;
+}
+
+uint16_t PAD_encoderTake(uint8_t knob) {
+  uint16_t t;
+  PAD_hwLock();
+  t = (uint16_t)encCcw[knob] | ((uint16_t)encCw[knob] << 8);
+  if(encLastCw & (1 << knob)) t |= 0x8000;
+  encCw[knob] = 0;
+  encCcw[knob] = 0;
+  PAD_hwUnlock();
+  return t;
 }
 
 // -----------------------------------------------------------------------------------
@@ -328,9 +399,9 @@ static void rawHeldSet(uint8_t slot, uint8_t on) {
   else   Pad.rawHeld[slot >> 3] &= (uint8_t)~(1 << (slot & 7));
 }
 
-static void emitRaw(uint8_t slot, uint8_t event) {
+static void emitRaw(uint8_t slot, uint8_t event, uint8_t count) {
   Pad.rawSeq++;
-  PAD_hwRaw(Pad.rawSeq, slot, event, PAD_activeLayer(&Pad.layers));
+  PAD_hwRaw(Pad.rawSeq, slot, event, PAD_activeLayer(&Pad.layers), count);
 }
 
 // Keymap side of a press. Layer actions change state; everything else goes out.
@@ -353,15 +424,12 @@ void PAD_event(uint8_t slot, uint8_t event) {
       case RAW_EVT_DOWN:
         if(Pad.held[slot]) return;              // went down in keymap mode; ignore
         rawHeldSet(slot, 1);
-        emitRaw(slot, RAW_EVT_DOWN);
+        emitRaw(slot, RAW_EVT_DOWN, 1);
         break;
       case RAW_EVT_UP:
         if(!rawHeldGet(slot)) return;           // no DOWN was sent for it
         rawHeldSet(slot, 0);
-        emitRaw(slot, RAW_EVT_UP);
-        break;
-      case RAW_EVT_TAP:
-        emitRaw(slot, RAW_EVT_TAP);
+        emitRaw(slot, RAW_EVT_UP, 1);
         break;
     }
     return;
@@ -381,28 +449,99 @@ void PAD_event(uint8_t slot, uint8_t event) {
       Pad.held[slot] = 0;
       actionUp(slot, packed);
       break;
-    case RAW_EVT_TAP:
-      packed = PAD_keymap(PAD_activeLayer(&Pad.layers), slot);
-      if(!packed) return;
-      if((packed >> 13) == ACT_LAYER) {
-        // A detent is press and release at once: momentary does nothing.
-        PAD_layerAction(&Pad.layers, packed & 0x3FF, slot, 1);
-        PAD_layerAction(&Pad.layers, packed & 0x3FF, slot, 0);
-        return;
+  }
+}
+
+uint16_t PAD_queued(void) {
+  uint16_t n = 0;
+  uint8_t i;
+  for(i = 0; i < Pad.runLen; i++) n += Pad.runCount[(Pad.runHead + i) % PAD_QUEUE_RUNS];
+  return n;
+}
+
+void PAD_turn(uint8_t knob, uint8_t cw, uint8_t detents) {
+  uint8_t slot, last, room;
+  uint16_t q;
+  if(knob >= KNOB_COUNT || detents == 0) return;
+  slot = (uint8_t)SLOT_KNOB(knob, cw ? KNOB_CW : KNOB_CCW);
+  if(PAD_rawActive(&Pad.raw)) {
+    // One report for all detents taken at once: USB pace never loses any.
+    emitRaw(slot, RAW_EVT_TAP, detents);
+    return;
+  }
+  // Append to the run of the same slot at the tail, or start a new run.
+  while(detents) {
+    if(Pad.runLen) {
+      last = (uint8_t)((Pad.runHead + Pad.runLen - 1) % PAD_QUEUE_RUNS);
+      if(Pad.runSlot[last] == slot && Pad.runCount[last] < PAD_RUN_MAX) {
+        room = (uint8_t)(PAD_RUN_MAX - Pad.runCount[last]);
+        if(room > detents) room = detents;
+        Pad.runCount[last] += room;
+        detents -= room;
+        continue;
       }
-      if(((packed >> 13) == ACT_MOUSE) && (((packed >> 8) & 0x07) != MS_BUTTON)) {
-        PAD_hwPress(packed);                    // wheel, pan, move: one-shot deltas
-        return;
-      }
-      PAD_hwPress(packed);
-      PAD_hwWait(PAD_TAP_GAP_MS);
-      PAD_hwRelease(packed);
+    }
+    if(Pad.runLen >= PAD_QUEUE_RUNS) {
+      Pad.stats.queueDrops += detents;          // more direction changes than fit
       break;
+    }
+    last = (uint8_t)((Pad.runHead + Pad.runLen) % PAD_QUEUE_RUNS);
+    Pad.runSlot[last] = slot;
+    Pad.runCount[last] = 0;
+    Pad.runLen++;
+  }
+  q = PAD_queued();
+  if(q > Pad.stats.maxQueue) Pad.stats.maxQueue = q;
+}
+
+// Types queued detents one at a time, in the order they were turned: press,
+// PAD_TAP_GAP_MS, release. Never waits: each pass does at most one press or
+// one release.
+static void runTaps(void) {
+  uint8_t slot;
+  uint16_t packed;
+  if(Pad.tapSlot != SLOT_NONE) {
+    if((uint16_t)(Pad.nowMs - Pad.tapAt) < PAD_TAP_GAP_MS) return;
+    packed = Pad.tapPacked;
+    Pad.tapSlot = SLOT_NONE;                    // not "held" while it is released
+    PAD_hwRelease(packed);
+    return;
+  }
+  if(!Pad.runLen) return;
+  slot = Pad.runSlot[Pad.runHead];
+  if(--Pad.runCount[Pad.runHead] == 0) {
+    Pad.runHead = (uint8_t)((Pad.runHead + 1) % PAD_QUEUE_RUNS);
+    Pad.runLen--;
+  }
+  packed = PAD_keymap(PAD_activeLayer(&Pad.layers), slot);
+  if(!packed) return;
+  if((packed >> 13) == ACT_LAYER) {
+    // A detent is press and release at once: momentary does nothing.
+    PAD_layerAction(&Pad.layers, packed & 0x3FF, slot, 1);
+    PAD_layerAction(&Pad.layers, packed & 0x3FF, slot, 0);
+    return;
+  }
+  PAD_hwPress(packed);
+  if(((packed >> 13) == ACT_MOUSE) && (((packed >> 8) & 0x07) != MS_BUTTON)) return;  // one-shot
+  Pad.tapSlot = slot;
+  Pad.tapPacked = packed;
+  Pad.tapAt = Pad.nowMs;
+}
+
+static void dropTaps(void) {
+  uint16_t packed;
+  Pad.runHead = 0;
+  Pad.runLen = 0;
+  if(Pad.tapSlot != SLOT_NONE) {
+    packed = Pad.tapPacked;
+    Pad.tapSlot = SLOT_NONE;
+    PAD_hwRelease(packed);
   }
 }
 
 void PAD_releaseAll(void) {
   uint8_t s;
+  dropTaps();
   for(s = 0; s < SLOT_COUNT; s++) {
     if(Pad.held[s]) {
       uint16_t packed = Pad.held[s];
@@ -425,6 +564,7 @@ uint8_t PAD_setRaw(uint16_t timeoutMs) {
 }
 
 void PAD_tick(uint16_t elapsedMs) {
+  Pad.nowMs += elapsedMs;
   if(PAD_rawTick(&Pad.raw, elapsedMs)) {
     // Heartbeat lost: back to the keymap. Keys still down stay silent until
     // they come up, so nothing is pressed that the user did not press anew.
@@ -439,9 +579,21 @@ void PAD_setLayer(uint8_t layer) {
   Pad.layers.momentarySlot = SLOT_NONE;
 }
 
-void PAD_init(uint8_t startLayer, uint8_t gpioKeyDown, uint8_t tmCode,
-              const uint8_t *encA, const uint8_t *encB) {
+void PAD_getStats(padstats_t *out, uint8_t clear) {
   uint8_t i;
+  uint8_t *dst = (uint8_t *)out;
+  uint8_t *src = (uint8_t *)&Pad.stats;
+  PAD_hwLock();
+  for(i = 0; i < sizeof(padstats_t); i++) {
+    dst[i] = src[i];
+    if(clear) src[i] = 0;
+  }
+  PAD_hwUnlock();
+}
+
+void PAD_init(uint8_t startLayer, uint8_t gpioKeyDown, uint8_t tmCode, uint8_t encPins) {
+  uint8_t i;
+  uint8_t *st = (uint8_t *)&Pad.stats;
   Pad.raw.timeoutMs = 0;
   Pad.raw.leftMs = 0;
   Pad.layers.base = startLayer < LAYER_COUNT ? startLayer : 0;
@@ -450,18 +602,24 @@ void PAD_init(uint8_t startLayer, uint8_t gpioKeyDown, uint8_t tmCode,
   Pad.rawSeq = 0;
   Pad.rawHeld[0] = Pad.rawHeld[1] = Pad.rawHeld[2] = 0;
   for(i = 0; i < SLOT_COUNT; i++) Pad.held[i] = 0;
+  Pad.runHead = 0;
+  Pad.runLen = 0;
+  for(i = 0; i < sizeof(padstats_t); i++) st[i] = 0;
+  Pad.nowMs = 0;
+  Pad.tapSlot = SLOT_NONE;
+  Pad.tapPacked = 0;
+  Pad.tapAt = 0;
   // Whatever is down at start-up counts as the resting state: it produces no
   // event until it is released and pressed again.
   PAD_debounceInit(&Pad.gpioKey, gpioKeyDown ? 1 : 0);
   PAD_debounceInit(&Pad.tm, tmCode);
   Pad.tmSlot = PAD_slotForKeycode(tmCode);
-  for(i = 0; i < KNOB_COUNT; i++) PAD_encoderInit(&Pad.enc[i], encA[i], encB[i]);
+  PAD_encoderReset(encPins);
 }
 
-void PAD_poll(uint8_t gpioKeyDown, uint8_t tmCode,
-              const uint8_t *encA, const uint8_t *encB) {
-  uint8_t i, slot;
-  int8_t step;
+void PAD_poll(uint8_t gpioKeyDown, uint8_t tmCode) {
+  uint8_t i, slot, held = 0;
+  uint16_t t;
 
   if(PAD_debounce(&Pad.gpioKey, gpioKeyDown ? 1 : 0))
     PAD_event(SLOT_GPIO_KEY, Pad.gpioKey.stable ? RAW_EVT_DOWN : RAW_EVT_UP);
@@ -475,11 +633,22 @@ void PAD_poll(uint8_t gpioKeyDown, uint8_t tmCode,
       if(slot != SLOT_NONE) PAD_event(slot, RAW_EVT_DOWN);
     }
   }
+  for(i = 0; i < KNOB_COUNT; i++)
+    if(Pad.tmSlot == SLOT_KNOB(i, KNOB_PRESS)) held |= (uint8_t)(1 << i);
+  PAD_encoderSetHeld(held);
 
   for(i = 0; i < KNOB_COUNT; i++) {
-    step = PAD_encoderUpdate(&Pad.enc[i], encA[i], encB[i],
-                             Pad.tmSlot == SLOT_KNOB(i, KNOB_PRESS));
-    if(step > 0) PAD_event(SLOT_KNOB(i, KNOB_CW), RAW_EVT_TAP);
-    else if(step < 0) PAD_event(SLOT_KNOB(i, KNOB_CCW), RAW_EVT_TAP);
+    t = PAD_encoderTake(i);
+    if(!t) continue;
+    // Both directions within one pass (under a millisecond apart): the older
+    // one first. Each direction keeps its own count, so neither is lost.
+    if(ENC_TAKE_LAST_CW(t)) {
+      PAD_turn(i, 0, ENC_TAKE_CCW(t));
+      PAD_turn(i, 1, ENC_TAKE_CW(t));
+    } else {
+      PAD_turn(i, 1, ENC_TAKE_CW(t));
+      PAD_turn(i, 0, ENC_TAKE_CCW(t));
+    }
   }
+  if(!PAD_rawActive(&Pad.raw)) runTaps();
 }

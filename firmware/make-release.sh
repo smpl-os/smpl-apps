@@ -50,6 +50,7 @@ cat > "$HERE/release/$NAME.json" <<JSON
   "toolchain": "$SDCC",
   "flash": "wchisp flash <file> (ROM bootloader 4348:55e0; config registers untouched)",
   "verifiedOnHardware": false,
+  "knownIssues": [],
   "notes": "Built reproducibly and host-tested (fw_logic, fw_store); not yet flashed to a pad."
 }
 JSON

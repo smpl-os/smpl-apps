@@ -78,24 +78,48 @@ uint16_t PAD_defaultAction(uint8_t layer, uint8_t slot);
 uint8_t PAD_crc8(const uint8_t *data, uint8_t len);
 
 // -----------------------------------------------------------------------------------
-// Encoder: detented, both lines high at rest, one full quadrature cycle per detent.
+// Encoders: detented, both lines high at rest, one full quadrature cycle per detent.
 // Clockwise is A falling first: (A,B) 11 -> 01 -> 00 -> 10 -> 11.
 //
-// Each valid single-line transition counts +-1; a step is reported only when the
-// encoder is back at rest with |count| >= 2. A knob press on this board pulls one
-// encoder line low (top: B, middle: B): that is one transition out and one back,
-// so it nets to zero and is never a step. Contact bounce cancels the same way,
-// and a skipped intermediate state still leaves |count| >= 2. While the knob's
-// switch is held the count is frozen at zero.
+// Sampled from a 4 kHz timer interrupt (PAD_encoderIsr), independent of the main
+// loop, so slow USB reports or I2C reads never cost a detent. Each valid
+// single-line transition counts +-1 (a transition table, Buxton style); a detent
+// is emitted every 4 counts in one direction, and on return to rest a remaining
+// |count| >= 2 also counts (one skipped state). Detents accumulate per knob until
+// the main loop takes them (PAD_encoderTake), so none are dropped when output is
+// slower than the spin.
+//
+// Knob press: on this board a press pulls one encoder line low and back. That is
+// -1 then +1, so it nets to zero; while the knob's switch is reported held the
+// count is also frozen at zero (with B held low a turn carries no direction).
+// A two-line jump (a missed state) counts as two quarter steps in the current
+// direction mid-rotation, and as nothing at rest; either way it is counted as
+// an illegal transition (a diagnostic: sampling too slow or a noisy line).
 // -----------------------------------------------------------------------------------
-typedef struct {
-  uint8_t state;                        // last (A << 1) | B
-  int8_t  count;                        // quarter steps since the last rest
-} encstate_t;
+#define ENC_ACC_MAX     100             // detents waiting to be taken, per knob
 
-void   PAD_encoderInit(encstate_t *e, uint8_t a, uint8_t b);
-// Returns +1 (clockwise), -1 or 0.
-int8_t PAD_encoderUpdate(encstate_t *e, uint8_t a, uint8_t b, uint8_t switchHeld);
+// pins: bit 2k+1 = knob k line A, bit 2k = line B (1 = high).
+void    PAD_encoderReset(uint8_t pins);
+void    PAD_encoderIsr(uint8_t pins);
+// Detents since the last call, then zero; interrupt-safe. Clockwise and
+// counter-clockwise are counted apart, so a quick back-and-forth is not lost:
+// bits 0-6 ccw, bits 8-14 cw, bit 15 set if the latest detent was clockwise.
+uint16_t PAD_encoderTake(uint8_t knob);
+#define ENC_TAKE_CCW(t)     ((uint8_t)((t) & 0x7F))
+#define ENC_TAKE_CW(t)      ((uint8_t)(((t) >> 8) & 0x7F))
+#define ENC_TAKE_LAST_CW(t) (((t) & 0x8000) != 0)
+// Knob switches currently held (bit k = knob k), set by the main loop.
+void    PAD_encoderSetHeld(uint8_t mask);
+
+// Diagnostics, readable with CMD_GET_STATS.
+typedef struct {
+  uint16_t illegal[KNOB_COUNT];         // two-line jumps
+  uint16_t cw[KNOB_COUNT];              // detents decoded, per direction
+  uint16_t ccw[KNOB_COUNT];
+  uint16_t overruns;                    // detents lost to a full accumulator (interrupt side)
+  uint16_t queueDrops;                  // detents lost to a full keymap tap queue (main loop)
+  uint16_t maxQueue;                    // most detents waiting to be typed at once
+} padstats_t;
 
 // -----------------------------------------------------------------------------------
 // Debounce: a sample must repeat DEBOUNCE_SAMPLES times in a row to be accepted.
@@ -127,10 +151,10 @@ uint8_t PAD_rawRequest(rawmode_t *r, uint16_t timeoutMs);
 uint8_t PAD_rawTick(rawmode_t *r, uint16_t elapsedMs);
 uint8_t PAD_rawActive(const rawmode_t *r);
 
-// Raw event codes (report ID 5): [seq][slot][event][layer]
+// Raw event codes (report ID 5): [seq][slot][event][layer][count]
 #define RAW_EVT_DOWN    1
 #define RAW_EVT_UP      2
-#define RAW_EVT_TAP     3               // one knob detent (slot says which way)
+#define RAW_EVT_TAP     3               // knob detents (slot says which way, count how many)
 
 // Layer state: base layer plus a momentary override.
 typedef struct {
@@ -147,7 +171,9 @@ void PAD_layerAction(layerstate_t *l, uint16_t code, uint8_t slot, uint8_t press
 // Pad core: input decoding and dispatch, shared by the firmware and the host tests.
 // The platform supplies the PAD_hw* hooks and the keymap lookup below.
 // -----------------------------------------------------------------------------------
-#define PAD_TAP_GAP_MS  15              // knob detents press, wait, release
+#define PAD_TAP_GAP_MS  5               // knob detent: press, this long, release (non-blocking)
+#define PAD_QUEUE_RUNS  16              // keymap tap queue: runs of detents on one slot, in order
+#define PAD_RUN_MAX     200             // detents one run holds
 
 typedef struct {
   rawmode_t    raw;
@@ -158,7 +184,14 @@ typedef struct {
   debounce_t   gpioKey;                 // key 1, 1 = pressed
   debounce_t   tm;                      // TM1650 key register
   uint8_t      tmSlot;                  // slot the TM1650 is holding down, or SLOT_NONE
-  encstate_t   enc[KNOB_COUNT];
+  uint16_t     nowMs;                   // clock advanced by PAD_tick
+  uint8_t      runSlot[PAD_QUEUE_RUNS]; // FIFO of (slot, detents): typed in the order turned
+  uint8_t      runCount[PAD_QUEUE_RUNS];
+  uint8_t      runHead, runLen;
+  uint8_t      tapSlot;                 // detent being typed, or SLOT_NONE
+  uint16_t     tapPacked;
+  uint16_t     tapAt;
+  padstats_t   stats;
 } padstate_t;
 
 #ifdef SDCC
@@ -171,18 +204,25 @@ extern padstate_t Pad;
 uint16_t PAD_keymap(uint8_t layer, uint8_t slot);
 void     PAD_hwPress(uint16_t packed);
 void     PAD_hwRelease(uint16_t packed);
-void     PAD_hwWait(uint8_t ms);
-void     PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer);
+void     PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer, uint8_t count);
+// Keep the encoder interrupt out while the main loop reads shared counters.
+void     PAD_hwLock(void);
+void     PAD_hwUnlock(void);
 
-// startLayer is the layer stored as the power-on default.
-void    PAD_init(uint8_t startLayer, uint8_t gpioKeyDown, uint8_t tmCode,
-                 const uint8_t *encA, const uint8_t *encB);
-// One poll: key 1 (1 = pressed), the TM1650 register, encoder lines (1 = high).
-void    PAD_poll(uint8_t gpioKeyDown, uint8_t tmCode,
-                 const uint8_t *encA, const uint8_t *encB);
-// Elapsed time for the raw-mode heartbeat.
+// startLayer is the layer stored as the power-on default; encPins as for the ISR.
+void    PAD_init(uint8_t startLayer, uint8_t gpioKeyDown, uint8_t tmCode, uint8_t encPins);
+// One main-loop pass: key 1 (1 = pressed), the TM1650 register; then the
+// detents the interrupt decoded, and the keymap tap queue.
+void    PAD_poll(uint8_t gpioKeyDown, uint8_t tmCode);
+// Elapsed time: raw-mode heartbeat and the tap clock.
 void    PAD_tick(uint16_t elapsedMs);
-// A slot event, after decoding (exposed for tests).
+// Detents of one knob in one direction, as taken from the decoder (exposed for tests).
+void    PAD_turn(uint8_t knob, uint8_t cw, uint8_t detents);
+// Detents waiting in the keymap tap queue.
+uint16_t PAD_queued(void);
+// A copy of the diagnostics (interrupt-safe); clear = 1 zeroes them afterwards.
+void    PAD_getStats(padstats_t *out, uint8_t clear);
+// A key or knob-switch event, after debouncing (exposed for tests).
 void    PAD_event(uint8_t slot, uint8_t event);
 // Host request; 0 means off. Returns 0 if the timeout is out of range.
 uint8_t PAD_setRaw(uint16_t timeoutMs);

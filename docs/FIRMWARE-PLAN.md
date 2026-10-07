@@ -224,7 +224,16 @@ The service stays disabled until the user enables it.
   Key 1 is a GPIO key on P1.5, which is why the first pass missed it; the knob
   switches sit on TM1650 DIG4 and also pull one encoder line low.
 * **Fork built and tested** (§7): firmware 2.0.0, host suites `fw_logic` and
-  `fw_store`. **Not flashed**: flashing waits for the user (§7.7).
+  `fw_store`.
+* **14:32 2.0.0 flashed and verified** by the parent (flash-and-verify rc 0):
+  * all 24 inputs in order;
+  * per knob, 3 ccw, 3 cw and 2 presses exact, with no stray rotation from
+    presses;
+  * key 1 and key 15 together both register.
+  * **Defect:** a fast revolution gave 10–11 of about 20 detents (slow: 19).
+* **2.0.1** fixes it (§7.2): interrupt-sampled encoders, a full-cycle
+  decoder, non-blocking ordered tap output, 1 ms endpoints, a raw `count`
+  byte, and `CMD_GET_STATS`. Not flashed yet.
 
 ## 7. The fork as built: control-surface firmware 2.0.0
 
@@ -251,31 +260,61 @@ them for the CH552 and the host test suite builds the very same files.
 TM1650 bus SDA = P3.3, SCL = P3.4. P3.1 is unused. Clockwise is A falling
 first. The slot order is the daemon's keys-then-knobs order (`scheme.cpp`).
 
-### 7.2 Input decoding
+### 7.2 Input decoding (2.0.1)
 
-* **Encoders:** full quadrature decoding. Each valid one-line transition counts
-  ±1; a detent is reported only on return to rest (both high) with |count| ≥ 2.
-  A knob press pulls B low and back (−1, +1), which nets to zero, so it never
-  becomes a turn. Contact bounce cancels the same way. One missed intermediate
-  state still gives |count| ≥ 2. While the TM1650 reports that knob's switch,
-  the count is held at zero, so a half-turn made while pressing never
-  completes into a step.
-* **Keys:** a value must repeat 3 polls in a row (about 3 ms) to count. The
-  TM1650 reports one key at a time, so two TM1650 keys cannot be held together
-  (rolling from one to another releases the first). Key 1 is a GPIO and works
-  together with any TM1650 key.
+* **Encoders** are sampled by a 4 kHz Timer2 interrupt, independent of the
+  main loop, so USB reports, TM1650 reads and keymap typing never cost a
+  detent.
+  * Decoding uses a transition table (Buxton style): each valid one-line
+    transition counts ±1, and a detent is emitted every 4 counts in one
+    direction.
+  * On return to rest, a remaining |count| ≥ 2 also counts (one skipped state).
+  * A two-line jump (a missed state) counts as ±2 in the current direction
+    mid-rotation, and as nothing at rest.
+  * Detents accumulate per knob and direction, up to 100 each, until the main
+    loop takes them.
+  * A knob press pulls B low and back (−1, +1), which nets to zero. While the
+    TM1650 reports that knob's switch, the count is held at zero: with B held
+    low a turn carries no direction.
+* **Keys:** a value must repeat on 3 main-loop passes in a row (one pass per
+  millisecond) to count. The TM1650 reports one key at a time, so two TM1650
+  keys cannot be held together (rolling from one to another releases the
+  first). Key 1 is a GPIO and works together with any TM1650 key.
 * Inputs held at power-on are treated as the resting state and send nothing
   until released and pressed again.
+* **Output never blocks the input:**
+  * The HID endpoints poll at 1 ms (`bInterval` 1; 2.0.0 used 10 ms).
+  * Keymap detents are typed from an ordered queue of runs (16 runs; up to 200
+    detents per run): press, 5 ms, release, at most one step per pass. Every
+    detent is typed in the order turned, a quick back-and-forth included.
+  * In raw mode one report carries all detents taken at once (`count` byte),
+    so a slow host never loses any.
+* **2.0.0 defect (fixed in 2.0.1):** a fast full revolution gave 10–11 of about
+  20 detents.
+  * The encoders were sampled in the main loop.
+  * Each detent blocked that loop for about 55 ms: four HID reports at the
+    10 ms poll interval, plus a 15 ms tap delay.
+  * The decoder also only counted on reaching rest.
+* **Diagnostics:** `CMD_GET_STATS` (`padctl.py stats`, and the `stats` field in
+  `control-surfaced firmware-info --json`) reports:
+  * decoded detents per knob and direction;
+  * missed-state transitions;
+  * accumulator overruns, tap-queue drops, and the deepest queue.
+* **Timing budget:** the interrupt is about 40 instructions plus about 170 for
+  the decoder, a few percent of the CPU at 4 kHz. Data-flash writes mask
+  interrupts briefly, only while the keymap is being changed.
 
 ### 7.3 Modes
 
 * **Keymap mode** (default): each input sends its action from the active
   layer. Keys press and release with the physical key; knob detents are taps
-  (press, 15 ms, release); wheel, pan and move actions are one-shot. A held key
+  (press, 5 ms, release, queued in order); wheel, pan and move actions are
+  one-shot. A held key
   always releases what it pressed, even if the layer changed meanwhile. A
   modifier that another held chord still needs stays down.
 * **Raw mode**: `CMD_RAW_MODE` with a timeout of 1–10000 ms. The pad then sends
-  only report 5 events `[seq][slot][event][layer]` (1 = down, 2 = up, 3 = tap)
+  only report 5 events `[seq][slot][event][layer][count]` (1 = down, 2 = up,
+  3 = tap; `count` = detents in a tap, 2.0.1+)
   and no keyboard, consumer or mouse output. Repeating the command is the
   heartbeat. Entering raw mode releases everything the keymap held. On
   timeout or `CMD_RAW_MODE 0` it returns to the keymap; a key held across the
@@ -310,6 +349,7 @@ Layer 0 as the host sees it (Linux evdev codes in brackets):
 | `07` CORRUPT | – | flips the stored CRC (recovery test) |
 | `08` RAW_MODE | timeout lo, hi (ms) | status, raw active |
 | `09` SET_LAYER | layer, persist 0/1 | status, layer |
+| `0A` GET_STATS (2.0.1+) | page 0/1, clear 0/1 | six u16 in bytes 3–6 and 8–15; page 0: missed states per knob, overruns, queue drops, deepest queue; page 1: cw, ccw per knob |
 | other | – | status 6 (unknown) |
 
 Action types: 0 none, 1 key (HID usage ≤ 0xE7 + modifier mask, one hand only),
@@ -335,10 +375,23 @@ ctest --test-dir /mnt/ai/keypad-lab/build/control-surface -R fw_
 | Image | Size | SHA-256 |
 |---|---|---|
 | `padfw.bin` 2.0.0 | 10744 B (10740 of 14336 used; XRAM 331/768; stack 133 B free) | `af866d807e9c95f11483fe937d225b0645f75b50dda8ee0cd5f45fb7f52343e9` |
+| `padfw.bin` 2.0.1 | 11328 B (11327 of 14336 used; XRAM 421/768; stack 130 B free) | `4c6f6f70315d71f8561c68e3c0b8e72fb0f1a6fb370ff8122e2cd05e5af0a9f2` |
 
 Two independent builds produce the same hash.
 
-* `fw_logic` (about 316,000 checks): the measured key map, every code in
+* 2.0.1: `fw_logic` (about 6.5 million checks) runs a timed simulator: the
+  encoder interrupt every 250 µs, the main loop every 1 ms, and each USB report
+  blocking the loop like the endpoint does.
+  * Fast spins of 20 detents, from 3.75 ms down to 0.5 ms per transition,
+    with bounce and jitter, on every knob, in keymap and raw mode, at report
+    paces of 0, 1 and 10 ms: exact counts every time.
+  * A quick back-and-forth comes out complete and in order.
+  * A knob press during a fast spin, and all three knobs spinning at once.
+  * Missed rest states, the accumulator and queue limits, and the soak at
+    both report paces.
+  * Mutations: sampling in the main loop as 2.0.0 did fails 184 checks;
+    emitting only at rest, as 2.0.0 did, fails 3.
+* 2.0.0: `fw_logic` (about 316,000 checks): the measured key map, every code in
   0x00–0xFF, the action codec over all 65,536 stored words, CRC vectors, the
   default keymaps (layer 0 = daemon scheme), encoder sequences (clean, bounce,
   press-without-turn on each knob, press with A chatter, turns while held,
@@ -391,20 +444,31 @@ Two independent builds produce the same hash.
 ### 7.7 One-step flash and verify (needs the user)
 
 ```sh
-firmware/flash-and-verify.sh /mnt/ai/keypad-lab/fw/build/control-surface/padfw.bin \
-    af866d807e9c95f11483fe937d225b0645f75b50dda8ee0cd5f45fb7f52343e9 <logdir>
+firmware/flash-and-verify.sh <image> <sha256> <logdir> [version]
+# pad already on 2.0.x: no key hold needed
+ENTER_BOOTLOADER=1 firmware/flash-and-verify.sh firmware/release/control-surface-sy181-15k3e-2.0.1.bin \
+    4c6f6f70315d71f8561c68e3c0b8e72fb0f1a6fb370ff8122e2cd05e5af0a9f2 <logdir> 2.0.1
 ```
 
 1. The parent starts its instant-grab capture first, then the script.
-2. The user unplugs the pad, holds the **top-left** key, plugs it in, and lets
-   go after about one second.
-3. The script checks the image hash, waits for a fresh 4348:55e0 session,
-   runs `wchisp flash` once (erase, write, verify, reset; no config), waits for
-   1189:8890 serial key153 (manufacturer `OpenMacroPad`, product
-   `Control Surface 15+3`, bcdDevice 2.00), then runs the read-only checks:
-   `GET_INFO` (`CS`, format 3, 24 slots, 2 layers, firmware 2.0.0, layer 0,
-   raw off), all 48 actions, and the data-flash dump. Exit code 0 means all
-   passed.
+2. **With `ENTER_BOOTLOADER=1`** the script asks the running firmware for the
+   bootloader (`padctl.py bootloader --yes`) *after* noting any existing
+   bootloader session, so the new one counts. Without it, or if the request is
+   not answered, the user unplugs the pad, holds the **top-left** key, plugs it
+   in, and lets go after about one second.
+3. The script then:
+   * checks the image hash;
+   * waits for a fresh 4348:55e0 session and runs `wchisp flash` once (erase,
+     write, verify, reset; no config);
+   * waits for 1189:8890 serial key153 (manufacturer `OpenMacroPad`, product
+     `Control Surface 15+3`, bcdDevice 2.00);
+   * runs the read-only checks: `GET_INFO` (`CS`, format 3, 24 slots,
+     2 layers, the expected version, raw off), all 48 actions, and the
+     data-flash dump.
+   * With 2.0.1, it also zeroes the encoder counters (`padctl.py stats
+     --clear`), so a measurement starts from zero.
+4. Exit code 0 means all passed. The keymap in data flash survives the
+   reflash.
 
 ### 7.8 Verification after the flash (user present, parent grabbing)
 
@@ -423,6 +487,16 @@ firmware/flash-and-verify.sh /mnt/ai/keypad-lab/fw/build/control-surface/padfw.b
    `padctl.py reset --yes` and check key 1 = F14 again.
 5. **Layer 1**: `padctl.py layer 1 --yes`; check volume on the top knob and the
    bottom-knob press toggling back to layer 0.
+
+### 7.8a Re-measuring the knobs on 2.0.1
+
+1. `firmware/padctl.py stats --clear`.
+2. One slow and one fast full revolution per direction on the top knob.
+3. `firmware/padctl.py stats` must then show about 20 detents for each
+   revolution, with `missed-state`, overruns and drops at 0. The parent's
+   capture must show the same number of chords.
+4. A non-zero `missed-state` means transitions shorter than 250 µs. That calls
+   for a faster timer, not a different decoder.
 
 ### 7.9 Soak plan (with the user)
 

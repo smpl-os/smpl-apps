@@ -10,15 +10,20 @@
 # registers (wchisp flash = erase, write, verify, reset of code flash only)
 # and it never touches any other USB device.
 #
-#   flash-and-verify.sh IMAGE SHA256 LOGDIR
+#   flash-and-verify.sh IMAGE SHA256 LOGDIR [VERSION]
+#
+# VERSION (e.g. 2.0.1) is the firmware version GET_INFO must report afterwards.
+# With ENTER_BOOTLOADER=1 the script asks a pad already running this firmware
+# (protocol v3) to switch to the ROM bootloader itself, so nobody has to hold
+# the top-left key; if that fails it still waits for the key method.
 #
 # Environment: WCHISP (default /mnt/ai/keypad-lab/tools/wchisp/bin/wchisp).
 # Exit codes: 0 ok, 2 usage, 3 hash mismatch, 4 no bootloader within 300 s,
 # 5 flash failed, 6 pad did not come back, 7 protocol check failed.
 
 set -u
-IMAGE=${1:-}; SHA=${2:-}; LOG=${3:-}
-[ -n "$IMAGE" ] && [ -n "$SHA" ] && [ -n "$LOG" ] || { echo "usage: $0 IMAGE SHA256 LOGDIR"; exit 2; }
+IMAGE=${1:-}; SHA=${2:-}; LOG=${3:-}; VERSION=${4:-}
+[ -n "$IMAGE" ] && [ -n "$SHA" ] && [ -n "$LOG" ] || { echo "usage: $0 IMAGE SHA256 LOGDIR [VERSION]"; exit 2; }
 WCHISP=${WCHISP:-/mnt/ai/keypad-lab/tools/wchisp/bin/wchisp}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$LOG"
@@ -45,6 +50,11 @@ echo "$(stamp) sha256 ok $GOT ($(stat -c %s "$IMAGE") bytes)"
 # session that appears after this script started.
 OLD=$(usbdev 4348:55e0 | cut -d' ' -f1)
 [ -n "$OLD" ] && echo "$(stamp) ignoring existing bootloader session devnum $OLD; replug with the top-left key held"
+if [ "${ENTER_BOOTLOADER:-0}" = 1 ]; then
+    # Started only now, after OLD was taken, so the new session counts as new.
+    echo "$(stamp) asking the pad's firmware for the bootloader"
+    python3 "$HERE/padctl.py" bootloader --yes || echo "$(stamp) not answered: use the top-left key instead"
+fi
 echo "$(stamp) waiting up to 300 s: hold TOP-LEFT key and plug the pad in"
 for _ in $(seq 1 3000); do
     CUR=$(usbdev 4348:55e0 | cut -d' ' -f1)
@@ -74,9 +84,10 @@ python3 "$HERE/padctl.py" info | tee "$LOG/info.txt" || FAIL=1
 python3 "$HERE/padctl.py" get | tee "$LOG/keymap.txt" || FAIL=1
 python3 "$HERE/padctl.py" dump | tee "$LOG/dataflash.txt" || FAIL=1
 grep -q "magic CS format v3 slots 24" "$LOG/info.txt" || { echo "unexpected GET_INFO"; FAIL=1; }
-grep -q "firmware 2.0.0 layers 2 active 0 raw 0 start 0" "$LOG/info.txt" || { echo "unexpected firmware state"; FAIL=1; }
+grep -Eq "firmware ${VERSION:-[0-9]+\.[0-9]+\.[0-9]+} layers 2 active [01] raw 0 start [01]" "$LOG/info.txt" || { echo "unexpected firmware version or state"; FAIL=1; }
 [ "$(grep -c '\[ok\]' "$LOG/keymap.txt")" = 48 ] || { echo "keymap read incomplete"; FAIL=1; }
 grep -q "L0 slot  0 key1         key      key usage=0x69 mods=0x00" "$LOG/keymap.txt" || { echo "layer 0 slot 0 is not F14"; FAIL=1; }
 grep -q "L0 slot 23 knob3.cw     key      key usage=0x6e mods=0x04" "$LOG/keymap.txt" || { echo "layer 0 slot 23 is not alt+F19"; FAIL=1; }
+python3 "$HERE/padctl.py" stats --clear | tee "$LOG/stats.txt" || true   # 2.0.1+: start the counters at zero
 [ $FAIL -eq 0 ] || exit 7
 echo "$(stamp) PROTOCOL CHECKS PASSED. Next: the press capture (all 24 inputs, several rounds)."

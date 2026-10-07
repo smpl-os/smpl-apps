@@ -40,17 +40,36 @@ void USB_ISR(void) __interrupt(INT_NO_USB) {
   USB_interrupt();
 }
 
-// 1 ms tick for the raw-mode heartbeat. An 8-bit counter is read atomically.
+// Timer2 at 4 kHz: samples the encoders (so no detent depends on how busy the
+// main loop is) and counts milliseconds for the main loop and raw mode.
 static volatile uint8_t msTicks = 0;
-void TMR2_ISR(void) __interrupt(INT_NO_TMR2) {
-  TF2 = 0;
-  msTicks++;
+static uint8_t quarter = 0;
+
+static uint8_t readEncoders(void) {
+  uint8_t pins = 0;
+  if(PIN_read(PIN_ENC1_B)) pins |= 0x01;
+  if(PIN_read(PIN_ENC1_A)) pins |= 0x02;
+  if(PIN_read(PIN_ENC2_B)) pins |= 0x04;
+  if(PIN_read(PIN_ENC2_A)) pins |= 0x08;
+  if(PIN_read(PIN_ENC3_B)) pins |= 0x10;
+  if(PIN_read(PIN_ENC3_A)) pins |= 0x20;
+  return pins;
 }
 
-#define T2_RELOAD (65536UL - (F_CPU / 12 / 1000))
+void TMR2_ISR(void) __interrupt(INT_NO_TMR2) {
+  TF2 = 0;
+  PAD_encoderIsr(readEncoders());
+  if(++quarter == 4) {
+    quarter = 0;
+    msTicks++;
+  }
+}
+
+// Fsys/4 = 4 MHz; 1000 counts = 250 us.
+#define T2_RELOAD (65536UL - (F_CPU / 4 / 4000))
 
 static void timerInit(void) {
-  T2MOD &= ~(bTMR_CLK | bT2_CLK);               // Fsys / 12
+  T2MOD = (T2MOD & ~bTMR_CLK) | bT2_CLK;        // Fsys / 4
   T2CON = 0;                                    // 16-bit auto-reload timer
   RCAP2L = (uint8_t)(T2_RELOAD & 0xFF);
   RCAP2H = (uint8_t)(T2_RELOAD >> 8);
@@ -99,9 +118,10 @@ void PAD_hwRelease(uint16_t packed) {
   uint8_t s, keep = 0;
   switch((uint8_t)(packed >> 13)) {
     case ACT_KEY:
-      // A modifier another held chord still needs stays down.
+      // A modifier another held chord (or the detent being typed) still needs stays down.
       for(s = 0; s < SLOT_COUNT; s++)
         if((Pad.held[s] >> 13) == ACT_KEY) keep |= modsOf(Pad.held[s]);
+      if(Pad.tapSlot != SLOT_NONE && (Pad.tapPacked >> 13) == ACT_KEY) keep |= modsOf(Pad.tapPacked);
       KBD_releaseUsage((uint8_t)(packed & 0xFF), modsOf(packed) & (uint8_t)~keep);
       break;
     case ACT_CON:
@@ -116,35 +136,24 @@ void PAD_hwRelease(uint16_t packed) {
   }
 }
 
-void PAD_hwWait(uint8_t ms) {
-  DLY_ms(ms);
+void PAD_hwLock(void) {
+  ET2 = 0;
 }
 
-static __xdata uint8_t rawReport[5];
+void PAD_hwUnlock(void) {
+  ET2 = 1;
+}
 
-void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer) {
+static __xdata uint8_t rawReport[6];
+
+void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer, uint8_t count) {
   rawReport[0] = RAW_REPORT_ID;
   rawReport[1] = seq;
   rawReport[2] = slot;
   rawReport[3] = event;
   rawReport[4] = layer;
+  rawReport[5] = count;
   HID_sendReport(rawReport, sizeof(rawReport));
-}
-
-// ===================================================================================
-// Input sampling
-// ===================================================================================
-
-static __xdata uint8_t encA[KNOB_COUNT];
-static __xdata uint8_t encB[KNOB_COUNT];
-
-static void sampleEncoders(void) {
-  encA[0] = PIN_read(PIN_ENC1_A) ? 1 : 0;
-  encB[0] = PIN_read(PIN_ENC1_B) ? 1 : 0;
-  encA[1] = PIN_read(PIN_ENC2_A) ? 1 : 0;
-  encB[1] = PIN_read(PIN_ENC2_B) ? 1 : 0;
-  encA[2] = PIN_read(PIN_ENC3_A) ? 1 : 0;
-  encB[2] = PIN_read(PIN_ENC3_B) ? 1 : 0;
 }
 
 // ===================================================================================
@@ -174,24 +183,23 @@ void main(void) {
   if(busOK && (TM1650_readKey() & TM1650_KEY_PRESSED)) BOOT_now();
 
   startLayer = PADCFG_init();
-  sampleEncoders();
-  PAD_init(startLayer, 0, TM1650_readKey(), encA, encB);
+  PAD_init(startLayer, 0, TM1650_readKey(), readEncoders());
 
   KBD_init();
   timerInit();
   last = msTicks;
 
+  // One pass per millisecond: keys are debounced over 3 passes; the encoders
+  // are already decoded by the interrupt and only collected here.
   while(1) {
     PADCFG_task();                              // pending host command, if any
-
-    key = TM1650_readKey();
-    sampleEncoders();
-    PAD_poll(!PIN_read(PIN_KEY1), key, encA, encB);
-
-    now = msTicks;
+    do {
+      now = msTicks;
+    } while(now == last);
     PAD_tick((uint8_t)(now - last));
     last = now;
 
-    DLY_ms(1);
+    key = TM1650_readKey();
+    PAD_poll(!PIN_read(PIN_KEY1), key);
   }
 }

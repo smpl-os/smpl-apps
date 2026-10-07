@@ -3,13 +3,15 @@
 """Talk to the control-surface pad firmware (protocol v3) over hidraw.
 
 Finds the pad by VID:PID 1189:8890 and serial key153; nothing else is opened.
-Read-only commands: info, get, dump. watch switches raw mode on with heartbeats
-and off again (nothing is stored). Commands that change the pad: set, layer,
+Read-only commands: info, get, dump, stats (--clear zeroes the counters in RAM;
+nothing is stored). watch switches raw mode on with heartbeats and off again. Commands that change the pad: set, layer,
 reset, bootloader; each needs --yes.
 
     padctl.py info
     padctl.py get [--layer N]              all 24 slots
     padctl.py dump                         raw data flash, 128 bytes
+    padctl.py stats [--clear]              encoder diagnostics (2.0.1+): detents per
+                                           knob and direction, missed states, drops
     padctl.py watch [--seconds S]          raw mode with heartbeats; prints events
     padctl.py set SLOT TYPE MOD CODE [--layer N] --yes
     padctl.py layer N [--persist] --yes
@@ -29,7 +31,7 @@ import time
 VID, PID, SERIAL = 0x1189, 0x8890, "key153"
 CFG_ID, RAW_ID = 3, 5
 CMD_GET_INFO, CMD_GET_ACTION, CMD_SET_ACTION, CMD_RESET = 1, 2, 3, 4
-CMD_BOOTLOADER, CMD_DUMP, CMD_RAW_MODE, CMD_SET_LAYER = 5, 6, 8, 9
+CMD_BOOTLOADER, CMD_DUMP, CMD_RAW_MODE, CMD_SET_LAYER, CMD_GET_STATS = 5, 6, 8, 9, 0x0A
 STATUS = {1: "ok", 2: "bad index", 3: "bad action", 4: "write failed", 5: "bad argument"}
 TYPES = {0: "none", 1: "key", 2: "consumer", 3: "mouse", 4: "layer"}
 EVENTS = {1: "down", 2: "up", 3: "tap"}
@@ -98,10 +100,11 @@ def describe(t: int, mod: int, code: int) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["info", "get", "dump", "watch", "set", "layer", "reset", "bootloader"])
+    ap.add_argument("command", choices=["info", "get", "dump", "stats", "watch", "set", "layer", "reset", "bootloader"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--layer", type=int, default=None)
     ap.add_argument("--persist", action="store_true")
+    ap.add_argument("--clear", action="store_true", help="stats: zero the counters after reading")
     ap.add_argument("--seconds", type=float, default=30.0)
     ap.add_argument("--device", help="hidraw node (default: find by VID:PID and serial)")
     ap.add_argument("--yes", action="store_true", help="allow commands that change the pad")
@@ -132,6 +135,21 @@ def main() -> None:
         data = data[:128]
         for off in range(0, 128, 16):
             print(f"{off:3d}: " + " ".join(f"{b:02x}" for b in data[off:off + 16]))
+    elif a.command == "stats":
+        def words(r):
+            idx = [3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]  # byte 7 is the status
+            return [r[idx[2 * j]] | r[idx[2 * j + 1]] << 8 for j in range(6)]
+        p0 = pad.request(CMD_GET_STATS, bytes([0, 0]))
+        if p0[7] != 1:
+            sys.exit("this firmware has no GET_STATS (2.0.0)")
+        p1 = pad.request(CMD_GET_STATS, bytes([1, 1 if a.clear else 0]))
+        w0, w1 = words(p0), words(p1)
+        names = ("top", "middle", "bottom")
+        for k in range(3):
+            print(f"knob{k + 1} ({names[k]:6s}) cw {w1[2 * k]:5d}  ccw {w1[2 * k + 1]:5d}  missed-state {w0[k]:5d}")
+        print(f"accumulator overruns {w0[3]}  tap-queue drops {w0[4]}  deepest tap queue {w0[5]}")
+        if a.clear:
+            print("counters cleared")
     elif a.command == "watch":
         # Raw mode lasts 1.5 s past each heartbeat; heartbeats go out every 0.5 s.
         print(f"raw mode on {pad.path} for {a.seconds:.0f} s; press things. Ctrl-C stops.")
@@ -146,9 +164,11 @@ def main() -> None:
                 rep = pad.read(0.05)
                 if rep and rep[0] == RAW_ID and len(rep) >= 5:
                     seq, slot, ev, layer = rep[1], rep[2], rep[3], rep[4]
+                    count = rep[5] if len(rep) >= 6 and ev == 3 and rep[5] else 1
                     gap = "" if last_seq is None or ((last_seq + 1) & 0xFF) == seq else f"  (seq gap after {last_seq})"
                     last_seq = seq
-                    print(f"{time.strftime('%H:%M:%S')} seq {seq:3d} {slot_name(slot):12s} {EVENTS.get(ev, ev)} layer {layer}{gap}",
+                    times = f" x{count}" if count > 1 else ""
+                    print(f"{time.strftime('%H:%M:%S')} seq {seq:3d} {slot_name(slot):12s} {EVENTS.get(ev, ev)}{times} layer {layer}{gap}",
                           flush=True)
         except KeyboardInterrupt:
             pass

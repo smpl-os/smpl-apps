@@ -24,7 +24,7 @@ static_assert(padfw::kCfgReport == CFG_REPORT_ID);
 static_assert(padfw::kRawReport == RAW_REPORT_ID);
 static_assert(padfw::GetInfo == CMD_GET_INFO && padfw::GetAction == CMD_GET_ACTION && padfw::SetAction == CMD_SET_ACTION);
 static_assert(padfw::Reset == CMD_RESET && padfw::Bootloader == CMD_BOOTLOADER && padfw::Dump == CMD_DUMP);
-static_assert(padfw::RawMode == CMD_RAW_MODE && padfw::SetLayer == CMD_SET_LAYER);
+static_assert(padfw::RawMode == CMD_RAW_MODE && padfw::SetLayer == CMD_SET_LAYER && padfw::GetStats == CMD_GET_STATS);
 static_assert(padfw::Ok == ST_OK && padfw::BadArg == ST_BAD_ARG && padfw::Unknown == ST_UNKNOWN);
 static_assert(padfw::Down == RAW_EVT_DOWN && padfw::Up == RAW_EVT_UP && padfw::Tap == RAW_EVT_TAP);
 static_assert(padfw::kRawTimeoutMaxMs == RAW_TIMEOUT_MAX_MS);
@@ -59,7 +59,7 @@ public:
         // A reply can race the daemon closing its end: no SIGPIPE, just false.
         return m_fd >= 0 && ::send(m_fd, b.constData(), size_t(b.size()), MSG_NOSIGNAL) == b.size();
     }
-    void raw(int seq, int slot, int event, int layer = 0) { QVERIFY(send({5, seq, slot, event, layer})); }
+    void raw(int seq, int slot, int event, int layer = 0, int count = 1) { QVERIFY(send({5, seq, slot, event, layer, count})); }
 
     bool answerInfo = true;
     QByteArray magic = "CS";
@@ -133,6 +133,22 @@ private Q_SLOTS:
         QVERIFY(!padfw::parseInfo(info, 10));
         const quint8 ev[] = {5, 9, 16, 1, 0};
         QCOMPARE(int(padfw::parseRaw(ev, 5)->slot), 16);
+        const quint8 tap6[] = {5, 9, 17, 3, 0, 12};
+        QCOMPARE(int(padfw::parseRaw(tap6, 6)->count), 12);
+        const quint8 down6[] = {5, 9, 16, 1, 0, 9};  // count only means something for taps
+        QCOMPARE(int(padfw::parseRaw(down6, 6)->count), 1);
+        const quint8 tap0[] = {5, 9, 17, 3, 0, 0};
+        QCOMPARE(int(padfw::parseRaw(tap0, 6)->count), 1);
+        const quint8 stats[] = {3, 0x0A, 1, 5, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0x10, 0x01};
+        const auto w = padfw::parseStatsPage(stats, sizeof stats);
+        QVERIFY(w);
+        QCOMPARE(int((*w)[0]), 5);
+        QCOMPARE(int((*w)[2]), 2);
+        QCOMPARE(int((*w)[5]), 0x110);
+        quint8 refused[sizeof stats];
+        memcpy(refused, stats, sizeof stats);
+        refused[7] = 5;
+        QVERIFY(!padfw::parseStatsPage(refused, sizeof refused));
         const quint8 junk[] = {5, 9, 16, 7, 0};
         QVERIFY(!padfw::parseRaw(junk, 5));
         const quint8 kbd[] = {1, 0, 0, 0x69, 0, 0, 0, 0, 0};
@@ -163,6 +179,15 @@ private Q_SLOTS:
         fw->raw(7, 30, 1);   // no such slot
         fw->raw(8, 22, 3);   // a tap on a press slot means nothing
         QTRY_COMPARE(events.count(), 6);
+        fw->raw(9, 20, 3, 0, 4);   // 2.0.1: four knob2 cw detents in one report
+        QTRY_COMPARE(events.count(), 10);
+        for (int i = 6; i < 10; ++i) {
+            QCOMPARE(events.at(i).at(0).value<PadEvent>().control, QStringLiteral("knob2"));
+            QCOMPARE(events.at(i).at(0).value<PadEvent>().delta, 1);
+        }
+        QVERIFY(fw->send({5, 10, 18, 3, 0}));   // 2.0.0 report without the count byte
+        QTRY_COMPARE(events.count(), 11);
+        QCOMPARE(events.last().at(0).value<PadEvent>().delta, -1);
         auto at = [&](int i) { return events.at(i).at(0).value<PadEvent>(); };
         QCOMPARE(at(0).control, QStringLiteral("key7"));
         QCOMPARE(at(0).type, PadEvent::KeyDown);
@@ -180,9 +205,9 @@ private Q_SLOTS:
         const int before = fw->rawTimeouts.size();
         QTRY_VERIFY(fw->rawTimeouts.size() >= before + 3);
 
-        // A lost event is noticed.
+        // A lost report is noticed.
         QSignalSpy msgs(&dev, &RawPadDevice::message);
-        fw->raw(11, 0, 1);
+        fw->raw(13, 0, 1);
         QTRY_COMPARE(dev.sequenceGaps(), 1u);
         QVERIFY(msgs.last().at(0).toString().contains(QStringLiteral("2 event(s) lost")));
 

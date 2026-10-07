@@ -11,6 +11,10 @@
 #endif
 
 static PS_XDATA uint16_t Keymap[LAYER_COUNT][SLOT_COUNT];
+PS_XDATA uint8_t PADSTORE_req[16];
+PS_XDATA uint8_t PADSTORE_reply[16];
+#define req   PADSTORE_req
+#define reply PADSTORE_reply
 static PS_XDATA uint8_t crcBuf[ACTION_BYTES];
 
 static uint8_t storedCrc(void) {
@@ -82,7 +86,7 @@ uint16_t PAD_keymap(uint8_t layer, uint8_t slot) {
   return Keymap[layer][slot];
 }
 
-uint8_t PADSTORE_handle(const uint8_t *req, uint8_t *reply) {
+uint8_t PADSTORE_handle(void) {
   uint8_t i, idx, layer, type, mod, boot = 0;
   uint16_t code, packed;
 
@@ -163,6 +167,29 @@ uint8_t PADSTORE_handle(const uint8_t *req, uint8_t *reply) {
       PAD_setLayer(idx);
       reply[7] = (!req[3] || EEPROM_write(HDR_START_LAYER, idx)) ? ST_OK : ST_WRITE_FAIL;
       break;
+
+    case CMD_GET_STATS: {
+      // Page 0: illegal transitions per knob, overruns, queue drops, max queue.
+      // Page 1: detents decoded per knob, cw and ccw. Little-endian u16 each,
+      // in bytes 3..6 and 8..15 (byte 7 is the status, as everywhere).
+      static PS_XDATA padstats_t st;
+      static PS_XDATA uint16_t v[6];
+      reply[2] = idx;
+      if(idx > 1 || req[3] > 1) { reply[7] = ST_BAD_ARG; break; }
+      PAD_getStats(&st, req[3]);
+      if(idx == 0) {
+        v[0] = st.illegal[0]; v[1] = st.illegal[1]; v[2] = st.illegal[2];
+        v[3] = st.overruns;   v[4] = st.queueDrops; v[5] = st.maxQueue;
+      } else {
+        v[0] = st.cw[0]; v[1] = st.ccw[0]; v[2] = st.cw[1];
+        v[3] = st.ccw[1]; v[4] = st.cw[2]; v[5] = st.ccw[2];
+      }
+      for(i = 0; i < 12; i++) {                 // data bytes 3..6, then 8..15
+        reply[i < 4 ? 3 + i : 4 + i] = (uint8_t)((i & 1) ? (v[i >> 1] >> 8) : (v[i >> 1] & 0xFF));
+      }
+      reply[7] = ST_OK;
+      break;
+    }
 
     case CMD_BOOTLOADER:
       if(req[2] != 'B' || req[3] != 'L') { reply[7] = ST_BAD_ARG; break; }

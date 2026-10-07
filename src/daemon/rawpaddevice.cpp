@@ -247,7 +247,10 @@ void RawPadDevice::handleReport(const quint8 *data, int len)
     case SlotTarget::Ccw:
     case SlotTarget::Cw:
         if (ev->event == padfw::Tap) {
-            Q_EMIT padEvent(PadEvent{t.control, PadEvent::Turn, t.kind == SlotTarget::Cw ? 1 : -1, 0});
+            // One event per detent: the engine's coalescing and pacing apply as usual.
+            for (int i = 0; i < ev->count; ++i) {
+                Q_EMIT padEvent(PadEvent{t.control, PadEvent::Turn, t.kind == SlotTarget::Cw ? 1 : -1, 0});
+            }
         }
         break;
     }

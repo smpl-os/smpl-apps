@@ -67,9 +67,10 @@ void USB_ISR(void) __interrupt(INT_NO_USB) {
 #include "src/padlogic.h"
 void PAD_hwPress(uint16_t packed) { (void)packed; }
 void PAD_hwRelease(uint16_t packed) { (void)packed; }
-void PAD_hwWait(uint8_t ms) { (void)ms; }
-void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer) {
-  (void)seq; (void)slot; (void)event; (void)layer;
+void PAD_hwLock(void) {}
+void PAD_hwUnlock(void) {}
+void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer, uint8_t count) {
+  (void)seq; (void)slot; (void)event; (void)layer; (void)count;
 }
 
 // Roughly two minutes at the loop period below, after which output is gated on

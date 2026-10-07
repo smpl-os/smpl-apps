@@ -57,6 +57,14 @@ Request setLayer(std::uint8_t layer, bool persist)
     return r;
 }
 
+Request getStats(std::uint8_t page, bool clear)
+{
+    Request r = make(GetStats);
+    r[2] = page;
+    r[3] = clear ? 1 : 0;
+    return r;
+}
+
 std::string Info::version() const
 {
     return std::to_string(fwMajor) + '.' + std::to_string(fwMinor) + '.' + std::to_string(fwPatch);
@@ -100,7 +108,24 @@ std::optional<RawEvent> parseRaw(const std::uint8_t *data, std::size_t len)
     if (len < 5 || data[0] != kRawReport || data[3] < Down || data[3] > Tap) {
         return std::nullopt;
     }
-    return RawEvent{data[1], data[2], data[3], data[4]};
+    RawEvent e{data[1], data[2], data[3], data[4], 1};
+    if (len >= 6 && data[3] == Tap && data[5] > 0) {
+        e.count = data[5];
+    }
+    return e;
+}
+
+std::optional<std::array<std::uint16_t, 6>> parseStatsPage(const std::uint8_t *data, std::size_t len)
+{
+    if (len < 16 || !isReplyTo(data, len, GetStats) || data[7] != Ok) {
+        return std::nullopt;
+    }
+    std::array<std::uint16_t, 6> w{};
+    for (std::size_t j = 0; j < 6; ++j) {
+        const std::size_t lo = j * 2 < 4 ? 3 + j * 2 : 4 + j * 2;  // byte 7 is the status
+        w[j] = std::uint16_t(data[lo] | (data[lo + 1] << 8));
+    }
+    return w;
 }
 
 std::optional<std::vector<std::uint8_t>> exchange(int fd, const Request &req, int timeoutMs, std::string *error)
@@ -168,6 +193,44 @@ std::optional<Info> queryInfo(const std::string &devnode, std::string *error, in
         *error = "not the control-surface firmware (protocol v3)";
     }
     return info;
+}
+
+std::optional<Stats> queryStats(const std::string &devnode, bool clear, std::string *error, int timeoutMs)
+{
+    const int fd = openNode(devnode, error);
+    if (fd < 0) {
+        return std::nullopt;
+    }
+    Stats st;
+    for (std::uint8_t page = 0; page < 2; ++page) {
+        // Clear only with the last page, so both pages describe the same span.
+        const auto reply = exchange(fd, getStats(page, clear && page == 1), timeoutMs, error);
+        const auto w = reply ? parseStatsPage(reply->data(), reply->size()) : std::nullopt;
+        if (!w) {
+            ::close(fd);
+            if (reply && error) {
+                *error = "the firmware has no GET_STATS (2.0.0)";
+            }
+            return std::nullopt;
+        }
+        if (page == 0) {
+            st.illegal[0] = (*w)[0];
+            st.illegal[1] = (*w)[1];
+            st.illegal[2] = (*w)[2];
+            st.overruns = (*w)[3];
+            st.queueDrops = (*w)[4];
+            st.maxQueue = (*w)[5];
+        } else {
+            st.cw[0] = (*w)[0];
+            st.ccw[0] = (*w)[1];
+            st.cw[1] = (*w)[2];
+            st.ccw[1] = (*w)[3];
+            st.cw[2] = (*w)[4];
+            st.ccw[2] = (*w)[5];
+        }
+    }
+    ::close(fd);
+    return st;
 }
 
 bool requestBootloader(const std::string &devnode, std::string *error, int timeoutMs)
