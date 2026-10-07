@@ -82,6 +82,12 @@ public:
     void focusTrack(const QString &trackId);
     void selectClip(const QString &clipId);
     void setTrimGestureSteps(int n) { m_trimGestureSteps = n; }  // limits.trimGestureSteps (default 128)
+    // MR1a action context: an open clip-monitor source (insert/overwrite and
+    // clip markers need one) and a native drag in progress (editing actions busy).
+    void setSourceOpen(bool on);
+    void setDragging(bool on) { m_dragging = on; }
+    static QStringList candidateActions();  // the 71 MR1a candidate ids
+    void announceActionsChanged();           // test helper: ActionsChanged to every subscriber now
     static QString wheelTarget(const QString &wheel) { return QStringLiteral("cw-") + wheel; }
     QVariantMap context() const { return m_context; }
     QVariantMap state() const;
@@ -182,6 +188,12 @@ private:
     QVariantMap timelineDescriptor() const;
     void finishFrameBoundGestures();
     QVariantMap stateCheck() const;  // ready/closing/active/modal, at admission and at dispatch
+    // MR1a: host context restrictions (no caller: the descriptor's "enabled"),
+    // plus caller-specific writer ownership and drag when a caller is given.
+    QVariantMap actionRefusal(const QString &id, const Caller *caller) const;
+    void applyAction(const QString &id);
+    void scheduleActionsCheck();  // ActionsChanged when ids or enabled/checked change
+    QList<QVariantMap> actionList() const;
     void checkGestureIdle();
 
     int m_stage = 3;
@@ -226,6 +238,13 @@ private:
     QVariantMap m_clips;   // id -> {track, start, end, minStart, maxEnd, linked, audio, volumeDb, staticVolume}
     QString m_selectedClip;
     int m_trimGestureSteps = 128;
+    bool m_sourceOpen = true;
+    bool m_dragging = false;
+    QString m_editMode = QStringLiteral("normal");
+    int m_zoneIn = 0, m_zoneOut = 0;
+    QStringList m_redo;
+    QList<QVariantMap> m_actionsSent;  // ListActions result last announced
+    bool m_actionsCheckScheduled = false;
 
     friend class MockControlSurfaceAdaptor;
 };

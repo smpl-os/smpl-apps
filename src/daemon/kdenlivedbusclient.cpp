@@ -337,10 +337,24 @@ void KdenliveDBusClient::stepListActions(quint64 gen, bool becomeAvailable)
     auto *w = new QDBusPendingCallWatcher(m_conn.asyncCall(call(QStringLiteral("ListActions")), kCallTimeoutMs), this);
     connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, gen, becomeAvailable] {
         w->deleteLater();
+        onListActionsReply(w->reply(), gen, becomeAvailable);
+        if (!becomeAvailable && m_actionsRefreshGen == gen) {
+            // One refresh in flight per lease; changes announced meanwhile get one more.
+            m_actionsRefreshGen = 0;
+            if (m_actionsDirty) {
+                m_actionsDirty = false;
+                onActionsChanged();
+            }
+        }
+    });
+}
+
+void KdenliveDBusClient::onListActionsReply(const QDBusMessage &reply, quint64 gen, bool becomeAvailable)
+{
+    {
         if (gen != m_generation) {
             return;
         }
-        const QDBusMessage reply = w->reply();
         if (reply.type() == QDBusMessage::ErrorMessage) {
             // Absent-class errors become Absent; anything else keeps the previous
             // allowlist (refresh) or stays Pending so the retry path asks again.
@@ -356,8 +370,12 @@ void KdenliveDBusClient::stepListActions(quint64 gen, bool becomeAvailable)
             return;
         }
         m_actions.clear();
+        m_actionEnabled.clear();
         for (const auto &a : e.result.value(QStringLiteral("actions")).toList()) {
-            m_actions.insert(a.toMap().value(QStringLiteral("id")).toString());
+            const QVariantMap d = a.toMap();
+            const QString id = d.value(QStringLiteral("id")).toString();
+            m_actions.insert(id);
+            m_actionEnabled.insert(id, d.value(QStringLiteral("enabled"), true).toBool());
         }
         if (becomeAvailable) {
             Q_EMIT message(QStringLiteral("attached to %1: %2 controls, %3 actions, %4 commands")
@@ -367,14 +385,24 @@ void KdenliveDBusClient::stepListActions(quint64 gen, bool becomeAvailable)
                                .arg(m_commands.size()));
             setState(State::Available);
         }
-    });
+    }
 }
 
 void KdenliveDBusClient::onActionsChanged()
 {
-    if (m_state == State::Available) {
-        stepListActions(m_generation, false);
+    // MR1a announces enabled/checked changes too (e.g. undo availability, a
+    // focus change), so refreshes are coalesced: at most one in flight.
+    if (m_state != State::Available) {
+        return;
     }
+    if (m_actionsRefreshGen == m_generation) {
+        m_actionsDirty = true;
+        return;
+    }
+    m_actionsRefreshGen = m_generation;
+    m_actionsDirty = false;
+    ++m_actionRefreshes;
+    stepListActions(m_generation, false);
 }
 
 void KdenliveDBusClient::setState(State s)

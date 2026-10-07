@@ -61,10 +61,20 @@ not:
 control-surfaced list-capabilities          # add --json for scripts
 ```
 
-Kdenlive currently offers 7 actions: play, pause, loop zone, switch monitor,
-zoom fit, and zoom in/out. The default key bindings for marks, edits and
-undo/redo start working when Kdenlive offers those actions. Until then,
-`list-capabilities` lists them under "not offered".
+Kdenlive's newer build (K23-MR1a) offers about 70 actions, and every key in
+the default configuration uses one of them. An older build offers only 7: play,
+pause, loop zone, switch monitor, zoom fit, and zoom in/out. On an older build,
+the keys for marks, edits and undo/redo do nothing, and `list-capabilities`
+lists them under "not offered".
+
+Some actions only work in the right place. If one does nothing, the log
+says why:
+
+* **Delete:** the timeline must have focus.
+* **Insert and overwrite:** a clip must be open in the clip monitor, and a
+  track must be targeted.
+* **Slip tool:** while it is active, Kdenlive blocks play and shuttle. Press
+  key 11 (the Selection tool) first. Pause always works.
 
 ## 4. Start the service
 
@@ -97,7 +107,12 @@ More detail on some of these:
   gives fine steps.
 * **Track page:** keys 1–4 toggle mute (hide on a video track), solo, lock and
   target for the selected track.
-* **Trim page:** this only resizes clips; it never ripples.
+* **Trim page:** the knobs only resize clips; they never ripple. Keys 1–4:
+  cut the clip's start to the playhead, cut its end to the playhead, remove
+  the gap at the playhead, and extract the selection (delete and close the
+  gap).
+* **Clip and project monitors:** keys 6–9 play the zone, loop it (in the clip
+  monitor, loop the clip), and jump to the zone's start or end.
 
 Keys (row 1 = keys 1–5):
 

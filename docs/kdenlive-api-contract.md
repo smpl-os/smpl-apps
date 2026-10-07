@@ -10,7 +10,12 @@ The normative texts are MAIN's:
 * the addendum `k23-contract-rev2-wire-clarifications.md`, SHA-256
   `b2121cc0d8cddc642498c10e482eb533ec6db1637744c8ceee06469c194d6de2`
   (mirrored verbatim in §4.8). It records the frozen host's exact serialization
-  and changes no wire behaviour.
+  and changes no wire behaviour;
+* the additive MR1a action contract `k23-contract-mr1a-actions.md`, SHA-256
+  `1e45ae44127945221a4690b13cff4662c2f510469b9abeb80c752f6c5b0c15be`
+  (mirrored verbatim in §4.9): 71 curated action candidates, context
+  restrictions, and Slip-preview transport admission. MAIN has implemented it;
+  it is **not yet qualified against this daemon** (no new lease yet).
 
 Previous mirrors: `e061f20c…a8357` (MR2: `colorWheels`, `emittedAtMs`),
 `5da6dcee…cc5cf` (`session` in ControlAck outcomes); the first proposal in
@@ -145,22 +150,29 @@ Legend: ✅ available, ◐ partial or unsuitable for interactive use, ❌ missin
 track mute.
 
 **Qualified host (app `7a0f189d…`).** All ten controls and three commands of
-MR1–MR3 are advertised; `edit.trim` offers `trimModes: ["resize"]` only. The
-`TriggerAction` allowlist currently has **7** ids: `monitor_play`,
-`monitor_pause`, `monitor_loop_zone`, `switch_monitor`, `zoom_fit`,
-`view_zoom_in`, `view_zoom_out`. The other "action" rows above (marks, three-point
-edits, cut/delete, tools, keyframe navigation, undo/redo) wait for MAIN's
-allowlist extension (K23-MR1a); until then the daemon reports them once as not
-offered and types nothing. `control-surfaced list-capabilities` shows what a
-running Kdenlive offers.
+MR1–MR3 are advertised; `edit.trim` offers `trimModes: ["resize"]` only. Its
+`TriggerAction` allowlist has **7** ids: `monitor_play`, `monitor_pause`,
+`monitor_loop_zone`, `switch_monitor`, `zoom_fit`, `view_zoom_in`,
+`view_zoom_out`.
+
+**K23-MR1a (§4.9, implemented, not yet qualified with this daemon).** The
+allowlist grows to 71 curated candidates (only IDs the build registers are
+listed). They cover every "action" row above, including marks, three-point
+edits, cut/delete/extract, resize-to-cursor, remove gap, tools and edit modes,
+selection, keyframe navigation, and undo/redo. Roll/slide tools, dialog actions
+(save, render, marker editing, insert space) and tool-aware frame steps stay
+out. Until a Kdenlive with MR1a runs, the daemon reports unlisted actions once
+as not offered and types nothing. `control-surfaced list-capabilities` shows
+what a running Kdenlive offers.
 
 ---
 
 ## 4. Revision 2 wire contract (verbatim mirror of MAIN's files)
 
 Sections 4.1–4.7 are `k23-contract-revised.md` (`39774d0c…6e8`) after its
-title and status paragraph; 4.8 is the addendum (`b2121cc0…de2`) in full.
-Only heading levels and numbers differ from MAIN's files.
+title and status paragraph; 4.8 is the addendum (`b2121cc0…de2`) and 4.9 the
+MR1a action contract (`1e45ae44…15be`), each in full. Only heading levels and
+numbers differ from MAIN's files.
 
 ### 4.1 Availability and authorization
 
@@ -510,6 +522,115 @@ and Invoke at528-532; `parametercontrol.cpp:451-470` applies before end;
 the oversize, target-scope and revision policy; this addendum makes the exact
 frozen serialization and boundary behavior explicit.
 
+### 4.9 K23 MR1a: curated editing actions and transport admission
+
+This additive revision-2 contract supplements `k23-contract-revised.md`
+(SHA-256 `39774d0c106e8c215b0c70a4e95d94a52ac9ecda34686bae78c3e5033514d6e8`)
+and `k23-contract-rev2-wire-clarifications.md`
+(`b2121cc0d8cddc642498c10e482eb533ec6db1637744c8ceee06469c194d6de2`).
+No method signature, error envelope, version negotiation or keyboard-fallback
+policy changes. Implementation identifies itself as `Kdenlive K23 MR1a`.
+
+#### Discovery and execution
+
+`ListActions` now has71 curated candidate IDs. It returns only IDs actually
+registered by this build; conditional category-marker actions may be absent.
+Do not hardcode a returned count. Each entry retains
+`{id,text,enabled,checkable,checked,shortcut}`.
+
+`ActionsChanged` is emitted when the listed action metadata changes, including
+enabled/checked state, not only when IDs appear/disappear. Refresh ListActions
+on this signal: initial undo/redo availability is not permanent.
+
+TriggerAction still returns `accepted` and a requestId; its directed
+ActionFinished reports `invoked` or a structured error after queued revalidation.
+Invoked means the native action callback ran, not that it necessarily changed
+data or that deferred work finished. Existing native undo grouping is retained;
+no open macro spans event-loop work. Native mark-out retains its usual exclusive
+end: pressing it at frame1040 stores zoneOut1041.
+
+Editing actions reject another caller's active edit gesture with `busy`.
+They also reject a native drag in progress. Context and QAction availability
+are rechecked at dispatch, including action deletion/replacement.
+
+#### Exact candidate inventory
+
+| Area | IDs |
+|---|---|
+| Play, pause, shuttle actions | `monitor_play`, `monitor_pause`, `monitor_seek_backward`, `monitor_seek_forward` |
+| Zone/clip playback | `monitor_play_zone`, `monitor_play_zone_cursor`, `monitor_loop_zone`, `monitor_loop_clip` |
+| Monitor switching/zoom | `switch_monitor`, `monitor_zoomin`, `monitor_zoomout`, `monitor_zoomreset` |
+| Timeline zoom | `zoom_fit`, `view_zoom_in`, `view_zoom_out` |
+| Boundaries | `seek_start`, `seek_end`, `seek_clip_start`, `seek_clip_end`, `seek_zone_start`, `seek_zone_end` |
+| Edit/marker navigation | `monitor_seek_snap_backward`, `monitor_seek_snap_forward`, `monitor_seek_guide_backward`, `monitor_seek_guide_forward` |
+| In/out | `mark_in`, `mark_out` |
+| Quick/category markers | `add_marker_guide_quickly`, `add_marker_guide_1` through `add_marker_guide_10` |
+| Marker deletion | `delete_clip_marker`, `delete_sequence_marker` |
+| Three-point editing | `insert_to_in_point`, `overwrite_to_in_point`, `remove_lift`, `remove_extract` |
+| Cut, lift/delete, extract/ripple | `cut_timeline_clip`, `cut_timeline_all_clips`, `delete_timeline_clip`, `extract_clip` |
+| Resize to cursor | `resize_timeline_clip_start`, `resize_timeline_clip_end` |
+| Remove gap | `delete_space`, `delete_space_all_tracks` |
+| Tools | `select_tool`, `razor_tool`, `spacer_tool`, `ripple_tool`, `slip_tool` |
+| Native edit modes | `normal_mode`, `overwrite_mode`, `insert_mode` |
+| Selection | `select_timeline_clip`, `deselect_timeline_clip`, `select_add_timeline_clip`, `select_timeline_zone`, `select_track`, `select_all_tracks` |
+| Native keyframes | `keyframe_add`, `keyframe_next`, `keyframe_previous` |
+| History | `edit_undo`, `edit_redo` |
+
+All action forms in the current keypad example config are covered by these
+candidate IDs. Existing continuous controls and typed track/gain/trim commands
+remain available; this is not a new editing engine.
+
+#### Context restrictions
+
+- `delete_timeline_clip` requires focus inside the current timeline.
+  Otherwise it returns `target_not_found`: the native QAction is focus-sensitive
+  and could instead delete a bin clip or an effect. No silent redirection.
+- Source-zone insert/overwrite requires an open clip-monitor source and a
+  compatible timeline target. Missing source/targets return `target_not_found`.
+- Quick markers require a clip or native guide context; a selected composition
+  is not treated as a clip marker target.
+- The descriptor's `enabled` combines native QAction state with host context
+  restrictions. Caller-specific writer ownership is checked when invoked.
+- Explicit `keyframe_add` retains native add/remove behavior. It is not an
+  implicit keyframe insertion during a parameter gesture; managed parameters
+  retain their existing native ownership protection.
+
+#### Shuttle and pause
+
+The real-daemon S1 attempt was made while `tool:"slip"` and the native monitor
+trimming preview was active. Native forward/rewind intentionally refuse that
+preview. This is not an editing-writer conflict.
+
+Nonzero shuttle and playback-start actions return `busy` in that state.
+Use `select_tool`, reacquire the current epoch, then shuttle normally.
+Zero shuttle and `monitor_pause` still pause; they do not edit a clip.
+Pure `playhead.jog` remains transport-only even in Slip mode.
+
+The host now prevents a refused Play toggle from leaving `playing:true` while
+the renderer is stopped. Pause is not skipped merely because the Play action's
+cached state is false, and stopping is allowed during trimming. Nonzero
+requestShuttle reports actual native playback-start failure instead of blindly
+reporting success after a void slot call.
+
+#### Deliberate exclusions
+
+No dialog-opening actions: file open/save/save-as (save can prompt on first save
+or I/O problems), interactive marker editing, track creation/deletion,
+duration/speed dialogs, replacement confirmations, render dialogs/jobs and
+insert-space dialogs. They are absent and return `unknown_action`, not a
+keyboard-fallback invitation. Existing guarded save/job APIs remain separate.
+
+Tool-aware frame/second QAction steps are excluded because they can edit Slip
+clips; use `playhead.jog` with an explicit frame delta instead. Roll/slide tools
+not registered by this native build are not fabricated. There is no invented
+clear-zone or next/previous-selected-clip action: use advertised boundary/snap
+navigation and explicit selection operations.
+
+Track target/mute/solo/lock/hide and faders remain the typed MR3 operations.
+Effect/wheel parameter editing stays MR2. An effect-enable/compare command
+without a reviewed native action is not invented. Optional automation-editor
+point editing and loop/reverse/AI job bridges remain deferred.
+
 ---
 
 ## 5. How the daemon uses it (client policy)
@@ -551,6 +672,16 @@ Further client rules:
 * If `ListActions` fails, the client stays Pending (absent-class errors
   become Absent) and retries. It never becomes Available with an empty
   allowlist. A failed refresh keeps the previous allowlist.
+* `ActionsChanged` (MR1a: also for `enabled`/`checked` changes, e.g. undo
+  availability or a focus change) triggers a `ListActions` refresh. At most
+  one refresh is in flight per lease; signals that arrive meanwhile collapse
+  into one more refresh. The client keeps each action's `enabled`, but it does
+  not gate on it: the host revalidates every `TriggerAction` at dispatch, and
+  a refusal (`target_not_found`, `action_disabled`, `busy`) is reported, never
+  typed.
+* A `busy` refusal of `playhead.shuttle` or a playback-starting action while
+  the context's `tool` is `slip` adds a hint to switch to the Selection tool:
+  MR1a's Slip trimming preview refuses playback; it is not a writer conflict.
 
 ### 5.2 Sequences, correlation and coalescing
 
@@ -651,8 +782,13 @@ slot wins, then the profile's own bindings (the default fallback):
 Keys: wheel resets (6–8) in the wheel layer; keyframe actions, the keyframe
 mode and `param.reset` in the parameter layer; mute/hide, solo (exclusive),
 lock and target toggles of the focused track on the track page (from the
-state Kdenlive publishes, `$!ctx:` paths); curated actions otherwise, with key
-13 cycling the page (edit → track → trim).
+state Kdenlive publishes, `$!ctx:` paths); on the trim page, resize the
+selection's start/end to the playhead, remove the gap and extract; in the
+monitors, play the zone, loop the clip (clip monitor) or zone (project
+monitor), and jump to the zone's start/end (keys 6–9); curated actions
+otherwise, with key 13 cycling the page (edit → track → trim). Every action the
+default config binds is an MR1a candidate (`tst_kdenlive_dbus
+mr1aActionsInventoryAndRestrictions` checks this).
 
 Configuration features (all tested):
 
@@ -740,9 +876,31 @@ exactly:
   transport-only jog (Slip mode leaves history untouched); shuttle indices with
   0 = pause.
 
-Known deviation: the mock's action allowlist (24 ids) is wider than the
-qualified host's (7, §3), so daemon tests can exercise curated actions before
-K23-MR1a.
+MR1a (§4.9) in the mock:
+
+* `ListActions` lists exactly the 71 candidates (approximate texts and
+  shortcuts), with `checked` for the current tool and edit mode and `enabled`
+  from the host context restrictions. `ActionsChanged` goes to every
+  subscriber whenever an id, `enabled` or `checked` changes (coalesced per
+  event-loop pass);
+* context restrictions, checked at `TriggerAction` and again at dispatch:
+  * `delete_timeline_clip` outside timeline focus → `target_not_found`;
+  * insert/overwrite without a clip-monitor source (console `source off`) or
+    without a target track → `target_not_found`;
+  * markers in the clip monitor without a source → `target_not_found`;
+  * undo/redo with nothing to undo/redo → `action_disabled`;
+* editing actions (markers, three-point, lift/extract, cut, delete, extract,
+  resize, remove space, `keyframe_add`, undo/redo) are `busy` while another
+  caller owns an editing gesture or a native drag runs (console `drag on`).
+  Each one is one history entry and starts a new epoch;
+* Slip: nonzero shuttle (`Control` or `SetControlValue`) and playback-starting
+  actions are `busy` and leave `playing` unchanged; zero shuttle and
+  `monitor_pause` still pause; `select_tool` changes the tool (a target key,
+  so a new epoch);
+* `mark_out` at frame N stores zone out N + 1; dialog actions →
+  `unknown_action`.
+
+Mock assumptions MR1a leaves open are listed in §7 (E–H).
 
 Tests:
 
@@ -791,15 +949,31 @@ addendum (`b2121cc0…`); the daemon and mock follow them.
 
 Still open, from the real-editor acceptance (none blocks the daemon):
 
-* **A. Action allowlist.** Only 7 actions are offered (§3). Marks, three-point
-  edits, cut/delete, tools, keyframe navigation and undo/redo wait for MAIN's
-  K23-MR1a.
-* **B. Shuttle.** `playhead.shuttle` was refused `busy` ("monitor unavailable
-  for shuttle playback") on the private Xvfb display; untested on a real
-  display. The daemon reports it and types nothing.
+* **A. Action allowlist.** Answered by MR1a (§4.9): 71 candidates covering
+  every action the config binds. Awaiting a pinned lease to qualify it with
+  this daemon.
+* **B. Shuttle.** Explained by MR1a: S1 ran with `tool: "slip"`, whose native
+  monitor trimming preview refuses forward/rewind (`busy`, not a writer
+  conflict). `select_tool` plus a fresh epoch permits shuttle. The daemon now
+  hints at this; to be re-run under a new lease.
 * **C. Wheel descriptor `name`.** Each `colorWheels` entry reports `name:
   "lift_r"`, also for gamma and gain. It is cosmetic (the daemon uses
   `target` and `wheel`), but a per-wheel name would read better in tools.
-* **D. `monitor_play` on Xvfb** toggled `playing` without advancing the
-  playhead, while the GUI Play button did advance. Probably the headless
-  display; worth a check on a real one.
+* **D. `monitor_play`** toggled `playing` without advancing the playhead.
+  MR1a fixes the host's fake `playing` after a refused Play (and pause now
+  always pauses). To be re-run under a new lease.
+
+MR1a assumptions the mock makes where §4.9 leaves room (none blocks the
+daemon, which never relies on them):
+
+* **E. Which actions are "editing actions"** for `busy` (another caller's
+  gesture, native drag)? The mock uses the history-producing ones listed in §6.
+  A per-descriptor flag would let clients know.
+* **F. Is Slip's playback `busy` reflected in `enabled`?** The mock keeps
+  `enabled` true and refuses when invoked.
+* **G. Are context restrictions also checked synchronously in
+  `TriggerAction`?** The mock refuses there (`target_not_found`) as well as at
+  dispatch (`ActionFinished`).
+* **H. Does an editing action's own undo entry bump `epoch`?** The mock bumps
+  it, as for any history change outside a gesture, so queued edits from before
+  get `stale_context`.

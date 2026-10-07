@@ -245,6 +245,16 @@ private Q_SLOTS:
         QCOMPARE(m_mock->history(), historyBefore);  // pure transport even in Slip mode
         raw.control(contract::kJog, -50, {}, 2);       // net batch clamped once at 0
         QTRY_COMPARE(m_mock->state().value(QStringLiteral("position")).toInt(), 0);
+        // MR1a: Slip's monitor trimming preview refuses playback (busy, not an
+        // editing-writer conflict); zero still pauses. select_tool + fresh epoch.
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("SetControlValue"), {contract::kShuttle, 2.0, QVariant::fromValue(raw.common())})), contract::err::Busy);
+        raw.control(contract::kShuttle, 1, {}, 3);
+        QTRY_VERIFY(!raw.ackFor(3).isEmpty());
+        QCOMPARE(RawClient::code(raw.ackFor(3).value(QStringLiteral("outcome")).toMap()), contract::err::Busy);
+        QVERIFY(!m_mock->context().value(QStringLiteral("playing")).toBool());  // no fake playing state
+        QVERIFY(raw.call(QStringLiteral("SetControlValue"), {contract::kShuttle, 0.0, QVariant::fromValue(raw.common())}).value(QStringLiteral("ok")).toBool());
+        m_mock->setContextValue(QStringLiteral("tool"), QStringLiteral("select"));
+        raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
         for (int i = 1; i <= 7; ++i) {
             const QVariantMap r = raw.call(QStringLiteral("SetControlValue"), {contract::kShuttle, double(i), QVariant::fromValue(raw.common())});
             QVERIFY(r.value(QStringLiteral("ok")).toBool());
@@ -256,7 +266,7 @@ private Q_SLOTS:
         QCOMPARE(m_mock->context().value(QStringLiteral("playing")).toBool(), false);  // zero pauses explicitly
         QCOMPARE(RawClient::code(raw.call(QStringLiteral("SetControlValue"), {contract::kShuttle, 8.0, QVariant::fromValue(raw.common())})), contract::err::InvalidArguments);
         QCOMPARE(RawClient::code(raw.call(QStringLiteral("SetControlValue"), {contract::kZoom, 3.0, QVariant::fromValue(raw.common())})), contract::err::UnsupportedControl);
-        raw.control(contract::kZoom, 3, {{QStringLiteral("anchor"), QStringLiteral("playhead")}}, 3);
+        raw.control(contract::kZoom, 3, {{QStringLiteral("anchor"), QStringLiteral("playhead")}}, 4);
         QTRY_COMPARE(m_mock->state().value(QStringLiteral("zoom")).toInt(), 13);
     }
 
@@ -1057,6 +1067,141 @@ private Q_SLOTS:
         e.setConfig(c);
         e.handle(PadEvent{QStringLiteral("key1"), PadEvent::KeyDown, 0, 0});
         QTRY_COMPARE(keys.taps, QStringList{QStringLiteral("I")});  // stock shortcut
+    }
+
+    // K23-MR1a (k23-contract-mr1a-actions.md): the curated candidates, context
+    // restrictions, editing-action busy, ActionsChanged on enabled/checked,
+    // Slip preview and pause, mark-out's exclusive end, and the client refresh.
+    void mr1aActionsInventoryAndRestrictions()
+    {
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        QVariantMap actions = raw.actionMap();
+        QCOMPARE(actions.size(), 71);
+        QCOMPARE(QStringList(actions.keys()), [] { QStringList c = MockKdenlive::candidateActions(); c.sort(); return c; }());
+        for (const auto &a : std::as_const(actions)) {
+            QCOMPARE(QStringList(a.toMap().keys()), (QStringList{QStringLiteral("checkable"), QStringLiteral("checked"), QStringLiteral("enabled"),
+                                                                  QStringLiteral("id"), QStringLiteral("shortcut"), QStringLiteral("text")}));
+        }
+        QVERIFY(!actions.contains(QStringLiteral("roll_tool")) && !actions.contains(QStringLiteral("slide_tool")));  // not fabricated
+        // Every action the shipped config binds is a candidate.
+        QString err;
+        auto def = loadConfig(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"), &err);
+        QVERIFY2(def, qPrintable(err));
+        QStringList bound;
+        for (const Profile &p : def->profiles) {
+            auto collect = [&](const QHash<QString, Binding> &bs) {
+                for (const Binding &b : bs) {
+                    if (b.kind == Binding::Action && !bound.contains(b.name)) {
+                        bound << b.name;
+                    }
+                }
+            };
+            collect(p.bindings);
+            for (const Layer &l : p.layers) {
+                collect(l.bindings);
+            }
+        }
+        QVERIFY(bound.size() >= 20);
+        for (const QString &id : std::as_const(bound)) {
+            QVERIFY2(actions.contains(id), qPrintable(id));
+        }
+        // Dialog actions are absent: unknown_action, never a fallback invitation.
+        for (const char *id : {"file_save", "project_render", "insert_space", "edit_marker"}) {
+            QCOMPARE(RawClient::code(raw.call(QStringLiteral("TriggerAction"), {QString::fromLatin1(id), QVariant::fromValue(raw.common())})), contract::err::UnknownAction);
+        }
+        auto trigger = [&](const QString &id) { return raw.call(QStringLiteral("TriggerAction"), {id, QVariant::fromValue(raw.common())}); };
+        auto refresh = [&] { raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap(); };
+        auto enabled = [&](const char *id) { return raw.actionMap().value(QString::fromLatin1(id)).toMap().value(QStringLiteral("enabled")).toBool(); };
+        // Undo availability is not permanent, and its change is announced.
+        QVERIFY(!enabled("edit_undo"));
+        int announced = raw.actionsChanged;
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("edit_undo"))), contract::err::ActionDisabled);
+        // delete needs focus inside the timeline; no silent redirection.
+        m_mock->setContextValue(QStringLiteral("focus"), QStringLiteral("effectStack"));
+        QTRY_VERIFY(raw.actionsChanged > announced);
+        refresh();
+        QVERIFY(!enabled("delete_timeline_clip"));
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("delete_timeline_clip"))), contract::err::TargetNotFound);
+        m_mock->setContextValue(QStringLiteral("focus"), QStringLiteral("timeline"));
+        refresh();
+        QTRY_VERIFY(enabled("delete_timeline_clip"));
+        const int historyBefore = int(m_mock->history().size());
+        announced = raw.actionsChanged;
+        QCOMPARE(trigger(QStringLiteral("delete_timeline_clip")).value(QStringLiteral("result")).toMap().value(QStringLiteral("state")).toString(), QStringLiteral("accepted"));
+        QTRY_COMPARE(raw.finished.size(), 1);
+        QCOMPARE(int(m_mock->history().size()), historyBefore + 1);  // one native undo entry
+        QTRY_VERIFY(raw.actionsChanged > announced);                  // undo became available
+        QVERIFY(enabled("edit_undo"));
+        refresh();
+        // Source insertion needs a clip-monitor source and a timeline target.
+        m_mock->setSourceOpen(false);
+        QTRY_VERIFY(!enabled("insert_to_in_point"));
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("overwrite_to_in_point"))), contract::err::TargetNotFound);
+        m_mock->setSourceOpen(true);
+        // Editing actions: another caller's editing gesture or a native drag -> busy.
+        RawClient other(connectClient(), QString());
+        other.subscribe();
+        m_mock->focusWheels(QStringLiteral("lift"));
+        refresh();
+        other.context = other.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap();
+        other.control(contract::kColorWheel, 2, {{QStringLiteral("target"), cw("lift")}, {QStringLiteral("gesture"), QStringLiteral("g-other")}, {QStringLiteral("axis"), QStringLiteral("value")}}, 1);
+        QTRY_VERIFY(!other.ackFor(1).isEmpty());
+        QVERIFY(other.ackFor(1).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("ok")).toBool());
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("cut_timeline_clip"))), contract::err::Busy);
+        const QVariantMap view = trigger(QStringLiteral("zoom_fit"));  // not an editing action
+        QVERIFY2(view.value(QStringLiteral("ok")).toBool(), qPrintable(RawClient::code(view)));
+        QTRY_COMPARE(raw.finished.size(), 2);
+        refresh();
+        m_mock->setDragging(true);
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("cut_timeline_clip"))), contract::err::Busy);
+        m_mock->setDragging(false);
+        // Mark out keeps Kdenlive's exclusive end: at frame 1040 the zone ends at 1041.
+        m_mock->setPosition(1040);
+        QVERIFY(trigger(QStringLiteral("mark_out")).value(QStringLiteral("ok")).toBool());
+        QTRY_COMPARE(m_mock->state().value(QStringLiteral("zone")).toMap().value(QStringLiteral("out")).toInt(), 1041);
+        // Slip preview: playback start is busy and leaves no fake playing state;
+        // pause still works; select_tool + fresh epoch allows playback again.
+        const int finishedBefore = int(raw.finished.size());
+        QVERIFY(trigger(QStringLiteral("slip_tool")).value(QStringLiteral("ok")).toBool());
+        QTRY_COMPARE(m_mock->context().value(QStringLiteral("tool")).toString(), QStringLiteral("slip"));
+        QTRY_VERIFY(raw.actionMap().value(QStringLiteral("slip_tool")).toMap().value(QStringLiteral("checked")).toBool());
+        refresh();
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("monitor_play"))), contract::err::Busy);
+        QVERIFY(!m_mock->context().value(QStringLiteral("playing")).toBool());
+        QVERIFY(trigger(QStringLiteral("monitor_pause")).value(QStringLiteral("ok")).toBool());
+        QVERIFY(trigger(QStringLiteral("select_tool")).value(QStringLiteral("ok")).toBool());
+        QTRY_COMPARE(m_mock->context().value(QStringLiteral("tool")).toString(), QStringLiteral("select"));
+        QTRY_COMPARE(int(raw.finished.size()), finishedBefore + 3);
+        refresh();
+        QVERIFY(trigger(QStringLiteral("monitor_play")).value(QStringLiteral("ok")).toBool());
+        QTRY_VERIFY(m_mock->context().value(QStringLiteral("playing")).toBool());
+
+        // The daemon's client refreshes its view on ActionsChanged, one refresh in flight.
+        m_mock->focusWheels(QString());
+        m_mock->setContextValue(QStringLiteral("focus"), QStringLiteral("timeline"));
+        KdenliveDBusClient client(connectClient());
+        client.setServiceOverride(QString());
+        client.attachToPid(1);
+        QTRY_COMPARE(client.state(), State::Available);
+        QVERIFY(client.supportsAction(QStringLiteral("extract_clip")));
+        QVERIFY(client.actionEnabled(QStringLiteral("delete_timeline_clip")));
+        m_mock->setContextValue(QStringLiteral("focus"), QStringLiteral("clipMonitor"));
+        QTRY_VERIFY(!client.actionEnabled(QStringLiteral("delete_timeline_clip")));
+        QTest::qWait(50);  // settle the focus change's refresh
+        const int refreshes = client.actionRefreshes();
+        m_mock->setSourceOpen(false);  // state the burst's refreshes must pick up
+        for (int i = 0; i < 5; ++i) {
+            m_mock->announceActionsChanged();  // five signals queued before the client reads any
+        }
+        QTRY_VERIFY(!client.actionEnabled(QStringLiteral("insert_to_in_point")));
+        QTest::qWait(100);
+        // The first signal starts a refresh; the other four arrive while it is in
+        // flight and collapse into one more (the mock's own coalesced signal for
+        // the source change may add one).
+        const int burst = client.actionRefreshes() - refreshes;
+        QVERIFY2(burst >= 2 && burst <= 3, qPrintable(QString::number(burst)));
+        client.attachToPid(0);
     }
 
     // list-capabilities: read-only queries (no lease), related to the config.

@@ -23,6 +23,7 @@ public:
         m_conn.connect(m_service, kPath, kInterface, QStringLiteral("ControlAck"), this, SLOT(onAck(qulonglong, QString, QVariantMap)));
         m_conn.connect(m_service, kPath, kInterface, QStringLiteral("ContextChanged"), this, SLOT(onContext(QVariantMap)));
         m_conn.connect(m_service, kPath, kInterface, QStringLiteral("ActionFinished"), this, SLOT(onFinished(qulonglong, QVariantMap)));
+        m_conn.connect(m_service, kPath, kInterface, QStringLiteral("ActionsChanged"), this, SLOT(onActionsChanged()));
     }
     ~RawClient() override
     {
@@ -30,6 +31,7 @@ public:
         m_conn.disconnect(m_service, kPath, kInterface, QStringLiteral("ControlAck"), this, SLOT(onAck(qulonglong, QString, QVariantMap)));
         m_conn.disconnect(m_service, kPath, kInterface, QStringLiteral("ContextChanged"), this, SLOT(onContext(QVariantMap)));
         m_conn.disconnect(m_service, kPath, kInterface, QStringLiteral("ActionFinished"), this, SLOT(onFinished(qulonglong, QVariantMap)));
+        m_conn.disconnect(m_service, kPath, kInterface, QStringLiteral("ActionsChanged"), this, SLOT(onActionsChanged()));
     }
 
     QDBusMessage message(const QString &method) const
@@ -89,6 +91,16 @@ public:
     QList<QVariantMap> acks;      // {seq, control, outcome}
     QList<QVariantMap> finished;  // {requestId, outcome}
     int contexts = 0;
+    int actionsChanged = 0;
+    // ListActions as {id -> descriptor}.
+    QVariantMap actionMap()
+    {
+        QVariantMap out;
+        for (const auto &a : call(QStringLiteral("ListActions")).value(QStringLiteral("result")).toMap().value(QStringLiteral("actions")).toList()) {
+            out.insert(a.toMap().value(QStringLiteral("id")).toString(), a);
+        }
+        return out;
+    }
 
 public Q_SLOTS:
     void onAck(qulonglong seq, const QString &control, const QVariantMap &outcome)
@@ -102,6 +114,7 @@ public Q_SLOTS:
         ++contexts;
         context = cs::KdenliveDBusClient::normalize(ctx).toMap();
     }
+    void onActionsChanged() { ++actionsChanged; }
     void onFinished(qulonglong requestId, const QVariantMap &outcome)
     {
         finished << QVariantMap{{QStringLiteral("requestId"), QVariant::fromValue<qulonglong>(requestId)},

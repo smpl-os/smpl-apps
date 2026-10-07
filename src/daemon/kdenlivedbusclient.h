@@ -43,6 +43,10 @@ public:
     void retry() override;
     bool supportsControl(const QString &name) const override { return m_controls.contains(name); }
     bool supportsAction(const QString &id) const override { return m_actions.contains(id); }
+    // The host's current "enabled" for a listed action (informational: the
+    // host revalidates every TriggerAction, so disabled ones are still sent).
+    bool actionEnabled(const QString &id) const { return m_actionEnabled.value(id, false); }
+    int actionRefreshes() const { return m_actionRefreshes; }  // ListActions refreshes after ActionsChanged
     bool supportsCommand(const QString &name) const override { return m_commands.contains(name); }
     int limit(const QString &name, int fallback) const override
     {
@@ -90,6 +94,7 @@ private:
     void stepCapabilities(quint64 gen);
     void stepSubscribe(quint64 gen);
     void stepListActions(quint64 gen, bool becomeAvailable);
+    void onListActionsReply(const QDBusMessage &reply, quint64 gen, bool becomeAvailable);
     void handleTransportError(const QString &what, const QString &errorName, const QString &errorMessage, const QString &actionId = {});
     QDBusMessage call(const QString &method) const;
     QVariantMap commonOptions() const;
@@ -109,6 +114,10 @@ private:
     bool m_haveSerial = false;
     QVariantMap m_caps;
     QSet<QString> m_controls, m_commands, m_actions;
+    QHash<QString, bool> m_actionEnabled;
+    quint64 m_actionsRefreshGen = 0;  // generation of the refresh in flight (0: none)
+    bool m_actionsDirty = false;
+    int m_actionRefreshes = 0;
     quint64 m_seq = 0;  // never reset in this process: late acks of an old lease cannot collide
     std::map<quint64, Sent> m_sent;
     QHash<QString, quint64> m_latestForKey;

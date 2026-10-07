@@ -35,6 +35,10 @@
 // daemon types nothing into Kdenlive and shows one notice instead. Set
 // "keyFallback": true on the profile to type the stock shortcuts instead.
 // Only what the running Kdenlive advertises is used; a refusal never types keys.
+// Actions are Kdenlive's curated list (K23-MR1a, see list-capabilities). Some
+// depend on context: delete needs timeline focus, insert/overwrite need a clip
+// in the clip monitor and a target track, and the Slip tool's preview blocks
+// playback and shuttle until you switch back to the Selection tool (key11).
 //
 // Layers: the first layer whose "when" matches and that binds a slot wins,
 // then the profile's own bindings (the default fallback), then "global".
@@ -153,22 +157,33 @@
                 {
                     // Trim page (key13): resize the selected clip(s); knob2 moves the
                     // start edge, knob3 the end edge (resize only, never ripples).
+                    // Row 1: cut the selected clip's start/end to the playhead, remove
+                    // the gap at the playhead, extract (ripple delete) the selection.
                     "name": "trim",
                     "when": { "$mode.page": "trim" },
                     "bindings": {
                         "knob1": { "turn": { "control": "playhead.jog" }, "press": { "action": "monitor_play" } },
                         "knob2": { "turn": { "control": "edit.trim", "accel": 1, "options": { "edge": "start", "mode": "resize" } }, "press": "none" },
-                        "knob3": { "turn": { "control": "edit.trim", "accel": 1, "options": { "edge": "end", "mode": "resize" } }, "press": "none" }
+                        "knob3": { "turn": { "control": "edit.trim", "accel": 1, "options": { "edge": "end", "mode": "resize" } }, "press": "none" },
+                        "key1": { "action": "resize_timeline_clip_start" },
+                        "key2": { "action": "resize_timeline_clip_end" },
+                        "key3": { "action": "delete_space" },
+                        "key4": { "action": "extract_clip" }
                     }
                 },
                 {
                     // Clip monitor focused: knob1 frames, knob2 shuttle, knob3 10-frame steps.
+                    // Row 2: play/loop the zone or clip and jump to the zone's ends.
                     "name": "clip-monitor",
                     "when": { "focus": "clipMonitor" },
                     "bindings": {
                         "knob1": { "turn": { "control": "playhead.jog" }, "press": { "action": "monitor_play" } },
                         "knob2": { "turn": { "control": "playhead.shuttle" }, "press": { "action": "monitor_pause" } },
-                        "knob3": { "turn": { "control": "playhead.jog", "scale": 10, "accel": 1 }, "press": { "action": "switch_monitor" } }
+                        "knob3": { "turn": { "control": "playhead.jog", "scale": 10, "accel": 1 }, "press": { "action": "switch_monitor" } },
+                        "key6": { "action": "monitor_play_zone" },
+                        "key7": { "action": "monitor_loop_clip" },
+                        "key8": { "action": "seek_zone_start" },
+                        "key9": { "action": "seek_zone_end" }
                     }
                 },
                 {
@@ -177,7 +192,11 @@
                     "bindings": {
                         "knob1": { "turn": { "control": "playhead.jog" }, "press": { "action": "monitor_play" } },
                         "knob2": { "turn": { "control": "playhead.shuttle" }, "press": { "action": "monitor_pause" } },
-                        "knob3": { "turn": { "control": "playhead.jog", "scale": 10, "accel": 1 }, "press": { "action": "switch_monitor" } }
+                        "knob3": { "turn": { "control": "playhead.jog", "scale": 10, "accel": 1 }, "press": { "action": "switch_monitor" } },
+                        "key6": { "action": "monitor_play_zone" },
+                        "key7": { "action": "monitor_loop_zone" },
+                        "key8": { "action": "seek_zone_start" },
+                        "key9": { "action": "seek_zone_end" }
                     }
                 },
                 {

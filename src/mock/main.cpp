@@ -101,6 +101,10 @@ int main(int argc, char **argv)
                 mock.focusTrack(arg);
             } else if (cmd == QLatin1String("clip")) {
                 mock.selectClip(arg == QLatin1String("-") || arg == QLatin1String("off") ? QString() : arg);
+            } else if (cmd == QLatin1String("source")) {
+                mock.setSourceOpen(on);
+            } else if (cmd == QLatin1String("drag")) {
+                mock.setDragging(on);
             } else if (cmd == QLatin1String("grouped")) {
                 mock.setGroupedPropagation(on);
             } else if (cmd == QLatin1String("history")) {

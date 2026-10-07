@@ -49,6 +49,7 @@ public:
     bool kdenliveAbsent() const;  // Kdenlive focused, interface proven absent (or no client)
     static QStringList shiftSlots(const QString &control, int delta);
     static QString absentNotice();
+    static bool startsPlayback(const QString &controlOrAction);  // shuttle and playback-start actions
     QString modeValue(const QString &mode) const;
     int pendingTaps() const { return int(m_tapQueue.size()); }
     int activeGestures() const { return int(m_gestures.size()); }

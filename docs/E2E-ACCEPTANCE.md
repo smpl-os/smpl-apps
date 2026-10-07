@@ -44,8 +44,8 @@ The logs and scripts are in `records/k23-acceptance-20261007/`. A log line
 |---|---|---|---|
 | S1 | Jog in Slip mode moves the monitor only: 7 → 17 → 13; history and clips unchanged. | pass | `s01-transport.log` |
 | S1 | Zoom 8 → 6 → 8. | pass | `s01-transport.log` |
-| S1 | Shuttle | **open B**: refused `busy` ("monitor unavailable for shuttle playback") on Xvfb; reported, nothing typed | `s01-transport.log`, `s01b-play.log` |
-| S1b | `monitor_play`/`monitor_pause` actions | **open D**: on Xvfb `playing` toggled but the playhead did not advance; the GUI Play button did advance | `s01b-play.log` |
+| S1 | Shuttle | **open B**: refused `busy` ("monitor unavailable for shuttle playback"); reported, nothing typed. MAIN later traced it: the tool was Slip, and its trimming preview refuses playback (MR1a, §4.9 of the contract). Re-run under a new lease. | `s01-transport.log`, `s01b-play.log` |
+| S1b | `monitor_play`/`monitor_pause` actions | **open D**: `playing` toggled but the playhead did not advance; the GUI Play button did advance. MR1a fixes the fake `playing` state after a refused Play. Re-run under a new lease. | `s01b-play.log` |
 | S2 | Three knobs on the three `colorWheels` handles without changing focus: lift 0 → 0.1, gamma 1 → 0.94, gain 1 → 1.16. Undo count 6 → 9; each wheel undid and redid separately. | pass | `s02-wheels.log` |
 | S3a | Parameter nudge on a static value: level 100 → 105, one undo. | pass | `s03a-nudge.log` |
 | S3b | Live grading while playing: 105 → 108 while the playhead moved 42 → 91, one gesture. | pass | `s03b-live.log` |
@@ -89,8 +89,10 @@ The minimum spacing per subscriber was 34 ms; the minimum arrival spacing was
    `absentAtCallTimeWithoutOptInOnlyNotices`, and
    `tst_kdenlive_dbus stockKdenliveWithoutInterface` (real D-Bus, object
    absent).
-3. **Allowlist.** Only 7 actions are offered (see the contract, §3). Key
-   bindings for marks, edits and history do nothing until K23-MR1a.
+3. **Allowlist.** This host offered only 7 actions (see the contract, §3).
+   MAIN's K23-MR1a (implemented after this run) offers 71 candidates covering
+   every action the config binds. It has not yet been run with this daemon:
+   that needs a new pinned lease.
 4. **Harness lessons.** `/ControlSurface` appears only after project setup.
    Clicking the timeline moves focus, the playhead and the active track. The
    effect stack needs a click on the clip. Scroll the stack with a scrollbar
@@ -98,8 +100,9 @@ The minimum spacing per subscriber was 34 ms; the minimum arrival spacing was
 
 ## Not covered
 
-* A real display and real audio: shuttle and `monitor_play` (open items B
-  and D).
+* Shuttle outside Slip mode, and `monitor_play` after MR1a's fix (open items
+  B and D).
+* MR1a's curated actions (marks, edits, undo/redo, …) against a real editor.
 * A multi-key edit while playing, through the GUI (S3d).
 * Additive solo, which no default binding uses.
 * The physical pad. It has been silent since programming; see

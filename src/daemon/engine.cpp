@@ -101,6 +101,11 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
         });
         connect(m_kd, &KdenliveClient::refused, this, [this](const QString &what, const QString &code, const QString &msg) {
             sayOnce(what + QLatin1Char('|') + code, QStringLiteral("Kdenlive refused %1: %2%3").arg(what, code, msg.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(msg)));
+            if (code == contract::err::Busy && m_kd->context().value(QStringLiteral("tool")).toString() == QLatin1String("slip") && startsPlayback(what)) {
+                // MR1a: Slip's monitor trimming preview refuses playback; it is not a writer conflict.
+                sayOnce(QStringLiteral("slip|") + what,
+                        QStringLiteral("%1: Kdenlive's Slip tool preview blocks playback; switch to the Selection tool (select_tool) first").arg(what));
+            }
             if (code == contract::err::StaleContext || code == contract::err::TargetNotFound) {
                 dropPendingWork();  // the host already dropped this work; resync on the next input
             }
@@ -274,6 +279,14 @@ void Engine::noticeAbsent(const QString &what)
         Q_EMIT message(QStringLiteral("%1 (%2)").arg(absentNotice(), what));
         Q_EMIT notice(absentNotice());
     }
+}
+
+bool Engine::startsPlayback(const QString &what)
+{
+    static const QStringList ids{QStringLiteral("monitor_play"),       QStringLiteral("monitor_seek_backward"), QStringLiteral("monitor_seek_forward"),
+                                 QStringLiteral("monitor_play_zone"),  QStringLiteral("monitor_play_zone_cursor"), QStringLiteral("monitor_loop_zone"),
+                                 QStringLiteral("monitor_loop_clip")};
+    return what == contract::kShuttle || ids.contains(what);
 }
 
 QStringList Engine::shiftSlots(const QString &control, int delta)

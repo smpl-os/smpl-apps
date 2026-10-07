@@ -339,6 +339,35 @@ private Q_SLOTS:
         QVERIFY(reported);
     }
 
+    // MR1a: busy for shuttle/playback while Slip's trimming preview is active
+    // gets a hint; it never types keys.
+    void slipPreviewBusyHint()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        QSignalSpy msgs(&e, &Engine::message);
+        e.setConfig(m_cfg);
+        e.setActiveWindow(kKdenlive);
+        auto hints = [&] {
+            int n = 0;
+            for (const auto &m : msgs) {
+                n += m[0].toString().contains(QStringLiteral("select_tool")) ? 1 : 0;
+            }
+            return n;
+        };
+        kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)}, {QStringLiteral("tool"), QStringLiteral("select")}});
+        Q_EMIT kd.refused(contract::kShuttle, contract::err::Busy, QStringLiteral("another caller"));
+        QCOMPARE(hints(), 0);  // a writer conflict is not about the tool
+        kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(2)}, {QStringLiteral("tool"), QStringLiteral("slip")}});
+        Q_EMIT kd.refused(contract::kShuttle, contract::err::Busy, QStringLiteral("monitor trimming preview"));
+        Q_EMIT kd.refused(QStringLiteral("monitor_play"), contract::err::Busy, QString());
+        Q_EMIT kd.refused(QStringLiteral("cut_timeline_clip"), contract::err::Busy, QString());  // editing: no hint
+        QCOMPARE(hints(), 2);
+        QTest::qWait(20);
+        QVERIFY(keys.taps.isEmpty());
+    }
+
     void absentAtCallTimeFallsBackOnlyInSameWindow()
     {
         RecordingKeySink keys;
