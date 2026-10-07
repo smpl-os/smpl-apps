@@ -237,6 +237,7 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
     }
     const QJsonObject o = v.toObject();
     b.label = o.value(QStringLiteral("label")).toString();
+    b.targetFrom = o.value(QStringLiteral("targetFrom")).toString();
     b.options = o.value(QStringLiteral("options")).toObject().toVariantMap();
     if (o.contains(QStringLiteral("fallback"))) {
         auto fb = parseKeys(o.value(QStringLiteral("fallback")), error);
@@ -394,6 +395,7 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
     cfg.settings.accelWindowMs = st.value(QStringLiteral("accelWindowMs")).toInt(cfg.settings.accelWindowMs);
     cfg.settings.accelFactor = st.value(QStringLiteral("accelFactor")).toDouble(cfg.settings.accelFactor);
     cfg.settings.keyRateHz = st.value(QStringLiteral("keyRateHz")).toInt(cfg.settings.keyRateHz);
+    cfg.settings.gestureIdleMs = qBound(50, st.value(QStringLiteral("gestureIdleMs")).toInt(cfg.settings.gestureIdleMs), 590);
 
     for (const auto &pv : root.value(QStringLiteral("profiles")).toArray()) {
         const QJsonObject po = pv.toObject();

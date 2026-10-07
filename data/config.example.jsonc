@@ -13,10 +13,18 @@
 //        when the Kdenlive control interface is not available (stock builds).
 //   {"control": "playhead.jog", "scale": 1, "options": {...}, "fallback": ["left", "right"]}
 //        continuous control (coalesced); fallback = [negative key, positive key]
-//   {"cycle": "liftAxis", "label": "Lift"}  advance a mode; "$liftAxis" in options expands
+//   {"cycle": "liftAxis", "label": "Lift"}  advance a mode; "$liftAxis" in options expands,
+//        "$ctx:tool" expands to a value from Kdenlive's context
 //   {"request": "colorwheel.reset", "params": {"wheel": "lift"}}   Invoke() on Kdenlive
 //   {"command": ["notify-send", "hello"]}
 //   "none"                            explicitly unbound (stops fallthrough)
+//
+// Kdenlive: actions/controls go through Kdenlive's ControlSurface1 interface
+// when it is enabled (it is OFF by default) and only for what that Kdenlive
+// advertises. Fallback keys are typed ONLY when the interface is absent
+// (stock Kdenlive), never when Kdenlive refuses or does not answer in time.
+// Editing controls target the focused item from Kdenlive's context; to aim at
+// the colour wheel under the mouse instead, add "targetFrom": "hoveredColorWheel.target".
 {
     "device": { "vendor": "1189", "product": "8890", "serial": "key153" },
 
@@ -37,17 +45,17 @@
             "match": { "class": "^org\\.kde\\.kdenlive" },
             "kdenlive": true,
             "modes": {
-                "liftAxis": ["luma", "r", "g", "b"],
-                "gammaAxis": ["luma", "r", "g", "b"],
-                "gainAxis": ["luma", "r", "g", "b"],
+                "liftAxis": ["value", "r", "g", "b"],
+                "gammaAxis": ["value", "r", "g", "b"],
+                "gainAxis": ["value", "r", "g", "b"],
                 "paramStep": ["normal", "fine"],
-                "curveAxis": ["value", "time"]
+                "trimEdge": ["end", "start"]
             },
             "layers": [
                 {
                     // Lift/Gamma/Gain effect focused: one knob per wheel, press cycles the axis.
                     "name": "color-wheels",
-                    "when": { "effect.id": "lift_gamma_gain" },
+                    "when": { "colorWheel.target": "/.+/" },
                     "bindings": {
                         "knob1": {
                             "turn": { "control": "colorwheel.nudge", "options": { "wheel": "lift", "axis": "$liftAxis" } },
@@ -67,23 +75,9 @@
                     }
                 },
                 {
-                    // Automation curve editor: knob1 moves selected points, press toggles value/time.
-                    "name": "automation",
-                    "when": { "focus": "automationEditor" },
-                    "bindings": {
-                        "knob1": {
-                            "turn": { "control": "automation.nudge", "options": { "axis": "$curveAxis" } },
-                            "press": { "cycle": "curveAxis", "label": "Curve axis" }
-                        },
-                        "key8": { "action": "keyframe_previous" },
-                        "key9": { "action": "keyframe_next" },
-                        "key10": { "action": "keyframe_add" }
-                    }
-                },
-                {
                     // Any other effect parameter focused in the effect stack.
                     "name": "effect-param",
-                    "when": { "focus": "effectStack", "param.name": "/.+/" },
+                    "when": { "focus": "effectStack", "param.target": "/.+/" },
                     "bindings": {
                         "knob1": {
                             "turn": { "control": "param.nudge", "options": { "step": "$paramStep" } },
@@ -96,11 +90,15 @@
                     }
                 },
                 {
-                    // Trim tools active: knob2 trims the selected edit point.
+                    // Qualified trim tools with a host-issued edit target: knob2 trims,
+                    // knob2 press switches the edge.
                     "name": "trim",
-                    "when": { "tool": ["ripple", "roll", "slip", "slide"] },
+                    "when": { "tool": ["ripple", "roll"], "edit.target": "/.+/" },
                     "bindings": {
-                        "knob2": { "turn": { "control": "edit.trim" } }
+                        "knob2": {
+                            "turn": { "control": "edit.trim", "options": { "edge": "$trimEdge", "mode": "$ctx:tool" } },
+                            "press": { "cycle": "trimEdge", "label": "Trim edge" }
+                        }
                     }
                 }
             ],

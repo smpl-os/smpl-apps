@@ -44,23 +44,34 @@ void FakeKdenliveClient::triggerAction(const QString &id)
     record(QStringLiteral("action %1").arg(id));
 }
 
-void FakeKdenliveClient::control(const QString &name, double delta, const QVariantMap &options)
+bool FakeKdenliveClient::control(const QString &key, const QString &name, double delta, const QVariantMap &options)
 {
-    record(QStringLiteral("control %1 %2%3").arg(name).arg(delta).arg(compact(options)));
+    // Bookkeeping options are omitted from the printed form to keep simulate readable.
+    QVariantMap shown = options;
+    shown.remove(QStringLiteral("gesture"));
+    shown.remove(QStringLiteral("target"));
+    const QString phase = shown.take(QStringLiteral("phase")).toString();
+    record(QStringLiteral("control %1 %2%3%4")
+               .arg(name)
+               .arg(delta)
+               .arg(compact(shown), phase.isEmpty() || phase == QLatin1String("update") ? QString() : QStringLiteral(" (%1)").arg(phase)));
     controlDeltas << delta;
+    controlOptions << options;
+    controlKeys << key;
     if (m_autoAck) {
-        QTimer::singleShot(0, this, [this, name] { Q_EMIT controlAcked(name, {}); });
+        QTimer::singleShot(0, this, [this, key] { Q_EMIT controlAcked(key, {{QStringLiteral("ok"), true}}); });
     } else {
-        m_unacked << name;
+        m_unacked << key;
     }
+    return true;
 }
 
-void FakeKdenliveClient::ackAll()
+void FakeKdenliveClient::ackAll(const QVariantMap &outcome)
 {
     const QStringList pending = m_unacked;
     m_unacked.clear();
-    for (const auto &n : pending) {
-        Q_EMIT controlAcked(n, {});
+    for (const auto &k : pending) {
+        Q_EMIT controlAcked(k, outcome);
     }
 }
 
@@ -74,18 +85,38 @@ void FakeKdenliveClient::notify(const QString &text)
     record(QStringLiteral("notify %1").arg(text));
 }
 
-void FakeKdenliveClient::setAvailable(bool on)
+void FakeKdenliveClient::setState(State s)
 {
-    if (m_available != on) {
-        m_available = on;
-        Q_EMIT availabilityChanged(on);
+    if (m_state != s) {
+        m_state = s;
+        Q_EMIT stateChanged(s);
     }
 }
 
 void FakeKdenliveClient::setContext(const QVariantMap &ctx)
 {
+    const quint64 before = epoch();
     m_context = ctx;
     Q_EMIT contextChanged(ctx);
+    if (epoch() != before) {
+        Q_EMIT epochChanged(epoch());
+    }
+}
+
+void FakeKdenliveClient::setCapabilities(const QStringList &controls, const QStringList &actions, const QStringList &commands)
+{
+    m_restricted = true;
+    m_restrictedActions = true;
+    m_controls = QSet<QString>(controls.begin(), controls.end());
+    m_actions = QSet<QString>(actions.begin(), actions.end());
+    m_commands = QSet<QString>(commands.begin(), commands.end());
+}
+
+void FakeKdenliveClient::setControlCapabilities(const QStringList &controls, const QStringList &commands)
+{
+    m_restricted = true;
+    m_controls = QSet<QString>(controls.begin(), controls.end());
+    m_commands = QSet<QString>(commands.begin(), commands.end());
 }
 
 } // namespace cs

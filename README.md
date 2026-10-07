@@ -12,15 +12,21 @@ press) into a per-application control surface on Hyprland.
   pluggable; KWin is planned.
 * Per-app **profiles**. For plain apps it types keys through one uinput
   keyboard. Knob taps are paced, and reversing a knob cancels queued motion.
-* **Kdenlive** is context-aware through the proposed
-  `org.kde.kdenlive.ControlSurface1` D-Bus interface
-  (`docs/kdenlive-api-contract.md`): actions by name, continuous controls (jog,
-  shuttle, zoom, parameter and colour-wheel nudges, automation, trim, gain), and
-  context layers. For example, when Lift/Gamma/Gain is focused, the three knobs
-  become the three wheels and a knob press cycles luma/R/G/B. Knob motion is
-  coalesced (one message in flight per control, acked by Kdenlive). Stock
-  Kdenlive without the interface gets the configured fallback keys instead.
-* Dry-run and simulate modes, a mock Kdenlive, and 10 test suites.
+* **Kdenlive** is context-aware through the K23 interface
+  `org.kde.kdenlive.ControlSurface1`, wire revision 2
+  (`docs/kdenlive-api-contract.md`). It uses curated actions, staged continuous
+  controls (MR1: jog/shuttle/zoom; MR2: parameter and colour-wheel nudges;
+  MR3: track, scroll, gain, trim) and context layers. For example, when a
+  Lift/Gamma/Gain target is in the context, the three knobs become the three
+  wheels and a knob press cycles value/R/G/B.
+  * Only what Kdenlive advertises is used.
+  * Knob motion is coalesced per gesture and target. Acks are matched on
+    (session, seq).
+  * The interface is **off by default** in Kdenlive. When it is absent, the
+    configured stock shortcuts are typed. Refusals and timeouts never type
+    keys.
+* Dry-run and simulate modes, a mock Kdenlive (`--stage 1|2|3`, `--off`), and
+  11 test suites, including one on a private D-Bus session bus.
 
 ## Quick start
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "engine.h"
+#include "kdenlivecontract.h"
 
+#include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTimer>
@@ -16,6 +18,26 @@ QString optionsKey(const QVariantMap &o)
 {
     return o.isEmpty() ? QString() : QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(o)).toJson(QJsonDocument::Compact));
 }
+
+QString defaultTargetPath(const QString &name)
+{
+    if (name == contract::kParamNudge || name == contract::kCmdParamReset) {
+        return QStringLiteral("param.target");
+    }
+    if (name == contract::kColorWheel || name == contract::kCmdWheelReset) {
+        return QStringLiteral("colorWheel.target");
+    }
+    if (name == contract::kAudioGain) {
+        return QStringLiteral("audio.target");
+    }
+    if (name == contract::kTrim) {
+        return QStringLiteral("edit.target");
+    }
+    if (name == contract::kCmdTrackSet) {
+        return QStringLiteral("timeline.track.target");
+    }
+    return {};
+}
 } // namespace
 
 Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
@@ -26,36 +48,71 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
     m_tapTimer = new QTimer(this);
     m_tapTimer->setTimerType(Qt::PreciseTimer);
     connect(m_tapTimer, &QTimer::timeout, this, &Engine::drainTap);
+    m_gestureTimer = new QTimer(this);
+    m_gestureTimer->setInterval(50);
+    connect(m_gestureTimer, &QTimer::timeout, this, &Engine::checkIdleGestures);
     connect(&m_coalescer, &DeltaCoalescer::flushed, this, &Engine::onFlush);
     if (m_kd) {
-        connect(m_kd, &KdenliveClient::controlAcked, this, [this](const QString &name, const QVariantMap &) {
-            const auto keys = m_inflight.take(name);
-            for (const auto &k : keys) {
-                m_coalescer.ack(k);
+        // Acks are correlated by the client to the exact key (lease/sequence/target);
+        // only that key is released.
+        connect(m_kd, &KdenliveClient::controlAcked, this, [this](const QString &key, const QVariantMap &) { m_coalescer.ack(key); });
+        connect(m_kd, &KdenliveClient::refused, this, [this](const QString &what, const QString &code, const QString &msg) {
+            sayOnce(what + QLatin1Char('|') + code, QStringLiteral("Kdenlive refused %1: %2%3").arg(what, code, msg.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(msg)));
+            if (code == contract::err::StaleContext || code == contract::err::TargetNotFound) {
+                dropPendingWork();  // the host already dropped this work; resync on the next input
             }
         });
         connect(m_kd, &KdenliveClient::actionFailed, this, [this](const QString &id) {
+            // Interface proven absent at call time (stock Kdenlive): stock keys,
+            // but only into the same Kdenlive window that was asked.
             const Fallback fb = m_actionFallback.take(id);
-            // Type fallback keys only into the same Kdenlive window that was asked.
-            if (fb.keys.isEmpty() || !m_profile || !m_profile->kdenlive || fb.pid != m_window.pid || fb.address != m_window.address) {
+            if (fb.keys.isEmpty() || !kdenliveProfile() || fb.pid != m_window.pid || fb.address != m_window.address) {
                 return;
             }
-            Q_EMIT message(QStringLiteral("action %1 unavailable, sending fallback keys").arg(id));
+            say(QStringLiteral("action %1: interface absent, using stock shortcut").arg(id));
             enqueueTaps(QStringLiteral("action:") + id, 0, fb.keys, 1);
         });
-        connect(m_kd, &KdenliveClient::availabilityChanged, this, [this](bool) { m_coalescer.clear(); m_inflight.clear(); });
+        connect(m_kd, &KdenliveClient::stateChanged, this, [this](KdenliveClient::State) {
+            dropPendingWork();
+            m_said.clear();
+        });
+        connect(m_kd, &KdenliveClient::epochChanged, this, [this](quint64) {
+            // Targets changed and the host has already invalidated pending work
+            // and ended open gestures: never deliver queued deltas to a new target.
+            dropPendingWork();
+        });
     }
     setConfig(Config{});
+}
+
+void Engine::say(const QString &text)
+{
+    Q_EMIT message(text);
+}
+
+void Engine::sayOnce(const QString &key, const QString &text)
+{
+    if (!m_said.contains(key)) {
+        m_said.insert(key);
+        Q_EMIT message(text);
+    }
+}
+
+void Engine::dropPendingWork()
+{
+    m_coalescer.clear();
+    m_gestures.clear();
+    m_gestureTimer->stop();
+    m_tapQueue.clear();
 }
 
 void Engine::setConfig(const Config &cfg)
 {
     m_cfg = cfg;
-    m_coalescer.clear();
-    m_inflight.clear();
-    m_tapQueue.clear();
+    dropPendingWork();
     m_coalescer.setMinIntervalMs(cfg.settings.coalesceMs);
     m_coalescer.setAckTimeoutMs(cfg.settings.ackTimeoutMs);
+    m_coalescer.setMaxKeys(contract::kMaxPendingKeys);
     m_tapTimer->setInterval(qMax(1, 1000 / qMax(1, cfg.settings.keyRateHz)));
     m_profile = nullptr;
     setActiveWindow(m_window);
@@ -70,15 +127,14 @@ void Engine::setActiveWindow(const WindowInfo &w)
     if (m_profile != before || !sameWindow) {
         // Never deliver a knob's leftover motion to the next window, even when
         // both windows share a profile. Title-only changes keep it.
-        m_coalescer.clear();
-        m_inflight.clear();
-        m_tapQueue.clear();
+        dropPendingWork();
     }
     if (m_profile != before) {
+        m_said.clear();
         Q_EMIT message(QStringLiteral("profile %1 for %2").arg(m_profile ? m_profile->name : QStringLiteral("(none)"), w.cls.isEmpty() ? QStringLiteral("(no window)") : w.cls));
     }
     if (m_kd) {
-        if (!m_profile || !m_profile->kdenlive) {
+        if (!kdenliveProfile()) {
             m_kd->attachToPid(0);
         } else if (w.pid > 0) {
             m_kd->attachToPid(w.pid);
@@ -88,9 +144,19 @@ void Engine::setActiveWindow(const WindowInfo &w)
     }
 }
 
+bool Engine::kdenliveProfile() const
+{
+    return m_profile && m_profile->kdenlive;
+}
+
 bool Engine::kdenliveActive() const
 {
-    return m_kd && m_profile && m_profile->kdenlive && m_kd->isAvailable();
+    return kdenliveProfile() && m_kd && m_kd->isAvailable();
+}
+
+bool Engine::kdenliveStock() const
+{
+    return kdenliveProfile() && (!m_kd || m_kd->isAbsent());
 }
 
 QStringList Engine::turnSlots(const QString &control, int delta)
@@ -154,9 +220,12 @@ QString Engine::modeValue(const QString &mode) const
 QVariantMap Engine::expandOptions(const QVariantMap &opts) const
 {
     QVariantMap out;
+    const QVariantMap ctx = kdenliveActive() ? m_kd->context() : QVariantMap{};
     for (auto it = opts.begin(); it != opts.end(); ++it) {
         const QString s = it.value().toString();
-        if (it.value().typeId() == QMetaType::QString && s.startsWith(QLatin1Char('$'))) {
+        if (it.value().typeId() == QMetaType::QString && s.startsWith(QLatin1String("$ctx:"))) {
+            out.insert(it.key(), valueAtPath(ctx, s.mid(5)));
+        } else if (it.value().typeId() == QMetaType::QString && s.startsWith(QLatin1Char('$'))) {
             out.insert(it.key(), modeValue(s.mid(1)));
         } else {
             out.insert(it.key(), it.value());
@@ -165,8 +234,20 @@ QVariantMap Engine::expandOptions(const QVariantMap &opts) const
     return out;
 }
 
+QString Engine::resolveTarget(const Binding &b, const QString &name) const
+{
+    const QString path = b.targetFrom.isEmpty() ? defaultTargetPath(name) : b.targetFrom;
+    if (path.isEmpty() || !m_kd) {
+        return {};
+    }
+    return valueAtPath(m_kd->context(), path).toString();
+}
+
 void Engine::handle(const PadEvent &e)
 {
+    if (kdenliveProfile() && m_kd && !m_kd->isAvailable() && !m_kd->isAbsent()) {
+        m_kd->retry();  // not answered definitively yet: ask again (rate-limited by the client)
+    }
     switch (e.type) {
     case PadEvent::KeyUp:
     case PadEvent::PressUp:
@@ -212,6 +293,7 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
     const QString group = slot.section(QLatin1Char('.'), 0, 0);
     const int dir = !isTurn ? 0 : (slot.endsWith(QLatin1String(".ccw")) ? -1 : slot.endsWith(QLatin1String(".cw")) ? 1 : (detents < 0 ? -1 : 1));
     const int count = qMax(1, int(std::lround(std::abs(detents))));
+    const bool kd = kdenliveProfile();
     switch (b.kind) {
     case Binding::None:
         return;
@@ -219,32 +301,30 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
         enqueueTaps(group, dir, b.keys, count);
         return;
     case Binding::Action:
-        if (kdenliveActive()) {
+        if (!kd || kdenliveStock()) {
+            // Not Kdenlive, or plain stock Kdenlive: the action's stock shortcut.
             if (!b.keys.isEmpty()) {
-                m_actionFallback.insert(b.name, Fallback{b.keys, m_window.pid, m_window.address});
+                enqueueTaps(group, dir, b.keys, isTurn ? count : 1);
+            } else if (kd) {
+                sayOnce(QStringLiteral("nofallback|") + b.name, QStringLiteral("%1: no stock shortcut configured for %2").arg(slot, b.name));
             }
+        } else if (kdenliveActive()) {
+            if (!m_kd->supportsAction(b.name)) {
+                sayOnce(QStringLiteral("action|") + b.name, QStringLiteral("Kdenlive does not offer action %1 to control surfaces").arg(b.name));
+                return;
+            }
+            endAllGestures(false);  // discrete operations close editing gestures first
+            m_actionFallback.insert(b.name, Fallback{b.keys, m_window.pid, m_window.address});
             for (int i = 0; i < (isTurn ? count : 1); ++i) {
                 m_kd->triggerAction(b.name);
             }
-        } else if (!b.keys.isEmpty()) {
-            enqueueTaps(group, dir, b.keys, isTurn ? count : 1);
         } else {
-            Q_EMIT message(QStringLiteral("%1: Kdenlive control interface not available, action %2 dropped").arg(slot, b.name));
+            sayOnce(QStringLiteral("pending"), QStringLiteral("Kdenlive has not answered yet; %1 dropped (no keyboard fallback)").arg(b.name));
         }
         return;
-    case Binding::Control: {
-        const double delta = detents * accel * b.scale;
-        if (kdenliveActive()) {
-            const QVariantMap opts = expandOptions(b.options);
-            const QString key = b.name + QLatin1Char('|') + optionsKey(opts);
-            m_coalescer.add(key, delta, QVariantMap{{QStringLiteral("name"), b.name}, {QStringLiteral("options"), opts}});
-        } else if (b.keys.size() >= 2) {
-            enqueueTaps(group, delta < 0 ? -1 : 1, {b.keys.at(delta < 0 ? 0 : 1)}, qMax(1, int(std::lround(std::abs(delta)))));
-        } else if (b.keys.size() == 1) {
-            enqueueTaps(group, dir, b.keys, count);
-        }
+    case Binding::Control:
+        executeControl(b, slot, group, dir, (isTurn ? detents : 1) * accel * b.scale);
         return;
-    }
     case Binding::Command:
         Q_EMIT runCommand(b.argv);
         return;
@@ -252,13 +332,14 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
         QString owner;
         const auto *modes = modesFor(b.name, &owner);
         if (!modes) {
-            Q_EMIT message(QStringLiteral("cycle: unknown mode %1").arg(b.name));
+            say(QStringLiteral("cycle: unknown mode %1").arg(b.name));
             return;
         }
+        endAllGestures(false);  // options change: the next turn is a new gesture
         const QString key = owner + QLatin1Char('/') + b.name;
         m_modeIndex[key] = (m_modeIndex.value(key) + 1) % modes->value(b.name).size();
         const QString text = QStringLiteral("%1: %2").arg(b.label.isEmpty() ? b.name : b.label, modeValue(b.name));
-        Q_EMIT message(text);
+        say(text);
         if (kdenliveActive()) {
             m_kd->notify(text);
         }
@@ -266,21 +347,134 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
     }
     case Binding::Request:
         if (kdenliveActive()) {
-            m_kd->invoke(b.name, expandOptions(b.options));
+            if (!m_kd->supportsCommand(b.name)) {
+                sayOnce(QStringLiteral("command|") + b.name, QStringLiteral("Kdenlive does not offer command %1").arg(b.name));
+                return;
+            }
+            QVariantMap args = expandOptions(b.options);
+            const QString path = b.targetFrom.isEmpty() ? defaultTargetPath(b.name) : b.targetFrom;
+            if (!path.isEmpty() && !args.contains(contract::kOptTarget)) {
+                const QString target = valueAtPath(m_kd->context(), path).toString();
+                if (target.isEmpty()) {
+                    sayOnce(QStringLiteral("notarget|") + b.name, QStringLiteral("%1: no %2 in Kdenlive's context").arg(b.name, path));
+                    return;
+                }
+                args.insert(contract::kOptTarget, target);
+            }
+            endAllGestures(false);
+            m_kd->invoke(b.name, args);
+        } else if (kdenliveStock() && !b.keys.isEmpty()) {
+            enqueueTaps(group, dir, b.keys, 1);
         }
         return;
     }
 }
 
-void Engine::onFlush(const QString &key, double delta, int merged, const QVariantMap &payload)
+void Engine::executeControl(const Binding &b, const QString &slot, const QString &group, int dir, double delta)
+{
+    if (!kdenliveProfile() || kdenliveStock()) {
+        // Stock behaviour: [negative key, positive key] or one key.
+        if (b.keys.size() >= 2) {
+            enqueueTaps(group, delta < 0 ? -1 : 1, {b.keys.at(delta < 0 ? 0 : 1)}, qMax(1, int(std::lround(std::abs(delta)))));
+        } else if (b.keys.size() == 1) {
+            enqueueTaps(group, dir, b.keys, qMax(1, int(std::lround(std::abs(delta)))));
+        }
+        return;
+    }
+    if (!kdenliveActive()) {
+        sayOnce(QStringLiteral("pending"), QStringLiteral("Kdenlive has not answered yet; %1 dropped (no keyboard fallback)").arg(b.name));
+        return;
+    }
+    if (!m_kd->supportsControl(b.name)) {
+        sayOnce(QStringLiteral("control|") + b.name, QStringLiteral("Kdenlive does not offer %1 yet").arg(b.name));
+        return;
+    }
+    const QVariantMap opts = expandOptions(b.options);
+    QString key;
+    QVariantMap payloadOptions = opts;
+    if (contract::isEditingControl(b.name)) {
+        const QString target = resolveTarget(b, b.name);
+        if (target.isEmpty()) {
+            sayOnce(QStringLiteral("notarget|") + b.name, QStringLiteral("%1: no editing target in Kdenlive's context").arg(b.name));
+            return;
+        }
+        const QString bindingId = slot + QLatin1Char('|') + b.name + QLatin1Char('|') + optionsKey(opts);
+        const quint64 epoch = m_kd->epoch();
+        auto it = m_gestures.find(bindingId);
+        if (it != m_gestures.end() && (it->target != target || it->epoch != epoch || it->last.elapsed() > m_cfg.settings.gestureIdleMs)) {
+            endGesture(bindingId, false);
+            it = m_gestures.end();
+        }
+        if (it == m_gestures.end()) {
+            Gesture g;
+            g.id = QStringLiteral("cs-%1-%2").arg(QCoreApplication::applicationPid()).arg(++m_gestureCounter);
+            g.key = bindingId + QStringLiteral("|") + g.id + QStringLiteral("|") + target;
+            g.control = b.name;
+            g.target = target;
+            g.epoch = epoch;
+            g.options = opts;
+            it = m_gestures.insert(bindingId, g);
+            m_gestureTimer->start();
+        }
+        it->last.start();
+        key = it->key;
+        payloadOptions.insert(contract::kOptTarget, target);
+        payloadOptions.insert(contract::kOptGesture, it->id);
+        payloadOptions.insert(contract::kOptPhase, QStringLiteral("update"));
+    } else {
+        key = b.name + QLatin1Char('|') + optionsKey(opts);
+    }
+    if (!m_coalescer.add(key, delta, QVariantMap{{QStringLiteral("name"), b.name}, {QStringLiteral("options"), payloadOptions}})) {
+        sayOnce(QStringLiteral("limit"), QStringLiteral("too many pending controls; dropping input"));
+    }
+}
+
+void Engine::endGesture(const QString &bindingId, bool dropPending)
+{
+    const auto it = m_gestures.constFind(bindingId);
+    if (it == m_gestures.constEnd()) {
+        return;
+    }
+    const Gesture g = *it;
+    m_gestures.erase(it);
+    QVariantMap opts = g.options;
+    opts.insert(contract::kOptTarget, g.target);
+    opts.insert(contract::kOptGesture, g.id);
+    opts.insert(contract::kOptPhase, QStringLiteral("end"));
+    m_coalescer.end(g.key, QVariantMap{{QStringLiteral("name"), g.control}, {QStringLiteral("options"), opts}}, dropPending);
+    if (m_gestures.isEmpty()) {
+        m_gestureTimer->stop();
+    }
+}
+
+void Engine::endAllGestures(bool dropPending)
+{
+    const auto ids = m_gestures.keys();
+    for (const auto &id : ids) {
+        endGesture(id, dropPending);
+    }
+}
+
+void Engine::checkIdleGestures()
+{
+    const auto ids = m_gestures.keys();
+    for (const auto &id : ids) {
+        if (m_gestures.value(id).last.elapsed() > m_cfg.settings.gestureIdleMs) {
+            endGesture(id, false);
+        }
+    }
+}
+
+void Engine::onFlush(const QString &key, double delta, int merged, const QVariantMap &payload, bool isEnd)
 {
     Q_UNUSED(merged)
+    Q_UNUSED(isEnd)
     if (!kdenliveActive()) {
         return;
     }
-    const QString name = payload.value(QStringLiteral("name")).toString();
-    m_inflight[name].insert(key);
-    m_kd->control(name, delta, payload.value(QStringLiteral("options")).toMap());
+    if (!m_kd->control(key, payload.value(QStringLiteral("name")).toString(), delta, payload.value(QStringLiteral("options")).toMap())) {
+        m_coalescer.ack(key);  // not sent: do not wait for an ack that cannot come
+    }
 }
 
 void Engine::enqueueTaps(const QString &group, int dir, const QList<KeyChord> &chords, int count)

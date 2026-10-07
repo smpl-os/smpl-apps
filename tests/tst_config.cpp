@@ -43,7 +43,7 @@ private Q_SLOTS:
         const Profile *kd = cfg->profileFor(QStringLiteral("org.kde.kdenlive"), QStringLiteral("x"));
         QCOMPARE(kd->name, QStringLiteral("kdenlive"));
         QVERIFY(kd->kdenlive);
-        QCOMPARE(kd->layers.size(), 4);
+        QCOMPARE(kd->layers.size(), 3);
         QCOMPARE(cfg->profileFor(QStringLiteral("org.kde.kdenlive.automation-preview"), {})->name, QStringLiteral("kdenlive"));
         QCOMPARE(cfg->profileFor(QStringLiteral("firefox"), {})->name, QStringLiteral("global"));
         const Binding jog = kd->bindings.value(QStringLiteral("knob1.turn"));

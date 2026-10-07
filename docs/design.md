@@ -34,7 +34,7 @@ For an event on slot `knob1.turn` (or `key5`, `knob2.press`, …):
 `focus`, `tool`). Values are exact strings, `/regex/`, `!negation`, lists
 (any of) or booleans (present/absent).
 
-Modes (`"modes": {"liftAxis": ["luma","r","g","b"]}`) are per profile.
+Modes (`"modes": {"liftAxis": ["value","r","g","b"]}`) are per profile.
 `{"cycle":"liftAxis"}` advances them, and `"$liftAxis"` in control options
 expands to the current value. Cycling also calls `Notify` so Kdenlive shows
 "Lift: r".
@@ -65,11 +65,16 @@ expands to the current value. Cycling also calls `Notify` so Kdenlive shows
   USB parent (VID, PID, serial), then checks `EVIOCGID` against the constants on
   the opened node before `EVIOCGRAB`. The uinput keyboard has its own IDs
   (`1d6b:0cf1`, `BUS_VIRTUAL`), so the daemon can never grab it.
-* Kdenlive action fallbacks: keys are typed only for a definite "not
-  triggered" answer or an absent interface. A timeout never counts, because the
-  action may still run late. They also go only into the same Kdenlive window
-  (pid and address) that was asked. Stale replies after a re-attach are
-  ignored.
+* Kdenlive keyboard fallbacks: stock shortcuts are typed **only when the
+  interface is absent** (no service, interface off, or an incompatible
+  revision).
+  * Never on a domain refusal such as `modal` or `action_disabled`, never on a
+    timeout, and never while the answer is still pending.
+  * A capability Kdenlive does not advertise is reported, not typed.
+  * If an action call proves the interface vanished, the key goes only into
+    the same Kdenlive window (pid and address) that was asked.
+  * Stale replies after a re-attach are ignored, and acks are matched on
+    (session, seq).
 * The virtual keyboard does not advertise power, sleep, wakeup, suspend,
   rfkill, battery or coffee keys, so the kernel drops those codes even if a
   config names them.

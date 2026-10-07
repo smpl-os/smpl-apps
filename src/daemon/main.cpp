@@ -94,7 +94,8 @@ std::optional<Config> obtainConfig(const QString &path, bool explicitPath)
     return c;
 }
 
-// simulate: "window CLASS [TITLE]" | "pid N" | "context {json}" | "kdenlive on|off"
+// simulate: "window CLASS [TITLE]" | "pid N" | "context {json}" | "kdenlive on|off|pending"
+//           "stage 1|2|3" (advertised controls/commands)
 //           "key3" | "knob1 +3" | "knob1 -1" | "knob2 press" | "wait MS" | "# comment"
 int simulate(Engine &engine, FakeKdenliveClient &kd, StaticWindowTracker &tracker, QIODevice &in)
 {
@@ -123,7 +124,22 @@ int simulate(Engine &engine, FakeKdenliveClient &kd, StaticWindowTracker &tracke
         } else if (cmd == QLatin1String("context")) {
             kd.setContext(QJsonDocument::fromJson(rest.toUtf8()).object().toVariantMap());
         } else if (cmd == QLatin1String("kdenlive")) {
-            kd.setAvailable(rest == QLatin1String("on"));
+            kd.setState(rest == QLatin1String("on") ? KdenliveClient::State::Available
+                        : rest == QLatin1String("pending") ? KdenliveClient::State::Pending
+                                                           : KdenliveClient::State::Absent);
+        } else if (cmd == QLatin1String("stage")) {
+            const int n = rest.toInt();
+            QStringList controls{QStringLiteral("playhead.jog"), QStringLiteral("playhead.shuttle"), QStringLiteral("timeline.zoom")};
+            QStringList commands;
+            if (n >= 2) {
+                controls << QStringLiteral("param.focus") << QStringLiteral("param.nudge") << QStringLiteral("colorwheel.nudge");
+                commands << QStringLiteral("param.reset") << QStringLiteral("colorwheel.reset");
+            }
+            if (n >= 3) {
+                controls << QStringLiteral("timeline.track") << QStringLiteral("timeline.scroll") << QStringLiteral("audio.gain") << QStringLiteral("edit.trim");
+                commands << QStringLiteral("track.set");
+            }
+            kd.setControlCapabilities(controls, commands);
         } else if (cmd == QLatin1String("wait")) {
             QEventLoop loop;
             QTimer::singleShot(rest.toInt(), &loop, &QEventLoop::quit);
@@ -256,7 +272,11 @@ int main(int argc, char **argv)
         client.attachToPid(1);
         QEventLoop loop;
         QTimer::singleShot(2000, &loop, &QEventLoop::quit);
-        QObject::connect(&client, &KdenliveClient::availabilityChanged, &loop, &QEventLoop::quit);
+        QObject::connect(&client, &KdenliveClient::stateChanged, &loop, [&loop](KdenliveClient::State s) {
+            if (s == KdenliveClient::State::Available || s == KdenliveClient::State::Absent) {
+                loop.quit();
+            }
+        });
         loop.exec();
         if (!client.isAvailable()) {
             std::fprintf(stderr, "%s does not implement %s\n", qPrintable(service), "org.kde.kdenlive.ControlSurface1");
@@ -276,7 +296,7 @@ int main(int argc, char **argv)
         for (int i = 0; i < n; ++i) {
             acked = false;
             t.start();
-            client.control(QStringLiteral("playhead.jog"), (i % 2) ? -1 : 1, {});
+            client.control(QStringLiteral("bench"), QStringLiteral("playhead.jog"), (i % 2) ? -1 : 1, {});
             deadline.start(500);
             loop.exec();
             deadline.stop();

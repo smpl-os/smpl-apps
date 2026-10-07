@@ -42,10 +42,14 @@ public:
     std::optional<Resolution> resolve(const QStringList &candidates) const;
     std::optional<Resolution> resolve(const QString &slot) const { return resolve(QStringList{slot}); }
     static QStringList turnSlots(const QString &control, int delta);
+
     const Profile *activeProfile() const { return m_profile; }
-    bool kdenliveActive() const;
+    bool kdenliveActive() const;  // interface available
+    bool kdenliveStock() const;   // Kdenlive focused, interface proven absent: stock keys allowed
     QString modeValue(const QString &mode) const;
     int pendingTaps() const { return int(m_tapQueue.size()); }
+    int activeGestures() const { return int(m_gestures.size()); }
+    void endAllGestures(bool dropPending);
 
 Q_SIGNALS:
     void runCommand(const QStringList &argv);
@@ -57,12 +61,29 @@ private:
         int dir = 0;
         KeyChord chord;
     };
+    struct Gesture {
+        QString id;
+        QString key;  // coalescer key
+        QString control;
+        QString target;
+        quint64 epoch = 0;
+        QVariantMap options;
+        QElapsedTimer last;
+    };
     void execute(const Resolution &r, const QString &slot, double detents, bool isTurn, double accel = 1.0);
+    void executeControl(const Binding &b, const QString &slot, const QString &group, int dir, double delta);
     void enqueueTaps(const QString &group, int dir, const QList<KeyChord> &chords, int count);
     void drainTap();
     QVariantMap expandOptions(const QVariantMap &opts) const;
+    QString resolveTarget(const Binding &b, const QString &name) const;
     const QHash<QString, QStringList> *modesFor(const QString &mode, QString *owner) const;
-    void onFlush(const QString &key, double delta, int merged, const QVariantMap &payload);
+    void onFlush(const QString &key, double delta, int merged, const QVariantMap &payload, bool isEnd);
+    void endGesture(const QString &bindingId, bool dropPending);
+    void checkIdleGestures();
+    void say(const QString &text);
+    void sayOnce(const QString &key, const QString &text);
+    void dropPendingWork();
+    bool kdenliveProfile() const;
 
     KeySink *m_keys;
     KdenliveClient *m_kd;
@@ -70,8 +91,10 @@ private:
     WindowInfo m_window;
     const Profile *m_profile = nullptr;
     DeltaCoalescer m_coalescer;
-    QHash<QString, QSet<QString>> m_inflight;  // control name -> coalescer keys
-    QHash<QString, int> m_modeIndex;            // "profile/mode" -> index
+    QHash<QString, Gesture> m_gestures;  // binding identity -> open editing gesture
+    quint64 m_gestureCounter = 0;
+    QTimer *m_gestureTimer;
+    QHash<QString, int> m_modeIndex;  // "profile/mode" -> index
     QHash<QString, QElapsedTimer> m_lastTurn;
     struct Fallback {
         QList<KeyChord> keys;
@@ -79,6 +102,7 @@ private:
         QString address;
     };
     QHash<QString, Fallback> m_actionFallback;
+    QSet<QString> m_said;
     QList<Tap> m_tapQueue;
     QTimer *m_tapTimer;
 };
