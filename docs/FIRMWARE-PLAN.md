@@ -204,3 +204,19 @@ The service stays disabled until the user enables it.
 | Code-flash wear | negligible | - | keymap in data flash, which is rated for far more writes than code flash; code flash only for the few reflashes (~200 cycles) |
 | Licence | none for personal use | - | firmware fork stays CC BY-SA 3.0 with attribution; daemon side is ours |
 | Daemon and firmware mismatch | low | inputs ignored | `GET_INFO` reports firmware version and slot count; the daemon checks it |
+
+## Progress log
+
+* **11:5x** The user entered the ROM bootloader by holding the top-left key at
+  plug-in. That confirms DOWNLOAD_CFG = P1.5 (wchisp: BTVER 02.40,
+  CODE_PROTECT 0, NO_BOOT_LOAD 1, UID 6E-78-A3-4C).
+* **11:57** Two `wchisp flash` attempts timed out at identify. The bootloader
+  wedges after repeated sessions. Nothing was erased.
+* **11:59:07–10** Fresh session (devnum 29). `wchisp flash discovery.bin`
+  erased 8 sectors, wrote 6144 B, **Verify OK**, then reset. The config
+  registers were read only and left unchanged. Log:
+  `docs/records/flash-20261007-wchisp-discovery.log`. **The stock firmware is
+  gone from here on.**
+* The pad re-enumerated as 1189:8890 at full speed, "SY181 / Macropad 12+3 /
+  CH552GPAD", with one HID interface: hidraw4, event18 (kbd), event19 (mouse).
+  The discovery mapping session is next (the parent captures).

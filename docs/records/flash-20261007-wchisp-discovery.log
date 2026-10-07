@@ -1,0 +1,41 @@
+2026-10-07T11:59:07-07:00 new bootloader session devnum=29
+18:59:07 [0m[34m[INFO] [0mOpening USB device #0
+18:59:07 [0m[34m[INFO] [0mChip: CH552[0x5211] (Code Flash: 14KiB, Data EEPROM: 128 Bytes)
+18:59:07 [0m[34m[INFO] [0mChip UID: 6E-78-A3-4C-00-00-00-00
+18:59:07 [0m[34m[INFO] [0mBTVER(bootloader ver): 02.40
+18:59:07 [0m[34m[INFO] [0mCurrent config registers: fffffffffdffffffff520000000204006e78a34c00000000
+REVERSED: 0xFFFFFFFF
+WPROTECT: 0xFFFFFFFD
+  [0:0]   NO_KEY_SERIAL_DOWNLOAD 0x1 (0b1)
+    `- Enable
+  [1:1]   DOWNLOAD_CFG 0x0 (0b0)
+    `- P5.1 / P51 / P1.5
+GLOBAL_CFG: 0x000052FF
+  [15:15] CODE_PROTECT 0x0 (0b0)
+    `- Forbid code & data protection
+  [14:14] NO_BOOT_LOAD 0x1 (0b1)
+    `- Boot from 0xf400 Bootloader
+  [13:13] EN_LONG_RESET 0x0 (0b0)
+    `- Short reset
+  [12:12] XT_OSC_STRONG 0x1 (0b1)
+    `- Enhanced
+  [11:11] EN_P5.7_RESET 0x0 (0b0)
+    `- Forbid
+  [10:10] EN_P0_PULLUP 0x0 (0b0)
+    `- Forbid
+  [9:8]   RESERVED 0x2 (0b10)
+    `- Default
+  [7:0]   RESERVED 0xFF (0b11111111)
+    `- Default
+18:59:07 [0m[34m[INFO] [0mRead /mnt/ai/keypad-lab/fw/build/openmacropad/firmware/out/discovery.bin as Binary format
+18:59:07 [0m[34m[INFO] [0mFirmware size: 6144
+18:59:07 [0m[34m[INFO] [0mErasing...
+18:59:07 [0m[33m[WARN] [0merase_code: set min number of erased sectors to 8
+18:59:07 [0m[34m[INFO] [0mErased 8 code flash sectors
+18:59:08 [0m[34m[INFO] [0mErase done
+18:59:08 [0m[34m[INFO] [0mWriting to code flash...
+18:59:09 [0m[34m[INFO] [0mCode flash 6144 bytes written
+18:59:10 [0m[34m[INFO] [0mVerifying...
+18:59:10 [0m[34m[INFO] [0mVerify OK
+18:59:10 [0m[34m[INFO] [0mNow reset device and skip any communication errors
+2026-10-07T11:59:10-07:00 wchisp rc=0
