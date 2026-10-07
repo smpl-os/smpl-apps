@@ -270,26 +270,50 @@ bool SettingsService::filterPadEvent(const PadEvent &e)
 // Queries
 // ---------------------------------------------------------------------------------
 
-BoardProfile SettingsService::currentLayout() const
+std::optional<BoardProfile> SettingsService::firmwareLayout() const
 {
     if (m_device.present && !m_device.firmware.board.isEmpty()) {
         if (auto p = builtinBoardProfile(m_device.firmware.board)) {
             p->source = QStringLiteral("firmware");
-            return *p;
+            return p;
         }
+    }
+    return std::nullopt;
+}
+
+BoardProfile SettingsService::currentLayout() const
+{
+    if (m_fallbackLayout && m_fallbackLayout->source == QLatin1String("config")) {
+        return *m_fallbackLayout;  // the user's override wins over the firmware
+    }
+    if (auto fw = firmwareLayout()) {
+        return *fw;
     }
     if (m_fallbackLayout) {
         return *m_fallbackLayout;
     }
-    return *builtinBoardProfile(QStringLiteral("sy181-15k3e"));
+    BoardProfile p = *builtinBoardProfile(QStringLiteral("sy181-15k3e"));
+    p.source = QStringLiteral("default");
+    return p;
 }
 
 QJsonObject SettingsService::layoutJson() const
 {
-    if ((m_device.present && !m_device.firmware.board.isEmpty() && builtinBoardProfile(m_device.firmware.board)) || m_fallbackLayout) {
-        return currentLayout().toJson();
+    const auto fw = firmwareLayout();
+    if (!fw && !m_fallbackLayout) {
+        return {};
     }
-    return {};
+    return layoutReport(currentLayout(), fw, m_device.present ? m_device.firmware.slotCount : 0);
+}
+
+QStringList SettingsService::configWarnings() const
+{
+    QStringList w = m_configWarnings;
+    const QString l = layoutMismatchWarning(currentLayout(), firmwareLayout(), m_device.present ? m_device.firmware.slotCount : 0);
+    if (!l.isEmpty()) {
+        w << l;
+    }
+    return w;
 }
 
 void SettingsService::setFallbackLayout(const BoardProfile &p)
@@ -384,7 +408,7 @@ QString SettingsService::GetStatus()
                             {QStringLiteral("config"), QJsonObject{{QStringLiteral("path"), m_store.path()},
                                                                    {QStringLiteral("hash"), m_configHash},
                                                                    {QStringLiteral("error"), m_configError},
-                                                                   {QStringLiteral("warnings"), QJsonArray::fromStringList(m_configWarnings)}}},
+                                                                   {QStringLiteral("warnings"), QJsonArray::fromStringList(configWarnings())}}},
                             {QStringLiteral("identify"), identify},
                             {QStringLiteral("layout"), layoutJson()},
                             {QStringLiteral("cheatsheet"), cheatsheetStatus()},
@@ -458,7 +482,20 @@ QString SettingsService::GetConfig(QString &path, QString &hash)
 
 QString SettingsService::ValidateConfig(const QString &text)
 {
-    return json(m_store.validate(text.toUtf8()).toJson());
+    const auto v = m_store.validate(text.toUtf8());
+    QJsonObject o = v.toJson();
+    if (v.config) {
+        // Against the pad as it is now: the layout this config would give.
+        const auto fw = firmwareLayout();
+        const int fwSlots = m_device.present ? m_device.firmware.slotCount : 0;
+        const BoardProfile l = effectiveLayout(*v.config, fw ? fw->id : QString());
+        o.insert(QStringLiteral("layout"), layoutReport(l, fw, fwSlots));
+        const QString w = layoutMismatchWarning(l, fw, fwSlots);
+        if (!w.isEmpty()) {
+            o.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(v.warnings + QStringList{w}));
+        }
+    }
+    return json(o);
 }
 
 QString SettingsService::applyText(const QByteArray &text, const QString &hash, QJsonObject *out)
@@ -471,10 +508,10 @@ QString SettingsService::applyText(const QByteArray &text, const QString &hash, 
     if (!err.isEmpty()) {
         return err;
     }
-    if (out) {
-        out->insert(QStringLiteral("warnings"), QJsonArray::fromStringList(v.warnings));
-    }
     setConfigState(hash, QString(), v.warnings);
+    if (out) {
+        out->insert(QStringLiteral("warnings"), QJsonArray::fromStringList(configWarnings()));
+    }
     return {};
 }
 

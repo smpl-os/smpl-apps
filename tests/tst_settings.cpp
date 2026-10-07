@@ -658,13 +658,55 @@ private Q_SLOTS:
         d.present = true;
         d.usb = usb(QStringLiteral("1189"), QStringLiteral("8890"), QStringLiteral("OpenMacroPad"), QStringLiteral("Control Surface 15+3"), QStringLiteral("0200"));
         d.firmware = classifyFirmware(d.usb);
+        QCOMPARE(d.firmware.version, QStringLiteral("2.0"));
+        QCOMPARE(d.firmware.versionSource, QStringLiteral("bcdDevice"));
         s.setDevice(d);
-        const QJsonObject layout = obj(s.GetLayout()).value(QStringLiteral("layout")).toObject();
+        // The config's layout (an override, e.g. a variant) wins over the
+        // firmware's board; both are reported, with the mismatch.
+        QJsonObject layout = obj(s.GetLayout()).value(QStringLiteral("layout")).toObject();
+        QCOMPARE(layout.value(QStringLiteral("id")).toString(), QStringLiteral("grid-3k1e"));
+        QCOMPARE(layout.value(QStringLiteral("source")).toString(), QStringLiteral("config"));
+        QCOMPARE(layout.value(QStringLiteral("firmwareLayout")).toObject().value(QStringLiteral("id")).toString(), QStringLiteral("sy181-15k3e"));
+        QCOMPARE(layout.value(QStringLiteral("firmwareLayout")).toObject().value(QStringLiteral("source")).toString(), QStringLiteral("firmware"));
+        QCOMPARE(layout.value(QStringLiteral("matchesFirmware")).toBool(), false);
+        QJsonObject st = obj(s.GetStatus());
+        QCOMPARE(st.value(QStringLiteral("layout")).toObject().value(QStringLiteral("id")).toString(), QStringLiteral("grid-3k1e"));
+        QJsonArray warnings = st.value(QStringLiteral("config")).toObject().value(QStringLiteral("warnings")).toArray();
+        QCOMPARE(warnings.size(), 1);
+        QVERIFY(warnings.first().toString().startsWith(QLatin1String("layout: the config's grid-3k1e")));
+        // Without an override the firmware's board is used.
+        s.setFallbackLayout(profileForControls({QStringLiteral("key3"), QStringLiteral("knob1")}, QStringLiteral("hardware-map")));
+        layout = obj(s.GetLayout()).value(QStringLiteral("layout")).toObject();
         QCOMPARE(layout.value(QStringLiteral("id")).toString(), QStringLiteral("sy181-15k3e"));
         QCOMPARE(layout.value(QStringLiteral("source")).toString(), QStringLiteral("firmware"));
+        QCOMPARE(layout.value(QStringLiteral("matchesFirmware")).toBool(), true);
+        QVERIFY(obj(s.GetStatus()).value(QStringLiteral("config")).toObject().value(QStringLiteral("warnings")).toArray().isEmpty());
         QCOMPARE(obj(s.GetDevice()).value(QStringLiteral("firmware")).toObject().value(QStringLiteral("type")).toString(), QStringLiteral("control-surface"));
+        // The full version once GET_INFO answered (bcdDevice carries only 2.0).
+        d.firmware.version = QStringLiteral("2.0.1");
+        d.firmware.versionSource = QStringLiteral("GET_INFO");
+        d.firmware.slotCount = 24;
+        s.setDevice(d);
+        const QJsonObject fwJson = obj(s.GetDevice()).value(QStringLiteral("firmware")).toObject();
+        QCOMPARE(fwJson.value(QStringLiteral("version")).toString(), QStringLiteral("2.0.1"));
+        QCOMPARE(fwJson.value(QStringLiteral("versionSource")).toString(), QStringLiteral("GET_INFO"));
+        QCOMPARE(fwJson.value(QStringLiteral("slots")).toInt(), 24);
+        QCOMPARE(obj(s.GetFirmwareStatus()).value(QStringLiteral("device")).toObject().value(QStringLiteral("firmware")).toObject().value(QStringLiteral("version")).toString(),
+                 QStringLiteral("2.0.1"));
+        QCOMPARE(obj(s.GetLayout()).value(QStringLiteral("layout")).toObject().value(QStringLiteral("firmwareSlots")).toInt(), 24);
+        // ValidateConfig answers for the pad as it is: the layout a config would give.
+        QJsonObject v = obj(s.ValidateConfig(QStringLiteral(R"({"layout": "generic-12k2e", "profiles": []})")));
+        QCOMPARE(v.value(QStringLiteral("ok")).toBool(), true);
+        QCOMPARE(v.value(QStringLiteral("layout")).toObject().value(QStringLiteral("source")).toString(), QStringLiteral("config"));
+        QCOMPARE(v.value(QStringLiteral("layout")).toObject().value(QStringLiteral("matchesFirmware")).toBool(), false);
+        QVERIFY(v.value(QStringLiteral("warnings")).toArray().last().toString().startsWith(QLatin1String("layout: the config's generic-12k2e")));
+        v = obj(s.ValidateConfig(QStringLiteral(R"({"layout": "sy181-15k3e", "profiles": []})")));  // same slots: fine
+        QCOMPARE(v.value(QStringLiteral("layout")).toObject().value(QStringLiteral("matchesFirmware")).toBool(), true);
+        QVERIFY(v.value(QStringLiteral("warnings")).toArray().isEmpty());
+        v = obj(s.ValidateConfig(QStringLiteral(R"({"profiles": []})")));
+        QCOMPARE(v.value(QStringLiteral("layout")).toObject().value(QStringLiteral("source")).toString(), QStringLiteral("firmware"));
         QVERIFY(obj(s.ListBoardProfiles()).value(QStringLiteral("profiles")).toArray().size() >= 5);
-        const QJsonObject st = obj(s.GetStatus());
+        st = obj(s.GetStatus());
         QCOMPARE(st.value(QStringLiteral("apiVersion")).toInt(), 1);
         QCOMPARE(st.value(QStringLiteral("device")).toObject().value(QStringLiteral("present")).toBool(), true);
         QCOMPARE(st.value(QStringLiteral("layout")).toObject().value(QStringLiteral("id")).toString(), QStringLiteral("sy181-15k3e"));

@@ -54,7 +54,11 @@ QList<UsbDeviceInfo> listUsbDevices(const QString &sysRoot)
 
 QJsonObject FirmwareInfo::toJson() const
 {
-    return QJsonObject{{QStringLiteral("type"), type}, {QStringLiteral("version"), version}, {QStringLiteral("board"), board}};
+    return QJsonObject{{QStringLiteral("type"), type},
+                       {QStringLiteral("version"), version},
+                       {QStringLiteral("versionSource"), versionSource},
+                       {QStringLiteral("board"), board},
+                       {QStringLiteral("slots"), slotCount > 0 ? QJsonValue(slotCount) : QJsonValue()}};
 }
 
 bool isWchIsp(const UsbDeviceInfo &d)
@@ -80,6 +84,7 @@ FirmwareInfo classifyFirmware(const UsbDeviceInfo &d)
         f.type = QStringLiteral("control-surface");
         const QString bcd = d.bcdDevice.rightJustified(4, QLatin1Char('0'));
         f.version = QStringLiteral("%1.%2").arg(bcd.left(2).toInt()).arg(bcd.mid(2).toInt());
+        f.versionSource = QStringLiteral("bcdDevice");
         if (d.productName == QLatin1String("Control Surface 15+3")) {
             f.board = QStringLiteral("sy181-15k3e");
         }

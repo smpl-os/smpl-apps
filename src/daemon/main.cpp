@@ -86,6 +86,33 @@ void say(const QString &s)
     std::fflush(stdout);
 }
 
+// The configured pad as sysfs describes it (nothing is opened): offline reports.
+DeviceState offlinePad(const DeviceMatch &m, const QString &sysRoot)
+{
+    DeviceState d;
+    for (const UsbDeviceInfo &u : listUsbDevices(sysRoot)) {
+        if (u.vendor == QLatin1String("1189") && u.product == QLatin1String("8890") && (m.serial.isEmpty() || u.serial == m.serial)) {
+            d.present = true;
+            d.usb = u;
+            d.firmware = classifyFirmware(u);
+            break;
+        }
+    }
+    return d;
+}
+
+std::optional<BoardProfile> boardOf(const DeviceState &d)
+{
+    if (!d.present || d.firmware.board.isEmpty()) {
+        return std::nullopt;
+    }
+    auto p = builtinBoardProfile(d.firmware.board);
+    if (p) {
+        p->source = QStringLiteral("firmware");
+    }
+    return p;
+}
+
 std::optional<Config> obtainConfig(const QString &path, bool explicitPath)
 {
     QString err;
@@ -353,7 +380,7 @@ int main(int argc, char **argv)
     QCommandLineOption noApiOpt(QStringLiteral("no-settings-api"), QStringLiteral("do not offer org.smplos.ControlSurface1 on the session bus"));
     QCommandLineOption allowFlashOpt(QStringLiteral("allow-flash"), QStringLiteral("settings API: allow real firmware flashing (dry runs are always allowed)"));
     QCommandLineOption flashToolOpt(QStringLiteral("flash-tool"), QStringLiteral("settings API: wchisp binary (default: wchisp in PATH)"), QStringLiteral("path"));
-    QCommandLineOption sysRootOpt(QStringLiteral("sys-root"), QStringLiteral("tests: a fake /sys for firmware-info and enter-bootloader"), QStringLiteral("dir"));
+    QCommandLineOption sysRootOpt(QStringLiteral("sys-root"), QStringLiteral("tests: a fake /sys for status, check-config, firmware-info and enter-bootloader"), QStringLiteral("dir"));
     sysRootOpt.setFlags(QCommandLineOption::HiddenFromHelp);
     QCommandLineOption yesOpt(QStringLiteral("yes"), QStringLiteral("enter-bootloader: really do it"));
     QCommandLineOption followOpt(QStringLiteral("follow"), QStringLiteral("cheatsheet: one JSON line per change (debugging; run --eww pushes to eww itself)"));
@@ -431,17 +458,15 @@ int main(int argc, char **argv)
             }
             const auto v = ConfigStore(path).validate(text);
             const Config c = v.config.value_or(Config{});
-            DeviceState d;
-            for (const UsbDeviceInfo &u : listUsbDevices()) {
-                if (u.vendor == QLatin1String("1189") && u.product == QLatin1String("8890") && (c.device.serial.isEmpty() || u.serial == c.device.serial)) {
-                    d.present = true;
-                    d.usb = u;
-                    d.firmware = classifyFirmware(u);
-                    break;
-                }
+            const DeviceState d = offlinePad(c.device, p.value(sysRootOpt));
+            const auto fwBoard = boardOf(d);
+            const BoardProfile layout = effectiveLayout(c, d.firmware.board);
+            QStringList warnings = v.warnings;
+            if (const QString w = layoutMismatchWarning(layout, fwBoard); !w.isEmpty()) {
+                warnings << w;
             }
             bool bootloader = false;
-            for (const UsbDeviceInfo &u : listUsbDevices()) {
+            for (const UsbDeviceInfo &u : listUsbDevices(p.value(sysRootOpt))) {
                 bootloader = bootloader || classifyFirmware(u).type == QLatin1String("bootloader");
             }
             out = QJsonObject{{QStringLiteral("ok"), true},
@@ -449,12 +474,12 @@ int main(int argc, char **argv)
                               {QStringLiteral("mode"), QStringLiteral("offline")},
                               {QStringLiteral("device"), d.toJson()},
                               {QStringLiteral("bootloaderPresent"), bootloader},
-                              {QStringLiteral("layout"), effectiveLayout(c, d.firmware.board).toJson()},
+                              {QStringLiteral("layout"), layoutReport(layout, fwBoard)},
                               {QStringLiteral("config"), QJsonObject{{QStringLiteral("path"), path},
                                                                      {QStringLiteral("exists"), snap.exists},
                                                                      {QStringLiteral("hash"), snap.hash},
                                                                      {QStringLiteral("error"), v.errors.join(QStringLiteral("; "))},
-                                                                     {QStringLiteral("warnings"), QJsonArray::fromStringList(v.warnings)}}}};
+                                                                     {QStringLiteral("warnings"), QJsonArray::fromStringList(warnings)}}}};
         }
         if (p.isSet(jsonOpt)) {
             say(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact)));
@@ -509,8 +534,19 @@ int main(int argc, char **argv)
             out = v.toJson();
             out.remove(QStringLiteral("errors"));
             out.insert(QStringLiteral("error"), v.ok ? QJsonValue() : QJsonValue(describeConfigIssue(v.errors.join(QStringLiteral("; "))).toJson()));
+            QStringList warnings = v.warnings;
+            if (v.config) {
+                // Against the pad plugged in now, from sysfs (nothing is opened).
+                const DeviceState d = offlinePad(v.config->device, p.value(sysRootOpt));
+                const BoardProfile layout = effectiveLayout(*v.config, d.firmware.board);
+                out.insert(QStringLiteral("layout"), layoutReport(layout, boardOf(d)));
+                if (const QString w = layoutMismatchWarning(layout, boardOf(d)); !w.isEmpty()) {
+                    warnings << w;
+                }
+            }
+            out.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(warnings));
             QJsonArray details;
-            for (const QString &w : v.warnings) {
+            for (const QString &w : std::as_const(warnings)) {
                 details.append(describeConfigIssue(w).toJson());
             }
             out.insert(QStringLiteral("warningDetails"), details);
@@ -1089,7 +1125,10 @@ int main(int argc, char **argv)
         publishPlugins();
         return QString();
     });
-    auto publishDevice = [&settings, &dev, &raw] {
+    // GET_INFO of the control-surface firmware when raw input is not used
+    // (device.input "evdev"): asked once per connect, for the full version.
+    std::optional<padfw::Info> evdevInfo;
+    auto publishDevice = [&settings, &dev, &raw, &evdevInfo] {
         DeviceState d;
         if (dev.isConnected()) {
             d.present = true;
@@ -1097,24 +1136,40 @@ int main(int argc, char **argv)
                 d.usb = *u;
                 d.firmware = classifyFirmware(*u);
             }
-            if (raw.isActive() && raw.info()) {
-                d.firmware.version = QString::fromStdString(raw.info()->version());
+            const std::optional<padfw::Info> fi = raw.firmwareInfo() ? raw.firmwareInfo() : evdevInfo;
+            if (fi && d.firmware.type == QLatin1String("control-surface")) {
+                d.firmware.version = QString::fromStdString(fi->version());
+                d.firmware.versionSource = QStringLiteral("GET_INFO");
+                d.firmware.slotCount = fi->slotCount;
             }
             d.devnodes = dev.devnodes();
             d.inputMode = raw.isActive() ? QStringLiteral("raw") : QStringLiteral("evdev-chords");
         }
         settings.setDevice(d);
     };
-    QObject::connect(&dev, &PadDevice::connected, &settings, [publishDevice, &raw, &dev, &cfg, log] {
+    QObject::connect(&dev, &PadDevice::connected, &settings, [publishDevice, &raw, &dev, &cfg, log, &evdevInfo] {
+        evdevInfo.reset();
+        if (cfg->device.input == QLatin1String("evdev")) {
+            const auto u = usbDeviceAt(dev.usbPath());
+            if (u && classifyFirmware(*u).type == QLatin1String("control-surface")) {
+                const QString node = findControlSurfaceHidraw(cfg->device, dev.usbPath());
+                std::string err;
+                if (!node.isEmpty()) {
+                    evdevInfo = padfw::queryInfo(node.toStdString(), &err, 300);
+                }
+            }
+        }
         publishDevice();
         if (cfg->device.input != QLatin1String("evdev") && !raw.start(dev.usbPath()) && cfg->device.input == QLatin1String("raw")) {
             log(QStringLiteral("raw input unavailable (not the control-surface firmware?); using evdev chords"));
         }
     });
-    QObject::connect(&dev, &PadDevice::disconnected, &settings, [publishDevice, &raw] {
+    QObject::connect(&dev, &PadDevice::disconnected, &settings, [publishDevice, &raw, &evdevInfo] {
         raw.stop();
+        evdevInfo.reset();
         publishDevice();
     });
+    QObject::connect(&raw, &RawPadDevice::firmwareInfoChanged, &settings, publishDevice);
     QObject::connect(&raw, &RawPadDevice::activeChanged, &settings, [publishDevice, log](bool on) {
         log(on ? QStringLiteral("input: raw events from the firmware") : QStringLiteral("input: evdev chords"));
         publishDevice();

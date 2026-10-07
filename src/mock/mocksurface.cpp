@@ -173,6 +173,13 @@ void MockSurface::publishDevice()
         d.usb = padUsb();
         d.firmware = classifyFirmware(d.usb);
         d.firmware.board = m_board;  // what CMD_IDENTIFY will report on real pads
+        if (d.firmware.type == QLatin1String("control-surface")) {
+            // As the daemon reports it after GET_INFO (bcdDevice has only 2.0).
+            d.firmware.version = QStringLiteral("2.0.1");
+            d.firmware.versionSource = QStringLiteral("GET_INFO");
+            const auto board = builtinBoardProfile(m_board);
+            d.firmware.slotCount = board ? board->slotCount() : 24;
+        }
         d.devnodes = {QStringLiteral("/dev/input/mock-event-kbd")};
         d.inputMode = QStringLiteral("evdev-chords");
     }

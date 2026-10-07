@@ -314,26 +314,59 @@ private Q_SLOTS:
     void layouts()
     {
         QString err;
-        // Default: what the hardware map names (15 keys, 3 knobs = the measured board).
+        // Precedence: config "layout" > firmware board > hardware map > default.
+        // Nothing known: the default (15 keys, 3 knobs = the measured board).
         auto c = parseConfig(R"({"profiles":[]})", {}, &err);
         QVERIFY2(c, qPrintable(err));
         QVERIFY(!c->layout);
         BoardProfile l = effectiveLayout(*c);
         QCOMPARE(l.id, QStringLiteral("sy181-15k3e"));
-        QCOMPARE(l.source, QStringLiteral("hardware-map"));
-        // The firmware's board wins.
+        QCOMPARE(l.source, QStringLiteral("default"));
+        // The firmware's board wins over that.
         l = effectiveLayout(*c, QStringLiteral("generic-3k1e"));
         QCOMPARE(l.id, QStringLiteral("generic-3k1e"));
         QCOMPARE(l.source, QStringLiteral("firmware"));
-        QCOMPARE(effectiveLayout(*c, QStringLiteral("no-such-board")).source, QStringLiteral("hardware-map"));
+        QCOMPARE(effectiveLayout(*c, QStringLiteral("no-such-board")).source, QStringLiteral("default"));
+        // A hardware map that names this pad's inputs (learned, or a scheme set on purpose).
+        c = parseConfig(R"({"hardware":"default:vendor-twelve","profiles":[]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(effectiveLayout(*c).source, QStringLiteral("hardware-map"));
+        QCOMPARE(effectiveLayout(*c, QStringLiteral("sy181-15k3e")).source, QStringLiteral("firmware"));
+        // A missing learned map is still the default.
+        c = parseConfig(R"({"hardware":"/nonexistent/hardware-map.json","profiles":[]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(effectiveLayout(*c).source, QStringLiteral("default"));
 
-        // A board profile by id.
+        // A board profile by id: the user's override wins, also over the firmware.
         c = parseConfig(R"({"layout":"generic-12k2e","profiles":[{"name":"g","bindings":{"key13":"a","knob3.cw":"b","key2":"c"}}]})", {}, &err);
         QVERIFY2(c, qPrintable(err));
         QCOMPARE(c->layout->keys.size(), 12);
         l = effectiveLayout(*c);
         QCOMPARE(l.source, QStringLiteral("config"));
         QCOMPARE(l.knobs.size(), 2);
+        l = effectiveLayout(*c, QStringLiteral("sy181-15k3e"));
+        QCOMPARE(l.id, QStringLiteral("generic-12k2e"));
+        QCOMPARE(l.source, QStringLiteral("config"));
+        // ... reported with the firmware's layout, and a warning on another slot count.
+        auto fw = builtinBoardProfile(QStringLiteral("sy181-15k3e"));
+        fw->source = QStringLiteral("firmware");
+        QJsonObject report = layoutReport(l, fw);
+        QCOMPARE(report.value(QStringLiteral("source")).toString(), QStringLiteral("config"));
+        QCOMPARE(report.value(QStringLiteral("firmwareLayout")).toObject().value(QStringLiteral("id")).toString(), QStringLiteral("sy181-15k3e"));
+        QCOMPARE(report.value(QStringLiteral("firmwareSlots")).toInt(), 24);
+        QCOMPARE(report.value(QStringLiteral("matchesFirmware")).toBool(), false);
+        const QString warn = layoutMismatchWarning(l, fw);
+        QVERIFY2(warn.startsWith(QLatin1String("layout: the config's generic-12k2e (12 keys, 2 knobs = 18 slots) overrides the firmware's sy181-15k3e, which has 24 slots")), qPrintable(warn));
+        const ConfigIssue issue = describeConfigIssue(warn);
+        QVERIFY(issue.profile.isEmpty() && issue.layer.isEmpty() && issue.slot.isEmpty());
+        QCOMPARE(layoutMismatchWarning(l, fw, 18), QString());           // GET_INFO's count decides
+        QCOMPARE(layoutReport(l, fw, 18).value(QStringLiteral("matchesFirmware")).toBool(), true);
+        QCOMPARE(layoutMismatchWarning(l, std::nullopt), QString());     // no firmware information
+        QVERIFY(layoutReport(l, std::nullopt).value(QStringLiteral("firmwareLayout")).isNull());
+        QVERIFY(layoutReport(l, std::nullopt).value(QStringLiteral("matchesFirmware")).isNull());
+        QCOMPARE(layoutMismatchWarning(*fw, fw), QString());             // not an override
+        QCOMPARE(layoutReport(*fw, fw).value(QStringLiteral("matchesFirmware")).toBool(), true);
+        QVERIFY(!layoutMismatchWarning(l, std::nullopt, 24).isEmpty()); // GET_INFO alone is enough
         QCOMPARE(c->warnings.size(), 2);  // key13 and knob3 are not on this pad
         QCOMPARE(describeConfigIssue(c->warnings.value(0)).profile, QStringLiteral("g"));
         QVERIFY(!parseConfig(R"({"layout":"nope","profiles":[]})", {}, &err));

@@ -55,7 +55,10 @@ QJsonObject featuresJson()
                                               {QStringLiteral("knob"), QStringLiteral("knob1..knob3 with .turn/.ccw/.cw/.press or .shift.turn/.shift.ccw/.shift.cw (turning while held)")}}},
         {QStringLiteral("inputEvents"), QJsonArray{QStringLiteral("press"), QStringLiteral("release"), QStringLiteral("ccw"), QStringLiteral("cw")}},
         {QStringLiteral("layouts"), QJsonObject{{QStringLiteral("builtin"), boards},
-                                                {QStringLiteral("custom"), QStringLiteral(R"({"keys": 0..16, "knobs": 0..3, "columns": 1..8})")}}},
+                                                {QStringLiteral("custom"), QStringLiteral(R"({"keys": 0..16, "knobs": 0..3, "columns": 1..8})")},
+                                                // The config's "layout" overrides the firmware's board.
+                                                {QStringLiteral("precedence"), QJsonArray{QStringLiteral("config"), QStringLiteral("firmware"),
+                                                                                          QStringLiteral("hardware-map"), QStringLiteral("default")}}}},
         {QStringLiteral("device"), QJsonObject{{QStringLiteral("usb"), QStringLiteral("1189:8890")},
                                                {QStringLiteral("serial"), QStringLiteral("empty: the first pad found")},
                                                {QStringLiteral("input"), QJsonArray{QStringLiteral("auto"), QStringLiteral("evdev"), QStringLiteral("raw")}}}},

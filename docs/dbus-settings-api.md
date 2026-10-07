@@ -52,16 +52,34 @@ emit `org.freedesktop.DBus.Properties.PropertiesChanged`.
 | Method | Returns |
 |---|---|
 | `GetStatus() → s` | everything at once: `{ok, apiVersion, daemonVersion, mode, device, layout, activeProfile, activeLayer, window: {class, title}, config: {path, hash, error, warnings[]}, identify: {active, remainingMs}, cheatsheet: {visible, eww}, flash: job \| null}` |
-| `GetDevice() → s` | `{ok, present, vendor, product, serial, manufacturer, productName, bcdDevice, firmware: {type, version, board}, inputMode, devnodes[], layout}`; only `{ok, present: false, layout}` when absent. `inputMode`: `raw` (firmware events, report 5) or `evdev-chords`. |
+| `GetDevice() → s` | `{ok, present, vendor, product, serial, manufacturer, productName, bcdDevice, firmware: {type, version, versionSource, board, slots}, inputMode, devnodes[], layout}`; only `{ok, present: false, layout}` when absent. `inputMode`: `raw` (firmware events, report 5) or `evdev-chords`. `firmware.version` is the full version from the firmware's `GET_INFO` (`"2.0.1"`, `versionSource: "GET_INFO"`, `slots` its slot count) when the control-surface firmware answers (asked in raw mode, and once per plug-in with `device.input: "evdev"`), else `"2.0"` from bcdDevice (`versionSource: "bcdDevice"`, `slots: null`). The same object is in `GetFirmwareStatus().device`. |
 | `GetLayout() → s` | `{ok, layout}` or `{ok: false, error: {code: "unknown"}}` |
 | `ListBoardProfiles() → s` | `{ok, profiles: [layout...]}` |
 
 A **layout** is
-`{id, name, source, rows, columns, slotCount, keys: [{control, slot, row, column}], knobs: [{control, slots: {ccw, press, cw}, row, column}]}`.
+`{id, name, source, rows, columns, slotCount, keys: [{control, slot, row, column}], knobs: [{control, slots: {ccw, press, cw}, row, column}]}`,
+and where it is the pad's layout in effect (`GetLayout`, `GetDevice`,
+`GetStatus`, `ValidateConfig`, `status`, `check-config`) also
+`firmwareLayout` (the layout the firmware names, or null), `firmwareSlots`
+(its slot count, from `GET_INFO` when known, or null) and `matchesFirmware`
+(slot counts agree; null without firmware information).
 Rows and columns count from 0, and knobs sit in the right-most column.
-`source` is `firmware` (the pad names its board), `config` (the config's
-`"layout"`), `hardware-map` (derived from the learned map), `measured` or
-`template` (built-in profiles). The built-in profiles are `sy181-15k3e`
+
+The layout in effect, first match wins:
+
+1. `config`: the config's `"layout"`, an explicit override (a variant, or a
+   Custom grid from Settings). It wins over the firmware.
+2. `firmware`: the board the pad's descriptors name.
+3. `hardware-map`: derived from a hardware map (learned by `verify`, inline,
+   or a scheme the config names).
+4. `default`: nothing known; the measured 15+3 board.
+
+When an override has another slot count than the firmware, the config gets
+a warning (`GetStatus().config.warnings`, `ValidateConfig`, `check-config`,
+starting with `layout:`). Raw input then stays off: the firmware's slots
+would land on the wrong controls, so the pad's own keymap (evdev chords) is
+used, and inputs outside the layout show nowhere. `measured` and `template`
+are the sources of the built-in profiles in `ListBoardProfiles`. The built-in profiles are `sy181-15k3e`
 (measured: this pad) and the grid templates `generic-3k`, `generic-3k1e`,
 `generic-6k1e`, `generic-10k`, `generic-12k2e`, `generic-12k3e` and
 `generic-16k3e`. A config sets one with `"layout": "<id>"` or
@@ -81,7 +99,7 @@ nothing is dispatched (no keys, no Kdenlive actions). It turns off:
 | Method | Returns |
 |---|---|
 | `GetConfig() → (s text, s path, s hash)` | the file as it is on disk and its SHA-256 (`""` if missing) |
-| `ValidateConfig(s text) → s` | `{ok, errors[], warnings[], profiles: [{name, layers, bindings, kdenlive, keyFallback}], hardwareSource}`. Nothing is written or applied. |
+| `ValidateConfig(s text) → s` | `{ok, errors[], warnings[], profiles: [{name, layers, bindings, kdenlive, keyFallback}], hardwareSource, layout}`: `layout` is what this config would give on the pad plugged in now (with `firmwareLayout`, `matchesFirmware`); a mismatching override adds a `layout:` warning. Nothing is written or applied. |
 | `SetConfig(s text, s expectedHash) → s` | `{ok, hash, backup, errors[], warnings[], error?}` |
 | `ReloadConfig() → s` | `{ok, hash, warnings[], error?}` (re-reads the file) |
 
@@ -276,8 +294,8 @@ change, shown or hidden) stays for debugging.
 | Command | Output |
 |---|---|
 | `control-surfaced monitor [--json]` | One line per input: `{"slot","event","delta","ms"}`. It follows a running daemon (or the mock) over D-Bus; without one, it reads the pad directly (grabbed, nothing dispatched). |
-| `control-surfaced status [--json]` | The daemon's `GetStatus`, or offline: `{ok, daemon: false, mode: "offline", device, bootloaderPresent, layout, config}` |
-| `control-surfaced check-config [-c FILE] --json` | `{ok, error: {message, profile, layer, slot} \| null, warnings[], warningDetails[], profiles[], path, source}`; exit 0 or 2 |
+| `control-surfaced status [--json]` | The daemon's `GetStatus`, or offline: `{ok, daemon: false, mode: "offline", device, bootloaderPresent, layout, config}` (sysfs only: the version is bcdDevice's) |
+| `control-surfaced check-config [-c FILE] --json` | `{ok, error: {message, profile, layer, slot} \| null, warnings[], warningDetails[], profiles[], path, source, layout}`; `layout` and a `layout:` mismatch warning against the pad plugged in now (sysfs only); exit 0 or 2 |
 | `control-surfaced list-actions [--json]` | `GetCatalog("kdenlive")` offline |
 | `control-surfaced features [--json]` | `GetFeatures` |
 | `control-surfaced cheatsheet [--json] [--follow]` | the running daemon's `GetCheatsheet`; `--follow` prints a JSON line on every change (debugging; eww gets it pushed, see Cheatsheet) |

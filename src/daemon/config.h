@@ -128,10 +128,18 @@ struct Config {
 
 // The controls (key1.., knob1..) the hardware map names.
 QStringList hardwareControls(const Config &cfg);
-// The layout in effect: the firmware's board (when the descriptors name one),
-// else the config's "layout", else what the hardware map names. Source:
-// firmware | config | hardware-map.
+// The layout in effect: the config's "layout" when it sets one (an explicit
+// override, e.g. a variant), else the firmware's board (when the descriptors
+// name one), else what a hardware map names, else the default (the measured
+// 15+3 board). Source: config | firmware | hardware-map | default.
 BoardProfile effectiveLayout(const Config &cfg, const QString &firmwareBoard = {});
+// The layout as the API reports it: the profile plus "firmwareLayout" (the
+// firmware's board, or null) and "matchesFirmware" (slot counts agree; null
+// without firmware information). firmwareSlots: GET_INFO's count, 0 unknown.
+QJsonObject layoutReport(const BoardProfile &effective, const std::optional<BoardProfile> &firmwareBoard, int firmwareSlots = 0);
+// A config warning when the config's layout override has another slot count
+// than the firmware (raw input then stays off); empty otherwise.
+QString layoutMismatchWarning(const BoardProfile &effective, const std::optional<BoardProfile> &firmwareBoard, int firmwareSlots = 0);
 
 QByteArray stripJsonComments(const QByteArray &in);
 std::optional<Binding> parseBinding(const QJsonValue &v, QString *error);

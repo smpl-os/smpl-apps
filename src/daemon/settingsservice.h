@@ -86,8 +86,14 @@ public:
     // After the daemon (re)loaded the config by itself (start-up, file watcher).
     void setConfigState(const QString &hash, const QString &error, const QStringList &warnings);
     void setFallbackLayout(const BoardProfile &p);
-    // The layout in effect: the firmware's board, else the fallback, else this pad.
+    // The layout in effect: the config's "layout" override (a fallback with
+    // source "config"), else the firmware's board, else the fallback (hardware
+    // map or default), else the default board.
     BoardProfile currentLayout() const;
+    // The firmware's board while a pad that names one is present.
+    std::optional<BoardProfile> firmwareLayout() const;
+    // The config's warnings plus a layout override that does not fit the firmware.
+    QStringList configWarnings() const;
     // The cheatsheet the overlay follows (created next to the engine).
     void setCheatsheet(Cheatsheet *c);
     // Extra fields for GetStatus().cheatsheet (e.g. {"eww": {...}}).

@@ -89,21 +89,70 @@ private Q_SLOTS:
 
     void statusOffline()
     {
-        // No daemon on this private bus: an offline report (sysfs is only read).
+        // No daemon on this private bus: an offline report (sysfs is only
+        // read). A fake /sys keeps it independent of what is plugged in here.
+        const QString empty = m_home.path() + QStringLiteral("/sys-empty");
+        QDir().mkpath(empty);
         const QString cfg = m_home.path() + QStringLiteral("/layout.jsonc");
         writeFile(cfg, R"({"layout":"generic-12k2e","profiles":[]})");
-        Run r = run({QStringLiteral("status"), QStringLiteral("--json"), QStringLiteral("-c"), cfg}, m_home.path());
+        Run r = run({QStringLiteral("status"), QStringLiteral("--json"), QStringLiteral("-c"), cfg, QStringLiteral("--sys-root"), empty}, m_home.path());
         QCOMPARE(r.code, 0);
         QJsonObject j = r.json();
         QCOMPARE(j.value(QStringLiteral("daemon")).toBool(), false);
         QCOMPARE(j.value(QStringLiteral("mode")).toString(), QStringLiteral("offline"));
-        QVERIFY(j.value(QStringLiteral("device")).toObject().contains(QStringLiteral("present")));
-        const QJsonObject layout = j.value(QStringLiteral("layout")).toObject();
-        if (!j.value(QStringLiteral("device")).toObject().value(QStringLiteral("present")).toBool()) {
-            QCOMPARE(layout.value(QStringLiteral("id")).toString(), QStringLiteral("generic-12k2e"));
-            QCOMPARE(layout.value(QStringLiteral("source")).toString(), QStringLiteral("config"));
-        }
+        QCOMPARE(j.value(QStringLiteral("device")).toObject().value(QStringLiteral("present")).toBool(), false);
+        QJsonObject layout = j.value(QStringLiteral("layout")).toObject();
+        QCOMPARE(layout.value(QStringLiteral("id")).toString(), QStringLiteral("generic-12k2e"));
+        QCOMPARE(layout.value(QStringLiteral("source")).toString(), QStringLiteral("config"));
+        QVERIFY(layout.value(QStringLiteral("firmwareLayout")).isNull());
+        QVERIFY(layout.value(QStringLiteral("matchesFirmware")).isNull());
         QCOMPARE(j.value(QStringLiteral("config")).toObject().value(QStringLiteral("exists")).toBool(), true);
+        QVERIFY(j.value(QStringLiteral("config")).toObject().value(QStringLiteral("warnings")).toArray().isEmpty());
+
+        // A pad with the control-surface firmware (descriptors name the 15+3 board).
+        const QString sys = m_home.path() + QStringLiteral("/sys-pad");
+        const QString dev = sys + QStringLiteral("/bus/usb/devices/1-4");
+        const QList<QPair<const char *, QByteArray>> attrs{{"idVendor", "1189"}, {"idProduct", "8890"}, {"serial", "key153"}, {"manufacturer", "OpenMacroPad"},
+                                                          {"product", "Control Surface 15+3"}, {"bcdDevice", "0200"}, {"busnum", "1"}, {"devnum", "9"},
+                                                          {"bNumInterfaces", " 2"}};
+        for (const auto &[name, value] : attrs) {
+            writeFile(dev + QLatin1Char('/') + QLatin1String(name), value + '\n');
+        }
+        // The config's layout overrides the firmware's, and the mismatch is reported.
+        r = run({QStringLiteral("status"), QStringLiteral("--json"), QStringLiteral("-c"), cfg, QStringLiteral("--sys-root"), sys}, m_home.path());
+        QCOMPARE(r.code, 0);
+        j = r.json();
+        const QJsonObject device = j.value(QStringLiteral("device")).toObject();
+        QCOMPARE(device.value(QStringLiteral("present")).toBool(), true);
+        QCOMPARE(device.value(QStringLiteral("firmware")).toObject().value(QStringLiteral("version")).toString(), QStringLiteral("2.0"));
+        QCOMPARE(device.value(QStringLiteral("firmware")).toObject().value(QStringLiteral("versionSource")).toString(), QStringLiteral("bcdDevice"));
+        layout = j.value(QStringLiteral("layout")).toObject();
+        QCOMPARE(layout.value(QStringLiteral("id")).toString(), QStringLiteral("generic-12k2e"));
+        QCOMPARE(layout.value(QStringLiteral("source")).toString(), QStringLiteral("config"));
+        QCOMPARE(layout.value(QStringLiteral("firmwareLayout")).toObject().value(QStringLiteral("id")).toString(), QStringLiteral("sy181-15k3e"));
+        QCOMPARE(layout.value(QStringLiteral("firmwareSlots")).toInt(), 24);
+        QCOMPARE(layout.value(QStringLiteral("matchesFirmware")).toBool(), false);
+        const QJsonArray warnings = j.value(QStringLiteral("config")).toObject().value(QStringLiteral("warnings")).toArray();
+        QCOMPARE(warnings.size(), 1);
+        QVERIFY(warnings.first().toString().startsWith(QLatin1String("layout: the config's generic-12k2e")));
+        r = run({QStringLiteral("check-config"), QStringLiteral("--json"), QStringLiteral("-c"), cfg, QStringLiteral("--sys-root"), sys}, m_home.path());
+        QCOMPARE(r.code, 0);  // a warning, not an error
+        j = r.json();
+        QCOMPARE(j.value(QStringLiteral("warnings")).toArray().size(), 1);
+        QCOMPARE(j.value(QStringLiteral("warningDetails")).toArray().first().toObject().value(QStringLiteral("message")).toString(), warnings.first().toString());
+        QCOMPARE(j.value(QStringLiteral("layout")).toObject().value(QStringLiteral("matchesFirmware")).toBool(), false);
+        // Without an override the firmware's board is the layout.
+        const QString plain = m_home.path() + QStringLiteral("/plain.jsonc");
+        writeFile(plain, R"({"profiles":[]})");
+        r = run({QStringLiteral("status"), QStringLiteral("--json"), QStringLiteral("-c"), plain, QStringLiteral("--sys-root"), sys}, m_home.path());
+        layout = r.json().value(QStringLiteral("layout")).toObject();
+        QCOMPARE(layout.value(QStringLiteral("source")).toString(), QStringLiteral("firmware"));
+        QCOMPARE(layout.value(QStringLiteral("matchesFirmware")).toBool(), true);
+        r = run({QStringLiteral("check-config"), QStringLiteral("--json"), QStringLiteral("-c"), plain, QStringLiteral("--sys-root"), sys}, m_home.path());
+        QVERIFY(r.json().value(QStringLiteral("warnings")).toArray().isEmpty());
+        // Nothing plugged in and nothing set: the default.
+        r = run({QStringLiteral("status"), QStringLiteral("--json"), QStringLiteral("-c"), plain, QStringLiteral("--sys-root"), empty}, m_home.path());
+        QCOMPARE(r.json().value(QStringLiteral("layout")).toObject().value(QStringLiteral("source")).toString(), QStringLiteral("default"));
         r = run({QStringLiteral("status")}, m_home.path());
         QCOMPARE(r.code, 0);
         QVERIFY(r.out.contains("layout:"));

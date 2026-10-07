@@ -108,6 +108,10 @@ bool RawPadDevice::startOnFd(int fd)
     stop();
     m_fd = fd;
     m_info.reset();
+    if (m_firmware) {
+        m_firmware.reset();  // a new device (or the same one replugged): ask again
+        Q_EMIT firmwareInfoChanged();
+    }
     m_lastSeq = -1;
     m_notifier = new QSocketNotifier(m_fd, QSocketNotifier::Read, this);
     connect(m_notifier, &QSocketNotifier::activated, this, &RawPadDevice::onReadable);
@@ -197,6 +201,8 @@ void RawPadDevice::handleReport(const quint8 *data, int len)
             close(QStringLiteral("GET_INFO answer is not protocol v3"));
             return;
         }
+        m_firmware = info;
+        Q_EMIT firmwareInfoChanged();
         if (int(info->slotCount) != m_layout.slotCount()) {
             close(QStringLiteral("firmware reports %1 slots, layout %2 has %3; using evdev").arg(info->slotCount).arg(m_layout.id).arg(m_layout.slotCount()));
             return;

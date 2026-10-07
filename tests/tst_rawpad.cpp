@@ -246,10 +246,18 @@ private Q_SLOTS:
             auto fw = link(dev);
             fw->slotCount = 6;
             QSignalSpy msgs(&dev, &RawPadDevice::message);
+            QSignalSpy fwInfo(&dev, &RawPadDevice::firmwareInfoChanged);
             dev.startOnFd(m_pair[0]);
             QTRY_VERIFY(!msgs.isEmpty());
             QVERIFY(msgs.last().at(0).toString().contains(QStringLiteral("6 slots")));
             QVERIFY(fw->rawTimeouts.isEmpty());
+            // Raw mode is off, but the firmware's answer stays for the device
+            // report (the full version; bcdDevice has only major.minor).
+            QVERIFY(!dev.info());
+            QCOMPARE(fwInfo.count(), 1);
+            QVERIFY(dev.firmwareInfo());
+            QCOMPARE(dev.firmwareInfo()->version(), std::string("2.0.0"));
+            QCOMPARE(int(dev.firmwareInfo()->slotCount), 6);
         }
         {  // ... unless the layout says so
             RawPadDevice dev{DeviceMatch{}};

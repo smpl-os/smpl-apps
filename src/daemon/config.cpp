@@ -889,16 +889,53 @@ QStringList hardwareControls(const Config &cfg)
 
 BoardProfile effectiveLayout(const Config &cfg, const QString &firmwareBoard)
 {
+    if (cfg.layout) {
+        return *cfg.layout;  // the user's explicit choice wins over the firmware
+    }
     if (!firmwareBoard.isEmpty()) {
         if (auto p = builtinBoardProfile(firmwareBoard)) {
             p->source = QStringLiteral("firmware");
             return *p;
         }
     }
-    if (cfg.layout) {
-        return *cfg.layout;
+    // The built-in keys-then-knobs scheme (also when its learned map is still
+    // missing) names nothing about this pad: that is the default.
+    const bool learned = !cfg.hardwareSource.startsWith(QLatin1String("default:keys-then-knobs"));
+    return profileForControls(hardwareControls(cfg), learned ? QStringLiteral("hardware-map") : QStringLiteral("default"));
+}
+
+namespace {
+int firmwareSlotCount(const std::optional<BoardProfile> &board, int fwSlots)
+{
+    return fwSlots > 0 ? fwSlots : board ? board->slotCount() : 0;
+}
+
+QString shape(const BoardProfile &p)
+{
+    return QStringLiteral("%1 (%2 keys, %3 knobs = %4 slots)").arg(p.id).arg(p.keys.size()).arg(p.knobs.size()).arg(p.slotCount());
+}
+} // namespace
+
+QJsonObject layoutReport(const BoardProfile &effective, const std::optional<BoardProfile> &firmwareBoard, int firmwareSlots)
+{
+    QJsonObject o = effective.toJson();
+    const int fw = firmwareSlotCount(firmwareBoard, firmwareSlots);
+    o.insert(QStringLiteral("firmwareLayout"), firmwareBoard ? QJsonValue(firmwareBoard->toJson()) : QJsonValue());
+    o.insert(QStringLiteral("firmwareSlots"), fw > 0 ? QJsonValue(fw) : QJsonValue());
+    o.insert(QStringLiteral("matchesFirmware"), fw > 0 ? QJsonValue(effective.slotCount() == fw) : QJsonValue());
+    return o;
+}
+
+QString layoutMismatchWarning(const BoardProfile &effective, const std::optional<BoardProfile> &firmwareBoard, int firmwareSlots)
+{
+    const int fw = firmwareSlotCount(firmwareBoard, firmwareSlots);
+    if (effective.source != QLatin1String("config") || fw <= 0 || effective.slotCount() == fw) {
+        return {};
     }
-    return profileForControls(hardwareControls(cfg), QStringLiteral("hardware-map"));
+    return QStringLiteral("layout: the config's %1 overrides the firmware's %2, which has %3 slots; "
+                          "raw input stays off (the pad's keymap is used) and inputs outside the layout show nowhere")
+        .arg(shape(effective), firmwareBoard ? firmwareBoard->id : QStringLiteral("board"))
+        .arg(fw);
 }
 
 QStringList CheatsheetOptions::positions()

@@ -32,8 +32,10 @@ bool isWchIsp(const UsbDeviceInfo &d);
 // What runs on a 1189:8890 pad (or the ROM bootloader), from descriptors only.
 struct FirmwareInfo {
     QString type;     // control-surface | openmacropad | stock | bootloader | unknown
-    QString version;  // control-surface: from bcdDevice, e.g. "2.0"
+    QString version;  // control-surface: "2.0.1" from GET_INFO, else "2.0" from bcdDevice
+    QString versionSource;  // GET_INFO | bcdDevice | "" (unknown)
     QString board;    // board profile id when the descriptors name one
+    int slotCount = 0;  // GET_INFO's slot count; 0 = not asked
     QJsonObject toJson() const;
 };
 

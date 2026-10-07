@@ -40,11 +40,15 @@ public:
     void stop();              // raw mode off (best effort) and close
     bool isActive() const { return m_active; }
     std::optional<padfw::Info> info() const { return m_info; }
+    // The firmware's GET_INFO answer, kept even when the layout does not fit
+    // (raw mode off): the full version (bcdDevice has only major.minor).
+    std::optional<padfw::Info> firmwareInfo() const { return m_firmware; }
     quint64 sequenceGaps() const { return m_gaps; }
 
 Q_SIGNALS:
     void padEvent(const cs::PadEvent &e);
     void activeChanged(bool active);
+    void firmwareInfoChanged();
     void message(const QString &text);
 
 private:
@@ -69,6 +73,7 @@ private:
     int m_rawTimeoutMs = 1500;
     bool m_active = false;
     std::optional<padfw::Info> m_info;
+    std::optional<padfw::Info> m_firmware;
     int m_lastSeq = -1;
     quint64 m_gaps = 0;
 };
