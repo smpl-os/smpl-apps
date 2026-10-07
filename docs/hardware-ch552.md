@@ -233,3 +233,20 @@ ch552-padprog flash --dialect blob03 --slots 1-1 --settle-ms 1500 --yes --log FI
 Test it first **without** a replug, to see whether it takes effect live, then again after a replug, to see whether it persisted. Grab event18–21 during the test (for example `control-surfaced verify --no-write`) so that a mis-stored modifier cannot reach the desktop.
 
 If key 1 still sends zeros, the next candidate is the same frames over the control endpoint: SET_REPORT through usbfs, after detaching usbhid from interface 1 only. padclaude claims this is required, but its macOS path most likely used the interrupt pipe as well. That step needs its own approval.
+
+### Blob03 result and a re-reading (2026-10-07 09:50)
+
+After the blob03 slot-1 run (`docs/records` holds the log), key 1 still sent all zeros, both before and after a replug. Only key 1 was captured.
+
+**Layers.** The vendor app's UI has Layer1–3, defaulting to 1. With report ID 0, which is our descriptor, the app never encodes a layer: there is no `A1 nn` and no layer nibble. In every other tool, `A1 nn` exists only in the report-ID-3 dialect. The Rockheung spec documents it as "switch active layer". On pads that have layers, a side button switches them and LEDs show the layer briefly (kriomant's `example-mapping.yaml`). No source describes a programming mode, a pinhole, or a key combination held at plug-in.
+
+**Re-reading padclaude.** padclaude made three measurements:
+* a with-prefix frame `[03 AA AA]` became key 3 with modifiers 0xAA;
+* legacy frames replayed as `11 01 01 00 code`;
+* the final `[keyId mods 00 usage]` buffer replayed as `00 00 68`.
+
+A simpler model fits all three: **wire byte 0 is the key ID, and bytes 1–8 are stored verbatim as that key's report**. IOKit added nothing to the wire.
+
+Issue #168 fits the same model. kriomant's 0x03-led frames ended with `[03 AA AA]`, and the reporter saw "key 3 as a rapid Shift + Win key": 0xAA is LShift + LGui + RShift + RGui.
+
+If this model is right, our blob03 frames all addressed **key ID 3**, not key 1.
