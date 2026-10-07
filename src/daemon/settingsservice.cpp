@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "settingsservice.h"
+#include "kdenlivecatalog.h"
 
 #include <QCryptographicHash>
 #include <QDBusConnectionInterface>
@@ -327,6 +328,17 @@ QString SettingsService::ListPlugins()
         a.append(p.toJson());
     }
     return json(QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("plugins"), a}});
+}
+
+QString SettingsService::GetCatalog(const QString &pluginId)
+{
+    if (pluginId == QLatin1String("kdenlive")) {
+        QJsonObject o = catalog::toJson();
+        o.insert(QStringLiteral("ok"), true);
+        return json(o);
+    }
+    return json(QJsonObject{{QStringLiteral("ok"), false},
+                            {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("unknown-plugin")}, {QStringLiteral("message"), QStringLiteral("no catalog for %1").arg(pluginId)}}}});
 }
 
 // ---------------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "mockkdenlive.h"
+#include "kdenlivecatalog.h"
 #include "kdenlivecontract.h"
 
 #include <QDBusMessage>
@@ -20,104 +21,10 @@ using namespace contract;
 
 const double kShuttleSpeeds[] = {0.0, 1.0, 2.0, 4.0, 5.0, 8.0, 16.0, 60.0};  // Kdenlive jogaction.cpp
 
-struct MockAction {
-    const char *id;
-    const char *text;
-    const char *shortcut;
-    bool checkable;
-};
-// K23-MR1a curated candidates (k23-contract-mr1a-actions.md, 71 ids). Texts
-// and shortcuts are approximations of Kdenlive's; only ids are normative.
-const MockAction kActions[] = {
-    {"monitor_play", "Play/Pause", "Space", false},
-    {"monitor_pause", "Pause", "K", false},
-    {"monitor_seek_backward", "Rewind", "J", false},
-    {"monitor_seek_forward", "Forward", "L", false},
-    {"monitor_play_zone", "Play Zone", "Ctrl+Space", false},
-    {"monitor_play_zone_cursor", "Play Zone From Cursor", "", false},
-    {"monitor_loop_zone", "Loop Zone", "Ctrl+Shift+Space", false},
-    {"monitor_loop_clip", "Loop Selected Clip", "", false},
-    {"switch_monitor", "Switch Monitor", "T", false},
-    {"monitor_zoomin", "Zoom In Monitor", "", false},
-    {"monitor_zoomout", "Zoom Out Monitor", "", false},
-    {"monitor_zoomreset", "Reset Monitor Zoom", "", false},
-    {"zoom_fit", "Fit Zoom to Project", "", false},
-    {"view_zoom_in", "Zoom In", "Ctrl+=", false},
-    {"view_zoom_out", "Zoom Out", "Ctrl+-", false},
-    {"seek_start", "Go to Project Start", "Home", false},
-    {"seek_end", "Go to Project End", "End", false},
-    {"seek_clip_start", "Go to Clip Start", "", false},
-    {"seek_clip_end", "Go to Clip End", "", false},
-    {"seek_zone_start", "Go to Zone Start", "Shift+I", false},
-    {"seek_zone_end", "Go to Zone End", "Shift+O", false},
-    {"monitor_seek_snap_backward", "Go to Previous Snap Point", "Alt+Left", false},
-    {"monitor_seek_snap_forward", "Go to Next Snap Point", "Alt+Right", false},
-    {"monitor_seek_guide_backward", "Go to Previous Guide", "Ctrl+Left", false},
-    {"monitor_seek_guide_forward", "Go to Next Guide", "Ctrl+Right", false},
-    {"mark_in", "Set Zone In", "I", false},
-    {"mark_out", "Set Zone Out", "O", false},
-    {"add_marker_guide_quickly", "Add Marker/Guide quickly", "Num+*", false},
-    {"add_marker_guide_1", "Add Marker/Guide (Category 1)", "", false},
-    {"add_marker_guide_2", "Add Marker/Guide (Category 2)", "", false},
-    {"add_marker_guide_3", "Add Marker/Guide (Category 3)", "", false},
-    {"add_marker_guide_4", "Add Marker/Guide (Category 4)", "", false},
-    {"add_marker_guide_5", "Add Marker/Guide (Category 5)", "", false},
-    {"add_marker_guide_6", "Add Marker/Guide (Category 6)", "", false},
-    {"add_marker_guide_7", "Add Marker/Guide (Category 7)", "", false},
-    {"add_marker_guide_8", "Add Marker/Guide (Category 8)", "", false},
-    {"add_marker_guide_9", "Add Marker/Guide (Category 9)", "", false},
-    {"add_marker_guide_10", "Add Marker/Guide (Category 10)", "", false},
-    {"delete_clip_marker", "Delete Clip Marker", "", false},
-    {"delete_sequence_marker", "Delete Guide", "", false},
-    {"insert_to_in_point", "Insert Clip Zone in Timeline", "V", false},
-    {"overwrite_to_in_point", "Overwrite Clip Zone in Timeline", "B", false},
-    {"remove_lift", "Lift Zone", "Z", false},
-    {"remove_extract", "Extract Zone", "Shift+X", false},
-    {"cut_timeline_clip", "Cut Clip", "Shift+R", false},
-    {"cut_timeline_all_clips", "Cut All Clips", "Ctrl+Shift+R", false},
-    {"delete_timeline_clip", "Delete Selected Item", "Del", false},
-    {"extract_clip", "Extract Clip", "", false},
-    {"resize_timeline_clip_start", "Resize Item Start", "(", false},
-    {"resize_timeline_clip_end", "Resize Item End", ")", false},
-    {"delete_space", "Remove Space", "", false},
-    {"delete_space_all_tracks", "Remove Space in All Tracks", "", false},
-    {"select_tool", "Selection Tool", "S", true},
-    {"razor_tool", "Razor Tool", "X", true},
-    {"spacer_tool", "Spacer Tool", "M", true},
-    {"ripple_tool", "Ripple Tool", "", true},
-    {"slip_tool", "Slip Tool", "", true},
-    {"normal_mode", "Normal Mode", "", true},
-    {"overwrite_mode", "Overwrite Mode", "", true},
-    {"insert_mode", "Insert Mode", "", true},
-    {"select_timeline_clip", "Select Clip", "+", false},
-    {"deselect_timeline_clip", "Deselect Clip", "-", false},
-    {"select_add_timeline_clip", "Add Clip To Selection", "Alt++", false},
-    {"select_timeline_zone", "Select Zone", "", false},
-    {"select_track", "Select All in Current Track", "Shift+A", false},
-    {"select_all_tracks", "Select All", "Ctrl+A", false},
-    {"keyframe_add", "Add/Remove Keyframe", "", false},
-    {"keyframe_next", "Go to Next Keyframe", "", false},
-    {"keyframe_previous", "Go to Previous Keyframe", "", false},
-    {"edit_undo", "Undo", "Ctrl+Z", false},
-    {"edit_redo", "Redo", "Ctrl+Shift+Z", false},
-};
-// k23-mr1a-mock-clarifications.md (ccb3d676): exactly these 30 ids take part
-// in the editing-writer and native-drag checks (no descriptor flag).
-const QStringList kEditingActions{
-    QStringLiteral("mark_in"), QStringLiteral("mark_out"), QStringLiteral("add_marker_guide_quickly"),
-    QStringLiteral("add_marker_guide_1"), QStringLiteral("add_marker_guide_2"), QStringLiteral("add_marker_guide_3"),
-    QStringLiteral("add_marker_guide_4"), QStringLiteral("add_marker_guide_5"), QStringLiteral("add_marker_guide_6"),
-    QStringLiteral("add_marker_guide_7"), QStringLiteral("add_marker_guide_8"), QStringLiteral("add_marker_guide_9"),
-    QStringLiteral("add_marker_guide_10"), QStringLiteral("delete_clip_marker"), QStringLiteral("delete_sequence_marker"),
-    QStringLiteral("insert_to_in_point"), QStringLiteral("overwrite_to_in_point"), QStringLiteral("remove_lift"), QStringLiteral("remove_extract"),
-    QStringLiteral("extract_clip"), QStringLiteral("cut_timeline_clip"), QStringLiteral("cut_timeline_all_clips"), QStringLiteral("delete_timeline_clip"),
-    QStringLiteral("resize_timeline_clip_start"), QStringLiteral("resize_timeline_clip_end"),
-    QStringLiteral("delete_space"), QStringLiteral("delete_space_all_tracks"), QStringLiteral("keyframe_add"), QStringLiteral("edit_undo"),
-    QStringLiteral("edit_redo")};
-// The playback actions the project monitor's trimming preview disables (clarification F).
-const QStringList kPlaybackActions{QStringLiteral("monitor_play"),      QStringLiteral("monitor_play_zone"), QStringLiteral("monitor_play_zone_cursor"),
-                                   QStringLiteral("monitor_loop_zone"), QStringLiteral("monitor_loop_clip"), QStringLiteral("monitor_seek_backward"),
-                                   QStringLiteral("monitor_seek_forward")};
+// The curated actions and the editing/playback sets live in the shared catalog
+// (src/daemon/kdenlivecatalog.cpp), which list-actions also prints.
+const QStringList kEditingActions = catalog::editingActionIds();
+const QStringList kPlaybackActions = catalog::playbackActionIds();
 // Playback-starting actions besides the play toggle (their effect in the mock).
 const QStringList kPlaybackStart{QStringLiteral("monitor_seek_backward"), QStringLiteral("monitor_seek_forward"), QStringLiteral("monitor_play_zone"),
                                  QStringLiteral("monitor_play_zone_cursor"), QStringLiteral("monitor_loop_zone"), QStringLiteral("monitor_loop_clip")};
@@ -584,8 +491,8 @@ QVariantMap MockKdenlive::getContext() const
 QStringList MockKdenlive::candidateActions()
 {
     QStringList ids;
-    for (const auto &a : kActions) {
-        ids << QString::fromLatin1(a.id);
+    for (const auto &a : catalog::actions()) {
+        ids << a.id;
     }
     return ids;
 }
@@ -595,14 +502,14 @@ QList<QVariantMap> MockKdenlive::actionList() const
     QList<QVariantMap> list;
     const QString tool = m_context.value(QStringLiteral("tool")).toString() + QStringLiteral("_tool");
     const QString mode = m_editMode + QStringLiteral("_mode");
-    for (const auto &a : kActions) {
-        const QString id = QString::fromLatin1(a.id);
+    for (const auto &a : catalog::actions()) {
+        const QString id = a.id;
         list << QVariantMap{{QStringLiteral("id"), id},
-                            {QStringLiteral("text"), QString::fromLatin1(a.text)},
+                            {QStringLiteral("text"), a.text},
                             {QStringLiteral("enabled"), actionRefusal(id, nullptr).isEmpty()},
                             {QStringLiteral("checkable"), a.checkable},
                             {QStringLiteral("checked"), a.checkable && (tool == id || mode == id)},
-                            {QStringLiteral("shortcut"), QString::fromLatin1(a.shortcut)}};
+                            {QStringLiteral("shortcut"), a.shortcut}};
     }
     return list;
 }
@@ -1555,8 +1462,8 @@ QVariantMap MockKdenlive::triggerAction(const QString &id, const QVariantMap &op
         return e;
     }
     bool known = false;
-    for (const auto &a : kActions) {
-        known = known || id == QLatin1String(a.id);
+    for (const auto &a : catalog::actions()) {
+        known = known || id == a.id;
     }
     if (!known) {
         // Dialog actions and anything else not curated: never a keyboard-fallback invitation.

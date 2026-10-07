@@ -1173,9 +1173,23 @@ private Q_SLOTS:
         // Trimming preview (entered with the Slip tool): the 7 playback actions are
         // listed disabled (announced), invoking one is busy and leaves no fake
         // playing state, pause still works; select_tool + fresh epoch allows playback.
-        const int finishedBefore = int(raw.finished.size());
+        // Count by request id: under load, ActionFinished of earlier steps can
+        // still be on its way when this part starts.
+        QList<quint64> accepted;
+        auto acceptedId = [](const QVariantMap &reply) { return reply.value(QStringLiteral("result")).toMap().value(QStringLiteral("requestId")).toULongLong(); };
+        auto finishedCount = [&] {
+            int n = 0;
+            for (const auto &f : std::as_const(raw.finished)) {
+                n += accepted.contains(f.value(QStringLiteral("requestId")).toULongLong());
+            }
+            return n;
+        };
         announced = raw.actionsChanged;
-        QVERIFY(trigger(QStringLiteral("slip_tool")).value(QStringLiteral("ok")).toBool());
+        {
+            const QVariantMap r = trigger(QStringLiteral("slip_tool"));
+            QVERIFY(r.value(QStringLiteral("ok")).toBool());
+            accepted << acceptedId(r);
+        }
         QTRY_COMPARE(m_mock->context().value(QStringLiteral("tool")).toString(), QStringLiteral("slip"));
         QTRY_VERIFY(raw.actionsChanged > announced);
         actions = raw.actionMap();
@@ -1199,10 +1213,14 @@ private Q_SLOTS:
                            return o;
                        }())}).value(QStringLiteral("ok")).toBool());  // the clip monitor is not trimming
         QVERIFY(raw.call(QStringLiteral("SetControlValue"), {contract::kShuttle, 0.0, QVariant::fromValue(raw.common())}).value(QStringLiteral("ok")).toBool());
-        QVERIFY(trigger(QStringLiteral("monitor_pause")).value(QStringLiteral("ok")).toBool());
-        QVERIFY(trigger(QStringLiteral("select_tool")).value(QStringLiteral("ok")).toBool());
+        for (const char *id : {"monitor_pause", "select_tool"}) {
+            const QVariantMap r = trigger(QLatin1String(id));
+            QVERIFY(r.value(QStringLiteral("ok")).toBool());
+            accepted << acceptedId(r);
+        }
         QTRY_COMPARE(m_mock->context().value(QStringLiteral("tool")).toString(), QStringLiteral("select"));
-        QTRY_COMPARE(int(raw.finished.size()), finishedBefore + 3);
+        QCOMPARE(QSet<quint64>(accepted.cbegin(), accepted.cend()).size(), 3);
+        QTRY_COMPARE(finishedCount(), 3);
         refresh();
         QVERIFY(trigger(QStringLiteral("monitor_play")).value(QStringLiteral("ok")).toBool());
         QTRY_VERIFY(m_mock->context().value(QStringLiteral("playing")).toBool());

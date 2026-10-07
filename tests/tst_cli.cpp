@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -122,6 +123,35 @@ private Q_SLOTS:
         QVERIFY(p.waitForFinished(5000));
         QCOMPARE(p.exitStatus(), QProcess::NormalExit);
         QCOMPARE(p.exitCode(), 0);
+    }
+
+    void listActionsOffline()
+    {
+        Run r = run({QStringLiteral("list-actions"), QStringLiteral("--json")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        const QJsonObject j = r.json();
+        const QJsonArray actions = j.value(QStringLiteral("actions")).toArray();
+        QCOMPARE(actions.size(), 71);
+        int editing = 0, playback = 0;
+        QSet<QString> ids;
+        for (const auto &a : actions) {
+            const QJsonObject o = a.toObject();
+            ids.insert(o.value(QStringLiteral("id")).toString());
+            editing += o.value(QStringLiteral("editing")).toBool();
+            playback += o.value(QStringLiteral("playback")).toBool();
+            QVERIFY(!o.value(QStringLiteral("group")).toString().isEmpty());
+        }
+        QCOMPARE(ids.size(), 71);
+        QCOMPARE(editing, 30);
+        QCOMPARE(playback, 7);
+        QVERIFY(ids.contains(QStringLiteral("razor_tool")));
+        QCOMPARE(j.value(QStringLiteral("controls")).toArray().size(), 10);
+        QCOMPARE(j.value(QStringLiteral("commands")).toArray().size(), 3);
+        QCOMPARE(j.value(QStringLiteral("contract")).toObject().value(QStringLiteral("interface")).toString(), QStringLiteral("org.kde.kdenlive.ControlSurface1"));
+        r = run({QStringLiteral("list-actions")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QVERIFY(r.out.contains("[editing]"));
+        QVERIFY(r.out.contains("playhead.jog"));
     }
 };
 

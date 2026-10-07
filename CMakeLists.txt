@@ -32,6 +32,11 @@ target_include_directories(cs_proto PUBLIC src/proto)
 add_executable(ch552-padprog src/padprog/main.cpp)
 target_link_libraries(ch552-padprog PRIVATE cs_proto Qt6::Core)
 
+# Offline Kdenlive catalog (curated actions, controls, commands): daemon and mock
+add_library(cs_catalog STATIC src/daemon/kdenlivecatalog.cpp)
+target_include_directories(cs_catalog PUBLIC src/daemon)
+target_link_libraries(cs_catalog PUBLIC Qt6::Core)
+
 # Daemon core (QtCore + QtNetwork + QtDBus)
 add_library(cs_core STATIC
     src/daemon/keynames.cpp
@@ -59,7 +64,7 @@ add_library(cs_core STATIC
     src/daemon/rawpaddevice.cpp
 )
 target_include_directories(cs_core PUBLIC src/daemon src/proto)
-target_link_libraries(cs_core PUBLIC cs_proto Qt6::Core Qt6::Network Qt6::DBus PkgConfig::UDEV)
+target_link_libraries(cs_core PUBLIC cs_proto cs_catalog Qt6::Core Qt6::Network Qt6::DBus PkgConfig::UDEV)
 
 add_executable(control-surfaced src/daemon/main.cpp)
 target_link_libraries(control-surfaced PRIVATE cs_core)
@@ -68,7 +73,7 @@ qt_add_resources(control-surfaced "defaults" PREFIX "/control-surface" BASE data
 # Mock Kdenlive implementing docs/kdenlive-api-contract.md
 add_library(cs_mock STATIC src/mock/mockkdenlive.cpp)
 target_include_directories(cs_mock PUBLIC src/mock src/daemon)
-target_link_libraries(cs_mock PUBLIC Qt6::Core Qt6::DBus)
+target_link_libraries(cs_mock PUBLIC cs_catalog Qt6::Core Qt6::DBus)
 
 add_executable(mock-kdenlive src/mock/main.cpp)
 target_link_libraries(mock-kdenlive PRIVATE cs_mock)

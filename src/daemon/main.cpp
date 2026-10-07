@@ -5,6 +5,7 @@
 #include "configwatcher.h"
 #include "engine.h"
 #include "inputmonitor.h"
+#include "kdenlivecatalog.h"
 #include "kdenlivedbusclient.h"
 #include "learn.h"
 #include "paddevice.h"
@@ -328,7 +329,7 @@ int main(int argc, char **argv)
     QCommandLineParser p;
     p.setApplicationDescription(QStringLiteral(
         "Per-application control surface for the CH552 macro pad (1189:8890).\n"
-        "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | check-config | example-config | bench-dbus [N]"));
+        "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | list-actions | check-config | example-config | bench-dbus [N]"));
     p.addHelpOption();
     p.addVersionOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
@@ -359,6 +360,32 @@ int main(int argc, char **argv)
             return 1;
         }
         std::fwrite(f.readAll().constData(), 1, size_t(f.size()), stdout);
+        return 0;
+    }
+    if (cmd == QLatin1String("list-actions")) {
+        // Offline: what a mapping editor can offer for Kdenlive (no Kdenlive needed).
+        // A running Kdenlive's ListActions (list-capabilities) stays authoritative.
+        if (p.isSet(jsonOpt)) {
+            say(QString::fromUtf8(QJsonDocument(catalog::toJson()).toJson(QJsonDocument::Compact)));
+            return 0;
+        }
+        QString group;
+        for (const auto &a : catalog::actions()) {
+            if (a.group != group) {
+                group = a.group;
+                say(QStringLiteral("[%1]").arg(group));
+            }
+            say(QStringLiteral("  %1  %2%3%4").arg(a.id, -30).arg(a.text, a.shortcut.isEmpty() ? QString() : QStringLiteral("  (%1)").arg(a.shortcut),
+                                                              a.editing ? QStringLiteral("  [editing]") : QString()));
+        }
+        say(QStringLiteral("[controls]"));
+        for (const auto &c : catalog::controls()) {
+            say(QStringLiteral("  %1  %2 per detent: %3%4").arg(c.name, -20).arg(c.stage, c.unit, c.editing ? QStringLiteral("  [editing]") : QString()));
+        }
+        say(QStringLiteral("[commands]"));
+        for (const auto &c : catalog::commands()) {
+            say(QStringLiteral("  %1  %2 %3").arg(c.name, -20).arg(c.stage, c.description));
+        }
         return 0;
     }
     if (cmd == QLatin1String("status")) {

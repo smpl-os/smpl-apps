@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "kdenlivecatalog.h"
+#include "kdenlivecontract.h"
+
+#include <QJsonArray>
+
+namespace cs::catalog {
+
+namespace {
+struct Row {
+    const char *id, *text, *shortcut;
+    bool checkable;
+    const char *group;
+};
+// K23-MR1a curated candidates, in the contract's order.
+const Row kRows[] = {
+    {"monitor_play", "Play/Pause", "Space", false, "playback"},
+    {"monitor_pause", "Pause", "K", false, "playback"},
+    {"monitor_seek_backward", "Rewind", "J", false, "playback"},
+    {"monitor_seek_forward", "Forward", "L", false, "playback"},
+    {"monitor_play_zone", "Play Zone", "Ctrl+Space", false, "playback"},
+    {"monitor_play_zone_cursor", "Play Zone From Cursor", "", false, "playback"},
+    {"monitor_loop_zone", "Loop Zone", "Ctrl+Shift+Space", false, "playback"},
+    {"monitor_loop_clip", "Loop Selected Clip", "", false, "playback"},
+    {"switch_monitor", "Switch Monitor", "T", false, "monitor"},
+    {"monitor_zoomin", "Zoom In Monitor", "", false, "monitor"},
+    {"monitor_zoomout", "Zoom Out Monitor", "", false, "monitor"},
+    {"monitor_zoomreset", "Reset Monitor Zoom", "", false, "monitor"},
+    {"zoom_fit", "Fit Zoom to Project", "", false, "navigation"},
+    {"view_zoom_in", "Zoom In", "Ctrl+=", false, "navigation"},
+    {"view_zoom_out", "Zoom Out", "Ctrl+-", false, "navigation"},
+    {"seek_start", "Go to Project Start", "Home", false, "navigation"},
+    {"seek_end", "Go to Project End", "End", false, "navigation"},
+    {"seek_clip_start", "Go to Clip Start", "", false, "navigation"},
+    {"seek_clip_end", "Go to Clip End", "", false, "navigation"},
+    {"seek_zone_start", "Go to Zone Start", "Shift+I", false, "navigation"},
+    {"seek_zone_end", "Go to Zone End", "Shift+O", false, "navigation"},
+    {"monitor_seek_snap_backward", "Go to Previous Snap Point", "Alt+Left", false, "navigation"},
+    {"monitor_seek_snap_forward", "Go to Next Snap Point", "Alt+Right", false, "navigation"},
+    {"monitor_seek_guide_backward", "Go to Previous Guide", "Ctrl+Left", false, "navigation"},
+    {"monitor_seek_guide_forward", "Go to Next Guide", "Ctrl+Right", false, "navigation"},
+    {"mark_in", "Set Zone In", "I", false, "zone"},
+    {"mark_out", "Set Zone Out", "O", false, "zone"},
+    {"add_marker_guide_quickly", "Add Marker/Guide quickly", "Num+*", false, "markers"},
+    {"add_marker_guide_1", "Add Marker/Guide (Category 1)", "", false, "markers"},
+    {"add_marker_guide_2", "Add Marker/Guide (Category 2)", "", false, "markers"},
+    {"add_marker_guide_3", "Add Marker/Guide (Category 3)", "", false, "markers"},
+    {"add_marker_guide_4", "Add Marker/Guide (Category 4)", "", false, "markers"},
+    {"add_marker_guide_5", "Add Marker/Guide (Category 5)", "", false, "markers"},
+    {"add_marker_guide_6", "Add Marker/Guide (Category 6)", "", false, "markers"},
+    {"add_marker_guide_7", "Add Marker/Guide (Category 7)", "", false, "markers"},
+    {"add_marker_guide_8", "Add Marker/Guide (Category 8)", "", false, "markers"},
+    {"add_marker_guide_9", "Add Marker/Guide (Category 9)", "", false, "markers"},
+    {"add_marker_guide_10", "Add Marker/Guide (Category 10)", "", false, "markers"},
+    {"delete_clip_marker", "Delete Clip Marker", "", false, "markers"},
+    {"delete_sequence_marker", "Delete Guide", "", false, "markers"},
+    {"insert_to_in_point", "Insert Clip Zone in Timeline", "V", false, "editing"},
+    {"overwrite_to_in_point", "Overwrite Clip Zone in Timeline", "B", false, "editing"},
+    {"remove_lift", "Lift Zone", "Z", false, "editing"},
+    {"remove_extract", "Extract Zone", "Shift+X", false, "editing"},
+    {"cut_timeline_clip", "Cut Clip", "Shift+R", false, "editing"},
+    {"cut_timeline_all_clips", "Cut All Clips", "Ctrl+Shift+R", false, "editing"},
+    {"delete_timeline_clip", "Delete Selected Item", "Del", false, "editing"},
+    {"extract_clip", "Extract Clip", "", false, "editing"},
+    {"resize_timeline_clip_start", "Resize Item Start", "(", false, "editing"},
+    {"resize_timeline_clip_end", "Resize Item End", ")", false, "editing"},
+    {"delete_space", "Remove Space", "", false, "editing"},
+    {"delete_space_all_tracks", "Remove Space in All Tracks", "", false, "editing"},
+    {"select_tool", "Selection Tool", "S", true, "tools"},
+    {"razor_tool", "Razor Tool", "X", true, "tools"},
+    {"spacer_tool", "Spacer Tool", "M", true, "tools"},
+    {"ripple_tool", "Ripple Tool", "", true, "tools"},
+    {"slip_tool", "Slip Tool", "", true, "tools"},
+    {"normal_mode", "Normal Mode", "", true, "tools"},
+    {"overwrite_mode", "Overwrite Mode", "", true, "tools"},
+    {"insert_mode", "Insert Mode", "", true, "tools"},
+    {"select_timeline_clip", "Select Clip", "+", false, "selection"},
+    {"deselect_timeline_clip", "Deselect Clip", "-", false, "selection"},
+    {"select_add_timeline_clip", "Add Clip To Selection", "Alt++", false, "selection"},
+    {"select_timeline_zone", "Select Zone", "", false, "selection"},
+    {"select_track", "Select All in Current Track", "Shift+A", false, "selection"},
+    {"select_all_tracks", "Select All", "Ctrl+A", false, "selection"},
+    {"keyframe_add", "Add/Remove Keyframe", "", false, "keyframes"},
+    {"keyframe_next", "Go to Next Keyframe", "", false, "keyframes"},
+    {"keyframe_previous", "Go to Previous Keyframe", "", false, "keyframes"},
+    {"edit_undo", "Undo", "Ctrl+Z", false, "history"},
+    {"edit_redo", "Redo", "Ctrl+Shift+Z", false, "history"},
+};
+// Clarification E (k23-mr1a-mock-clarifications.md, ccb3d676): exactly these 30.
+const char *const kEditing[] = {"mark_in", "mark_out", "add_marker_guide_quickly", "add_marker_guide_1", "add_marker_guide_2", "add_marker_guide_3",
+                                "add_marker_guide_4", "add_marker_guide_5", "add_marker_guide_6", "add_marker_guide_7", "add_marker_guide_8",
+                                "add_marker_guide_9", "add_marker_guide_10", "delete_clip_marker", "delete_sequence_marker", "insert_to_in_point",
+                                "overwrite_to_in_point", "remove_lift", "remove_extract", "extract_clip", "cut_timeline_clip", "cut_timeline_all_clips",
+                                "delete_timeline_clip", "resize_timeline_clip_start", "resize_timeline_clip_end", "delete_space",
+                                "delete_space_all_tracks", "keyframe_add", "edit_undo", "edit_redo"};
+// Clarification F: the playback actions the trimming preview disables.
+const char *const kPlayback[] = {"monitor_play", "monitor_play_zone", "monitor_play_zone_cursor", "monitor_loop_zone",
+                                 "monitor_loop_clip", "monitor_seek_backward", "monitor_seek_forward"};
+
+template<std::size_t N>
+QStringList toList(const char *const (&a)[N])
+{
+    QStringList l;
+    for (const char *s : a) {
+        l << QString::fromLatin1(s);
+    }
+    return l;
+}
+} // namespace
+
+QStringList editingActionIds()
+{
+    return toList(kEditing);
+}
+
+QStringList playbackActionIds()
+{
+    return toList(kPlayback);
+}
+
+const QList<Action> &actions()
+{
+    static const QList<Action> list = [] {
+        const QStringList editing = editingActionIds(), playback = playbackActionIds();
+        QList<Action> l;
+        for (const Row &r : kRows) {
+            const QString id = QString::fromLatin1(r.id);
+            l << Action{id, QString::fromUtf8(r.text), QString::fromLatin1(r.shortcut), r.checkable, QString::fromLatin1(r.group), editing.contains(id), playback.contains(id)};
+        }
+        return l;
+    }();
+    return list;
+}
+
+const QList<Control> &controls()
+{
+    using namespace cs::contract;
+    static const QList<Control> list{
+        {kJog, QStringLiteral("MR1"), QStringLiteral("frame"), false, QStringLiteral("Move the playhead frame by frame")},
+        {kShuttle, QStringLiteral("MR1"), QStringLiteral("speed step (-7..7, 0 pauses)"), false, QStringLiteral("Shuttle playback speed")},
+        {kZoom, QStringLiteral("MR1"), QStringLiteral("zoom step (+ zooms in)"), false, QStringLiteral("Timeline zoom")},
+        {kParamFocus, QStringLiteral("MR2"), QStringLiteral("parameter"), false, QStringLiteral("Focus the next or previous effect parameter")},
+        {kParamNudge, QStringLiteral("MR2"), QStringLiteral("parameter step"), true, QStringLiteral("Change the focused effect parameter")},
+        {kColorWheel, QStringLiteral("MR2"), QStringLiteral("wheel step"), true, QStringLiteral("Lift/Gamma/Gain wheel value or R/G/B")},
+        {kTrackFocus, QStringLiteral("MR3"), QStringLiteral("track"), false, QStringLiteral("Move the track focus up or down")},
+        {kScroll, QStringLiteral("MR3"), QStringLiteral("tenth of the visible width"), false, QStringLiteral("Scroll the timeline")},
+        {kAudioGain, QStringLiteral("MR3"), QStringLiteral("0.1 dB"), true, QStringLiteral("Track or clip gain")},
+        {kTrim, QStringLiteral("MR3"), QStringLiteral("frame"), true, QStringLiteral("Trim (resize) the selected clip edge, no ripple")},
+    };
+    return list;
+}
+
+const QList<Command> &commands()
+{
+    using namespace cs::contract;
+    static const QList<Command> list{
+        {kCmdParamReset, QStringLiteral("MR2"), QStringLiteral("Reset the focused parameter")},
+        {kCmdWheelReset, QStringLiteral("MR2"), QStringLiteral("Reset a colour wheel")},
+        {kCmdTrackSet, QStringLiteral("MR3"), QStringLiteral("Set a track's mute, hide, lock, solo or target")},
+    };
+    return list;
+}
+
+QJsonObject toJson()
+{
+    QJsonArray a, c, m;
+    for (const Action &x : actions()) {
+        a.append(QJsonObject{{QStringLiteral("id"), x.id},
+                             {QStringLiteral("text"), x.text},
+                             {QStringLiteral("shortcut"), x.shortcut},
+                             {QStringLiteral("checkable"), x.checkable},
+                             {QStringLiteral("group"), x.group},
+                             {QStringLiteral("editing"), x.editing},
+                             {QStringLiteral("playback"), x.playback}});
+    }
+    for (const Control &x : controls()) {
+        c.append(QJsonObject{{QStringLiteral("name"), x.name},
+                             {QStringLiteral("stage"), x.stage},
+                             {QStringLiteral("unit"), x.unit},
+                             {QStringLiteral("editing"), x.editing},
+                             {QStringLiteral("description"), x.description}});
+    }
+    for (const Command &x : commands()) {
+        m.append(QJsonObject{{QStringLiteral("name"), x.name}, {QStringLiteral("stage"), x.stage}, {QStringLiteral("description"), x.description}});
+    }
+    return QJsonObject{{QStringLiteral("contract"), QJsonObject{{QStringLiteral("interface"), cs::contract::kInterface},
+                                                                {QStringLiteral("version"), int(cs::contract::kVersion)},
+                                                                {QStringLiteral("revision"), int(cs::contract::kRevision)},
+                                                                {QStringLiteral("actionsSource"), QStringLiteral("k23-contract-mr1a-actions.md (71 curated candidates)")}}},
+                       {QStringLiteral("actions"), a},
+                       {QStringLiteral("controls"), c},
+                       {QStringLiteral("commands"), m}};
+}
+
+} // namespace cs::catalog
