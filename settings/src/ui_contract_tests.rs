@@ -371,3 +371,64 @@ fn keypad_tab_is_wired_and_flashes_only_as_a_dry_run_by_default() {
     let ui_rs = include_str!("keypad/ui.rs");
     assert!(ui_rs.contains("let execute = super::real_flash_enabled();"));
 }
+
+fn keypad_page() -> &'static str {
+    UI.split("// KEYPAD TAB").nth(1).unwrap().split("// ABOUT TAB").next().unwrap()
+}
+
+#[test]
+fn keypad_tab_states_its_device_scope_first() {
+    let keypad = keypad_page();
+    let scope = keypad.find("// ── Which keypads this supports").expect("scope note");
+    let device = keypad.find("// ── Device: keypad (sysfs) and the keypad app").unwrap();
+    assert!(scope < device, "the scope note comes before the device card");
+    for needle in [
+        "Supports CH552-based macro keypads only: USB ID 1189:8890",
+        "\\\"MINI KeyBoard\\\"-style pads with 3 to 16 keys and up to 3 knobs",
+        "a supported keypad shows up as connected just below",
+        "keypad-ctl present (or lsusb) finds USB ID 1189:8890",
+        "clicked => { root.kp-open-scope-help(); }",
+    ] {
+        assert!(keypad.contains(needle), "missing: {needle}");
+    }
+    let ui_rs = include_str!("keypad/ui.rs");
+    assert!(ui_rs.contains("KEYPAD.md#which-keypads-work"));
+}
+
+#[test]
+fn keypad_app_status_offers_start_only_when_told_to() {
+    let keypad = keypad_page();
+    assert!(keypad.contains("text: root.kp-app-text;"));
+    assert!(keypad.contains("if root.kp-show-start: KeypadButton {"));
+    assert!(keypad.contains("clicked => { root.kp-start-app(); }"));
+    for gone in ["kp-service-text", "kp-service(\"restart\")", "Keypad service", "detection"] {
+        assert!(!keypad.contains(gone), "stale: {gone}");
+    }
+    let ui_rs = include_str!("keypad/ui.rs");
+    assert!(ui_rs.contains("super::app_summary(&st.status.app, pad.is_some())"));
+    let mod_rs = include_str!("keypad/mod.rs");
+    assert!(mod_rs.contains("\"--user\", \"start\", SERVICE"));
+    assert!(!mod_rs.contains("\"status\", \"--service\""), "status comes from sysfs, not keypad-ctl");
+}
+
+#[test]
+fn keypad_variant_picker_has_previews_custom_grid_and_detected_mode() {
+    let keypad = keypad_page();
+    for needle in [
+        "if root.kp-variant-detected != \"\": HorizontalLayout {",
+        "\"Detected from the keypad: \" + root.kp-variant-detected",
+        "clicked => { root.kp-override-variant(); }",
+        "if root.kp-variant-picker: KeypadVariantDropdown {",
+        "selected(i) => { root.kp-select-variant(i); }",
+        "if root.kp-variant-picker && root.kp-custom: HorizontalLayout {",
+        "label: \"Keys\";",
+        "label: \"Knobs\";",
+        "label: \"Columns\";",
+    ] {
+        assert!(keypad.contains(needle), "missing: {needle}");
+    }
+    let dropdown = UI.split("component KeypadVariantDropdown").nth(1).unwrap().split("\ncomponent ").next().unwrap();
+    assert_eq!(dropdown.matches("KeypadMiniPad {").count(), 2, "a schematic for the choice and for every entry");
+    let ui_rs = include_str!("keypad/ui.rs");
+    assert!(ui_rs.contains("menu.push(entry(\"Custom…\".into(), ck, cn, cc));"));
+}

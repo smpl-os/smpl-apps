@@ -407,6 +407,19 @@ fn pattern_covers(pattern: &str, class: &str) -> bool {
     !literal.is_empty() && if exact { class == literal } else { class.starts_with(&literal) }
 }
 
+/// The config's `"layout"`: unset (the daemon decides), a board profile id,
+/// or a custom grid.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Layout {
+    Auto,
+    Board(String),
+    Custom { keys: usize, knobs: usize, columns: usize },
+}
+
+pub const MAX_KEYS: usize = 16;
+pub const MAX_KNOBS: usize = 3;
+pub const MAX_COLUMNS: usize = 8;
+
 pub struct KeypadConfig {
     pub doc: Json,
 }
@@ -575,6 +588,53 @@ impl KeypadConfig {
             }
         }
         Ok(note)
+    }
+
+    pub fn layout(&self) -> Layout {
+        let num = |v: &Json, k: &str| match v.get(k) {
+            Some(Json::Num(n)) => n.parse::<usize>().ok(),
+            _ => None,
+        };
+        match self.doc.get("layout") {
+            Some(Json::Str(id)) => Layout::Board(id.clone()),
+            Some(o @ Json::Obj(_)) => Layout::Custom {
+                keys: num(o, "keys").unwrap_or(0),
+                knobs: num(o, "knobs").unwrap_or(0),
+                columns: num(o, "columns").unwrap_or(1),
+            },
+            _ => Layout::Auto,
+        }
+    }
+
+    /// Sets the config's `"layout"`; `Auto` removes it.
+    pub fn set_layout(&mut self, layout: &Layout) -> Result<(), String> {
+        match layout {
+            Layout::Auto => {
+                self.doc.remove("layout");
+            }
+            Layout::Board(id) => {
+                if id.is_empty() || id.contains(char::is_whitespace) {
+                    return Err("choose a keypad variant".into());
+                }
+                self.doc.set("layout", Json::str(id));
+            }
+            Layout::Custom { keys, knobs, columns } => {
+                if !(1..=MAX_KEYS).contains(keys) || *knobs > MAX_KNOBS || !(1..=MAX_COLUMNS).contains(columns) {
+                    return Err(format!(
+                        "a custom layout needs 1-{MAX_KEYS} keys, 0-{MAX_KNOBS} knobs and 1-{MAX_COLUMNS} columns"
+                    ));
+                }
+                self.doc.set(
+                    "layout",
+                    Json::Obj(vec![
+                        ("keys".into(), Json::Num(keys.to_string())),
+                        ("knobs".into(), Json::Num(knobs.to_string())),
+                        ("columns".into(), Json::Num(columns.to_string())),
+                    ]),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Adds an app profile before the global one; returns its index.
@@ -799,6 +859,32 @@ mod tests {
         assert_eq!(c.profiles().len(), 2);
         assert_eq!(c.apply_kdenlive_preset(preset), 0);
         assert_eq!(c.profiles().len(), 2);
+    }
+
+    #[test]
+    fn layout_round_trips_ids_and_custom_grids() {
+        let mut c = config();
+        assert_eq!(c.layout(), Layout::Auto);
+        c.set_layout(&Layout::Board("generic-12k2e".into())).unwrap();
+        assert_eq!(c.layout(), Layout::Board("generic-12k2e".into()));
+        assert!(c.render().contains(r#""layout": "generic-12k2e""#));
+        let custom = Layout::Custom { keys: 9, knobs: 1, columns: 3 };
+        c.set_layout(&custom).unwrap();
+        let reread = KeypadConfig::parse(&c.render()).unwrap();
+        assert_eq!(reread.layout(), custom);
+        let layout = reread.doc.get("layout").unwrap();
+        assert_eq!(json::to_compact(layout), r#"{ "keys": 9, "knobs": 1, "columns": 3 }"#);
+        for bad in [
+            Layout::Custom { keys: 0, knobs: 1, columns: 3 },
+            Layout::Custom { keys: 17, knobs: 0, columns: 4 },
+            Layout::Custom { keys: 4, knobs: 4, columns: 4 },
+            Layout::Custom { keys: 4, knobs: 0, columns: 9 },
+            Layout::Board(String::new()),
+        ] {
+            assert!(c.set_layout(&bad).is_err(), "{bad:?}");
+        }
+        c.set_layout(&Layout::Auto).unwrap();
+        assert!(!c.render().contains("\"layout\""));
     }
 
     #[test]

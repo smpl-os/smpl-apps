@@ -1,7 +1,8 @@
 //! Slint wiring for the Keypad tab. The tab state lives on the UI thread;
-//! keypad-ctl, the daemon and file writes run on worker threads and report
-//! back through `invoke_from_event_loop`, after which the whole tab is
-//! re-rendered from state.
+//! sysfs scans, the daemon, keypad-ctl (flashing) and file writes run on
+//! worker threads and report back through `invoke_from_event_loop`, after
+//! which the whole tab is re-rendered from state. Nothing here runs unless
+//! Settings is open on this tab.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -12,11 +13,12 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use super::config::{self, ActionKind, Binding, KeypadConfig};
-use super::{Board, FirmwareImage, InputEvent, Status, Validation};
-use crate::{KeypadBindingRow, KeypadControl, MainWindow};
+use super::config::{self, ActionKind, Binding, KeypadConfig, Layout};
+use super::{FirmwareImage, InputEvent, Status, Validation, Variant};
+use crate::{KeypadBindingRow, KeypadControl, KeypadVariant, MainWindow};
 
 const KEYPAD_TAB: i32 = 11;
+pub const SCOPE_HELP_URL: &str = "https://github.com/smpl-os/smplos/blob/main/KEYPAD.md#which-keypads-work";
 const POLL: Duration = Duration::from_secs(2);
 const WIZARD_POLL: Duration = Duration::from_secs(1);
 const FLASH_HIGHLIGHT: Duration = Duration::from_millis(350);
@@ -54,7 +56,9 @@ struct State {
     loaded: bool,
     status: Status,
     status_loaded: bool,
-    boards: Vec<Board>,
+    variants: Vec<Variant>,
+    /// "Override" was clicked for a keypad that describes its own layout.
+    override_open: bool,
     daemon: Option<PathBuf>,
     config: KeypadConfig,
     /// The file exists but could not be read; editing stays off until fixed.
@@ -104,11 +108,91 @@ fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
 // ── Derived values ───────────────────────────────────────────────────────────
 
 impl State {
-    fn layout(&self) -> (usize, usize, usize, bool) {
-        if let Some(pad) = self.status.pads.first() {
-            return (pad.keys, pad.knobs, pad.cols.max(1), pad.layout_source != "device");
+    fn variant(&self, id: &str) -> Option<&Variant> {
+        self.variants.iter().find(|v| v.id == id)
+    }
+
+    /// The layout the keypad describes itself (our firmware), if any.
+    fn detected(&self) -> Option<(String, usize, usize, usize)> {
+        let pad = self.status.pads.first()?;
+        if let Some(v) = self.variant(&pad.board) {
+            return Some((v.name.clone(), v.keys, v.knobs, v.columns));
         }
-        (self.max_keys.min(15), self.max_knobs, 5, true)
+        if let Some((keys, knobs)) = pad.described {
+            return Some((format!("{keys} keys, {knobs} knobs"), keys, knobs, super::default_columns(keys)));
+        }
+        let l = self.status.layout.as_ref().filter(|l| l.source == "firmware")?;
+        Some((l.name.clone(), l.keys, l.knobs, l.columns))
+    }
+
+    /// What "Automatic" resolves to: the keypad's own description, the
+    /// running app's layout, or the default board.
+    fn automatic(&self) -> (String, usize, usize, usize) {
+        if let Some(d) = self.detected() {
+            return d;
+        }
+        if let Some(l) = self.status.layout.as_ref().filter(|l| l.source != "config" && l.keys + l.knobs > 0) {
+            return (l.name.clone(), l.keys, l.knobs, l.columns);
+        }
+        let v = self.variants.first().cloned().unwrap_or_else(|| super::builtin_variants().remove(0));
+        (v.name, v.keys, v.knobs, v.columns)
+    }
+
+    /// Keys, knobs and key columns shown for mapping.
+    fn layout(&self) -> (usize, usize, usize) {
+        match self.config.layout() {
+            Layout::Board(id) => match self.variant(&id) {
+                Some(v) => (v.keys, v.knobs, v.columns),
+                None => {
+                    let (_, k, n, c) = self.automatic();
+                    (k, n, c)
+                }
+            },
+            Layout::Custom { keys, knobs, columns } => (keys.max(1), knobs, columns.max(1)),
+            Layout::Auto => {
+                let (_, k, n, c) = self.automatic();
+                (k, n, c)
+            }
+        }
+    }
+
+    /// Variant menu: Automatic, the board profiles, an unknown configured id, Custom.
+    fn variant_menu(&self) -> (Vec<KeypadVariant>, i32) {
+        let (auto_name, k, n, c) = self.automatic();
+        let auto_label = if self.detected().is_some() {
+            format!("Use the detected layout ({auto_name})")
+        } else {
+            format!("Automatic ({auto_name})")
+        };
+        let entry = |name: String, keys: usize, knobs: usize, cols: usize| KeypadVariant {
+            name: s(name),
+            keys: keys as i32,
+            knobs: knobs as i32,
+            cols: cols as i32,
+        };
+        let mut menu = vec![entry(auto_label, k, n, c)];
+        menu.extend(self.variants.iter().map(|v| entry(v.name.clone(), v.keys, v.knobs, v.columns)));
+        let layout = self.config.layout();
+        let mut index = 0;
+        if let Layout::Board(id) = &layout {
+            index = match self.variants.iter().position(|v| v.id == *id) {
+                Some(i) => i + 1,
+                None => {
+                    let (_, k, n, c) = self.automatic();
+                    menu.push(entry(format!("{id} (unknown to this version)"), k, n, c));
+                    menu.len() - 1
+                }
+            };
+        }
+        let (ck, cn, cc) = match layout {
+            Layout::Custom { keys, knobs, columns } => (keys, knobs, columns),
+            _ => self.layout(),
+        };
+        menu.push(entry("Custom…".into(), ck, cn, cc));
+        if matches!(self.config.layout(), Layout::Custom { .. }) {
+            index = menu.len() - 1;
+        }
+        (menu, index as i32)
     }
 
     fn profiles(&self) -> Vec<config::ProfileInfo> {
@@ -189,7 +273,7 @@ impl State {
     }
 
     fn verify_total(&self) -> usize {
-        let (keys, knobs, _, _) = self.layout();
+        let (keys, knobs, _) = self.layout();
         keys + knobs * 3
     }
 }
@@ -209,62 +293,69 @@ fn render(ui: &MainWindow) {
 }
 
 fn render_state(ui: &MainWindow, st: &State) {
-    let (keys, knobs, cols, editable_layout) = st.layout();
+    let (keys, knobs, cols) = st.layout();
     let pad = st.status.pads.first();
 
-    // Device card
+    // Device card: what is plugged in (sysfs) and whether the keypad app runs.
     ui.set_kp_connected(pad.is_some());
     ui.set_kp_bootloader(st.status.bootloaders > 0);
-    let title = if let Some(e) = &st.status.helper_error {
-        format!("Keypad detection unavailable: {e}")
-    } else if !st.status_loaded {
-        "Looking for keypads…".into()
+    let title = if !st.status_loaded {
+        "Looking for keypads…".to_string()
     } else if let Some(pad) = pad {
-        let more = if st.status.pads.len() > 1 { format!(" (+{} more)", st.status.pads.len() - 1) } else { String::new() };
-        let knobs_text = if pad.knobs > 0 { format!(", {} knobs", pad.knobs) } else { String::new() };
-        format!("Macro keypad connected{more}: {} keys{knobs_text}", pad.keys)
+        let more = if st.status.pads.len() > 1 {
+            format!(" (+{} more; the keypad app drives one)", st.status.pads.len() - 1)
+        } else {
+            String::new()
+        };
+        let version = if pad.version.is_empty() { String::new() } else { format!(" {}", pad.version) };
+        format!("CH552 keypad connected{more}: {}{version}", pad.firmware_label)
     } else if st.status.bootloaders > 0 {
-        "A keypad is in firmware update mode".into()
+        "A keypad is in firmware update mode (USB 4348:55e0)".into()
     } else {
-        "No keypad connected. Plug in a CH552 macro keypad; you can still prepare mappings below.".into()
+        "No CH552 keypad connected. You can still prepare mappings below.".into()
     };
     ui.set_kp_device_title(s(title));
     ui.set_kp_device_detail(s(pad.map_or(String::new(), |p| {
         let name = format!("{} {}", p.manufacturer, p.product).trim().to_string();
         let serial = if p.serial.is_empty() { String::new() } else { format!(" · serial {}", p.serial) };
-        format!("{} · {name}{serial}", p.firmware_label)
+        format!("{name}{serial} · USB 1189:8890")
     })));
     ui.set_kp_firmware(s(pad.map_or("", |p| p.firmware.as_str())));
     ui.set_kp_firmware_text(s(match pad.map(|p| p.firmware.as_str()) {
-        Some("stock") => "Stock firmware. The keypad service remaps its keys, but the stock firmware can't describe its layout and can't be backed up. Installing the open firmware is optional and one-way.",
-        Some("open") => "Open firmware (control-surface). The keypad describes its own layout and every key and knob reaches the keypad service directly.",
-        Some("open-upstream") => "Open firmware (OpenMacroPad, not the smplOS build). Install the control-surface build to let the keypad describe its layout.",
+        Some("stock") => "Stock firmware. The keypad app remaps its keys, but the stock firmware can't describe its layout and can't be backed up. Installing the open firmware is optional and one-way.",
+        Some("control-surface") => "Open firmware (control-surface). The keypad describes its own layout and every key and knob reaches the keypad app directly.",
+        Some("openmacropad") => "Open firmware (OpenMacroPad, not the smplOS build). Install the control-surface build to let the keypad describe its layout.",
         Some(_) => "Unknown firmware.",
         None => "Connect the keypad to see its firmware.",
     }));
-    let service = if st.daemon.is_none() && !st.status.service_installed {
-        "Keypad service: not installed (package control-surface). Mappings are still saved.".to_string()
-    } else {
-        match st.status.service_state.as_str() {
-            "active" => "Keypad service: running".to_string(),
-            "activating" => "Keypad service: starting".to_string(),
-            "failed" => "Keypad service: failed (journalctl --user -u control-surface)".to_string(),
-            "" | "unknown" => "Keypad service: unknown".to_string(),
-            other => format!("Keypad service: {other}"),
-        }
-    };
-    ui.set_kp_service_text(s(service));
-    ui.set_kp_service_installed(st.status.service_installed || st.daemon.is_some());
-    ui.set_kp_service_running(st.status.service_state == "active");
+    let (app_text, show_start) = super::app_summary(&st.status.app, pad.is_some());
+    ui.set_kp_app_text(s(if st.status_loaded { app_text } else { String::new() }));
+    ui.set_kp_show_start(st.status_loaded && show_start);
 
-    // Board picker (only when the keypad can't describe itself)
-    ui.set_kp_layout_editable(editable_layout && !st.boards.is_empty());
-    ui.set_kp_board_names(strings(st.boards.iter().map(|b| b.name.clone())));
-    let board_id = pad.map_or("15+3", |p| p.board.as_str());
-    ui.set_kp_board_index(st.boards.iter().position(|b| b.id == board_id).map_or(-1, |i| i as i32));
-    ui.set_kp_layout_note(s(if keys > st.max_keys || knobs > st.max_knobs {
+    // Variant: detected (read-only) for self-describing keypads, else a menu.
+    let detected = st.detected();
+    let layout_choice = st.config.layout();
+    ui.set_kp_variant_detected(s(detected.as_ref().map_or(String::new(), |d| d.0.clone())));
+    ui.set_kp_variant_picker(detected.is_none() || st.override_open || layout_choice != Layout::Auto);
+    let (menu, index) = st.variant_menu();
+    ui.set_kp_variants(ModelRc::from(Rc::new(VecModel::from(menu))));
+    ui.set_kp_variant_index(index);
+    if let Layout::Custom { keys, knobs, columns } = layout_choice {
+        ui.set_kp_custom(true);
+        ui.set_kp_custom_keys(keys as i32);
+        ui.set_kp_custom_knobs(knobs as i32);
+        ui.set_kp_custom_cols(columns as i32);
+    } else {
+        ui.set_kp_custom(false);
+    }
+    let override_ignored = detected.is_some()
+        && layout_choice != Layout::Auto
+        && st.status.layout.as_ref().is_some_and(|l| l.source == "firmware");
+    ui.set_kp_layout_note(s(if override_ignored {
+        "Saved, but this version of the keypad app always uses the keypad's own layout, so the override has no effect yet.".to_string()
+    } else if keys > st.max_keys || knobs > st.max_knobs {
         format!(
-            "The installed keypad service maps up to {} keys and {} knobs; the others are shown but can't be mapped yet.",
+            "The installed keypad app maps up to {} keys and {} knobs; the others are shown but can't be mapped yet.",
             st.max_keys, st.max_knobs
         )
     } else {
@@ -305,11 +396,11 @@ fn render_state(ui: &MainWindow, st: &State) {
     ui.set_kp_rows(rows as i32);
     ui.set_kp_knobs(knobs as i32);
     ui.set_kp_identify(st.identify);
-    let live = st.status.api || super::mock_events().is_some();
+    let live = st.status.app.bus || super::mock_events().is_some();
     let testing = st.wizard.as_ref().is_some_and(|w| w.step == 6);
     ui.set_kp_live_note(s(match (live, st.identify || testing) {
         (_, false) => "",
-        (false, true) => "Live input needs the keypad service running (Start it above). Click a control instead.",
+        (false, true) => "Live input needs the keypad app running with a keypad plugged in. Click a control instead.",
         (true, true) if testing => "Mapped actions are paused while you test.",
         (true, true) => "Press a key or turn a knob on the keypad to select it. Mapped actions are paused meanwhile.",
     }));
@@ -344,7 +435,7 @@ fn render_state(ui: &MainWindow, st: &State) {
     ui.set_kp_selected_title(s(if mappable {
         config::slot_label(&st.control)
     } else {
-        format!("{} (not supported by the keypad service yet)", config::slot_label(&st.control))
+        format!("{} (not supported by the keypad app yet)", config::slot_label(&st.control))
     }));
     ui.set_kp_selected_knob(knob);
     ui.set_kp_knob_event(st.knob_event as i32);
@@ -369,7 +460,7 @@ fn render_state(ui: &MainWindow, st: &State) {
     };
     ui.set_kp_editor_mode(if mappable && st.config_error.is_none() { mode } else { 0 });
     ui.set_kp_editor_hint(s(if !mappable {
-        "The keypad service can't map this control yet."
+        "The keypad app can't map this control yet."
     } else if st.config_error.is_some() {
         "Fix the config file first (Open file)."
     } else {
@@ -484,11 +575,12 @@ fn load_config(st: &mut State) {
             .and_then(|t| KeypadConfig::parse(t).ok())
             .unwrap_or_else(|| KeypadConfig::parse(config::DEFAULT_CONFIG).expect("default config"));
         st.set_message(
-            "No keypad config yet: showing the defaults the keypad service uses. Saving creates the file.",
+            "No keypad config yet: showing the defaults the keypad app uses. Saving creates the file.",
             false,
         );
     }
     st.dirty = false;
+    st.override_open = false;
     st.profile = st.profile.min(st.config.profiles().len().saturating_sub(1));
     st.load_editor();
 }
@@ -609,6 +701,24 @@ fn on_input(ui: &MainWindow, event: InputEvent) {
     });
 }
 
+fn set_layout(st: &mut State, choice: Layout) {
+    if st.config_error.is_some() || st.config.layout() == choice {
+        return;
+    }
+    match st.config.set_layout(&choice) {
+        Ok(()) => {
+            st.dirty = true;
+            if choice == Layout::Auto {
+                st.override_open = false;
+            }
+            let (keys, knobs, _) = st.layout();
+            let knobs_text = if knobs > 0 { format!(", {knobs} knobs") } else { String::new() };
+            st.set_message(format!("Keypad variant: {keys} keys{knobs_text}. Not saved yet."), false);
+        }
+        Err(e) => st.set_message(e, true),
+    }
+}
+
 fn select_slot(st: &mut State, slot: &str) {
     let (control, event) = slot.split_once('.').unwrap_or((slot, ""));
     st.control = control.to_string();
@@ -685,10 +795,10 @@ fn save(ui: &MainWindow) {
                             .backup
                             .and_then(|b| b.file_name().map(|n| format!(" Previous version: backups/{}.", n.to_string_lossy())))
                             .unwrap_or_default();
-                        let applies = if st.status.service_state == "active" {
-                            "the keypad service applies it right away"
+                        let applies = if st.status.app.running() {
+                            "the keypad app applies it right away"
                         } else {
-                            "it takes effect when the keypad service runs"
+                            "it takes effect when the keypad app runs"
                         };
                         let check = match saved.validation {
                             Validation::Ok { warnings } if warnings.is_empty() => {
@@ -700,7 +810,7 @@ fn save(ui: &MainWindow) {
                                 warnings.first().cloned().unwrap_or_default()
                             ),
                             Validation::Unchecked => {
-                                "Saved. Not checked: the keypad service isn't installed.".to_string()
+                                "Saved. Not checked: the keypad app isn't installed.".to_string()
                             }
                             Validation::Invalid(_) => unreachable!("invalid configs are never written"),
                         };
@@ -840,7 +950,7 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
     let weak = ui.as_weak();
     let daemon = with(|st| st.daemon.clone()).flatten();
     std::thread::spawn(move || {
-        let boards = super::load_boards();
+        let variants = super::variants(daemon.as_deref());
         let features = super::features(daemon.as_deref());
         let mouse = match &features {
             Some(f) => f.mouse,
@@ -852,7 +962,7 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
         }
         let _ = slint::invoke_from_event_loop(move || {
             with(|st| {
-                st.boards = boards;
+                st.variants = variants;
                 st.mouse = mouse;
                 st.kdenlive_actions = actions;
                 if let Some(f) = features {
@@ -877,7 +987,8 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         loaded: false,
         status: Status::default(),
         status_loaded: false,
-        boards: Vec::new(),
+        variants: super::builtin_variants(),
+        override_open: false,
         daemon: None,
         config: KeypadConfig::parse(config::DEFAULT_CONFIG).expect("default config"),
         config_error: None,
@@ -930,33 +1041,71 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     });
 
     let weak = ui.as_weak();
-    ui.on_kp_select_board(move |i| {
+    ui.on_kp_start_app(move || {
         let Some(ui) = weak.upgrade() else { return };
-        let id = with(|st| st.boards.get(i as usize).map(|b| b.id.clone())).flatten();
-        if let Some(id) = id {
-            if let Err(e) = super::set_board(&id) {
-                with(|st| st.set_message(e, true));
-            }
-            refresh_status(&ui);
-        }
-    });
-
-    let weak = ui.as_weak();
-    ui.on_kp_service(move |action| {
-        let Some(ui) = weak.upgrade() else { return };
-        let action = action.to_string();
         let weak = ui.as_weak();
         std::thread::spawn(move || {
-            let result = super::service_action(&action);
+            let result = super::start_app();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = weak.upgrade() {
                     if let Err(e) = result {
-                        with(|st| st.set_message(format!("Keypad service: {e}"), true));
+                        with(|st| st.set_message(format!("Could not start the keypad app: {e}"), true));
                     }
                     refresh_status(&ui);
                 }
             });
         });
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_open_scope_help(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        if Command::new("xdg-open").arg(SCOPE_HELP_URL).spawn().is_err() {
+            with(|st| st.set_message(format!("Open {SCOPE_HELP_URL} in a browser."), false));
+            render(&ui);
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_override_variant(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| st.override_open = true);
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_select_variant(move |i| {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            let (menu, _) = st.variant_menu();
+            let i = i.max(0) as usize;
+            let choice = if i == 0 {
+                Layout::Auto
+            } else if i + 1 == menu.len() {
+                let (keys, knobs, columns) = st.layout();
+                Layout::Custom { keys: keys.clamp(1, config::MAX_KEYS), knobs: knobs.min(config::MAX_KNOBS), columns: columns.clamp(1, config::MAX_COLUMNS) }
+            } else if let Some(v) = st.variants.get(i - 1) {
+                Layout::Board(v.id.clone())
+            } else {
+                return; // the "unknown id" entry: already selected
+            };
+            set_layout(st, choice);
+        });
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_custom(move |keys, knobs, columns| {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            let choice = Layout::Custom {
+                keys: (keys.max(1) as usize).min(config::MAX_KEYS),
+                knobs: (knobs.max(0) as usize).min(config::MAX_KNOBS),
+                columns: (columns.max(1) as usize).min(config::MAX_COLUMNS),
+            };
+            set_layout(st, choice);
+        });
+        render(&ui);
     });
 
     let weak = ui.as_weak();
@@ -1127,7 +1276,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                     st.load_editor();
                     st.set_message("Loaded the recommended Kdenlive layout (with context layers). Not saved yet.", false);
                 }
-                None => st.set_message("The recommended layout comes with the keypad service, which isn't installed.", true),
+                None => st.set_message("The recommended layout comes with the keypad app, which isn't installed.", true),
             }
         });
         sync_editor_text(&ui);

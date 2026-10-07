@@ -8,27 +8,36 @@ All notable changes to smpl-apps are documented here.
 
 ### Added
 
-- **settings: Keypad tab for CH552 macro keypads.** It shows the connected
-  keypad, its firmware (stock or open), the keypad service's state and a board
-  picker when the keypad can't describe its layout. A clickable layout of the
-  keys and knobs opens a mapping editor for the Global profile and per-app
-  profiles. A control can get a keyboard shortcut, a media key, a command or
-  "do nothing", plus mouse buttons once the daemon supports them. Profiles can
-  turn on the Kdenlive API plugin (D-Bus ControlSurface1), with its actions and
-  the daemon's recommended layout. Press to identify selects the control you
-  press on the keypad. It listens to the daemon's `InputEvent` signal and
+- **settings: Keypad tab for CH552 macro keypads.** The top of the tab says
+  which keypads it supports (CH552, USB 1189:8890, "MINI KeyBoard"-style pads
+  with 3 to 16 keys and up to 3 knobs) and how to check. The device card reads
+  sysfs directly: whether a keypad is plugged in, its firmware and version.
+  It shows whether the keypad app (`control-surfaced`) runs, judged by its
+  session-bus name, a hand-started process or `control-surface.service`, and
+  offers Start only while a keypad is plugged in and the app isn't running.
+  A variant dropdown with a schematic per entry lists the daemon's board
+  profiles plus Custom (1-16 keys, 0-3 knobs, 1-8 columns) and writes the
+  config's `"layout"`; a keypad with the open firmware shows its detected
+  layout read-only, with Override. A clickable layout of the keys and knobs
+  opens a mapping editor for the Global profile and per-app profiles. A
+  control can get a keyboard shortcut, a media key, a command or "do
+  nothing", plus mouse buttons when the daemon supports them. Profiles can
+  turn on the Kdenlive API plugin (D-Bus ControlSurface1), with its actions
+  and the daemon's recommended layout. Press to identify selects the control
+  you press on the keypad. It listens to the daemon's `InputEvent` signal and
   pauses mapped actions while you identify (`org.smplos.ControlSurface1`
-  `SetIdentify`); the keypad itself is never opened. Limits, mouse support and
-  the Kdenlive catalog come from `control-surfaced features` and `list-actions`
-  when the daemon has them. Mappings are written to the daemon's
-  `~/.config/control-surface/config.jsonc`. Each save is checked by
-  `control-surfaced check-config` first and refused if the file changed on disk
-  since it was read. The previous file goes to `backups/` (10 kept) and the new
-  one replaces it atomically. Unknown entries (layers, modes, continuous
-  controls) are kept. A firmware wizard walks through
+  `SetIdentify`); the keypad itself is never opened. Limits, mouse support,
+  board profiles and the Kdenlive catalog come from `control-surfaced
+  features` and `list-actions` when the daemon has them. Mappings are written
+  to the daemon's `~/.config/control-surface/config.jsonc`. Each save is
+  checked by `control-surfaced check-config` first and refused if the file
+  changed on disk since it was read. The previous file goes to `backups/` (10
+  kept) and the new one replaces it atomically. Unknown entries (layers,
+  modes, continuous controls) are kept. A firmware wizard walks through
   unplug, hold the top-left key, plug in, flash, replug and test every input.
-  Flashing is a dry run unless `SMPLOS_KEYPAD_REAL_FLASH=1`. Needs smplOS's
-  `keypad-ctl` (detection and flashing); see smplOS `KEYPAD.md`. Opens with
+  Flashing is a dry run unless `SMPLOS_KEYPAD_REAL_FLASH=1`. Nothing keypad
+  related runs unless Settings is open on this tab. Needs smplOS's
+  `keypad-ctl` for flashing; see smplOS `KEYPAD.md`. Opens with
   `settings --tab keypad`.
 
 - **start-menu: resident mode opens the menu in about 20 ms.** Each Super

@@ -19,45 +19,373 @@ use serde_json::Value;
 pub const SERVICE: &str = "control-surface.service";
 const BACKUPS_KEPT: usize = 10;
 
-// ── Devices ──────────────────────────────────────────────────────────────────
+// ── Devices (sysfs only: the keypad is never opened) ─────────────────────────
+
+const PAD_ID: (&str, &str) = ("1189", "8890");
+const BOOTLOADER_IDS: [(&str, &str); 2] = [("4348", "55e0"), ("1a86", "55e0")];
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pad {
     pub path: String,
+    /// The daemon's names: `control-surface` (ours), `openmacropad`, `stock`, `unknown`.
     pub firmware: String,
     pub firmware_label: String,
+    /// From bcdDevice for our firmware, e.g. "2.1".
+    pub version: String,
     pub manufacturer: String,
     pub product: String,
     pub serial: String,
+    /// Board profile the keypad names itself ("Control Surface 15+3" -> sy181-15k3e).
     pub board: String,
+    /// Keys and knobs the keypad describes, if it does (our firmware).
+    pub described: Option<(usize, usize)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AppState {
+    /// `control-surfaced` is installed (PATH, ~/.local/bin or /usr/bin).
+    pub installed: bool,
+    /// control-surface.service: LoadState, ActiveState, ConditionResult.
+    pub load: String,
+    pub active: String,
+    pub condition_failed: bool,
+    /// org.smplos.ControlSurface is on the session bus (systemd or not).
+    pub bus: bool,
+    /// A `control-surfaced run` process exists (e.g. started by hand).
+    pub process: bool,
+}
+
+impl AppState {
+    pub fn running(&self) -> bool {
+        self.bus || self.process || self.active == "active"
+    }
+}
+
+/// The daemon's effective layout, from its Settings API.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DaemonLayout {
+    pub id: String,
+    pub name: String,
+    /// firmware | config | hardware-map | measured | template
+    pub source: String,
     pub keys: usize,
     pub knobs: usize,
-    pub cols: usize,
-    /// "device" (self-described), "user" (chosen board) or "default".
-    pub layout_source: String,
-    /// The daemon can address every control of this layout.
-    pub supported: bool,
+    pub columns: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Status {
     pub pads: Vec<Pad>,
     pub bootloaders: usize,
-    pub service_installed: bool,
-    pub service_state: String,
-    /// keypad-ctl is missing (smplOS too old) or failed.
-    pub helper_error: Option<String>,
-    /// The daemon's Settings API is on the session bus.
-    pub api: bool,
+    pub app: AppState,
+    pub layout: Option<DaemonLayout>,
 }
 
+fn sysfs_root() -> PathBuf {
+    std::env::var_os("SMPLOS_KEYPAD_SYSFS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/sys/bus/usb/devices"))
+}
+
+fn attr(dir: &Path, name: &str) -> String {
+    std::fs::read_to_string(dir.join(name)).map(|s| s.trim().to_string()).unwrap_or_default()
+}
+
+/// Same rules as control-surfaced (usbinfo.cpp classifyFirmware).
+pub fn classify_pad(manufacturer: &str, product: &str, bcd: &str) -> (String, String, String, String) {
+    let (kind, label) = if manufacturer == "OpenMacroPad" && product.starts_with("Control Surface") {
+        ("control-surface", "Open firmware (control-surface)")
+    } else if manufacturer == "SY181" {
+        ("openmacropad", "Open firmware (OpenMacroPad)")
+    } else if manufacturer == "wch.cn" {
+        ("stock", "Stock firmware")
+    } else {
+        ("unknown", "Unknown firmware")
+    };
+    let mut version = String::new();
+    let mut board = String::new();
+    if kind == "control-surface" {
+        let bcd = format!("{bcd:0>4}");
+        let major = bcd[..2].parse::<u32>().unwrap_or(0);
+        let minor = bcd[2..4].parse::<u32>().unwrap_or(0);
+        version = format!("{major}.{minor}");
+        if product == "Control Surface 15+3" {
+            board = "sy181-15k3e".into();
+        }
+    }
+    (kind.into(), label.into(), version, board)
+}
+
+/// "Control Surface 12+2" -> (12, 2).
+pub fn described_layout(kind: &str, product: &str) -> Option<(usize, usize)> {
+    if kind != "control-surface" {
+        return None;
+    }
+    let tail = product.rsplit(' ').next()?;
+    let (keys, knobs) = tail.split_once('+')?;
+    let (keys, knobs) = (keys.parse::<usize>().ok()?, knobs.parse::<usize>().ok()?);
+    (keys > 0 && keys <= 32 && knobs <= 4).then_some((keys, knobs))
+}
+
+/// Connected keypads and WCH bootloaders, from USB device attributes.
+pub fn scan_sysfs(root: &Path) -> (Vec<Pad>, usize) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return (Vec::new(), 0);
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| !n.contains(':')))
+        .collect();
+    dirs.sort();
+    let (mut pads, mut loaders) = (Vec::new(), 0);
+    for dir in dirs {
+        let id = (attr(&dir, "idVendor").to_lowercase(), attr(&dir, "idProduct").to_lowercase());
+        if (id.0.as_str(), id.1.as_str()) == PAD_ID {
+            let manufacturer = attr(&dir, "manufacturer");
+            let product = attr(&dir, "product");
+            let (firmware, firmware_label, version, board) =
+                classify_pad(&manufacturer, &product, &attr(&dir, "bcdDevice"));
+            pads.push(Pad {
+                path: dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                described: described_layout(&firmware, &product),
+                firmware,
+                firmware_label,
+                version,
+                serial: attr(&dir, "serial"),
+                manufacturer,
+                product,
+                board,
+            });
+        } else if BOOTLOADER_IDS.iter().any(|(v, p)| (id.0.as_str(), id.1.as_str()) == (*v, *p)) {
+            loaders += 1;
+        }
+    }
+    (pads, loaders)
+}
+
+/// A `control-surfaced` process running the daemon (not a one-shot command).
+fn daemon_process_running(proc_root: &Path) -> bool {
+    let Ok(procs) = std::fs::read_dir(proc_root) else {
+        return false;
+    };
+    procs.flatten().any(|p| {
+        if !std::fs::read_to_string(p.path().join("comm")).is_ok_and(|c| c.trim() == "control-surfaced") {
+            return false;
+        }
+        let cmdline = std::fs::read(p.path().join("cmdline")).unwrap_or_default();
+        let mut args = cmdline.split(|b| *b == 0).skip(1).filter(|a| !a.is_empty());
+        match args.find(|a| !a.starts_with(b"-")) {
+            None => true,
+            Some(cmd) => cmd == b"run",
+        }
+    })
+}
+
+fn unit_state() -> (String, String, bool) {
+    let Ok(out) = Command::new("systemctl")
+        .args(["--user", "show", SERVICE, "-p", "LoadState", "-p", "ActiveState", "-p", "ConditionResult"])
+        .output()
+    else {
+        return (String::new(), String::new(), false);
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let get = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key).and_then(|v| v.strip_prefix('=')))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let active = get("ActiveState");
+    let condition_failed = get("ConditionResult") == "no" && active != "active";
+    (get("LoadState"), active, condition_failed)
+}
+
+pub fn load_status() -> Status {
+    let (pads, bootloaders) = scan_sysfs(&sysfs_root());
+    let (load, active, condition_failed) = unit_state();
+    let bus = api_available();
+    let app = AppState {
+        installed: daemon_binary().is_some(),
+        load,
+        active,
+        condition_failed,
+        bus,
+        process: !bus
+            && daemon_process_running(&std::env::var_os("SMPLOS_KEYPAD_PROC").map_or_else(|| PathBuf::from("/proc"), PathBuf::from)),
+    };
+    let layout = if app.bus { daemon_layout() } else { None };
+    Status { pads, bootloaders, app, layout }
+}
+
+/// What to say about the keypad app, and whether to offer Start.
+pub fn app_summary(app: &AppState, keypad_present: bool) -> (String, bool) {
+    if app.running() {
+        let how = if app.active == "active" {
+            ""
+        } else {
+            " (started outside systemd)"
+        };
+        let api = if app.bus {
+            ""
+        } else {
+            " This version has no Settings interface, so live input is unavailable."
+        };
+        return (format!("Keypad app: running{how}.{api}"), false);
+    }
+    if !app.installed {
+        return ("Keypad app: not installed (package control-surface).".into(), false);
+    }
+    match app.active.as_str() {
+        "activating" | "reloading" => return ("Keypad app: starting…".into(), false),
+        "failed" => {
+            return (
+                "Keypad app: failed. Details: journalctl --user -u control-surface".into(),
+                keypad_present,
+            )
+        }
+        _ => {}
+    }
+    if app.condition_failed {
+        return (
+            "Keypad app: not started: /usr/bin/control-surfaced is missing (package control-surface).".into(),
+            false,
+        );
+    }
+    if app.load == "not-found" {
+        return ("Keypad app: not running; control-surface.service is missing (update smplOS).".into(), false);
+    }
+    if keypad_present {
+        ("Keypad app: not running.".into(), true)
+    } else {
+        ("Keypad app: not running. It starts by itself when a keypad is plugged in.".into(), false)
+    }
+}
+
+pub fn start_app() -> Result<(), String> {
+    let out = Command::new("systemctl")
+        .args(["--user", "start", SERVICE])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// Keys first (row-major), then knobs in a column to the right.
+pub fn control_ids(keys: usize, knobs: usize) -> Vec<String> {
+    (1..=keys)
+        .map(|k| format!("key{k}"))
+        .chain((1..=knobs).map(|k| format!("knob{k}")))
+        .collect()
+}
+
+// ── Variants (the daemon's board profiles) ──────────────────────────────────
+
 #[derive(Clone, Debug, PartialEq)]
-pub struct Board {
+pub struct Variant {
     pub id: String,
     pub name: String,
     pub keys: usize,
     pub knobs: usize,
-    pub cols: usize,
+    /// Key columns (knobs sit in one extra column to the right).
+    pub columns: usize,
+}
+
+/// control-surfaced's built-in board profiles (boardprofile.cpp), in menu order.
+pub const BUILTIN_VARIANTS: &[(&str, &str, usize, usize, usize)] = &[
+    ("sy181-15k3e", "15 keys, 3 knobs (SY181 \"12+3\" board)", 15, 3, 5),
+    ("generic-3k", "3 keys", 3, 0, 3),
+    ("generic-3k1e", "3 keys, 1 knob", 3, 1, 3),
+    ("generic-6k1e", "6 keys, 1 knob", 6, 1, 3),
+    ("generic-10k", "10 keys", 10, 0, 5),
+    ("generic-12k2e", "12 keys, 2 knobs", 12, 2, 4),
+    ("generic-12k3e", "12 keys, 3 knobs", 12, 3, 4),
+    ("generic-16k3e", "16 keys, 3 knobs", 16, 3, 4),
+];
+
+/// The daemon's column rule for grids it builds itself (profileForControls).
+pub fn default_columns(keys: usize) -> usize {
+    if keys >= 15 || keys == 10 {
+        5
+    } else if keys >= 7 {
+        4
+    } else {
+        keys.clamp(1, 3)
+    }
+}
+
+pub fn builtin_variants() -> Vec<Variant> {
+    BUILTIN_VARIANTS
+        .iter()
+        .map(|(id, name, keys, knobs, columns)| Variant {
+            id: id.to_string(),
+            name: name.to_string(),
+            keys: *keys,
+            knobs: *knobs,
+            columns: *columns,
+        })
+        .collect()
+}
+
+/// Board profiles from `features --json` (`layouts.builtin`), in the built-in
+/// menu order, with the built-in column counts; new ids are appended.
+pub fn parse_variants(features: &str) -> Option<Vec<Variant>> {
+    let v: Value = serde_json::from_str(features.trim()).ok()?;
+    let listed = v.get("layouts")?.get("builtin")?.as_array()?;
+    let builtin = builtin_variants();
+    let mut out: Vec<Variant> = Vec::new();
+    for b in &builtin {
+        if listed.iter().any(|l| text(l, "id") == b.id) {
+            out.push(b.clone());
+        }
+    }
+    for l in listed {
+        let id = text(l, "id");
+        if id.is_empty() || out.iter().any(|v| v.id == id) {
+            continue;
+        }
+        let keys = count(l, "keys");
+        out.push(Variant { name: text(l, "name"), keys, knobs: count(l, "knobs"), columns: default_columns(keys), id });
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+pub fn variants(daemon: Option<&Path>) -> Vec<Variant> {
+    daemon
+        .and_then(|d| Command::new(d).args(["features", "--json"]).output().ok())
+        .filter(|o| o.status.success())
+        .and_then(|o| parse_variants(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_else(builtin_variants)
+}
+
+pub fn parse_daemon_layout(json: &str) -> Option<DaemonLayout> {
+    let v: Value = serde_json::from_str(json.trim()).ok()?;
+    let l = v.get("layout").filter(|l| l.is_object()).unwrap_or(&v);
+    let keys = l.get("keys")?.as_array()?;
+    let knobs = l.get("knobs").and_then(Value::as_array).map_or(0, Vec::len);
+    let columns = keys
+        .iter()
+        .filter_map(|k| k.get("column").and_then(Value::as_u64))
+        .max()
+        .map_or(1, |c| c as usize + 1);
+    Some(DaemonLayout {
+        id: text(l, "id"),
+        name: text(l, "name"),
+        source: text(l, "source"),
+        keys: keys.len(),
+        knobs,
+        columns,
+    })
+}
+
+fn daemon_layout() -> Option<DaemonLayout> {
+    let reply = bus()?
+        .call_method(Some(DBUS_SERVICE), DBUS_PATH, Some(DBUS_INTERFACE), "GetLayout", &())
+        .ok()?;
+    parse_daemon_layout(&reply.body().deserialize::<String>().ok()?)
 }
 
 fn text(v: &Value, key: &str) -> String {
@@ -66,45 +394,6 @@ fn text(v: &Value, key: &str) -> String {
 
 fn count(v: &Value, key: &str) -> usize {
     v.get(key).and_then(Value::as_u64).unwrap_or(0) as usize
-}
-
-pub fn parse_status(json: &str) -> Result<Status, String> {
-    let v: Value = serde_json::from_str(json.trim()).map_err(|e| format!("keypad-ctl: {e}"))?;
-    let pads = v
-        .get("devices")
-        .and_then(Value::as_array)
-        .map(|devices| {
-            devices
-                .iter()
-                .map(|d| {
-                    let layout = d.get("layout").cloned().unwrap_or(Value::Null);
-                    Pad {
-                        path: text(d, "path"),
-                        firmware: text(d, "firmware"),
-                        firmware_label: text(d, "firmware_label"),
-                        manufacturer: text(d, "manufacturer"),
-                        product: text(d, "product"),
-                        serial: text(d, "serial"),
-                        board: text(&layout, "board"),
-                        keys: count(&layout, "keys"),
-                        knobs: count(&layout, "knobs"),
-                        cols: count(&layout, "cols").max(1),
-                        layout_source: text(&layout, "source"),
-                        supported: layout.get("supported").and_then(Value::as_bool).unwrap_or(true),
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let service = v.get("service").cloned().unwrap_or(Value::Null);
-    Ok(Status {
-        pads,
-        bootloaders: v.get("bootloaders").and_then(Value::as_array).map_or(0, Vec::len),
-        service_installed: service.get("installed").and_then(Value::as_bool).unwrap_or(false),
-        service_state: text(&service, "state"),
-        helper_error: None,
-        api: false,
-    })
 }
 
 fn keypad_ctl() -> Command {
@@ -121,61 +410,6 @@ fn run_keypad_ctl(args: &[&str]) -> Result<String, String> {
         return Err(err.lines().last().unwrap_or("keypad-ctl failed").to_string());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-pub fn load_status() -> Status {
-    let mut status = match run_keypad_ctl(&["status", "--service"]).and_then(|out| parse_status(&out)) {
-        Ok(status) => status,
-        Err(e) => Status { helper_error: Some(e), ..Status::default() },
-    };
-    status.api = api_available();
-    status
-}
-
-pub fn load_boards() -> Vec<Board> {
-    let Ok(out) = run_keypad_ctl(&["boards"]) else {
-        return Vec::new();
-    };
-    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(out.trim()) else {
-        return Vec::new();
-    };
-    items
-        .iter()
-        .map(|b| Board {
-            id: text(b, "id"),
-            name: text(b, "name"),
-            keys: count(b, "keys"),
-            knobs: count(b, "knobs"),
-            cols: count(b, "cols").max(1),
-        })
-        .collect()
-}
-
-pub fn set_board(id: &str) -> Result<(), String> {
-    run_keypad_ctl(&["set-board", id]).map(|_| ())
-}
-
-/// Keys first (row-major), then knobs in a column to the right.
-pub fn control_ids(keys: usize, knobs: usize) -> Vec<String> {
-    (1..=keys)
-        .map(|k| format!("key{k}"))
-        .chain((1..=knobs).map(|k| format!("knob{k}")))
-        .collect()
-}
-
-pub fn service_action(action: &str) -> Result<(), String> {
-    if !["start", "restart", "stop"].contains(&action) {
-        return Err(format!("unsupported service action {action}"));
-    }
-    let out = Command::new("systemctl")
-        .args(["--user", action, SERVICE])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
 }
 
 // ── Daemon and config file ──────────────────────────────────────────────────
@@ -238,7 +472,7 @@ pub fn check_config(daemon: Option<&Path>, file: &Path) -> Validation {
         .lines()
         .rev()
         .find(|l| !l.trim().is_empty())
-        .unwrap_or("the keypad service rejected the config");
+        .unwrap_or("the keypad app rejected the config");
     // "config /path/.tmp: profile x: ..." -> "profile x: ..."
     let message = match message.strip_prefix("config ") {
         Some(rest) => rest.split_once(": ").map_or(rest, |(_, m)| m),
@@ -688,24 +922,104 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    fn fake_sysfs(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        for (dev, attrs) in [
+            ("1-1", &[("idVendor", "0c45"), ("idProduct", "760a"), ("manufacturer", "SONiX")][..]),
+            ("1-1:1.0", &[][..]),
+            ("1-5", &[("idVendor", "1189"), ("idProduct", "8890"), ("manufacturer", "OpenMacroPad"),
+                      ("product", "Control Surface 15+3"), ("serial", "key153"), ("bcdDevice", "0201")][..]),
+            ("1-6", &[("idVendor", "1189"), ("idProduct", "8890"), ("manufacturer", "wch.cn"),
+                      ("product", "CH552"), ("serial", "key153"), ("bcdDevice", "0100")][..]),
+            ("3-1", &[("idVendor", "4348"), ("idProduct", "55e0")][..]),
+        ] {
+            let d = dir.join(dev);
+            std::fs::create_dir_all(&d).unwrap();
+            for (k, v) in attrs {
+                std::fs::write(d.join(k), format!("{v}\n")).unwrap();
+            }
+        }
+        dir
+    }
+
     #[test]
-    fn parses_keypad_ctl_status() {
-        let status = parse_status(
-            r#"{"present":"yes","state":"ready","count":"1","tooltip":"",
-                "devices":[{"path":"1-5","vid":"1189","pid":"8890","manufacturer":"OpenMacroPad",
-                  "product":"Control Surface 15+3","serial":"key153","bcd":"0200","firmware":"open",
-                  "firmware_label":"Open firmware (control-surface)",
-                  "layout":{"board":"15+3","keys":15,"knobs":3,"cols":5,"source":"device","supported":true}}],
-                "bootloaders":[],"service":{"installed":true,"state":"active"}}"#,
-        )
-        .unwrap();
-        assert_eq!(status.pads.len(), 1);
-        let pad = &status.pads[0];
-        assert_eq!((pad.keys, pad.knobs, pad.cols), (15, 3, 5));
-        assert_eq!((pad.firmware.as_str(), pad.layout_source.as_str()), ("open", "device"));
-        assert!(status.service_installed);
-        assert_eq!(status.service_state, "active");
-        assert!(parse_status("not json").is_err());
+    fn sysfs_detection_matches_the_daemon_and_ignores_other_devices() {
+        let dir = fake_sysfs("sysfs");
+        let (pads, loaders) = scan_sysfs(&dir);
+        assert_eq!(loaders, 1);
+        assert_eq!(pads.len(), 2, "the 0c45 keyboard is not a keypad");
+        let open = &pads[0];
+        assert_eq!((open.firmware.as_str(), open.version.as_str(), open.board.as_str()), ("control-surface", "2.1", "sy181-15k3e"));
+        assert_eq!(open.described, Some((15, 3)));
+        let stock = &pads[1];
+        assert_eq!((stock.firmware.as_str(), stock.board.as_str(), stock.described), ("stock", "", None));
+        assert_eq!(described_layout("control-surface", "Control Surface 12+2"), Some((12, 2)));
+        assert_eq!(described_layout("openmacropad", "Macropad 12+3"), None);
+        assert_eq!(scan_sysfs(&dir.join("missing")), (Vec::new(), 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_a_daemon_started_by_hand_but_not_its_one_shot_commands() {
+        let dir = temp_dir("proc");
+        let process = |pid: &str, comm: &str, argv: &[&str]| {
+            let d = dir.join(pid);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
+            std::fs::write(d.join("cmdline"), argv.iter().map(|a| format!("{a}\0")).collect::<String>()).unwrap();
+        };
+        process("10", "bash", &["bash"]);
+        process("11", "control-surfaced", &["control-surfaced", "monitor", "--json"]);
+        assert!(!daemon_process_running(&dir));
+        process("12", "control-surfaced", &["/home/u/.local/bin/control-surfaced", "--quiet", "run"]);
+        assert!(daemon_process_running(&dir));
+        std::fs::remove_dir_all(dir.join("12")).unwrap();
+        process("13", "control-surfaced", &["control-surfaced"]);
+        assert!(daemon_process_running(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn app(installed: bool, active: &str, bus: bool, process: bool) -> AppState {
+        AppState { installed, load: "loaded".into(), active: active.into(), condition_failed: false, bus, process }
+    }
+
+    #[test]
+    fn app_status_is_accurate_and_start_only_with_a_keypad() {
+        let (text, start) = app_summary(&app(true, "active", true, false), true);
+        assert_eq!((text.as_str(), start), ("Keypad app: running.", false));
+        let (text, start) = app_summary(&app(true, "inactive", true, false), true);
+        assert!(text.contains("started outside systemd") && !start, "{text}");
+        let (text, _) = app_summary(&app(true, "inactive", false, true), true);
+        assert!(text.contains("no Settings interface"), "{text}");
+        assert_eq!(app_summary(&app(true, "inactive", false, false), true), ("Keypad app: not running.".into(), true));
+        let (text, start) = app_summary(&app(true, "inactive", false, false), false);
+        assert!(text.contains("starts by itself") && !start, "{text}");
+        let (text, start) = app_summary(&app(true, "failed", false, false), true);
+        assert!(text.contains("journalctl") && start, "{text}");
+        let (text, start) = app_summary(&app(false, "inactive", false, false), true);
+        assert!(text.contains("not installed") && !start, "{text}");
+        let mut missing = app(true, "inactive", false, false);
+        missing.condition_failed = true;
+        assert!(app_summary(&missing, true).0.contains("/usr/bin/control-surfaced is missing"));
+        assert!(!app_summary(&missing, true).1);
+    }
+
+    #[test]
+    fn variants_follow_the_daemon_and_keep_the_menu_order() {
+        let ids: Vec<String> = builtin_variants().into_iter().map(|v| v.id).collect();
+        assert_eq!(ids, ["sy181-15k3e", "generic-3k", "generic-3k1e", "generic-6k1e", "generic-10k",
+                         "generic-12k2e", "generic-12k3e", "generic-16k3e"]);
+        let parsed = parse_variants(r#"{"layouts":{"builtin":[
+            {"id":"generic-3k","name":"3 keys","keys":3,"knobs":0},
+            {"id":"sy181-15k3e","name":"x","keys":15,"knobs":3},
+            {"id":"generic-8k1e","name":"8 keys, 1 knob","keys":8,"knobs":1}]}}"#).unwrap();
+        let summary: Vec<(String, usize)> = parsed.iter().map(|v| (v.id.clone(), v.columns)).collect();
+        assert_eq!(summary, [("sy181-15k3e".to_string(), 5), ("generic-3k".to_string(), 3), ("generic-8k1e".to_string(), 4)]);
+        assert!(parse_variants("{}").is_none());
+        let layout = parse_daemon_layout(r#"{"ok":true,"layout":{"id":"sy181-15k3e","name":"n","source":"firmware",
+            "keys":[{"control":"key1","row":0,"column":0},{"control":"key5","row":0,"column":4}],
+            "knobs":[{"control":"knob1","row":0,"column":5}]}}"#).unwrap();
+        assert_eq!((layout.source.as_str(), layout.keys, layout.knobs, layout.columns), ("firmware", 2, 1, 5));
     }
 
     #[test]

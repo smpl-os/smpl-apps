@@ -104,6 +104,14 @@ struct KeypadControl {
     seen: bool,
 }
 
+/// A keypad variant (board profile) with what its schematic needs.
+struct KeypadVariant {
+    name: string,
+    keys: int,
+    knobs: int,
+    cols: int,
+}
+
 /// A binding of the selected keypad profile ("knob1.cw" -> "Media key").
 struct KeypadBindingRow {
     slot: string,
@@ -760,6 +768,197 @@ component KeypadCanvas inherits Rectangle {
     }
 }
 
+// Small schematic of a keypad variant: keys row-major in `cols` columns,
+// knobs (round) stacked in one extra column on the right.
+component KeypadMiniPad inherits Rectangle {
+    in property <int> keys;
+    in property <int> knobs;
+    in property <int> cols: 1;
+    in property <color> ink: Theme.fg_dim;
+    // Fits any variant into this box; cells shrink for tall or wide grids.
+    in property <length> box-width: 60px;
+    in property <length> box-height: 30px;
+
+    property <int> columns: max(root.cols, 1);
+    property <int> rows: max(Math.ceil(root.keys / root.columns), root.knobs, 1);
+    property <length> cell: max(4px, min(7px, root.box-height / root.rows,
+        (root.box-width - (root.knobs > 0 ? 3px : 0px)) / (root.columns + (root.knobs > 0 ? 1 : 0))));
+    width: root.columns * root.cell + (root.knobs > 0 ? root.cell + 3px : 0px);
+    height: root.rows * root.cell;
+
+    for i in root.keys: Rectangle {
+        x: Math.mod(i, root.columns) * root.cell;
+        y: Math.floor(i / root.columns) * root.cell;
+        width: root.cell - 1px;
+        height: root.cell - 1px;
+        border-radius: 1px;
+        background: root.ink;
+    }
+    for j in root.knobs: Rectangle {
+        x: root.columns * root.cell + 3px;
+        y: j * root.cell;
+        width: root.cell - 1px;
+        height: root.cell - 1px;
+        border-radius: (root.cell - 1px) / 2;
+        border-width: 1px;
+        border-color: root.ink;
+    }
+}
+
+// Variant picker: like ResDropdown, with a schematic next to every entry.
+component KeypadVariantDropdown inherits Rectangle {
+    in property <[KeypadVariant]> model: [];
+    in property <int> current-index: -1;
+    callback selected(int);
+
+    property <length> item-height: 40px;
+    height: root.item-height;
+    border-radius: 4px;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: drop-touch.has-hover ? Theme.accent : Theme.bg_lighter;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 10px;
+
+        if root.current-index >= 0 && root.current-index < root.model.length: VerticalLayout {
+            alignment: center;
+            width: 64px;
+            KeypadMiniPad {
+                keys: root.model[root.current-index].keys;
+                knobs: root.model[root.current-index].knobs;
+                cols: root.model[root.current-index].cols;
+                ink: Theme.accent;
+            }
+        }
+        Text {
+            text: root.current-index >= 0 && root.current-index < root.model.length
+                ? root.model[root.current-index].name : "Choose your keypad";
+            color: Theme.fg;
+            font-size: Typography.body;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: "\u{25bc}";
+            color: Theme.fg_dim;
+            font-size: Typography.caption;
+            vertical-alignment: center;
+            width: 16px;
+        }
+    }
+
+    drop-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: parent.height + 2px;
+        width: root.width;
+        height: min(320px, root.model.length * root.item-height + 4px);
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            border-radius: 4px;
+            background: Theme.bg_light;
+            border-width: 1px;
+            border-color: Theme.bg_lighter;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000066;
+
+            Flickable {
+                x: 2px;
+                y: 2px;
+                width: parent.width - 4px;
+                height: parent.height - 4px;
+                viewport-width: self.width;
+                viewport-height: root.model.length * root.item-height;
+
+                for item[idx] in root.model: Rectangle {
+                    y: idx * root.item-height;
+                    height: root.item-height;
+                    width: parent.width;
+                    border-radius: 3px;
+                    background: idx == root.current-index ? Theme.accent
+                              : opt-touch.has-hover ? Theme.bg_lighter
+                              : transparent;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            width: 64px;
+                            KeypadMiniPad {
+                                keys: item.keys;
+                                knobs: item.knobs;
+                                cols: item.cols;
+                                ink: idx == root.current-index ? Theme.bg : Theme.fg_dim;
+                            }
+                        }
+                        Text {
+                            text: item.name;
+                            color: idx == root.current-index ? Theme.bg : Theme.fg;
+                            font-size: Typography.secondary;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                    }
+
+                    opt-touch := TouchArea {
+                        clicked => {
+                            root.selected(idx);
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// "−  7  +" for a bounded number.
+component KeypadStepper inherits HorizontalLayout {
+    in property <string> label;
+    in property <int> value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 16;
+    callback changed(int);
+
+    spacing: 6px;
+    Text {
+        text: root.label;
+        color: Theme.fg_dim;
+        font-size: Typography.secondary;
+        vertical-alignment: center;
+    }
+    KeypadButton {
+        text: "\u{2212}";
+        enabled: root.value > root.minimum;
+        clicked => { root.changed(root.value - 1); }
+    }
+    Text {
+        text: root.value;
+        color: Theme.fg;
+        font-size: Typography.body;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        min-width: 24px;
+    }
+    KeypadButton {
+        text: "+";
+        enabled: root.value < root.maximum;
+        clicked => { root.changed(root.value + 1); }
+    }
+}
+
 component KeypadInput inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder;
@@ -1124,12 +1323,18 @@ export component MainWindow inherits Window {
     in property <string> kp-device-detail;
     in property <string> kp-firmware;
     in property <string> kp-firmware-text;
-    in property <string> kp-service-text;
-    in property <bool> kp-service-installed: false;
-    in property <bool> kp-service-running: false;
-    in property <bool> kp-layout-editable: false;
-    in property <[string]> kp-board-names;
-    in property <int> kp-board-index: -1;
+    // Keypad app (control-surfaced): running state and the Start offer.
+    in property <string> kp-app-text;
+    in property <bool> kp-show-start: false;
+    // Variant: detected (read-only) for self-describing keypads, else a menu.
+    in property <string> kp-variant-detected;
+    in property <bool> kp-variant-picker: true;
+    in property <[KeypadVariant]> kp-variants;
+    in property <int> kp-variant-index: 0;
+    in property <bool> kp-custom: false;
+    in property <int> kp-custom-keys: 15;
+    in property <int> kp-custom-knobs: 3;
+    in property <int> kp-custom-cols: 5;
     in property <string> kp-layout-note;
     in property <[KeypadControl]> kp-controls;
     in property <int> kp-cols: 5;
@@ -1181,8 +1386,11 @@ export component MainWindow inherits Window {
     in property <int> kp-verify-seen: 0;
     in property <int> kp-verify-total: 0;
     callback kp-refresh();
-    callback kp-select-board(int);
-    callback kp-service(string);
+    callback kp-start-app();
+    callback kp-open-scope-help();
+    callback kp-override-variant();
+    callback kp-select-variant(int);
+    callback kp-set-custom(int, int, int);
     callback kp-select-control(string);
     callback kp-select-knob-event(int);
     callback kp-select-profile(int);
@@ -7531,6 +7739,47 @@ export component MainWindow inherits Window {
                         KeypadButton { text: "Refresh"; clicked => { root.kp-refresh(); } }
                     }
 
+                    // ── Which keypads this supports ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+                        border-width: 1px;
+                        border-color: Theme.info;
+
+                        HorizontalLayout {
+                            padding: 10px;
+                            spacing: 10px;
+                            Text {
+                                text: "\u{2139}";
+                                color: Theme.info;
+                                font-size: Typography.heading;
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 4px;
+                                Text {
+                                    text: "Supports CH552-based macro keypads only: USB ID 1189:8890, the inexpensive \"MINI KeyBoard\"-style pads with 3 to 16 keys and up to 3 knobs.";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "Is yours one? Plug it in: a supported keypad shows up as connected just below. In a terminal, keypad-ctl present (or lsusb) finds USB ID 1189:8890. Other keypads won't show up here.";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                KeypadButton {
+                                    text: "How to tell";
+                                    clicked => { root.kp-open-scope-help(); }
+                                }
+                            }
+                        }
+                    }
+
                     if root.kp-status != "" && !root.kp-wizard-open: Text {
                         text: root.kp-status;
                         color: root.kp-status-is-error ? Theme.danger : Theme.fg_dim;
@@ -7538,7 +7787,7 @@ export component MainWindow inherits Window {
                         wrap: word-wrap;
                     }
 
-                    // ── Device ──
+                    // ── Device: keypad (sysfs) and the keypad app ──
                     if !root.kp-wizard-open: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
@@ -7576,36 +7825,80 @@ export component MainWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 8px;
                                 Text {
-                                    text: root.kp-service-text;
+                                    text: root.kp-app-text;
                                     color: Theme.fg_dim;
                                     font-size: Typography.secondary;
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                     wrap: word-wrap;
                                 }
-                                if root.kp-service-installed && !root.kp-service-running && root.kp-connected: KeypadButton {
+                                if root.kp-show-start: KeypadButton {
                                     text: "Start";
-                                    clicked => { root.kp-service("start"); }
-                                }
-                                if root.kp-service-installed && root.kp-service-running: KeypadButton {
-                                    text: "Restart";
-                                    clicked => { root.kp-service("restart"); }
+                                    primary: true;
+                                    clicked => { root.kp-start-app(); }
                                 }
                             }
-                            if root.kp-layout-editable: HorizontalLayout {
+                        }
+                    }
+
+                    // ── Variant ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Keypad variant";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+                            if root.kp-variant-detected != "": HorizontalLayout {
                                 spacing: 8px;
                                 Text {
-                                    text: "Board";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
+                                    text: "Detected from the keypad: " + root.kp-variant-detected;
+                                    color: Theme.fg;
+                                    font-size: Typography.body;
                                     vertical-alignment: center;
-                                }
-                                ResDropdown {
                                     horizontal-stretch: 1;
-                                    model: root.kp-board-names;
-                                    current-index: root.kp-board-index;
-                                    selected(i) => { root.kp-select-board(i); }
+                                    wrap: word-wrap;
+                                }
+                                if !root.kp-variant-picker: KeypadButton {
+                                    text: "Override…";
+                                    clicked => { root.kp-override-variant(); }
+                                }
+                            }
+                            if root.kp-variant-picker: KeypadVariantDropdown {
+                                model: root.kp-variants;
+                                current-index: root.kp-variant-index;
+                                selected(i) => { root.kp-select-variant(i); }
+                            }
+                            if root.kp-variant-picker && root.kp-custom: HorizontalLayout {
+                                spacing: 16px;
+                                alignment: start;
+                                KeypadStepper {
+                                    label: "Keys";
+                                    value: root.kp-custom-keys;
+                                    minimum: 1;
+                                    maximum: 16;
+                                    changed(v) => { root.kp-set-custom(v, root.kp-custom-knobs, root.kp-custom-cols); }
+                                }
+                                KeypadStepper {
+                                    label: "Knobs";
+                                    value: root.kp-custom-knobs;
+                                    minimum: 0;
+                                    maximum: 3;
+                                    changed(v) => { root.kp-set-custom(root.kp-custom-keys, v, root.kp-custom-cols); }
+                                }
+                                KeypadStepper {
+                                    label: "Columns";
+                                    value: root.kp-custom-cols;
+                                    minimum: 1;
+                                    maximum: 8;
+                                    changed(v) => { root.kp-set-custom(root.kp-custom-keys, root.kp-custom-knobs, v); }
                                 }
                             }
                             if root.kp-layout-note != "": Text {
