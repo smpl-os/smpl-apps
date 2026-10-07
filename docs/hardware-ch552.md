@@ -147,3 +147,47 @@ This sends the ping, then for every slot 1–24 a header-only "empty key" frame
 a report-ID-3 pad. On this report-ID-0 pad it is **untested**. The alternative
 is to reflash any known map (`ch552-padprog flash --yes`) or use the vendor app.
 The pad's firmware itself was never touched.
+
+## Silent after programming (open)
+
+Before programming, every key and knob sent an all-zero HID report on hidraw4,
+hidraw6 and hidraw7, and no evdev keys. After the flash, the coordinator saw
+**no reports at all**. I diagnosed this passively from sysfs and `/proc`, with
+no device I/O:
+
+* The frames are byte-compatible with the vendor app's report-ID-0
+  `Download_Click` (`FormMain.cs:498–560`). They contain no mode, LED, layer or
+  bootloader opcodes.
+* The flash differs from the vendor app in two ways:
+  * it wrote 24 slots, while the vendor app writes slots 1–18;
+  * it sent 24 `AA AA` commits in quick succession.
+* The pad re-enumerated at 08:29 as USB device 21. `verify-pad.sh` held its
+  event nodes at the time.
+
+Recovery steps, in order. Stop at the first one that brings reports back:
+
+1. **Passive capture.** Stop `verify-pad.sh` and the service. Then, as you,
+   with no writes:
+
+   ```sh
+   timeout 20 od -An -tx1 -w64 /dev/hidraw4 & timeout 20 od -An -tx1 -w64 /dev/hidraw6 & timeout 20 od -An -tx1 -w64 /dev/hidraw7 & wait
+   ```
+
+   Press a few keys and knobs while it runs. Unplug and replug the pad once,
+   too.
+2. **Minimal reflash** of slot 1 only, with a long pause after the commit:
+
+   ```sh
+   ch552-padprog flash --slots 1-1 --settle-ms 1500                 # dry run: 4 frames
+   ch552-padprog flash --slots 1-1 --settle-ms 1500 --yes --log /tmp/pad-slot1.json
+   ```
+
+   Key 1 should then type F14. If it does, flash the rest in vendor-sized
+   steps (`--slots 2-18`, then `--slots 19-24`).
+3. **Blank**: `ch552-padprog blank --yes`. Add `--slots` to limit it.
+4. **The vendor Windows app.** It writes slots 1–18 with its own timing.
+
+`--slots N` or `--slots A-B` (within 1–24) limits a `plan`, `flash` or `blank`
+to those slots. `--settle-ms` (0–10000, default 120) sets the pause after each
+commit frame. Every frame still passes the same allow-list: ping, binding,
+empty-key and commit frames only. No firmware or bootloader mode is ever used.

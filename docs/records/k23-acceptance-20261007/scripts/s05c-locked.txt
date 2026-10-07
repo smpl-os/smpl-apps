@@ -1,0 +1,15 @@
+## S5c a locked track in the declared trim scope refuses without a partial edit (key3 = lock toggle)
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.trim.clip 5
+await ctx timeline.track.id 3
+key3
+await ctx timeline.track.locked true
+refusals clear
+knob2 +3
+expect refused track_locked 3000
+wait 700
+key3
+await ctx timeline.track.locked false
+expect no-keys

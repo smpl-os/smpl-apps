@@ -1,0 +1,10 @@
+## S5b (variant config: knob2 sends mode=ripple) unsupported trim mode refuses without any edit or key
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.trim.clip 5
+refusals clear
+knob2 +2
+expect refused unsupported_mode 3000
+wait 700
+expect no-keys

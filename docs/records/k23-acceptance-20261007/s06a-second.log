@@ -1,0 +1,29 @@
+## S6a client B: a second editing caller while A owns the gesture -> busy, never keys
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 172 epoch 20 {"active":true,"activeMonitor":"project","dialog":false,"epoch":20,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":172,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.trim.clip 5
+  EXPECT ok: context timeline.trim.clip = 5 (now 5)
+> refusals clear
+> knob2 +1
+  [kdenlive] -> Control edit.trim 1 seq 1 {"edge":"end","epoch":20,"gesture":"cs-3435630-1","mode":"resize","phase":"update","session":"7231cdcc-5a68-4965-b337-a116a43a58ff","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 1 edit.trim {"error":{"code":"busy","field":"","message":"Another caller owns the editor gesture."},"ok":false,"session":"7231cdcc-5a68-4965-b337-a116a43a58ff"}
+  (Kdenlive refused edit.trim: busy (Another caller owns the editor gesture.))
+> expect refused busy 3000
+  EXPECT ok: a refusal with busy
+> knob3 +1
+  [kdenlive] -> Control edit.trim 0 seq 2 {"edge":"end","epoch":20,"gesture":"cs-3435630-1","mode":"resize","phase":"end","session":"7231cdcc-5a68-4965-b337-a116a43a58ff","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] -> Control audio.gain 1 seq 3 {"epoch":20,"gesture":"cs-3435630-2","phase":"update","session":"7231cdcc-5a68-4965-b337-a116a43a58ff","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 2 edit.trim {"error":{"code":"busy","field":"","message":"Another caller owns the editor gesture."},"ok":false,"session":"7231cdcc-5a68-4965-b337-a116a43a58ff"}
+  [kdenlive] <- ControlAck seq 3 audio.gain {"error":{"code":"busy","field":"","message":"Another caller owns the editor gesture."},"ok":false,"session":"7231cdcc-5a68-4965-b337-a116a43a58ff"}
+  (Kdenlive refused audio.gain: busy (Another caller owns the editor gesture.))
+> expect refused busy 3000
+  EXPECT ok: a refusal with busy
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)

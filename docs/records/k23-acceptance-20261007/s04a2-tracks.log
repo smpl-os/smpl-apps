@@ -1,0 +1,96 @@
+## S4a (rerun with exact track-id awaits) mute, exclusive solo and manual-mute retention
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 139 epoch 11 {"active":true,"activeMonitor":"project","dialog":false,"epoch":11,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":329,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":139,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.track.id 2
+  EXPECT ok: context timeline.track.id = 2 (now 2)
+> refusals clear
+## clean state: A2 (id 1) is still soloed from the first attempt -> unsolo
+> knob1 -1
+  [kdenlive] -> Control timeline.track -1 seq 1 {"epoch":11,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+  [kdenlive] <- ControlAck seq 1 timeline.track {"ok":true,"result":{"changed":true,"epoch":11,"firstSeq":1,"gesture":"","lastSeq":1,"state":"applied","target":"","track":1},"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+> await ctx timeline.track.id 1
+  [kdenlive] <- context serial 141 epoch 12 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":679172,"epoch":12,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":329,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":141,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"d0162768-6b53-4462-94ca-25b51183a439","value":0},"hidden":false,"id":1,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":true,"target":"d0162768-6b53-4462-94ca-25b51183a439","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  EXPECT ok: context timeline.track.id = 1 (now 1)
+> await ctx timeline.track.solo true
+  EXPECT ok: context timeline.track.solo = true (now true)
+> key2
+  [kdenlive] -> Invoke track.set {"epoch":12,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893","soloMode":"exclusive","target":"d0162768-6b53-4462-94ca-25b51183a439","value":false,"what":"solo"}
+  [kdenlive] <= Invoke track.set {"ok":true,"result":{"audio":true,"changed":true,"hidden":false,"id":1,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"state":"applied","targeted":false}}
+> await ctx timeline.track.solo false
+  EXPECT ok: context timeline.track.solo = false (now false)
+## A1 (id 2): manual mute
+> knob1 +1
+  [kdenlive] -> Control timeline.track 1 seq 2 {"epoch":12,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+  [kdenlive] <- ControlAck seq 2 timeline.track {"ok":true,"result":{"changed":true,"epoch":12,"firstSeq":2,"gesture":"","lastSeq":2,"state":"applied","target":"","track":2},"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+> await ctx timeline.track.id 2
+  [kdenlive] <- context serial 143 epoch 13 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":679277,"epoch":13,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":329,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":143,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  EXPECT ok: context timeline.track.id = 2 (now 2)
+> await ctx timeline.track.muted false
+  EXPECT ok: context timeline.track.muted = false (now false)
+> key1
+  [kdenlive] -> Invoke track.set {"epoch":13,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893","target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":true,"what":"mute"}
+  [kdenlive] <= Invoke track.set {"ok":true,"result":{"audio":true,"changed":true,"hidden":false,"id":2,"locked":false,"muted":true,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"state":"applied","targeted":false}}
+> await ctx timeline.track.muted true
+  EXPECT ok: context timeline.track.muted = true (now true)
+## A2 (id 1): exclusive solo
+> knob1 -1
+  [kdenlive] -> Control timeline.track -1 seq 3 {"epoch":13,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+  [kdenlive] <- ControlAck seq 3 timeline.track {"ok":true,"result":{"changed":true,"epoch":13,"firstSeq":3,"gesture":"","lastSeq":3,"state":"applied","target":"","track":1},"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+> await ctx timeline.track.id 1
+  [kdenlive] <- context serial 145 epoch 14 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":679347,"epoch":14,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":329,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":145,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"d0162768-6b53-4462-94ca-25b51183a439","value":0},"hidden":false,"id":1,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"d0162768-6b53-4462-94ca-25b51183a439","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  EXPECT ok: context timeline.track.id = 1 (now 1)
+> key2
+  [kdenlive] -> Invoke track.set {"epoch":14,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893","soloMode":"exclusive","target":"d0162768-6b53-4462-94ca-25b51183a439","value":true,"what":"solo"}
+  [kdenlive] <= Invoke track.set {"ok":true,"result":{"audio":true,"changed":true,"hidden":false,"id":1,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":true,"state":"applied","targeted":false}}
+> await ctx timeline.track.solo true
+  EXPECT ok: context timeline.track.solo = true (now true)
+## A1 while A2 is soloed
+> knob1 +1
+  [kdenlive] -> Control timeline.track 1 seq 4 {"epoch":14,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+  [kdenlive] <- ControlAck seq 4 timeline.track {"ok":true,"result":{"changed":true,"epoch":14,"firstSeq":4,"gesture":"","lastSeq":4,"state":"applied","target":"","track":2},"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+> await ctx timeline.track.id 2
+  [kdenlive] <- context serial 147 epoch 15 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":679446,"epoch":15,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":329,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":147,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":true,"gain":{"enabled":false,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":true,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  EXPECT ok: context timeline.track.id = 2 (now 2)
+> print ctx timeline.track
+  ctx timeline.track = {"audio":true,"gain":{"enabled":false,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":true,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false}
+## A2: unsolo
+> knob1 -1
+  [kdenlive] -> Control timeline.track -1 seq 5 {"epoch":15,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+  [kdenlive] <- ControlAck seq 5 timeline.track {"ok":true,"result":{"changed":true,"epoch":15,"firstSeq":5,"gesture":"","lastSeq":5,"state":"applied","target":"","track":1},"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+> await ctx timeline.track.id 1
+  [kdenlive] <- context serial 148 epoch 16 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":679482,"epoch":16,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":329,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":148,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"d0162768-6b53-4462-94ca-25b51183a439","value":0},"hidden":false,"id":1,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":true,"target":"d0162768-6b53-4462-94ca-25b51183a439","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  EXPECT ok: context timeline.track.id = 1 (now 1)
+> key2
+  [kdenlive] -> Invoke track.set {"epoch":16,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893","soloMode":"exclusive","target":"d0162768-6b53-4462-94ca-25b51183a439","value":false,"what":"solo"}
+  [kdenlive] <= Invoke track.set {"ok":true,"result":{"audio":true,"changed":true,"hidden":false,"id":1,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"state":"applied","targeted":false}}
+> await ctx timeline.track.solo false
+  EXPECT ok: context timeline.track.solo = false (now false)
+> print ctx timeline.track
+  ctx timeline.track = {"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"d0162768-6b53-4462-94ca-25b51183a439","value":0},"hidden":false,"id":1,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"d0162768-6b53-4462-94ca-25b51183a439","targeted":false}
+## A1: the manual mute survived the solo round trip
+> knob1 +1
+  [kdenlive] -> Control timeline.track 1 seq 6 {"epoch":16,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+  [kdenlive] <- ControlAck seq 6 timeline.track {"ok":true,"result":{"changed":true,"epoch":16,"firstSeq":6,"gesture":"","lastSeq":6,"state":"applied","target":"","track":2},"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893"}
+> await ctx timeline.track.id 2
+  [kdenlive] <- context serial 150 epoch 17 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":679552,"epoch":17,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":329,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":150,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":true,"gain":{"enabled":false,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":true,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  EXPECT ok: context timeline.track.id = 2 (now 2)
+> await ctx timeline.track.muted true
+  EXPECT ok: context timeline.track.muted = true (now true)
+> print ctx timeline.track
+  ctx timeline.track = {"audio":true,"gain":{"enabled":false,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":true,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false}
+> key1
+  [kdenlive] -> Invoke track.set {"epoch":17,"session":"4398c4c5-cda7-4edf-a634-6d5ffb408893","target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":false,"what":"mute"}
+  [kdenlive] <= Invoke track.set {"ok":true,"result":{"audio":true,"changed":true,"hidden":false,"id":2,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"state":"applied","targeted":false}}
+> await ctx timeline.track.muted false
+  EXPECT ok: context timeline.track.muted = false (now false)
+> expect no-refusal
+  EXPECT ok: no refusal (none)
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)

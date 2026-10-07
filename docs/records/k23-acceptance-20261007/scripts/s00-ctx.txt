@@ -1,0 +1,11 @@
+## context probe
+window org.kde.kdenlive keypad-generated
+await available 8000
+print ctx focus
+print ctx colorWheel
+print ctx colorWheels
+print ctx hoveredColorWheel
+print ctx effect
+print ctx param
+print ctx timeline
+print ctx epoch

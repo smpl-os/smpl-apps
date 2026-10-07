@@ -1,0 +1,14 @@
+## S4c (rerun) track mixer gain through timeline.track.gain.target on the active audio track
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.selection.count 0
+await ctx timeline.track.id 1
+await ctx timeline.track.gain.enabled true
+print ctx timeline.track.gain
+refusals clear
+knob3 +5
+wait 800
+expect no-refusal
+print ctx timeline.track.gain
+expect no-keys

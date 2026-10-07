@@ -1,0 +1,11 @@
+## S3d multi-key parameter while playing: edits refuse with busy, nothing changes
+window org.kde.kdenlive keypad-generated
+await available 8000
+await ctx param.name level
+await ctx playing true 4000
+print ctx param
+refusals clear
+knob1 +1
+expect refused busy 3000
+print ctx position
+expect no-keys

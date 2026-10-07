@@ -1,0 +1,23 @@
+## S7 interface OFF (the default): negotiation proves the object absent before any mutation, so the daemon selects
+## the configured stock shortcuts; the NON-EMITTING sink only records them
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] org.kde.kdenlive-3451785: org.kde.kdenlive.ControlSurface1 not available (org.freedesktop.DBus.Error.UnknownObject); stock shortcuts will be used
+> await absent 8000
+  EXPECT ok: interface absent (stock Kdenlive)
+## key1 = mark_in (stock "i"), knob1 = jog (stock left/right), key13 = page cycle (daemon mode only), key2 = mark_out ("o")
+> key1
+  -> key I
+> knob1 +2
+  -> key RIGHT
+  -> key RIGHT
+> knob1 -1
+  -> key LEFT
+> key13
+  (Page: timeline)
+> key2
+  -> key O
+> expect keys I RIGHT RIGHT LEFT O
+  EXPECT ok: recorded (never emitted) keys I RIGHT RIGHT LEFT O, wanted I RIGHT RIGHT LEFT O
+> expect no-refusal
+  EXPECT ok: no refusal (none)

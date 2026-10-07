@@ -1,0 +1,213 @@
+[0085] {
+  "command": {
+    "op": "editor",
+    "method": "effects.get",
+    "params": {
+      "expected_project_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+      "sequence_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+      "clip_id": 5
+    }
+  },
+  "started": 1791385894.5245497,
+  "reply": {
+    "ok": true,
+    "result": {
+      "clip_id": 5,
+      "effects": [
+        {
+          "asset_id": "brightness",
+          "automation_revision": 0,
+          "built_in": false,
+          "effect_uuid": "144a5d53-3b56-4e36-a4d4-00dc4fc1f51b",
+          "enabled": true,
+          "label": "Intensity (Brightness)",
+          "locally_enabled": true,
+          "parameters": [
+            {
+              "automation_supported": true,
+              "default": 100,
+              "display_scale": 100,
+              "label": "Intensity",
+              "managed": false,
+              "max": 400,
+              "min": 0,
+              "name": "level",
+              "native_type": 16,
+              "reason": "Use the shared automation API; existing animation is never overwritten by a static write.",
+              "static_write_supported": false,
+              "type": "animated_number",
+              "unit": "",
+              "value": null
+            }
+          ]
+        },
+        {
+          "asset_id": "lift_gamma_gain",
+          "automation_revision": 0,
+          "built_in": false,
+          "effect_uuid": "fde73720-9bc5-493a-a98c-5c0ebe3e1d6b",
+          "enabled": true,
+          "label": "Lift/gamma/gain",
+          "locally_enabled": true,
+          "parameters": [
+            {
+              "automation_supported": false,
+              "default": "0",
+              "display_scale": 100,
+              "label": "Lift: Red",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "lift_r",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=0.099992"
+            },
+            {
+              "automation_supported": false,
+              "default": "0",
+              "display_scale": 100,
+              "label": "Lift: Green",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "lift_g",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=0.099992"
+            },
+            {
+              "automation_supported": false,
+              "default": "0",
+              "display_scale": 100,
+              "label": "Lift: Blue",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "lift_b",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=0.099992"
+            },
+            {
+              "automation_supported": false,
+              "default": "1",
+              "display_scale": 100,
+              "label": "Gamma: Red",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "gamma_r",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=0.940017"
+            },
+            {
+              "automation_supported": false,
+              "default": "1",
+              "display_scale": 100,
+              "label": "Gamma: Green",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "gamma_g",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=0.940017"
+            },
+            {
+              "automation_supported": false,
+              "default": "1",
+              "display_scale": 100,
+              "label": "Gamma: Blue",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "gamma_b",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=0.940017"
+            },
+            {
+              "automation_supported": false,
+              "default": "1",
+              "display_scale": 100,
+              "label": "Gain: Red",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "gain_r",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=1.15999"
+            },
+            {
+              "automation_supported": false,
+              "default": "1",
+              "display_scale": 100,
+              "label": "Gain: Green",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "gain_g",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=1.15999"
+            },
+            {
+              "automation_supported": false,
+              "default": "1",
+              "display_scale": 100,
+              "label": "Gain: Blue",
+              "managed": false,
+              "max": 500,
+              "min": 0,
+              "name": "gain_b",
+              "native_type": 19,
+              "reason": "This parameter type has no typed workflow setter.",
+              "static_write_supported": false,
+              "type": "unsupported",
+              "unit": "",
+              "value": "30=1.15999"
+            }
+          ]
+        }
+      ],
+      "history": {
+        "can_redo": false,
+        "can_undo": true,
+        "redo_label": "",
+        "undo_count": 13,
+        "undo_index": 13,
+        "undo_label": "Adjust parameter with control surface"
+      },
+      "sequence_id": "58089865-109e-4a58-8e5c-3ee5a02513b3"
+    }
+  },
+  "finished": 1791385894.528867
+}
+

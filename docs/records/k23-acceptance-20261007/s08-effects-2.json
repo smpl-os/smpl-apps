@@ -1,0 +1,58 @@
+[0230] {
+  "command": {
+    "op": "editor",
+    "method": "effects.get",
+    "params": {
+      "expected_project_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+      "sequence_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+      "clip_id": 2
+    }
+  },
+  "started": 1791386633.5923188,
+  "reply": {
+    "ok": true,
+    "result": {
+      "clip_id": 2,
+      "effects": [
+        {
+          "asset_id": "volume",
+          "automation_revision": 0,
+          "built_in": false,
+          "effect_uuid": "3e743ec1-5ea2-4b77-82a6-e92d8256c73a",
+          "enabled": true,
+          "label": "Volume",
+          "locally_enabled": true,
+          "parameters": [
+            {
+              "automation_supported": true,
+              "default": 0,
+              "display_scale": 1,
+              "label": "Gain",
+              "managed": false,
+              "max": 50,
+              "min": -100,
+              "name": "level",
+              "native_type": 16,
+              "reason": "",
+              "static_write_supported": true,
+              "type": "animated_number",
+              "unit": "dB",
+              "value": 1.1
+            }
+          ]
+        }
+      ],
+      "history": {
+        "can_redo": false,
+        "can_undo": false,
+        "redo_label": "",
+        "undo_count": 0,
+        "undo_index": 0,
+        "undo_label": ""
+      },
+      "sequence_id": "58089865-109e-4a58-8e5c-3ee5a02513b3"
+    }
+  },
+  "finished": 1791386633.5960655
+}
+

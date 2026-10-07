@@ -1,0 +1,16 @@
+## S4c track mixer gain through timeline.track.gain.target (no clip selected): one gesture, one undo entry
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.selection.count 0
+print ctx timeline.track
+refusals clear
+knob1 -2
+await ctx timeline.track.id 2
+await ctx timeline.track.gain.enabled true
+print ctx timeline.track.gain
+knob3 +5
+wait 800
+expect no-refusal
+print ctx timeline.track.gain
+expect no-keys

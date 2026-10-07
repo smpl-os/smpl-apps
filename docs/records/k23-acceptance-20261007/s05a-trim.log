@@ -1,0 +1,40 @@
+## S5a edit.trim mode=resize on the declared aligned A/V scope: end +6, then start -4; later clips do not move
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 162 epoch 20 {"active":true,"activeMonitor":"project","dialog":false,"epoch":20,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":162,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.trim.clip 5
+  EXPECT ok: context timeline.trim.clip = 5 (now 5)
+> print ctx timeline.trim
+  ctx timeline.trim = {"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]}
+> refusals clear
+## knob2 = edit.trim {edge: $trimEdge (end), mode: resize}
+> knob2 +6
+  [kdenlive] -> Control edit.trim 1 seq 1 {"edge":"end","epoch":20,"gesture":"cs-3434437-1","mode":"resize","phase":"update","session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 1 edit.trim {"ok":true,"result":{"changed":true,"duration":181,"epoch":20,"firstSeq":1,"gesture":"cs-3434437-1","lastSeq":1,"mode":"resize","state":"applied","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"},"session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb"}
+  [kdenlive] -> Control edit.trim 5 seq 2 {"edge":"end","epoch":20,"gesture":"cs-3434437-1","mode":"resize","phase":"update","session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 2 edit.trim {"ok":true,"result":{"changed":true,"duration":186,"epoch":20,"firstSeq":2,"gesture":"cs-3434437-1","lastSeq":2,"mode":"resize","state":"applied","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"},"session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb"}
+> wait 800
+  [kdenlive] -> Control edit.trim 0 seq 3 {"edge":"end","epoch":20,"gesture":"cs-3434437-1","mode":"resize","phase":"end","session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 3 edit.trim {"ok":true,"result":{"changed":false,"epoch":20,"firstSeq":3,"gesture":"cs-3434437-1","lastSeq":3,"state":"applied","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"},"session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb"}
+## knob2 press: edge -> start
+> knob2 press
+  (Trim edge: start)
+  [kdenlive] -> Notify "Trim edge: start"
+> knob2 -4
+  [kdenlive] -> Control edit.trim -1 seq 4 {"edge":"start","epoch":20,"gesture":"cs-3434437-2","mode":"resize","phase":"update","session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 4 edit.trim {"ok":true,"result":{"changed":true,"duration":187,"epoch":20,"firstSeq":4,"gesture":"cs-3434437-2","lastSeq":4,"mode":"resize","state":"applied","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"},"session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb"}
+  [kdenlive] -> Control edit.trim -3 seq 5 {"edge":"start","epoch":20,"gesture":"cs-3434437-2","mode":"resize","phase":"update","session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+> wait 800
+  [kdenlive] <- ControlAck seq 5 edit.trim {"ok":true,"result":{"changed":true,"duration":190,"epoch":20,"firstSeq":5,"gesture":"cs-3434437-2","lastSeq":5,"mode":"resize","state":"applied","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"},"session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb"}
+  [kdenlive] -> Control edit.trim 0 seq 6 {"edge":"start","epoch":20,"gesture":"cs-3434437-2","mode":"resize","phase":"end","session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 6 edit.trim {"ok":true,"result":{"changed":false,"epoch":20,"firstSeq":6,"gesture":"cs-3434437-2","lastSeq":6,"state":"applied","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"},"session":"f3f3ee43-08ba-4e48-a71a-c24afec905bb"}
+> expect no-refusal
+  EXPECT ok: no refusal (none)
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)

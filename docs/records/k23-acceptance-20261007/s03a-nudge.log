@@ -1,0 +1,26 @@
+## S3a single-key scalar nudge (keyframe: existing) while stopped: value changes, key count does not
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 21 epoch 5 {"active":true,"activeMonitor":"project","dialog":false,"effect":{"id":"brightness","ownerId":5,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3"},"epoch":5,"focus":"effectStack","fps":{"den":1,"num":30},"param":{"enabled":true,"fineStep":1,"frame":30,"keyframed":true,"liveGrading":true,"max":400,"min":0,"name":"level","step":1,"target":"7441cf22-76f3-4ab8-8552-c1ce2b34ee65","type":"number","unit":"","value":100},"playing":false,"position":0,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":21,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> await ctx param.name level
+  EXPECT ok: context param.name = level (now "level")
+> print ctx param
+  ctx param = {"enabled":true,"fineStep":1,"frame":30,"keyframed":true,"liveGrading":true,"max":400,"min":0,"name":"level","step":1,"target":"7441cf22-76f3-4ab8-8552-c1ce2b34ee65","type":"number","unit":"","value":100}
+> refusals clear
+> knob1 +5
+  [kdenlive] -> Control param.nudge 1 seq 1 {"epoch":5,"gesture":"cs-3425900-1","keyframe":"existing","phase":"update","session":"e253f996-52b3-4677-9fbd-04c62efb2524","step":"normal","target":"7441cf22-76f3-4ab8-8552-c1ce2b34ee65"}
+  [kdenlive] <- ControlAck seq 1 param.nudge {"ok":true,"result":{"changed":true,"enabled":true,"epoch":5,"fineStep":1,"firstSeq":1,"frame":30,"gesture":"cs-3425900-1","keyframed":true,"lastSeq":1,"liveGrading":true,"max":400,"min":0,"name":"level","state":"applied","step":1,"target":"7441cf22-76f3-4ab8-8552-c1ce2b34ee65","type":"number","unit":"","value":101},"session":"e253f996-52b3-4677-9fbd-04c62efb2524"}
+  [kdenlive] -> Control param.nudge 4 seq 2 {"epoch":5,"gesture":"cs-3425900-1","keyframe":"existing","phase":"update","session":"e253f996-52b3-4677-9fbd-04c62efb2524","step":"normal","target":"7441cf22-76f3-4ab8-8552-c1ce2b34ee65"}
+  [kdenlive] <- ControlAck seq 2 param.nudge {"ok":true,"result":{"changed":true,"enabled":true,"epoch":5,"fineStep":1,"firstSeq":2,"frame":30,"gesture":"cs-3425900-1","keyframed":true,"lastSeq":2,"liveGrading":true,"max":400,"min":0,"name":"level","state":"applied","step":1,"target":"7441cf22-76f3-4ab8-8552-c1ce2b34ee65","type":"number","unit":"","value":105},"session":"e253f996-52b3-4677-9fbd-04c62efb2524"}
+> wait 800
+  [kdenlive] -> Control param.nudge 0 seq 3 {"epoch":5,"gesture":"cs-3425900-1","keyframe":"existing","phase":"end","session":"e253f996-52b3-4677-9fbd-04c62efb2524","step":"normal","target":"7441cf22-76f3-4ab8-8552-c1ce2b34ee65"}
+  [kdenlive] <- ControlAck seq 3 param.nudge {"ok":true,"result":{"changed":false,"enabled":true,"epoch":5,"fineStep":1,"firstSeq":3,"frame":30,"gesture":"cs-3425900-1","keyframed":true,"lastSeq":3,"liveGrading":true,"max":400,"min":0,"name":"level","state":"applied","step":1,"target":"7441cf22-76f3-4ab8-8552-c1ce2b34ee65","type":"number","unit":"","value":105},"session":"e253f996-52b3-4677-9fbd-04c62efb2524"}
+> await ctx param.value 105
+  EXPECT ok: context param.value = 105 (now 105)
+> expect no-refusal
+  EXPECT ok: no refusal (none)
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)

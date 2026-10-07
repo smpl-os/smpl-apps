@@ -1,0 +1,13 @@
+[0245] {
+  "command": {
+    "op": "capabilities"
+  },
+  "started": 1791386715.672144,
+  "reply": {
+    "rc": 0,
+    "stdout": "({'ok': <true>, 'result': <{'commands': <['param.reset', 'colorwheel.reset', 'track.set']>, 'contextKeys': <['serial', 'emittedAtMs', 'epoch', 'ready', 'active', 'dialog', 'focus', 'project', 'sequence', 'activeMonitor', 'position', 'fps', 'playing', 'speed', 'tool', 'timeline', 'effect', 'param', 'colorWheel', 'colorWheels', 'hoveredColorWheel']>, 'controls': <['playhead.jog', 'playhead.shuttle', 'timeline.zoom', 'param.focus', 'param.nudge', 'colorwheel.nudge', 'timeline.track', 'timeline.scroll', 'audio.gain', 'edit.trim']>, 'implementation': <'Kdenlive K23 MR3'>, 'limits': <{'contextHz': <30>, 'editingWriters': <1>, 'maximumDelta': <10000>, 'pendingKeys': <64>, 'queuedActions': <32>, 'subscriptions': <8>, 'trimGestureSteps': <128>}>, 'revision': <uint32 2>, 'trimModes': <['resize']>, 'version': <uint32 1>}>},)",
+    "stderr": ""
+  },
+  "finished": 1791386715.6756558
+}
+

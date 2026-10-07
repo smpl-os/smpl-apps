@@ -1,0 +1,30 @@
+## S1 transport: jog in Slip mode moves the monitor only; shuttle, then zero pauses; zoom
+window org.kde.kdenlive keypad-generated
+await available 8000
+await ctx tool slip
+await ctx position 7
+refusals clear
+## knob1 = playhead.jog: +10 then -4 frames
+knob1 +10
+await ctx position 17
+knob1 -4
+await ctx position 13
+## knob2 = playhead.shuttle: +2 index steps plays, -2 back to index 0 pauses
+knob2 +2
+await ctx playing true
+print ctx speed
+wait 600
+knob2 -2
+await ctx playing false
+print ctx speed
+print ctx position
+## knob3 = timeline.zoom: +2 then -2
+print ctx timeline.zoom
+knob3 +2
+wait 400
+print ctx timeline.zoom
+knob3 -2
+wait 400
+print ctx timeline.zoom
+expect no-refusal
+expect no-keys

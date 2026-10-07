@@ -1,0 +1,31 @@
+{
+ "lease": "k23-keypad-sim-20261007",
+ "mode": "on",
+ "service": "org.kde.kdenlive-3417682",
+ "app_identity": {
+  "pid": 3417682,
+  "ppid": 3417675,
+  "starttime": 14463860,
+  "comm": "kdenlive",
+  "exe": "/home/blin/Documents/source/kdenlive/.automation-curves/build-private-20261004/bin/kdenlive"
+ },
+ "app_exit": 0,
+ "spawned_exit": {
+  "dbus-monitor": -15,
+  "ownerA": 0,
+  "foreignA": 0,
+  "midA": 0,
+  "forgeA": 0
+ },
+ "app_absent": true,
+ "capabilities_probe": {
+  "rc": 0,
+  "stdout": "({'ok': <true>, 'result': <{'commands': <['param.reset', 'colorwheel.reset', 'track.set']>, 'contextKeys': <['serial', 'emittedAtMs', 'epoch', 'ready', 'active', 'dialog', 'focus', 'project', 'sequence', 'activeMonitor', 'position', 'fps', 'playing', 'speed', 'tool', 'timeline', 'effect', 'param', 'colorWheel', 'colorWheels', 'hoveredColorWheel']>, 'controls': <['playhead.jog', 'playhead.shuttle', 'timeline.zoom', 'param.focus', 'param.nudge', 'colorwheel.nudge', 'timeline.track', 'timeline.scroll', 'audio.gain', 'edit.trim']>, 'implementation': <'Kdenlive K23 MR3'>, 'limits': <{'contextHz': <30>, 'editingWriters': <1>, 'maximumDelta': <10000>, 'pendingKeys': <64>, 'queuedActions': <32>, 'subscriptions': <8>, 'trimGestureSteps': <128>}>, 'revision': <uint32 2>, 'trimModes': <['resize']>, 'version': <uint32 1>}>},)",
+  "stderr": ""
+ },
+ "fixture": {
+  "rc": 0,
+  "stdout": "{\"ok\": true, \"fixture\": \"/home/blin/.copilot/session-state/9147f090-d696-4b70-af0f-aa5a935f364f/files/k23-real-daemon-20261007-03/fixture.json\"}\n",
+  "stderr": ""
+ }
+}

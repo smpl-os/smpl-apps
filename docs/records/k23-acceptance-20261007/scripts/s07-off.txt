@@ -1,0 +1,12 @@
+## S7 interface OFF (the default): negotiation proves the object absent before any mutation, so the daemon selects
+## the configured stock shortcuts; the NON-EMITTING sink only records them
+window org.kde.kdenlive keypad-generated
+await absent 8000
+## key1 = mark_in (stock "i"), knob1 = jog (stock left/right), key13 = page cycle (daemon mode only), key2 = mark_out ("o")
+key1
+knob1 +2
+knob1 -1
+key13
+key2
+expect keys I RIGHT RIGHT LEFT O
+expect no-refusal

@@ -1,0 +1,17 @@
+## S6b foreign save, then foreign undo, between turns of one knob: each bumps the epoch; the next turn is a fresh gesture
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.clipGain.clip 6
+print ctx epoch
+refusals clear
+knob3 +1
+wait 3500
+print ctx epoch
+knob3 +1
+wait 3500
+print ctx epoch
+knob3 +1
+wait 900
+print ctx epoch
+expect no-keys

@@ -1,0 +1,35 @@
+## S4a track focus, mute, exclusive solo and manual-mute retention (timeline page, key13)
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.track.target /.+/
+print ctx timeline.track
+refusals clear
+## knob1 = timeline.track: step to an audio track
+knob1 -1
+await ctx timeline.track.audio true
+print ctx timeline.track
+## key1 = mute toggle (manual mute on this track)
+key1
+await ctx timeline.track.muted true
+print ctx timeline.track
+## step to the other audio track and solo it exclusively
+knob1 -1
+await ctx timeline.track.audio true
+print ctx timeline.track
+key2
+await ctx timeline.track.solo true
+print ctx timeline.track
+wait 500
+## unsolo
+key2
+await ctx timeline.track.solo false
+## back to the manually muted track: still muted
+knob1 +1
+await ctx timeline.track.muted true
+print ctx timeline.track
+## unmute it again
+key1
+await ctx timeline.track.muted false
+expect no-refusal
+expect no-keys

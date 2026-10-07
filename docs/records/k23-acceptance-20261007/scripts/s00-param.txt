@@ -1,0 +1,10 @@
+## context probe
+window org.kde.kdenlive keypad-generated
+await available 8000
+print ctx focus
+print ctx tool
+print ctx position
+print ctx playing
+print ctx param
+print ctx effect
+print ctx epoch

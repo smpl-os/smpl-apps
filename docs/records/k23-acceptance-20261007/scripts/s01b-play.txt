@@ -1,0 +1,24 @@
+## S1b playback through allowlisted actions (knob1 press = monitor_play, knob2 press = monitor_pause)
+window org.kde.kdenlive keypad-generated
+await available 8000
+print ctx activeMonitor
+refusals clear
+knob1 press
+await ctx playing true 4000
+wait 1000
+print ctx position
+print ctx speed
+knob2 press
+await ctx playing false 4000
+print ctx position
+## shuttle once more while stopped, then while playing
+knob2 +1
+wait 400
+knob1 press
+await ctx playing true 4000
+knob2 +1
+wait 400
+print ctx speed
+knob2 press
+await ctx playing false 4000
+expect no-keys

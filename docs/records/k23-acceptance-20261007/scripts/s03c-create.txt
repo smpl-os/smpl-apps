@@ -1,0 +1,20 @@
+## S3c explicit key creation while stopped: a second key appears at the playhead; then the parameter is multi-key
+window org.kde.kdenlive keypad-generated
+await available 8000
+await ctx playing false 4000
+await ctx param.name level
+print ctx position
+print ctx param
+refusals clear
+key11
+knob1 +2
+wait 800
+expect no-refusal
+print ctx param
+## multi-key now: editing the existing key at the playhead works while stopped
+key11
+knob1 +1
+wait 800
+expect no-refusal
+print ctx param
+expect no-keys

@@ -1,0 +1,74 @@
+## S1 transport: jog in Slip mode moves the monitor only; shuttle, then zero pauses; zoom
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 10 epoch 4 {"active":true,"activeMonitor":"project","dialog":false,"epoch":4,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":7,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":10,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"slip"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> await ctx tool slip
+  EXPECT ok: context tool = slip (now "slip")
+> await ctx position 7
+  EXPECT ok: context position = 7 (now 7)
+> refusals clear
+## knob1 = playhead.jog: +10 then -4 frames
+> knob1 +10
+  [kdenlive] -> Control playhead.jog 1 seq 1 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 1 playhead.jog {"ok":true,"result":{"changed":true,"epoch":4,"firstSeq":1,"gesture":"","lastSeq":1,"position":8,"state":"applied","target":""},"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] -> Control playhead.jog 9 seq 2 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 2 playhead.jog {"ok":true,"result":{"changed":true,"epoch":4,"firstSeq":2,"gesture":"","lastSeq":2,"position":17,"state":"applied","target":""},"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+> await ctx position 17
+  EXPECT ok: context position = 17 (now 17)
+> knob1 -4
+  [kdenlive] -> Control playhead.jog -1 seq 3 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 3 playhead.jog {"ok":true,"result":{"changed":true,"epoch":4,"firstSeq":3,"gesture":"","lastSeq":3,"position":16,"state":"applied","target":""},"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] -> Control playhead.jog -3 seq 4 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 4 playhead.jog {"ok":true,"result":{"changed":true,"epoch":4,"firstSeq":4,"gesture":"","lastSeq":4,"position":13,"state":"applied","target":""},"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+> await ctx position 13
+  EXPECT ok: context position = 13 (now 13)
+## knob2 = playhead.shuttle: +2 index steps plays, -2 back to index 0 pauses
+> knob2 +2
+  [kdenlive] -> Control playhead.shuttle 1 seq 5 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 5 playhead.shuttle {"error":{"code":"busy","field":"","message":"The monitor is unavailable for shuttle playback."},"ok":false,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  (Kdenlive refused playhead.shuttle: busy (The monitor is unavailable for shuttle playback.))
+  [kdenlive] -> Control playhead.shuttle 1 seq 6 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 6 playhead.shuttle {"error":{"code":"busy","field":"","message":"The monitor is unavailable for shuttle playback."},"ok":false,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+> await ctx playing true
+  EXPECT FAIL: context playing = true (now false)
+> print ctx speed
+  ctx speed = 0
+> wait 600
+> knob2 -2
+  [kdenlive] -> Control playhead.shuttle -1 seq 7 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 7 playhead.shuttle {"error":{"code":"busy","field":"","message":"The monitor is unavailable for shuttle playback."},"ok":false,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] -> Control playhead.shuttle -1 seq 8 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 8 playhead.shuttle {"error":{"code":"busy","field":"","message":"The monitor is unavailable for shuttle playback."},"ok":false,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+> await ctx playing false
+  EXPECT ok: context playing = false (now false)
+> print ctx speed
+  ctx speed = 0
+> print ctx position
+  ctx position = 13
+## knob3 = timeline.zoom: +2 then -2
+> print ctx timeline.zoom
+  ctx timeline.zoom = 8
+> knob3 +2
+  [kdenlive] -> Control timeline.zoom 1 seq 9 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 9 timeline.zoom {"ok":true,"result":{"changed":true,"epoch":4,"firstSeq":9,"gesture":"","lastSeq":9,"state":"applied","target":"","zoom":7},"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] -> Control timeline.zoom 1 seq 10 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+> wait 400
+  [kdenlive] <- ControlAck seq 10 timeline.zoom {"ok":true,"result":{"changed":true,"epoch":4,"firstSeq":10,"gesture":"","lastSeq":10,"state":"applied","target":"","zoom":6},"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+> print ctx timeline.zoom
+  ctx timeline.zoom = 6
+> knob3 -2
+  [kdenlive] -> Control timeline.zoom -1 seq 11 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] <- ControlAck seq 11 timeline.zoom {"ok":true,"result":{"changed":true,"epoch":4,"firstSeq":11,"gesture":"","lastSeq":11,"state":"applied","target":"","zoom":7},"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+  [kdenlive] -> Control timeline.zoom -1 seq 12 {"epoch":4,"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+> wait 400
+  [kdenlive] <- ControlAck seq 12 timeline.zoom {"ok":true,"result":{"changed":true,"epoch":4,"firstSeq":12,"gesture":"","lastSeq":12,"state":"applied","target":"","zoom":8},"session":"be3705ed-323a-4e61-bf24-325537ffbfe9"}
+> print ctx timeline.zoom
+  ctx timeline.zoom = 8
+> expect no-refusal
+  EXPECT FAIL: no refusal (playhead.shuttle:busy, playhead.shuttle:busy, playhead.shuttle:busy, playhead.shuttle:busy)
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)
+2 expectation(s) failed

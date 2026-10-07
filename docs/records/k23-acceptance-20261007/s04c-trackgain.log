@@ -1,0 +1,40 @@
+## S4c track mixer gain through timeline.track.gain.target (no clip selected): one gesture, one undo entry
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 154 epoch 18 {"active":true,"activeMonitor":"project","dialog":false,"epoch":18,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":1661,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":154,"speed":0,"timeline":{"selection":{"clips":[],"count":0},"track":{"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.selection.count 0
+  EXPECT ok: context timeline.selection.count = 0 (now 0)
+> print ctx timeline.track
+  ctx timeline.track = {"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false}
+> refusals clear
+> knob1 -2
+  [kdenlive] -> Control timeline.track -1 seq 1 {"epoch":18,"session":"cfb92a13-d780-4332-91d4-392a3be5aa52"}
+  [kdenlive] <- ControlAck seq 1 timeline.track {"ok":true,"result":{"changed":true,"epoch":18,"firstSeq":1,"gesture":"","lastSeq":1,"state":"applied","target":"","track":1},"session":"cfb92a13-d780-4332-91d4-392a3be5aa52"}
+  [kdenlive] -> Control timeline.track -1 seq 2 {"epoch":18,"session":"cfb92a13-d780-4332-91d4-392a3be5aa52"}
+> await ctx timeline.track.id 2
+  EXPECT ok: context timeline.track.id = 2 (now 2)
+> await ctx timeline.track.gain.enabled true
+  EXPECT ok: context timeline.track.gain.enabled = true (now true)
+> print ctx timeline.track.gain
+  ctx timeline.track.gain = {"enabled":true,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0}
+> knob3 +5
+  [kdenlive] -> Control audio.gain 1 seq 3 {"epoch":18,"gesture":"cs-3432414-1","phase":"update","session":"cfb92a13-d780-4332-91d4-392a3be5aa52","target":"8cac62ae-97bc-42b9-a967-48cb26afdab3"}
+  [kdenlive] <- ControlAck seq 2 timeline.track {"error":{"code":"stale_context","field":"","message":"The target context changed."},"ok":false,"session":"cfb92a13-d780-4332-91d4-392a3be5aa52"}
+  (Kdenlive refused timeline.track: stale_context (The target context changed.))
+  [kdenlive] <- ControlAck seq 3 audio.gain {"error":{"code":"stale_context","field":"","message":"The target context changed."},"ok":false,"session":"cfb92a13-d780-4332-91d4-392a3be5aa52"}
+  (Kdenlive refused audio.gain: stale_context (The target context changed.))
+  [kdenlive] <- context serial 156 epoch 19 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":712634,"epoch":19,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":1661,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":156,"speed":0,"timeline":{"selection":{"clips":[],"count":0},"track":{"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"d0162768-6b53-4462-94ca-25b51183a439","value":0},"hidden":false,"id":1,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"d0162768-6b53-4462-94ca-25b51183a439","targeted":false},"zoom":8},"tool":"select"}
+> wait 800
+> expect no-refusal
+  EXPECT FAIL: no refusal (timeline.track:stale_context, audio.gain:stale_context)
+> print ctx timeline.track.gain
+  ctx timeline.track.gain = {"enabled":true,"max":24,"min":-50,"target":"d0162768-6b53-4462-94ca-25b51183a439","value":0}
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)
+1 expectation(s) failed

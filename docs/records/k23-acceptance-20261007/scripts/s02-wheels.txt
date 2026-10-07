@@ -1,0 +1,19 @@
+## S2 three wheel knobs through the colorWheels handles: one gesture and one undo entry each
+window org.kde.kdenlive keypad-generated
+await available 8000
+await ctx colorWheels true
+print ctx colorWheels
+refusals clear
+## knob1 = lift (value axis) +5 detents
+knob1 +5
+wait 800
+## knob2 = gamma (value axis) -3 detents
+knob2 -3
+wait 800
+## knob3 = gain (value axis) +4 detents
+knob3 +4
+wait 900
+expect no-refusal
+expect no-keys
+print ctx colorWheels
+print ctx epoch

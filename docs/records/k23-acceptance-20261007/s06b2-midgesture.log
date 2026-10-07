@@ -1,0 +1,77 @@
+## S6b2 foreign undo while a gesture is open: the host ends it and bumps the epoch; the daemon drops queued work and continues with a fresh gesture
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 177 epoch 23 {"active":true,"activeMonitor":"project","dialog":false,"epoch":23,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":177,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.clipGain.clip 6
+  EXPECT ok: context timeline.clipGain.clip = 6 (now 6)
+> refusals clear
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 1 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 1 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":1,"gainDb":0.7999999999999998,"gesture":"cs-3437925-1","lastSeq":1,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 2 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 2 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":2,"gainDb":0.8999999999999998,"gesture":"cs-3437925-1","lastSeq":2,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 3 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 3 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":3,"gainDb":0.9999999999999998,"gesture":"cs-3437925-1","lastSeq":3,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 4 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 4 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":4,"gainDb":1.0999999999999999,"gesture":"cs-3437925-1","lastSeq":4,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 5 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 5 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":5,"gainDb":1.2,"gesture":"cs-3437925-1","lastSeq":5,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 6 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 6 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":6,"gainDb":1.3,"gesture":"cs-3437925-1","lastSeq":6,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 7 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 7 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":7,"gainDb":1.4000000000000001,"gesture":"cs-3437925-1","lastSeq":7,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 8 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 8 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":8,"gainDb":1.5000000000000002,"gesture":"cs-3437925-1","lastSeq":8,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 9 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 9 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":9,"gainDb":1.6000000000000003,"gesture":"cs-3437925-1","lastSeq":9,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 10 {"epoch":23,"gesture":"cs-3437925-1","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 10 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":10,"gainDb":1.7000000000000004,"gesture":"cs-3437925-1","lastSeq":10,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+  [kdenlive] <- context serial 179 epoch 24 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":944028,"epoch":24,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":179,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 11 {"epoch":24,"gesture":"cs-3437925-2","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 11 audio.gain {"ok":true,"result":{"changed":true,"epoch":24,"firstSeq":11,"gainDb":0.7999999999999998,"gesture":"cs-3437925-2","lastSeq":11,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 12 {"epoch":24,"gesture":"cs-3437925-2","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 12 audio.gain {"ok":true,"result":{"changed":true,"epoch":24,"firstSeq":12,"gainDb":0.8999999999999998,"gesture":"cs-3437925-2","lastSeq":12,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 13 {"epoch":24,"gesture":"cs-3437925-2","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 13 audio.gain {"ok":true,"result":{"changed":true,"epoch":24,"firstSeq":13,"gainDb":0.9999999999999998,"gesture":"cs-3437925-2","lastSeq":13,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 14 {"epoch":24,"gesture":"cs-3437925-2","phase":"update","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 14 audio.gain {"ok":true,"result":{"changed":true,"epoch":24,"firstSeq":14,"gainDb":1.0999999999999999,"gesture":"cs-3437925-2","lastSeq":14,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> wait 250
+> wait 900
+  [kdenlive] -> Control audio.gain 0 seq 15 {"epoch":24,"gesture":"cs-3437925-2","phase":"end","session":"58745346-3187-4104-b2a4-d1da0389f92e","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 15 audio.gain {"ok":true,"result":{"changed":false,"epoch":24,"firstSeq":15,"gesture":"cs-3437925-2","lastSeq":15,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"58745346-3187-4104-b2a4-d1da0389f92e"}
+> print ctx epoch
+  ctx epoch = 24
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)
