@@ -29,6 +29,9 @@
 //   {"mouse": "left"}               left right middle back forward, or one wheel detent:
 //        wheel-up wheel-down wheel-left wheel-right (per knob detent)
 //   {"command": ["notify-send", "hello"]}
+//   {"cheatsheet": "toggle"}         show/hide an overlay of what every key and knob does
+//        right now (profile, Kdenlive layer, modes); "hold" shows it while held.
+//        Keys and knob presses only. Any binding object may carry "label" for it.
 //   "none"                            explicitly unbound (stops fallthrough)
 //
 // Kdenlive is driven ONLY through its control-surface interface (D-Bus
@@ -54,6 +57,12 @@
     // several). "input": "auto" uses the control-surface firmware's raw events
     // when it answers, else the keys the pad types; "evdev" forces the latter.
     "device": { "vendor": "1189", "product": "8890", "serial": "", "input": "auto" },
+
+    // The cheatsheet overlay (drawn by the desktop, e.g. smplOS's eww bar).
+    // autoHideMs: hide after this long without pad input (0 = until hidden).
+    // position: center, top, bottom, left, right, top-left, top-right,
+    // bottom-left, bottom-right.
+    "cheatsheet": { "opacity": 0.85, "autoHideMs": 0, "position": "center" },
 
     // Written by `control-surfaced verify`; until then the flashed default applies.
     "hardware": "~/.config/control-surface/hardware-map.json",

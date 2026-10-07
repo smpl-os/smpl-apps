@@ -39,6 +39,8 @@ QString Binding::describe() const
         return QStringLiteral("request:") + name;
     case Mouse:
         return QStringLiteral("mouse:") + name;
+    case Cheatsheet:
+        return QStringLiteral("cheatsheet:") + name;
     }
     return {};
 }
@@ -314,13 +316,22 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
             }
             return std::nullopt;
         }
+    } else if (o.contains(QStringLiteral("cheatsheet"))) {
+        b.kind = Binding::Cheatsheet;
+        b.name = o.value(QStringLiteral("cheatsheet")).toString();
+        if (b.name != QLatin1String("toggle") && b.name != QLatin1String("hold")) {
+            if (error) {
+                *error = QStringLiteral("\"cheatsheet\" must be \"toggle\" or \"hold\"");
+            }
+            return std::nullopt;
+        }
     } else if (o.contains(QStringLiteral("request"))) {
         b.kind = Binding::Request;
         b.name = o.value(QStringLiteral("request")).toString();
         b.options = o.value(QStringLiteral("params")).toObject().toVariantMap();
     } else {
         if (error) {
-            *error = QStringLiteral("binding object needs one of keys/mouse/action/control/command/cycle/request");
+            *error = QStringLiteral("binding object needs one of keys/mouse/action/control/command/cycle/request/cheatsheet");
         }
         return std::nullopt;
     }
@@ -395,6 +406,34 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
     if (!QStringList{QStringLiteral("auto"), QStringLiteral("evdev"), QStringLiteral("raw")}.contains(cfg.device.input)) {
         if (error) {
             *error = QStringLiteral("device.input must be auto, evdev or raw");
+        }
+        return std::nullopt;
+    }
+
+    const QJsonValue sheet = root.value(QStringLiteral("cheatsheet"));
+    if (sheet.isObject()) {
+        const QJsonObject o = sheet.toObject();
+        for (auto it = o.begin(); it != o.end(); ++it) {
+            if (!QStringList{QStringLiteral("opacity"), QStringLiteral("autoHideMs"), QStringLiteral("position")}.contains(it.key())) {
+                if (error) {
+                    *error = QStringLiteral("cheatsheet: unknown option '%1' (opacity, autoHideMs, position)").arg(it.key());
+                }
+                return std::nullopt;
+            }
+        }
+        cfg.cheatsheet.opacity = o.value(QStringLiteral("opacity")).toDouble(cfg.cheatsheet.opacity);
+        cfg.cheatsheet.autoHideMs = o.value(QStringLiteral("autoHideMs")).toInt(cfg.cheatsheet.autoHideMs);
+        cfg.cheatsheet.position = o.value(QStringLiteral("position")).toString(cfg.cheatsheet.position);
+        if (!(cfg.cheatsheet.opacity >= 0.05 && cfg.cheatsheet.opacity <= 1.0) || cfg.cheatsheet.autoHideMs < 0 || cfg.cheatsheet.autoHideMs > 600000
+            || !CheatsheetOptions::positions().contains(cfg.cheatsheet.position)) {
+            if (error) {
+                *error = QStringLiteral("cheatsheet: opacity 0.05..1, autoHideMs 0..600000, position one of %1").arg(CheatsheetOptions::positions().join(QStringLiteral(", ")));
+            }
+            return std::nullopt;
+        }
+    } else if (!sheet.isUndefined() && !sheet.isNull()) {
+        if (error) {
+            *error = QStringLiteral("cheatsheet: must be an object");
         }
         return std::nullopt;
     }
@@ -547,6 +586,45 @@ bool checkConfig(Config &cfg, QString *error)
 {
     // Errors: references that can never work. Warnings: names this daemon does
     // not know (a newer Kdenlive may offer them) and bindings that do nothing.
+    {
+        // A cheatsheet goes on something pressed: a key or a knob press. "hold"
+        // on a knob whose press waits for release (it has shift bindings) can
+        // only toggle.
+        static const QRegularExpression pressSlot(QStringLiteral("^(key\\d+|knob\\d+\\.press)$"));
+        auto checkSheet = [&](const QString &where, const BindingMap &m, const BindingMap &profileBindings) -> bool {
+            for (auto it = m.cbegin(); it != m.cend(); ++it) {
+                if (it.value().kind != Binding::Cheatsheet) {
+                    continue;
+                }
+                if (!pressSlot.match(it.key()).hasMatch()) {
+                    return fail(error, QStringLiteral("%1 %2: a cheatsheet binding goes on a key or a knob press").arg(where, it.key()));
+                }
+                if (it.value().name == QLatin1String("hold") && it.key().startsWith(QLatin1String("knob"))) {
+                    const QString knob = it.key().section(QLatin1Char('.'), 0, 0);
+                    bool shifted = false;
+                    for (const BindingMap *bm : {&m, &profileBindings}) {
+                        for (auto k = bm->cbegin(); k != bm->cend() && !shifted; ++k) {
+                            shifted = k.key().startsWith(knob + QStringLiteral(".shift."));
+                        }
+                    }
+                    if (shifted) {
+                        cfg.warnings << QStringLiteral("%1 %2: \"hold\" acts as \"toggle\" here, because %3 has shift bindings (its press fires on release)").arg(where, it.key(), knob);
+                    }
+                }
+            }
+            return true;
+        };
+        for (const Profile &p : cfg.profiles) {
+            if (!checkSheet(QStringLiteral("profile %1").arg(p.name), p.bindings, p.bindings)) {
+                return false;
+            }
+            for (const Layer &l : p.layers) {
+                if (!checkSheet(QStringLiteral("profile %1 layer %2:").arg(p.name, l.name), l.bindings, p.bindings)) {
+                    return false;
+                }
+            }
+        }
+    }
     if (cfg.layout) {
         // Bindings for inputs this pad does not have are harmless but likely a mistake.
         QSet<QString> present;
@@ -779,6 +857,12 @@ BoardProfile effectiveLayout(const Config &cfg, const QString &firmwareBoard)
         return *cfg.layout;
     }
     return profileForControls(hardwareControls(cfg), QStringLiteral("hardware-map"));
+}
+
+QStringList CheatsheetOptions::positions()
+{
+    return {QStringLiteral("center"), QStringLiteral("top"), QStringLiteral("bottom"), QStringLiteral("left"), QStringLiteral("right"),
+            QStringLiteral("top-left"), QStringLiteral("top-right"), QStringLiteral("bottom-left"), QStringLiteral("bottom-right")};
 }
 
 } // namespace cs

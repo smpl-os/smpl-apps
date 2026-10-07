@@ -41,4 +41,28 @@ QString InputMonitor::textLine(const QString &slot, const QString &event, int de
     return delta ? QStringLiteral("%1 %2 %3").arg(slot, event).arg(delta) : QStringLiteral("%1 %2").arg(slot, event);
 }
 
+bool CheatsheetFollower::attach(const QDBusConnection &bus)
+{
+    QDBusConnection b(bus);
+    const QString service = QLatin1String(SettingsService::kService);
+    if (!b.interface() || !b.interface()->isServiceRegistered(service)) {
+        return false;
+    }
+    auto *watch = new QDBusServiceWatcher(service, b, QDBusServiceWatcher::WatchForUnregistration, this);
+    connect(watch, &QDBusServiceWatcher::serviceUnregistered, this, &CheatsheetFollower::daemonGone);
+    const QString path = QLatin1String(SettingsService::kPath), iface = QLatin1String(SettingsService::kInterface);
+    return b.connect(service, path, iface, QStringLiteral("CheatsheetChanged"), this, SLOT(onContent(QString)))
+        && b.connect(service, path, iface, QStringLiteral("CheatsheetVisibilityChanged"), this, SLOT(onVisibility(bool)));
+}
+
+void CheatsheetFollower::onContent(const QString &)
+{
+    Q_EMIT changed();
+}
+
+void CheatsheetFollower::onVisibility(bool)
+{
+    Q_EMIT changed();
+}
+
 } // namespace cs

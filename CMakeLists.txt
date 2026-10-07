@@ -63,6 +63,8 @@ add_library(cs_core STATIC
     src/daemon/inputmonitor.cpp
     src/daemon/rawpaddevice.cpp
     src/daemon/featurelist.cpp
+    src/daemon/bindinglabel.cpp
+    src/daemon/cheatsheet.cpp
 )
 target_include_directories(cs_core PUBLIC src/daemon src/proto)
 target_link_libraries(cs_core PUBLIC cs_proto cs_catalog Qt6::Core Qt6::Network Qt6::DBus PkgConfig::UDEV)
@@ -91,7 +93,7 @@ install(TARGETS control-surfaced ch552-padprog RUNTIME DESTINATION ${CMAKE_INSTA
 
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    foreach(t proto decoder hardwaremap config coalescer engine hyprland kdenlive_dbus kdenlive_bus uinput paddevice)
+    foreach(t proto decoder hardwaremap config coalescer engine hyprland kdenlive_dbus kdenlive_bus uinput paddevice cheatsheet)
         add_executable(tst_${t} tests/tst_${t}.cpp)
         target_link_libraries(tst_${t} PRIVATE cs_core cs_mock Qt6::Test)
         target_compile_definitions(tst_${t} PRIVATE CS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

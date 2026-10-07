@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QDBusError>
 #include <QFile>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTimer>
 
@@ -72,6 +73,8 @@ MockSurface::MockSurface(const Options &o, QObject *parent)
         });
     });
 
+    m_cheatsheet = std::make_unique<Cheatsheet>(m_engine.get(), m_kd.get());
+    m_settings->setCheatsheet(m_cheatsheet.get());
     connect(m_engine.get(), &Engine::dispatched, this, [this](const QString &slot, const QString &binding, const QString &layer) {
         m_settings->setActiveLayer(layer);
         Q_EMIT Dispatched(slot, binding, layer);
@@ -84,7 +87,10 @@ MockSurface::MockSurface(const Options &o, QObject *parent)
     m_settings->setActiveProfile(m_engine->activeProfile() ? m_engine->activeProfile()->name : QString());
 }
 
-MockSurface::~MockSurface() = default;
+MockSurface::~MockSurface()
+{
+    m_cheatsheet.reset();  // before the engine and the service it talks to
+}
 
 bool MockSurface::registerOn(const QDBusConnection &bus, bool claimName, QString *error)
 {
@@ -290,6 +296,33 @@ QStringList MockSurface::TakeKeys()
     const QStringList t = m_keys->taps;
     m_keys->taps.clear();
     return t;
+}
+
+void MockSurface::SetKdenliveState(const QString &state)
+{
+    static const QHash<QString, KdenliveClient::State> states{{QStringLiteral("available"), KdenliveClient::State::Available},
+                                                               {QStringLiteral("absent"), KdenliveClient::State::Absent},
+                                                               {QStringLiteral("pending"), KdenliveClient::State::Pending},
+                                                               {QStringLiteral("detached"), KdenliveClient::State::Detached}};
+    if (!states.contains(state)) {
+        if (calledFromDBus()) {
+            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("state must be available, absent, pending or detached"));
+        }
+        return;
+    }
+    m_kd->setState(states.value(state));
+}
+
+void MockSurface::SetKdenliveContext(const QString &json)
+{
+    const QJsonDocument d = QJsonDocument::fromJson(json.toUtf8());
+    if (!d.isObject()) {
+        if (calledFromDBus()) {
+            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("the context must be a JSON object"));
+        }
+        return;
+    }
+    m_kd->setContext(d.object().toVariantMap());
 }
 
 } // namespace cs

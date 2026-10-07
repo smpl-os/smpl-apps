@@ -395,6 +395,54 @@ private Q_SLOTS:
             QVERIFY2(parseBinding(d.array().at(0), &err), qPrintable(example + QStringLiteral(": ") + err));
         }
     }
+
+    void cheatsheetBindingAndOptions()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles":[{"name":"g","bindings":{"key15":{"cheatsheet":"toggle","label":"Help"},"knob2":{"press":{"cheatsheet":"hold"}}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        const Binding t = c->profiles.first().bindings.value(QStringLiteral("key15"));
+        QCOMPARE(t.kind, Binding::Cheatsheet);
+        QCOMPARE(t.name, QStringLiteral("toggle"));
+        QCOMPARE(t.label, QStringLiteral("Help"));
+        QCOMPARE(t.describe(), QStringLiteral("cheatsheet:toggle"));
+        QCOMPARE(c->profiles.first().bindings.value(QStringLiteral("knob2.press")).name, QStringLiteral("hold"));
+        QVERIFY(c->warnings.isEmpty());
+        // Defaults.
+        QCOMPARE(c->cheatsheet.opacity, 0.85);
+        QCOMPARE(c->cheatsheet.autoHideMs, 0);
+        QCOMPARE(c->cheatsheet.position, QStringLiteral("center"));
+
+        QVERIFY(!parseConfig(R"({"profiles":[{"name":"g","bindings":{"key1":{"cheatsheet":"always"}}}]})", {}, &err));
+        QVERIFY(err.contains(QStringLiteral("toggle")));
+        // Only on something pressed.
+        for (const char *bad : {R"({"profiles":[{"name":"g","bindings":{"knob1.cw":{"cheatsheet":"toggle"}}}]})",
+                                R"({"profiles":[{"name":"g","bindings":{"knob1":{"turn":{"cheatsheet":"toggle"}}}}]})",
+                                R"({"profiles":[{"name":"g","layers":[{"name":"L","when":{"a":1},"bindings":{"knob3.ccw":{"cheatsheet":"hold"}}}]}]})"}) {
+            QVERIFY2(!parseConfig(bad, {}, &err), bad);
+            QVERIFY(err.contains(QStringLiteral("key or a knob press")));
+            QVERIFY(!describeConfigIssue(err).slot.isEmpty());
+        }
+        // hold on a knob whose press waits for release: a warning.
+        c = parseConfig(R"({"profiles":[{"name":"g","bindings":{"knob1":{"press":{"cheatsheet":"hold"},"shift":{"cw":"a"}}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(c->warnings.size(), 1);
+        QVERIFY(c->warnings.first().contains(QStringLiteral("acts as \"toggle\"")));
+        QCOMPARE(describeConfigIssue(c->warnings.first()).slot, QStringLiteral("knob1.press"));
+
+        // Options.
+        c = parseConfig(R"({"cheatsheet":{"opacity":0.5,"autoHideMs":4000,"position":"top-right"},"profiles":[]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(c->cheatsheet.opacity, 0.5);
+        QCOMPARE(c->cheatsheet.autoHideMs, 4000);
+        QCOMPARE(c->cheatsheet.position, QStringLiteral("top-right"));
+        for (const char *bad : {R"({"cheatsheet":{"opacity":0},"profiles":[]})", R"({"cheatsheet":{"opacity":1.5},"profiles":[]})",
+                                R"({"cheatsheet":{"autoHideMs":-1},"profiles":[]})", R"({"cheatsheet":{"position":"middle"},"profiles":[]})",
+                                R"({"cheatsheet":{"color":"red"},"profiles":[]})", R"({"cheatsheet":true,"profiles":[]})"}) {
+            QVERIFY2(!parseConfig(bad, {}, &err), bad);
+            QVERIFY(err.startsWith(QStringLiteral("cheatsheet")));
+        }
+    }
 };
 
 QTEST_GUILESS_MAIN(TestConfig)

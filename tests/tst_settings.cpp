@@ -99,6 +99,8 @@ public:
         m_c.connect(s, path, i, QStringLiteral("ConfigRejected"), this, SLOT(onRejected(QString)));
         m_c.connect(s, path, i, QStringLiteral("PluginsChanged"), this, SLOT(onPlugins()));
         m_c.connect(s, path, i, QStringLiteral("FlashProgress"), this, SLOT(onFlash(QString, QString, QString)));
+        m_c.connect(s, path, i, QStringLiteral("CheatsheetChanged"), this, SLOT(onSheet(QString)));
+        m_c.connect(s, path, i, QStringLiteral("CheatsheetVisibilityChanged"), this, SLOT(onSheetVisible(bool)));
         m_c.connect(s, path, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("PropertiesChanged"), this, SLOT(onProps(QString, QVariantMap, QStringList)));
         m_c.connect(s, QLatin1String(MockSurface::kMockPath), QStringLiteral("org.smplos.ControlSurface1.Mock"), QStringLiteral("Dispatched"), this,
                     SLOT(onDispatched(QString, QString, QString)));
@@ -127,7 +129,8 @@ public:
         return v.canConvert<QDBusArgument>() ? qdbus_cast<QVariantMap>(v.value<QDBusArgument>()) : v.toMap();
     }
 
-    QStringList inputs, devices, configs, rejected, flash, dispatched;
+    QStringList inputs, devices, configs, rejected, flash, dispatched, sheets;
+    QList<bool> sheetVisible;
     QList<bool> identify;
     QVariantMap changedProps;
     int plugins = 0;
@@ -142,6 +145,8 @@ public Q_SLOTS:
     void onFlash(const QString &id, const QString &phase, const QString &) { flash << id + QLatin1Char(':') + phase; }
     void onProps(const QString &, const QVariantMap &changed, const QStringList &) { changedProps.insert(changed); }
     void onDispatched(const QString &slot, const QString &binding, const QString &) { dispatched << slot + QLatin1Char('=') + binding; }
+    void onSheet(const QString &json) { sheets << json; }
+    void onSheetVisible(bool on) { sheetVisible << on; }
 
 private:
     QDBusConnection m_c;
@@ -193,7 +198,7 @@ private Q_SLOTS:
     void cleanup()
     {
         // A failed check returns early: never leave a name or connection behind.
-        for (const char *n : {"srv1", "srv2", "cli1", "msrv", "mcli", "monsrv", "moncli", "gone"}) {
+        for (const char *n : {"srv1", "srv2", "cli1", "msrv", "mcli", "monsrv", "moncli", "gone", "csrv", "ccli"}) {
             QDBusConnection c = QDBusConnection(QLatin1String(n));
             if (c.isConnected()) {
                 c.unregisterService(QLatin1String(SettingsService::kService));
@@ -982,6 +987,102 @@ private Q_SLOTS:
         }
         QDBusConnection::disconnectFromBus(QStringLiteral("monsrv"));
         QDBusConnection::disconnectFromBus(QStringLiteral("moncli"));
+    }
+
+    void cheatsheetOverBus()
+    {
+        if (!privateBus()) {
+            QSKIP("runs only on a private bus: ctest starts it under dbus-run-session");
+        }
+        QTemporaryDir t;
+        const QString cfgPath = t.path() + QStringLiteral("/config.jsonc");
+        writeFile(cfgPath, R"({"cheatsheet":{"autoHideMs":0,"opacity":0.6,"position":"top"},"profiles":[
+            {"name":"Kdenlive","match":{"class":"^org\\.kde\\.kdenlive"},"kdenlive":true,
+             "layers":[{"name":"Wheels","when":{"colorWheels":true},"bindings":{"key2":{"request":"colorwheel.reset","params":{"wheel":"lift"}}}}],
+             "bindings":{"key2":{"action":"mark_in"}}},
+            {"name":"global","bindings":{"key1":{"cheatsheet":"toggle"},"key3":{"cheatsheet":"hold"},"key2":"ctrl+z"}}]})");
+        QDBusConnection srv = bus(QStringLiteral("csrv"));
+        QDBusConnection cli = bus(QStringLiteral("ccli"));
+        {
+            MockSurface::Options o;
+            o.configPath = cfgPath;
+            o.firmwareDir = t.path() + QStringLiteral("/fw");
+            MockSurface mock(o);
+            QString err;
+            QVERIFY2(mock.registerOn(srv, true, &err), qPrintable(err));
+            Receiver r(cli);
+
+            QCOMPARE(r.props().value(QStringLiteral("CheatsheetVisible")).toBool(), false);
+            QJsonObject c = r.json(QStringLiteral("GetCheatsheet"));
+            QCOMPARE(c.value(QStringLiteral("ok")).toBool(), true);
+            QCOMPARE(c.value(QStringLiteral("visible")).toBool(), false);
+            QCOMPARE(c.value(QStringLiteral("profile")).toString(), QStringLiteral("global"));
+            QCOMPARE(c.value(QStringLiteral("options")).toObject().value(QStringLiteral("position")).toString(), QStringLiteral("top"));
+            QCOMPARE(c.value(QStringLiteral("layout")).toObject().value(QStringLiteral("id")).toString(), QStringLiteral("sy181-15k3e"));
+
+            // The mapped key shows it; the overlay gets visibility and content.
+            r.mock(QStringLiteral("Press"), {QStringLiteral("key1")});
+            QTRY_COMPARE(r.sheetVisible, QList<bool>{true});
+            QTRY_COMPARE(r.sheets.size(), 1);
+            QCOMPARE(obj(r.sheets.last()).value(QStringLiteral("visible")).toBool(), true);
+            QTRY_COMPARE(r.changedProps.value(QStringLiteral("CheatsheetVisible")).toBool(), true);
+            QVERIFY(r.mock(QStringLiteral("TakeKeys")).arguments().value(0).toStringList().isEmpty());  // nothing typed
+
+            // Focus Kdenlive with the wheels open: new content while shown.
+            r.mock(QStringLiteral("SetKdenliveState"), {QStringLiteral("available")});
+            r.mock(QStringLiteral("SetKdenliveContext"), {QStringLiteral(R"({"colorWheels": true, "focus": "effectStack"})")});
+            r.mock(QStringLiteral("Focus"), {QStringLiteral("org.kde.kdenlive"), QStringLiteral("x")});
+            QTRY_VERIFY(!r.sheets.isEmpty() && obj(r.sheets.last()).value(QStringLiteral("title")).toString() == QStringLiteral("Kdenlive · Wheels"));
+            c = obj(r.sheets.last());
+            QString key2;
+            for (const auto &k : c.value(QStringLiteral("keys")).toArray()) {
+                if (k.toObject().value(QStringLiteral("control")).toString() == QLatin1String("key2")) {
+                    key2 = k.toObject().value(QStringLiteral("label")).toString();
+                }
+            }
+            QCOMPARE(key2, QStringLiteral("Reset lift"));
+            // The wheels close.
+            const int before = r.sheets.size();
+            r.mock(QStringLiteral("SetKdenliveContext"), {QStringLiteral(R"({"focus": "timeline"})")});
+            QTRY_COMPARE(r.sheets.size(), before + 1);
+            QCOMPARE(obj(r.sheets.last()).value(QStringLiteral("title")).toString(), QStringLiteral("Kdenlive"));
+            QCOMPARE(r.mock(QStringLiteral("SetKdenliveState"), {QStringLiteral("gone")}).type(), QDBusMessage::ErrorMessage);
+            QCOMPARE(r.mock(QStringLiteral("SetKdenliveContext"), {QStringLiteral("[1]")}).type(), QDBusMessage::ErrorMessage);
+
+            // Methods.
+            r.call(QStringLiteral("HideCheatsheet"));
+            QTRY_COMPARE(r.sheetVisible, (QList<bool>{true, false}));
+            QCOMPARE(r.json(QStringLiteral("GetStatus")).value(QStringLiteral("cheatsheet")).toObject().value(QStringLiteral("visible")).toBool(), false);
+            r.call(QStringLiteral("ToggleCheatsheet"));
+            QTRY_COMPARE(r.sheetVisible.size(), 3);
+            r.call(QStringLiteral("ShowCheatsheet"));
+            QTest::qWait(50);
+            QCOMPARE(r.sheetVisible.size(), 3);  // already shown
+            // Unplugging hides it (a held key can no longer be released).
+            r.mock(QStringLiteral("Unplug"));
+            QTRY_COMPARE(r.sheetVisible.size(), 4);
+            QCOMPARE(r.sheetVisible.last(), false);
+            r.mock(QStringLiteral("Plug"), {QStringLiteral("control-surface"), QString()});
+            // Hold.
+            r.mock(QStringLiteral("Hold"), {QStringLiteral("key3")});
+            QTRY_COMPARE(r.sheetVisible.size(), 5);
+            r.mock(QStringLiteral("Release"), {QStringLiteral("key3")});
+            QTRY_COMPARE(r.sheetVisible.size(), 6);
+            QCOMPARE(r.sheetVisible.last(), false);
+
+            // Previews for editors.
+            c = r.json(QStringLiteral("GetCheatsheetFor"), {QStringLiteral("org.kde.kdenlive"), QString(), QStringLiteral(R"({"colorWheels":true})")});
+            QCOMPARE(c.value(QStringLiteral("preview")).toBool(), true);
+            QCOMPARE(c.value(QStringLiteral("title")).toString(), QStringLiteral("Kdenlive · Wheels"));
+            c = r.json(QStringLiteral("GetCheatsheetFor"), {QStringLiteral("brave-browser"), QString(), QString()});
+            QCOMPARE(c.value(QStringLiteral("profile")).toString(), QStringLiteral("global"));
+            c = r.json(QStringLiteral("GetCheatsheetFor"), {QStringLiteral("x"), QString(), QStringLiteral("not json")});
+            QCOMPARE(c.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toString(), QStringLiteral("invalid-arguments"));
+            QCOMPARE(r.props().value(QStringLiteral("CheatsheetVisible")).toBool(), false);  // previews never show it
+            srv.unregisterService(QLatin1String(SettingsService::kService));
+        }
+        QDBusConnection::disconnectFromBus(QStringLiteral("csrv"));
+        QDBusConnection::disconnectFromBus(QStringLiteral("ccli"));
     }
 };
 

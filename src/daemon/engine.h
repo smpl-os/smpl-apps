@@ -44,6 +44,7 @@ public:
     static QStringList turnSlots(const QString &control, int delta);
 
     const Profile *activeProfile() const { return m_profile; }
+    const WindowInfo &activeWindow() const { return m_window; }
     bool kdenliveActive() const;  // interface available
     bool kdenliveStock() const;   // interface proven absent and the profile opted into keyFallback
     bool kdenliveAbsent() const;  // Kdenlive focused, interface proven absent (or no client)
@@ -62,6 +63,11 @@ Q_SIGNALS:
     void notice(const QString &text);
     // A binding is about to run (dry-run and simulate print these).
     void dispatched(const QString &slot, const QString &binding, const QString &layer);
+    // A cheatsheet binding: "toggle", "show" (hold pressed) or "hide" (hold released).
+    void cheatsheetRequested(const QString &op);
+    // What inputs resolve to may have changed: window, profile, config or a mode.
+    // (Kdenlive context changes come from the client's own signal.)
+    void resolutionChanged();
 
 private:
     struct Tap {
@@ -136,6 +142,8 @@ private:
     QSet<QString> m_held;
     QSet<QString> m_deferredPress;
     QSet<QString> m_shiftTurned;
+    QSet<QString> m_cheatsheetHold;  // controls holding the cheatsheet open
+    bool m_inRelease = false;        // executing a press deferred to its release
     void noticeAbsent(const QString &what);
     void clearHeld();
     QList<Tap> m_tapQueue;

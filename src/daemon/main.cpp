@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "capabilities.h"
+#include "cheatsheet.h"
 #include "config.h"
 #include "configstore.h"
 #include "configwatcher.h"
@@ -333,7 +334,7 @@ int main(int argc, char **argv)
     p.setApplicationDescription(QStringLiteral(
         "Per-application control surface for the CH552 macro pad (1189:8890).\n"
         "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | list-actions |\n"
-        "          firmware-info | enter-bootloader --yes | features | check-config | example-config | bench-dbus [N]"));
+        "          firmware-info | enter-bootloader --yes | features | cheatsheet | check-config | example-config | bench-dbus [N]"));
     p.addHelpOption();
     p.addVersionOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
@@ -354,8 +355,12 @@ int main(int argc, char **argv)
     QCommandLineOption sysRootOpt(QStringLiteral("sys-root"), QStringLiteral("tests: a fake /sys for firmware-info and enter-bootloader"), QStringLiteral("dir"));
     sysRootOpt.setFlags(QCommandLineOption::HiddenFromHelp);
     QCommandLineOption yesOpt(QStringLiteral("yes"), QStringLiteral("enter-bootloader: really do it"));
+    QCommandLineOption followOpt(QStringLiteral("follow"), QStringLiteral("cheatsheet: one JSON line per change (for eww deflisten)"));
+    QCommandLineOption sheetWindowOpt(QStringLiteral("window"), QStringLiteral("cheatsheet: preview for this window class (offline)"), QStringLiteral("class"));
+    QCommandLineOption sheetTitleOpt(QStringLiteral("title"), QStringLiteral("cheatsheet: window title for --window"), QStringLiteral("text"));
+    QCommandLineOption sheetContextOpt(QStringLiteral("context"), QStringLiteral("cheatsheet: Kdenlive context JSON for --window"), QStringLiteral("json"));
     QCommandLineOption imageDirOpt(QStringLiteral("firmware-dir"), QStringLiteral("settings API: directory of flashable images (repeatable)"), QStringLiteral("dir"));
-    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt});
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt, followOpt, sheetWindowOpt, sheetTitleOpt, sheetContextOpt});
     p.process(app);
     const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
     const bool explicitConfig = p.isSet(configOpt);
@@ -571,6 +576,88 @@ int main(int argc, char **argv)
             say(QStringLiteral("no running Kdenlive on the session bus (looked for org.kde.kdenlive-<pid>; use --kdenlive-service NAME)"));
         }
         return anyAvailable ? 0 : 3;
+    }
+    if (cmd == QLatin1String("cheatsheet")) {
+        // What each input does now. --window CLASS: offline preview from the
+        // config. Otherwise the running daemon's; --follow prints a line on
+        // every change (shown, hidden, new content) until the daemon exits.
+        auto print = [&](const QJsonObject &o) {
+            if (p.isSet(jsonOpt) || p.isSet(followOpt)) {
+                say(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+                return;
+            }
+            say(QStringLiteral("%1%2").arg(o.value(QStringLiteral("title")).toString(), o.value(QStringLiteral("visible")).toBool() ? QStringLiteral("  (shown)") : QString()));
+            if (!o.value(QStringLiteral("notice")).toString().isEmpty()) {
+                say(QStringLiteral("  ! %1").arg(o.value(QStringLiteral("notice")).toString()));
+            }
+            auto text = [](const QJsonObject &e) {
+                if (!e.value(QStringLiteral("bound")).toBool()) {
+                    return QStringLiteral("-");
+                }
+                QString t = e.value(QStringLiteral("label")).toString();
+                if (!e.value(QStringLiteral("state")).toString().isEmpty()) {
+                    t += QStringLiteral(" [%1]").arg(e.value(QStringLiteral("state")).toString());
+                }
+                if (!e.value(QStringLiteral("active")).toBool()) {
+                    t += QStringLiteral(" (inactive)");
+                }
+                return t;
+            };
+            for (const auto &k : o.value(QStringLiteral("keys")).toArray()) {
+                say(QStringLiteral("  %1  %2").arg(k.toObject().value(QStringLiteral("control")).toString(), -6).arg(text(k.toObject())));
+            }
+            for (const auto &k : o.value(QStringLiteral("knobs")).toArray()) {
+                const QJsonObject n = k.toObject();
+                say(QStringLiteral("  %1  ccw %2 | press %3 | cw %4")
+                        .arg(n.value(QStringLiteral("control")).toString(), -6)
+                        .arg(text(n.value(QStringLiteral("ccw")).toObject()), text(n.value(QStringLiteral("press")).toObject()),
+                             text(n.value(QStringLiteral("cw")).toObject())));
+            }
+        };
+        if (p.isSet(sheetWindowOpt)) {
+            QVariantMap ctx;
+            if (p.isSet(sheetContextOpt)) {
+                const QJsonDocument d = QJsonDocument::fromJson(p.value(sheetContextOpt).toUtf8());
+                if (!d.isObject()) {
+                    std::fprintf(stderr, "--context must be a JSON object\n");
+                    return 2;
+                }
+                ctx = d.object().toVariantMap();
+            }
+            print(Cheatsheet::preview(*cfg, effectiveLayout(*cfg), p.value(sheetWindowOpt), p.value(sheetTitleOpt), ctx));
+            return 0;
+        }
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        auto fetch = [&bus]() -> std::optional<QJsonObject> {
+            auto m = QDBusMessage::createMethodCall(QLatin1String(SettingsService::kService), QLatin1String(SettingsService::kPath),
+                                                    QLatin1String(SettingsService::kInterface), QStringLiteral("GetCheatsheet"));
+            const QDBusMessage r = bus.call(m, QDBus::Block, 3000);
+            if (r.type() != QDBusMessage::ReplyMessage) {
+                return std::nullopt;
+            }
+            return QJsonDocument::fromJson(r.arguments().value(0).toString().toUtf8()).object();
+        };
+        CheatsheetFollower follower;
+        const bool attached = p.isSet(followOpt) && follower.attach(bus);
+        const auto first = fetch();
+        if (!first) {
+            std::fprintf(stderr, "no daemon on the session bus (start control-surfaced, or use --window CLASS for a preview)\n");
+            return 3;
+        }
+        print(*first);
+        if (!p.isSet(followOpt)) {
+            return 0;
+        }
+        if (!attached) {
+            return 3;
+        }
+        QObject::connect(&follower, &CheatsheetFollower::changed, [&] {
+            if (const auto o = fetch()) {
+                print(*o);
+            }
+        });
+        QObject::connect(&follower, &CheatsheetFollower::daemonGone, &app, [&app] { app.exit(4); });
+        return app.exec();
     }
     if (cmd == QLatin1String("firmware-info") || cmd == QLatin1String("enter-bootloader")) {
         // Protocol v3 over hidraw (the control-surface firmware only); other
@@ -909,6 +996,9 @@ int main(int argc, char **argv)
     // config get/validate/set, plugins and the guarded flash job.
     SettingsService settings(p.value(configOpt));
     settingsRef = &settings;
+    Cheatsheet cheatsheet(&engine, kd.get());
+    settings.setCheatsheet(&cheatsheet);
+    QObject::connect(&cheatsheet, &Cheatsheet::visibilityChanged, [log](bool on) { log(on ? QStringLiteral("cheatsheet shown") : QStringLiteral("cheatsheet hidden")); });
     settings.setActiveProfile(engine.activeProfile() ? engine.activeProfile()->name : QString());
     settings.setMode(dry ? QStringLiteral("dry-run") : QStringLiteral("run"));
     settings.setDaemonVersion(QCoreApplication::applicationVersion());

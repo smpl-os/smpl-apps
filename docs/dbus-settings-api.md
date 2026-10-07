@@ -29,6 +29,7 @@ emit `org.freedesktop.DBus.Properties.PropertiesChanged`.
 | `ActiveLayer` | s | layer of the last dispatched input (`""` = profile base bindings) |
 | `ConfigHash` | s | SHA-256 of the config text in effect |
 | `Identifying` | b | identify mode is on (actions suppressed) |
+| `CheatsheetVisible` | b | the cheatsheet overlay should be shown |
 
 ## Signals
 
@@ -41,6 +42,8 @@ emit `org.freedesktop.DBus.Properties.PropertiesChanged`.
 | `ConfigRejected(s error)` | a new config was refused; the previous one stays in effect |
 | `PluginsChanged()` | a plugin's status changed; call `ListPlugins` |
 | `FlashProgress(s jobId, s phase, s message)` | flash job progress (see below) |
+| `CheatsheetVisibilityChanged(b visible)` | show or hide the overlay |
+| `CheatsheetChanged(s json)` | the overlay's content: once when shown, then on every change while shown (focus, profile, Kdenlive layer, mode, config, layout) |
 
 ## Methods
 
@@ -163,6 +166,71 @@ Phases (`FlashProgress`):
 The job JSON (in `GetStatus().flash` and `GetFirmwareStatus().flash.job`) is
 `{id, image, dryRun, phase, message, finished, ok, toolExitCode?, toolOutput?, firmware?, notes?}`.
 
+### Cheatsheet
+
+An overlay of what every key and knob does **right now**. It follows the
+focused app's profile, Kdenlive's context layers (for example the colour-wheel
+layer instead of the timeline), and daemon modes; an unknown app shows the
+global profile. The daemon supplies only content and visibility; the desktop
+draws it (smplOS: the running eww), so no extra process is involved.
+
+| Method | Returns |
+|---|---|
+| `GetCheatsheet() → s` | the content below, for the focused window (also while hidden) |
+| `GetCheatsheetFor(s windowClass, s title, s kdenliveContextJson) → s` | the same for any app and Kdenlive context (`""` or e.g. `{"colorWheels": true}`), for editors. Kdenlive is assumed to answer. Changes nothing. |
+| `ShowCheatsheet()`, `HideCheatsheet()`, `ToggleCheatsheet()` | for the bar, hotkeys or Settings |
+
+Shown and hidden by a binding (`{"cheatsheet": "toggle"}`, or `"hold"`: shown
+while held; keys and knob presses only), by these methods, or hidden by
+`autoHideMs` without pad input. Unplugging the pad hides it.
+
+Content:
+
+```json
+{"ok": true, "visible": true, "title": "Kdenlive · Wheels", "profile": "Kdenlive",
+ "layers": ["Wheels"], "window": {"class": "org.kde.kdenlive", "title": "…"},
+ "context": {"focus": "effectStack"}, "notice": "",
+ "options": {"opacity": 0.85, "autoHideMs": 0, "position": "center"},
+ "layout": {"id": "sy181-15k3e", "name": "…", "rows": 3, "columns": 6, "source": "firmware"},
+ "keys":  [{"control": "key1", "row": 0, "column": 0, <entry>}, …],
+ "knobs": [{"control": "knob1", "row": 0, "column": 5,
+            "ccw": <entry>, "press": <entry>, "cw": <entry>, "shiftCcw": <entry>, "shiftCw": <entry>}, …]}
+```
+
+`<entry>` is
+`{"bound", "label", "kind", "custom", "state", "binding", "profile", "layer", "active"}`:
+
+* `label` is the binding's own `"label"` (`custom: true`), or a readable name
+  made from what it does: Kdenlive catalog titles ("Set Zone In"), controls
+  ("Jog", "Lift R", "Trim out"), chords ("Ctrl+Z"), media keys ("Volume up"),
+  mouse actions ("Scroll down"), "Run notify-send".
+* `state` is a cycle's current value (e.g. the wheel axis `r`).
+* `active` is false when the binding would do nothing now: Kdenlive's
+  interface is off or not answering, or it does not offer that action or
+  control.
+* Unbound inputs have `bound: false`, `label: ""`, `kind: "none"`.
+* `context` is present only while Kdenlive answers, and holds only `focus`;
+  the playhead is left out, so playback does not resend the content.
+* `notice` explains inactive Kdenlive bindings (interface off, or not
+  answered yet).
+
+Config: `"cheatsheet": {"opacity": 0.05..1, "autoHideMs": 0..600000 (0 = until
+hidden; restarted by pad input), "position": "center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right"}`.
+
+For eww, `control-surfaced cheatsheet --follow` prints the content as one JSON
+line at start and on every change, shown or hidden:
+
+```lisp
+(deflisten pad_sheet :initial '{"visible":false}' "control-surfaced cheatsheet --follow")
+(defwindow pad-cheatsheet :stacking "overlay" :geometry (geometry :anchor "center")
+  (revealer :reveal {pad_sheet.visible}
+    (box :class "pad-sheet" :style "opacity: ${pad_sheet.options.opacity}" :orientation "v"
+      (label :text {pad_sheet.title})
+      (box :orientation "h"
+        (for k in {pad_sheet.keys}
+          (label :class {k.active ? "on" : "off"} :text {k.label}))))))
+```
+
 ## CLI mirrors
 
 | Command | Output |
@@ -172,6 +240,8 @@ The job JSON (in `GetStatus().flash` and `GetFirmwareStatus().flash.job`) is
 | `control-surfaced check-config [-c FILE] --json` | `{ok, error: {message, profile, layer, slot} \| null, warnings[], warningDetails[], profiles[], path, source}`; exit 0 or 2 |
 | `control-surfaced list-actions [--json]` | `GetCatalog("kdenlive")` offline |
 | `control-surfaced features [--json]` | `GetFeatures` |
+| `control-surfaced cheatsheet [--json] [--follow]` | the running daemon's `GetCheatsheet`; `--follow` prints a JSON line on every change (eww `deflisten`) |
+| `control-surfaced cheatsheet --window CLASS [--title T] [--context JSON]` | offline preview from the config (no daemon) |
 | `control-surfaced firmware-info [--json]` | `GET_INFO` from a pad running the control-surface firmware: `{ok, node, version, format, slots, layers, activeLayer, startLayer, rawActive, eepromBytes, stats?}`. From 2.0.1, `stats` is `{knobs: [{cw, ccw, illegal}], overruns, queueDrops, maxQueue}`, the encoder counters since power-on or the last clear. |
 | `control-surfaced enter-bootloader --yes [--json]` | `CMD_BOOTLOADER`; the pad shows as 4348:55e0 until flashed or replugged |
 
@@ -181,6 +251,9 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
 ## Config additions the editor can write
 
 * Mouse bindings: `{"mouse": "left|right|middle|back|forward|wheel-up|wheel-down|wheel-left|wheel-right"}`.
+* Cheatsheet bindings: `{"cheatsheet": "toggle"}` or `{"cheatsheet": "hold"}`
+  on `keyN` or `knobN.press`, and the root `"cheatsheet"` options above. Any
+  binding object may carry `"label"` for the overlay.
 * Slots `key1`..`key16`.
 * `"layout"`, described under State.
 * `"device": {"serial": "", "input": "auto|evdev|raw"}`. An empty serial
@@ -210,6 +283,8 @@ Extra interface `org.smplos.ControlSurface1.Mock` at `/org/smplos/ControlSurface
 | `EnterBootloader()` | what the user does with the boot key (a new bootloader session) |
 | `SetFlashOutcome(s outcome)` | `ok`, `tool-fails`, `no-return` |
 | `TakeKeys() → as` | key and mouse actions dispatched since the last call (`F13`, `mouse:left`, ...) |
+| `SetKdenliveState(s state)` | `available`, `absent`, `pending`, `detached` |
+| `SetKdenliveContext(s json)` | Kdenlive's context as the engine sees it, e.g. `{"colorWheels": true}` for the wheel layer |
 | signal `Dispatched(s slot, s binding, s layer)` | what the engine did with an input |
 
 ## Examples

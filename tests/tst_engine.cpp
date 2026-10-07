@@ -1073,6 +1073,57 @@ private Q_SLOTS:
         e.handle(turn(1, 1));
         QTRY_COMPARE(keys.taps, (QStringList{QStringLiteral("VOLUMEUP"), QStringLiteral("VOLUMEUP")}));
     }
+
+    void cheatsheetBindings()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles":[{"name":"g","modes":{"m":["a","b"]},"bindings":{
+            "key1":{"cheatsheet":"toggle"},"key2":{"cheatsheet":"hold"},"key3":{"cycle":"m"},
+            "knob1":{"press":{"cheatsheet":"hold"}},
+            "knob2":{"press":{"cheatsheet":"hold"},"shift":{"cw":"a"}}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        QSignalSpy ops(&e, &Engine::cheatsheetRequested);
+        QSignalSpy changed(&e, &Engine::resolutionChanged);
+        e.setConfig(*c);
+        e.setActiveWindow(kFirefox);
+        QVERIFY(changed.count() >= 1);
+        auto opList = [&] {
+            QStringList l;
+            for (const auto &a : ops) {
+                l << a.at(0).toString();
+            }
+            ops.clear();
+            return l;
+        };
+        // toggle: on press only.
+        e.handle(PadEvent{QStringLiteral("key1"), PadEvent::KeyDown, 0, 0});
+        e.handle(PadEvent{QStringLiteral("key1"), PadEvent::KeyUp, 0, 0});
+        QCOMPARE(opList(), QStringList{QStringLiteral("toggle")});
+        // hold: shown while the key is down.
+        e.handle(PadEvent{QStringLiteral("key2"), PadEvent::KeyDown, 0, 0});
+        e.handle(PadEvent{QStringLiteral("key2"), PadEvent::KeyUp, 0, 0});
+        QCOMPARE(opList(), (QStringList{QStringLiteral("show"), QStringLiteral("hide")}));
+        // ... also on a knob press.
+        e.handle(press(1));
+        e.handle(PadEvent{QStringLiteral("knob1"), PadEvent::PressUp, 0, 0});
+        QCOMPARE(opList(), (QStringList{QStringLiteral("show"), QStringLiteral("hide")}));
+        // A knob with shift bindings presses on release: hold becomes a toggle.
+        e.handle(press(2));
+        QVERIFY(opList().isEmpty());
+        e.handle(PadEvent{QStringLiteral("knob2"), PadEvent::PressUp, 0, 0});
+        QCOMPARE(opList(), QStringList{QStringLiteral("toggle")});
+        // Releasing a key that did not show it says nothing.
+        e.handle(PadEvent{QStringLiteral("key2"), PadEvent::KeyUp, 0, 0});
+        QVERIFY(opList().isEmpty());
+        QVERIFY(keys.taps.isEmpty());  // nothing typed
+        // A mode change may change layers and labels.
+        changed.clear();
+        e.handle(PadEvent{QStringLiteral("key3"), PadEvent::KeyDown, 0, 0});
+        QCOMPARE(changed.count(), 1);
+    }
 };
 
 QTEST_GUILESS_MAIN(TestEngine)

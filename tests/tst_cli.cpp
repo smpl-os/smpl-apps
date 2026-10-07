@@ -204,7 +204,10 @@ private Q_SLOTS:
             kinds << k.toObject().value(QStringLiteral("kind")).toString();
         }
         QCOMPARE(kinds, (QStringList{QStringLiteral("keys"), QStringLiteral("mouse"), QStringLiteral("action"), QStringLiteral("control"), QStringLiteral("request"),
-                                     QStringLiteral("cycle"), QStringLiteral("command"), QStringLiteral("none")}));
+                                     QStringLiteral("cycle"), QStringLiteral("command"), QStringLiteral("cheatsheet"), QStringLiteral("none")}));
+        const QJsonObject sheet = j.value(QStringLiteral("cheatsheet")).toObject();
+        QCOMPARE(sheet.value(QStringLiteral("modes")).toArray().size(), 2);
+        QVERIFY(sheet.value(QStringLiteral("options")).toObject().value(QStringLiteral("position")).toArray().contains(QStringLiteral("top-right")));
         const QJsonArray keys = j.value(QStringLiteral("keyNames")).toArray();
         QVERIFY(keys.contains(QStringLiteral("F24")));
         QVERIFY(keys.contains(QStringLiteral("PLAYPAUSE")));
@@ -215,6 +218,27 @@ private Q_SLOTS:
         QCOMPARE(j.value(QStringLiteral("dbus")).toObject().value(QStringLiteral("interface")).toString(), QStringLiteral("org.smplos.ControlSurface1"));
         QVERIFY(j.value(QStringLiteral("layouts")).toObject().value(QStringLiteral("builtin")).toArray().size() >= 5);
         // (tst_config checks that every advertised name and example parses.)
+    }
+
+    void cheatsheetCommand()
+    {
+        const QString cfg = m_home.path() + QStringLiteral("/sheet.jsonc");
+        writeFile(cfg, R"({"profiles":[{"name":"Brave","match":{"class":"^brave"},"bindings":{"key1":"ctrl+t"}},
+                                       {"name":"global","bindings":{"key15":{"cheatsheet":"toggle"}}}]})");
+        Run r = run({QStringLiteral("cheatsheet"), QStringLiteral("--json"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QJsonObject j = r.json();
+        QCOMPARE(j.value(QStringLiteral("profile")).toString(), QStringLiteral("Brave"));
+        QCOMPARE(j.value(QStringLiteral("keys")).toArray().at(0).toObject().value(QStringLiteral("label")).toString(), QStringLiteral("Ctrl+T"));
+        QCOMPARE(j.value(QStringLiteral("keys")).toArray().at(14).toObject().value(QStringLiteral("label")).toString(), QStringLiteral("Cheatsheet"));
+        r = run({QStringLiteral("cheatsheet"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QVERIFY(r.out.contains("Ctrl+T"));
+        r = run({QStringLiteral("cheatsheet"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("x"), QStringLiteral("--context"), QStringLiteral("[")}, m_home.path());
+        QCOMPARE(r.code, 2);
+        // No daemon on this private bus.
+        r = run({QStringLiteral("cheatsheet"), QStringLiteral("--follow"), QStringLiteral("-c"), cfg}, m_home.path());
+        QCOMPARE(r.code, 3);
     }
 };
 

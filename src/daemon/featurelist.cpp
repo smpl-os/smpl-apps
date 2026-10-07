@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "featurelist.h"
 #include "boardprofile.h"
+#include "config.h"
 #include "kdenlivecontract.h"
 #include "keynames.h"
 #include "keysink.h"
@@ -27,6 +28,7 @@ QJsonObject featuresJson()
         kind("request", R"({"request": "colorwheel.reset", "params": {"wheel": "lift"}})", "Invoke a Kdenlive command (kdenlive profiles)"),
         kind("cycle", R"({"cycle": "liftAxis"})", "Advance a mode defined under \"modes\""),
         kind("command", R"({"command": ["notify-send", "hello"]})", "Start a program (argv, no shell)", false),
+        kind("cheatsheet", R"({"cheatsheet": "toggle"} | {"cheatsheet": "hold"})", "Show what each input does now as an overlay: toggle, or while held (keys and knob presses only)", false),
         kind("none", R"("none")", "Explicitly unbound; stops the fall-through to the global profile"),
     };
     QJsonArray boards;
@@ -58,6 +60,12 @@ QJsonObject featuresJson()
                                                {QStringLiteral("serial"), QStringLiteral("empty: the first pad found")},
                                                {QStringLiteral("input"), QJsonArray{QStringLiteral("auto"), QStringLiteral("evdev"), QStringLiteral("raw")}}}},
         {QStringLiteral("plugins"), QJsonArray{QStringLiteral("keys"), QStringLiteral("command"), QStringLiteral("kdenlive")}},
+        {QStringLiteral("cheatsheet"), QJsonObject{{QStringLiteral("modes"), QJsonArray{QStringLiteral("toggle"), QStringLiteral("hold")}},
+                                                   {QStringLiteral("slots"), QStringLiteral("keyN or knobN.press")},
+                                                   {QStringLiteral("options"), QJsonObject{{QStringLiteral("opacity"), QStringLiteral("0.05..1, default 0.85")},
+                                                                                           {QStringLiteral("autoHideMs"), QStringLiteral("0..600000, 0 = until hidden; restarted by pad input")},
+                                                                                           {QStringLiteral("position"), QJsonArray::fromStringList(CheatsheetOptions::positions())}}},
+                                                   {QStringLiteral("label"), QStringLiteral("any binding object may carry \"label\"; otherwise one is made from what it does")}}},
         {QStringLiteral("kdenlive"), QJsonObject{{QStringLiteral("interface"), cs::contract::kInterface},
                                                  {QStringLiteral("catalog"), QStringLiteral("control-surfaced list-actions --json")}}},
     };

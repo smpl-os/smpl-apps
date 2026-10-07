@@ -20,6 +20,8 @@ class QTimer;
 
 namespace cs {
 
+class Cheatsheet;
+
 // What the daemon knows about the pad right now.
 struct DeviceState {
     bool present = false;
@@ -60,6 +62,7 @@ class SettingsService : public QObject, protected QDBusContext
     Q_PROPERTY(QString ActiveLayer READ activeLayer)
     Q_PROPERTY(QString ConfigHash READ configHash)
     Q_PROPERTY(bool Identifying READ identifyActive)
+    Q_PROPERTY(bool CheatsheetVisible READ cheatsheetVisible)
 
 public:
     static constexpr const char *kService = "org.smplos.ControlSurface";
@@ -82,7 +85,11 @@ public:
     void setPlugins(const QList<PluginInfo> &plugins);
     // After the daemon (re)loaded the config by itself (start-up, file watcher).
     void setConfigState(const QString &hash, const QString &error, const QStringList &warnings);
-    void setFallbackLayout(const BoardProfile &p) { m_fallbackLayout = p; }
+    void setFallbackLayout(const BoardProfile &p);
+    // The layout in effect: the firmware's board, else the fallback, else this pad.
+    BoardProfile currentLayout() const;
+    // The cheatsheet the overlay follows (created next to the engine).
+    void setCheatsheet(Cheatsheet *c);
     using ConfigApplier = std::function<QString(const Config &)>;  // error, or empty when applied
     void setConfigApplier(ConfigApplier a) { m_apply = std::move(a); }
     void setFlashSettings(const FlashSettings &s) { m_flash = s; }
@@ -106,6 +113,7 @@ public:
     QString activeLayer() const { return m_layer; }
     QString configHash() const { return m_configHash; }
     bool identifyActive() const;
+    bool cheatsheetVisible() const;
     const DeviceState &device() const { return m_device; }
     FlashJob *currentJob() const { return m_job; }
 
@@ -125,6 +133,12 @@ public Q_SLOTS:
     Q_SCRIPTABLE QString GetFirmwareStatus();
     Q_SCRIPTABLE QString StartFlash(const QString &image, const QString &sha256, bool dryRun);
     Q_SCRIPTABLE bool CancelFlash(const QString &jobId);
+    Q_SCRIPTABLE QString GetCheatsheet();
+    // Editors: the cheatsheet for any window class and Kdenlive context (JSON object or "").
+    Q_SCRIPTABLE QString GetCheatsheetFor(const QString &windowClass, const QString &title, const QString &kdenliveContextJson);
+    Q_SCRIPTABLE void ShowCheatsheet();
+    Q_SCRIPTABLE void HideCheatsheet();
+    Q_SCRIPTABLE void ToggleCheatsheet();
 
 Q_SIGNALS:
     Q_SCRIPTABLE void InputEvent(const QString &slot, const QString &event, int delta);
@@ -134,6 +148,8 @@ Q_SIGNALS:
     Q_SCRIPTABLE void ConfigRejected(const QString &error);
     Q_SCRIPTABLE void PluginsChanged();
     Q_SCRIPTABLE void FlashProgress(const QString &jobId, const QString &phase, const QString &message);
+    Q_SCRIPTABLE void CheatsheetVisibilityChanged(bool visible);
+    Q_SCRIPTABLE void CheatsheetChanged(const QString &json);  // while visible: when shown and on every change
     // In-process only: the flash job wants the pad released / grabbed again.
     void releaseDeviceRequested();
     void reacquireDeviceRequested();
@@ -161,6 +177,7 @@ private:
     JobSetup m_jobSetup;
     FlashJob::BootloaderRequest m_bootloaderRequest;
     QPointer<FlashJob> m_job;
+    QPointer<Cheatsheet> m_cheatsheet;
     int m_jobCounter = 0;
     QTimer *m_identifyTimer;
     QString m_identifyOwner;

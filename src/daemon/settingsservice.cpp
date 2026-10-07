@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "settingsservice.h"
+#include "cheatsheet.h"
 #include "featurelist.h"
 #include "kdenlivecatalog.h"
 
@@ -125,6 +126,12 @@ void SettingsService::setDevice(const DeviceState &d)
     propertiesChanged(changed);
     if (!changed.isEmpty()) {
         Q_EMIT DeviceChanged(d.present, firmwareType());
+    }
+    if (m_cheatsheet) {
+        if (!d.present) {
+            m_cheatsheet->hide();  // a held cheatsheet key can no longer be released
+        }
+        m_cheatsheet->invalidate();
     }
 }
 
@@ -253,6 +260,9 @@ bool SettingsService::filterPadEvent(const PadEvent &e)
     int delta = 0;
     inputEventFor(e, &slot, &event, &delta);
     Q_EMIT InputEvent(slot, event, delta);
+    if (m_cheatsheet) {
+        m_cheatsheet->noteInput();
+    }
     return identifyActive();
 }
 
@@ -260,19 +270,96 @@ bool SettingsService::filterPadEvent(const PadEvent &e)
 // Queries
 // ---------------------------------------------------------------------------------
 
-QJsonObject SettingsService::layoutJson() const
+BoardProfile SettingsService::currentLayout() const
 {
     if (m_device.present && !m_device.firmware.board.isEmpty()) {
         if (auto p = builtinBoardProfile(m_device.firmware.board)) {
-            QJsonObject o = p->toJson();
-            o.insert(QStringLiteral("source"), QStringLiteral("firmware"));
-            return o;
+            p->source = QStringLiteral("firmware");
+            return *p;
         }
     }
     if (m_fallbackLayout) {
-        return m_fallbackLayout->toJson();
+        return *m_fallbackLayout;
+    }
+    return *builtinBoardProfile(QStringLiteral("sy181-15k3e"));
+}
+
+QJsonObject SettingsService::layoutJson() const
+{
+    if ((m_device.present && !m_device.firmware.board.isEmpty() && builtinBoardProfile(m_device.firmware.board)) || m_fallbackLayout) {
+        return currentLayout().toJson();
     }
     return {};
+}
+
+void SettingsService::setFallbackLayout(const BoardProfile &p)
+{
+    m_fallbackLayout = p;
+    if (m_cheatsheet) {
+        m_cheatsheet->invalidate();
+    }
+}
+
+void SettingsService::setCheatsheet(Cheatsheet *c)
+{
+    m_cheatsheet = c;
+    c->setLayoutProvider([this] { return currentLayout(); });
+    connect(c, &Cheatsheet::visibilityChanged, this, [this](bool on) {
+        propertiesChanged({{QStringLiteral("CheatsheetVisible"), on}});
+        Q_EMIT CheatsheetVisibilityChanged(on);
+    });
+    connect(c, &Cheatsheet::changed, this, [this](const QJsonObject &content) { Q_EMIT CheatsheetChanged(json(content)); });
+}
+
+bool SettingsService::cheatsheetVisible() const
+{
+    return m_cheatsheet && m_cheatsheet->isVisible();
+}
+
+QString SettingsService::GetCheatsheet()
+{
+    if (!m_cheatsheet) {
+        return json(QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("unavailable")}, {QStringLiteral("message"), QStringLiteral("no cheatsheet in this process")}}}});
+    }
+    return json(m_cheatsheet->content());
+}
+
+QString SettingsService::GetCheatsheetFor(const QString &windowClass, const QString &title, const QString &kdenliveContextJson)
+{
+    if (!m_cheatsheet) {
+        return GetCheatsheet();
+    }
+    QVariantMap ctx;
+    if (!kdenliveContextJson.trimmed().isEmpty()) {
+        QJsonParseError pe;
+        const QJsonDocument d = QJsonDocument::fromJson(kdenliveContextJson.toUtf8(), &pe);
+        if (!d.isObject()) {
+            return json(QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("invalid-arguments")}, {QStringLiteral("message"), QStringLiteral("the Kdenlive context must be a JSON object")}}}});
+        }
+        ctx = d.object().toVariantMap();
+    }
+    return json(m_cheatsheet->previewFor(windowClass, title, ctx));
+}
+
+void SettingsService::ShowCheatsheet()
+{
+    if (m_cheatsheet) {
+        m_cheatsheet->show(false);
+    }
+}
+
+void SettingsService::HideCheatsheet()
+{
+    if (m_cheatsheet) {
+        m_cheatsheet->hide();
+    }
+}
+
+void SettingsService::ToggleCheatsheet()
+{
+    if (m_cheatsheet) {
+        m_cheatsheet->toggle();
+    }
 }
 
 QString SettingsService::GetStatus()
@@ -293,6 +380,7 @@ QString SettingsService::GetStatus()
                                                                    {QStringLiteral("warnings"), QJsonArray::fromStringList(m_configWarnings)}}},
                             {QStringLiteral("identify"), identify},
                             {QStringLiteral("layout"), layoutJson()},
+                            {QStringLiteral("cheatsheet"), QJsonObject{{QStringLiteral("visible"), cheatsheetVisible()}}},
                             {QStringLiteral("flash"), m_job ? QJsonValue(m_job->toJson()) : QJsonValue()}});
 }
 

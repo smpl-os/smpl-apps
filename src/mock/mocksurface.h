@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include "cheatsheet.h"
 #include "engine.h"
 #include "kdenliveclient.h"
 #include "keysink.h"
@@ -38,6 +39,7 @@ public:
     bool registerOn(const QDBusConnection &bus, bool claimName, QString *error);
     SettingsService &settings() { return *m_settings; }
     Engine &engine() { return *m_engine; }
+    Cheatsheet &cheatsheet() { return *m_cheatsheet; }
     RecordingKeySink &keys() { return *m_keys; }
 
     // Simulated USB devices, as the flash job's probe sees them.
@@ -55,6 +57,10 @@ public Q_SLOTS:
     Q_SCRIPTABLE void EnterBootloader();                // what the user does with the boot key
     Q_SCRIPTABLE void SetFlashOutcome(const QString &outcome);  // ok | tool-fails | no-return
     Q_SCRIPTABLE QStringList TakeKeys();                // recorded key taps since the last call
+    // Kdenlive as the engine sees it: available | absent | pending | detached,
+    // and its context (JSON object), e.g. {"colorWheels": true} for the wheel layer.
+    Q_SCRIPTABLE void SetKdenliveState(const QString &state);
+    Q_SCRIPTABLE void SetKdenliveContext(const QString &json);
 
 Q_SIGNALS:
     Q_SCRIPTABLE void Dispatched(const QString &slot, const QString &binding, const QString &layer);
@@ -70,6 +76,7 @@ private:
     std::unique_ptr<FakeKdenliveClient> m_kd;
     std::unique_ptr<Engine> m_engine;
     std::unique_ptr<SettingsService> m_settings;
+    std::unique_ptr<Cheatsheet> m_cheatsheet;
     bool m_plugged = false;
     bool m_bootloader = false;
     int m_bootloaderDevnum = 40;

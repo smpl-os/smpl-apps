@@ -105,6 +105,7 @@ interface `org.smplos.ControlSurface1`. Full reference: `docs/dbus-settings-api.
 | Plugins | `ListPlugins()`; signal `PluginsChanged` |
 | Firmware | `GetFirmwareStatus()`, `StartFlash(image, sha256, dryRun)`, `CancelFlash(job)`; signal `FlashProgress(job, phase, message)` |
 | Everything at once | `GetStatus()`; `PropertiesChanged` on every property |
+| Cheatsheet overlay | `GetCheatsheet()`, `GetCheatsheetFor(...)`, `Show/Hide/ToggleCheatsheet()`, property `CheatsheetVisible`, signals `CheatsheetVisibilityChanged`, `CheatsheetChanged`; binding `{"cheatsheet": "toggle"\|"hold"}`; CLI `cheatsheet --follow` |
 
 Design rules:
 

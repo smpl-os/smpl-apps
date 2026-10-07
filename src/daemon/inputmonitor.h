@@ -27,4 +27,22 @@ private Q_SLOTS:
     void onInputEvent(const QString &slot, const QString &event, int delta);
 };
 
+// `control-surfaced cheatsheet --follow`: reports every cheatsheet change of a
+// running daemon (shown, hidden, new content) so a desktop overlay can follow.
+class CheatsheetFollower : public QObject
+{
+    Q_OBJECT
+public:
+    explicit CheatsheetFollower(QObject *parent = nullptr) : QObject(parent) {}
+    bool attach(const QDBusConnection &bus);
+
+Q_SIGNALS:
+    void changed();
+    void daemonGone();
+
+private Q_SLOTS:
+    void onContent(const QString &json);
+    void onVisibility(bool visible);
+};
+
 } // namespace cs

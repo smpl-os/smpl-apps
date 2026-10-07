@@ -235,6 +235,7 @@ void Engine::setActiveWindow(const WindowInfo &w)
         // pid 0 for a Kdenlive window is a provisional focus event; keep the
         // current attachment until the window query reports the real pid.
     }
+    Q_EMIT resolutionChanged();
 }
 
 bool Engine::kdenliveProfile() const
@@ -434,8 +435,14 @@ void Engine::handle(const PadEvent &e)
     }
     switch (e.type) {
     case PadEvent::KeyUp:
+        if (m_cheatsheetHold.remove(e.control)) {
+            Q_EMIT cheatsheetRequested(QStringLiteral("hide"));
+        }
         return;  // key bindings fire on press
     case PadEvent::PressUp: {
+        if (m_cheatsheetHold.remove(e.control)) {
+            Q_EMIT cheatsheetRequested(QStringLiteral("hide"));
+        }
         // A press deferred because the knob has shift bindings fires on release,
         // unless the knob turned while held (then the hold was a shift).
         const bool deferred = m_deferredPress.remove(e.control);
@@ -444,7 +451,9 @@ void Engine::handle(const PadEvent &e)
         if (deferred && !turned) {
             const QString slot = e.control + QStringLiteral(".press");
             if (auto r = resolve(slot)) {
+                m_inRelease = true;
                 execute(*r, slot, 1, false);
+                m_inRelease = false;
             }
         }
         return;
@@ -561,6 +570,14 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
     case Binding::Mouse:
         enqueueMouse(group, dir, b.name, count);  // wheels: one detent per knob detent
         return;
+    case Binding::Cheatsheet:
+        if (b.name == QLatin1String("hold") && !isTurn && !m_inRelease) {
+            m_cheatsheetHold.insert(group);  // hidden again when this control comes up
+            Q_EMIT cheatsheetRequested(QStringLiteral("show"));
+        } else {
+            Q_EMIT cheatsheetRequested(QStringLiteral("toggle"));
+        }
+        return;
     case Binding::Cycle: {
         QString owner;
         const auto *modes = modesFor(b.name, &owner);
@@ -571,6 +588,7 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
         endAllGestures(false);  // options change: the next turn is a new gesture
         const QString key = owner + QLatin1Char('/') + b.name;
         m_modeIndex[key] = (m_modeIndex.value(key) + 1) % modes->value(b.name).size();
+        Q_EMIT resolutionChanged();  // layers and labels may follow the mode
         const QString text = QStringLiteral("%1: %2").arg(b.label.isEmpty() ? b.name : b.label, modeValue(b.name));
         say(text);
         if (kdenliveActive()) {

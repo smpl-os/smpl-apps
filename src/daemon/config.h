@@ -15,10 +15,10 @@
 namespace cs {
 
 struct Binding {
-    enum Kind { None, Keys, Action, Control, Command, Cycle, Request, Mouse };
+    enum Kind { None, Keys, Action, Control, Command, Cycle, Request, Mouse, Cheatsheet };
     Kind kind = None;
     QList<KeyChord> keys;  // Keys, or Action/Control fallback when Kdenlive does not answer
-    QString name;          // action id, control id, cycle mode, request method, mouse action
+    QString name;          // action id, control id, cycle mode, request method, mouse action, cheatsheet toggle|hold
     double scale = 1.0;    // Control: multiplier applied to detents
     double accel = 0;      // Control: acceleration factor for fast detents; 0 = settings.accelFactor
     QVariantMap options;   // Control/Request options; "$mode" expands to a mode value, "$ctx:path" to a context value
@@ -65,6 +65,15 @@ struct Settings {
     int gestureIdleMs = 500;   // end an editing gesture after this idle time (host ends at 600)
 };
 
+// The on-screen cheatsheet of what each input does now (rendered by the desktop,
+// e.g. smplOS's eww; the daemon only supplies its content and visibility).
+struct CheatsheetOptions {
+    double opacity = 0.85;  // 0.05..1
+    int autoHideMs = 0;     // hide after this long without pad input; 0 = until hidden
+    QString position = QStringLiteral("center");
+    static QStringList positions();
+};
+
 // The daemon only ever grabs this device; vendor/product are not configurable.
 constexpr quint16 kPadVendor = 0x1189;
 constexpr quint16 kPadProduct = 0x8890;
@@ -84,6 +93,7 @@ struct Config {
     QString hardwareSource = QStringLiteral("default:keys-then-knobs");
     // "layout": a board profile id or {"keys": 1..16, "knobs": 0..3, "columns": n}.
     std::optional<BoardProfile> layout;
+    CheatsheetOptions cheatsheet;
     Settings settings;
     QList<Profile> profiles;
     QStringList warnings;  // non-fatal findings of the config check
