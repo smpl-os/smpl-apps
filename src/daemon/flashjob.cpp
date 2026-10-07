@@ -10,6 +10,7 @@
 #include <QPointer>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QTemporaryFile>
 #include <QTimer>
 
 namespace cs {
@@ -34,6 +35,8 @@ FlashJob::FlashJob(const QString &id, const FlashSettings &settings, const QStri
     connect(m_timer, &QTimer::timeout, this, &FlashJob::poll);
     m_runner = processRunner(m_s.tool);
 }
+
+FlashJob::~FlashJob() = default;
 
 FlashJob::Runner FlashJob::processRunner(const QString &tool, int timeoutMs)
 {
@@ -101,7 +104,7 @@ void FlashJob::fail(const QString &message)
     finish(false, QStringLiteral("failed"), message);
 }
 
-QStringList FlashJob::checkImage(QString *warning) const
+QStringList FlashJob::checkImage(QString *warning)
 {
     QStringList problems;
     const QFileInfo fi(m_image);
@@ -124,15 +127,20 @@ QStringList FlashJob::checkImage(QString *warning) const
     if (!inDir) {
         problems << QStringLiteral("image is not in an allowed firmware directory (%1)").arg(m_s.imageDirs.join(QStringLiteral(", ")));
     }
-    if (fi.size() <= 0 || fi.size() > m_s.maxImageBytes) {
-        problems << QStringLiteral("image size %1 is outside 1..%2 bytes").arg(fi.size()).arg(m_s.maxImageBytes);
-    }
+    // Read the bytes once, from the resolved file, and judge only those.
     QFile f(real);
-    if (f.open(QIODevice::ReadOnly) && fi.size() <= m_s.maxImageBytes) {
-        const QString got = QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex());
-        if (got != m_sha) {
-            problems << QStringLiteral("sha256 mismatch: image is %1").arg(got);
-        }
+    if (!f.open(QIODevice::ReadOnly)) {
+        problems << QStringLiteral("cannot read the image: %1").arg(f.errorString());
+        return problems;
+    }
+    const QByteArray data = f.read(m_s.maxImageBytes + 1);
+    if (data.isEmpty() || data.size() > m_s.maxImageBytes) {
+        problems << QStringLiteral("image size %1 is outside 1..%2 bytes").arg(qMax(qint64(data.size()), fi.size())).arg(m_s.maxImageBytes);
+        return problems;
+    }
+    const QString got = QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
+    if (got != m_sha) {
+        problems << QStringLiteral("sha256 mismatch: image is %1").arg(got);
     }
     const QFileInfo tool(m_s.tool);
     if (m_s.tool.isEmpty() || !tool.isFile() || !tool.isExecutable()) {
@@ -143,7 +151,25 @@ QStringList FlashJob::checkImage(QString *warning) const
             problems << t;
         }
     }
+    if (!problems.isEmpty() || m_dry) {
+        return problems;
+    }
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (dir.isEmpty()) {
+        dir = QDir::tempPath();
+    }
+    // QTemporaryFile creates the file 0600; the .bin suffix tells wchisp it is raw.
+    m_copy = std::make_unique<QTemporaryFile>(dir + QStringLiteral("/control-surface-flash-XXXXXX.bin"));
+    if (!m_copy->open() || m_copy->write(data) != data.size() || !m_copy->flush()) {
+        problems << QStringLiteral("cannot stage the image in %1").arg(dir);
+        m_copy.reset();
+    }
     return problems;
+}
+
+QString FlashJob::portOf(const UsbDeviceInfo &d)
+{
+    return d.sysPath.section(QLatin1Char('/'), -1);  // "1-4"; empty when unknown
 }
 
 QString FlashJob::bootloaderKey(const UsbDeviceInfo &d) const
@@ -183,8 +209,10 @@ void FlashJob::start()
         return;
     }
     for (const UsbDeviceInfo &d : m_probe()) {
-        if (classifyFirmware(d).type == QLatin1String("bootloader")) {
+        if (isWchIsp(d)) {
             m_oldBootloaders.insert(bootloaderKey(d));  // possibly wedged: wait for a fresh one
+        } else if (d.vendor == QLatin1String("1189") && d.product == QLatin1String("8890")) {
+            m_oldPads.insert(bootloaderKey(d));
         }
     }
     m_released = true;
@@ -215,27 +243,48 @@ void FlashJob::poll()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_phase == QLatin1String("waiting-bootloader")) {
-        for (const UsbDeviceInfo &d : m_probe()) {
-            if (classifyFirmware(d).type == QLatin1String("bootloader") && !m_oldBootloaders.contains(bootloaderKey(d))) {
-                m_timer->stop();
-                step(QStringLiteral("flashing"), QStringLiteral("bootloader session %1; writing %2").arg(bootloaderKey(d), m_image));
-                QPointer<FlashJob> self(this);
-                m_runner(m_image, [self, this](int code, const QString &output) {
-                    if (!self || m_finished) {
-                        return;
-                    }
-                    m_result.insert(QStringLiteral("toolExitCode"), code);
-                    m_result.insert(QStringLiteral("toolOutput"), output.right(4000));
-                    if (code != 0) {
-                        fail(QStringLiteral("the flash tool failed (exit %1); the pad stays in the bootloader: replug it and try again").arg(code));
-                        return;
-                    }
-                    step(QStringLiteral("waiting-device"), QStringLiteral("flashed; waiting for the pad (let go of all keys)"));
-                    m_deadline = QDateTime::currentMSecsSinceEpoch() + m_s.deviceTimeoutMs;
-                    m_timer->start();
-                });
-                return;
+        // wchisp has no stable way to name a device (-d is a libusb index), so
+        // it opens the first WCH ISP device it finds. Only flash when the new
+        // session is the one and only WCH ISP device on the system.
+        QList<UsbDeviceInfo> isp;
+        const UsbDeviceInfo *fresh = nullptr;
+        const QList<UsbDeviceInfo> devices = m_probe();
+        for (const UsbDeviceInfo &d : devices) {
+            if (isWchIsp(d)) {
+                isp << d;
             }
+        }
+        for (const UsbDeviceInfo &d : std::as_const(isp)) {
+            if (!m_oldBootloaders.contains(bootloaderKey(d))) {
+                fresh = &d;
+            }
+        }
+        if (fresh && isp.size() > 1) {
+            const QString note = QStringLiteral("%1 WCH bootloader devices are connected; unplug all but the pad (the flash tool cannot tell them apart)").arg(isp.size());
+            if (note != m_waitNote) {
+                m_waitNote = note;
+                step(QStringLiteral("waiting-bootloader"), note);
+            }
+        } else if (fresh) {
+            m_timer->stop();
+            m_bootloaderPort = portOf(*fresh);
+            step(QStringLiteral("flashing"), QStringLiteral("bootloader session %1; writing %2").arg(bootloaderKey(*fresh), m_image));
+            QPointer<FlashJob> self(this);
+            m_runner(m_copy ? m_copy->fileName() : m_image, [self, this](int code, const QString &output) {
+                if (!self || m_finished) {
+                    return;
+                }
+                m_result.insert(QStringLiteral("toolExitCode"), code);
+                m_result.insert(QStringLiteral("toolOutput"), output.right(4000));
+                if (code != 0) {
+                    fail(QStringLiteral("the flash tool failed (exit %1); the pad stays in the bootloader: replug it and try again").arg(code));
+                    return;
+                }
+                step(QStringLiteral("waiting-device"), QStringLiteral("flashed; waiting for the pad (let go of all keys)"));
+                m_deadline = QDateTime::currentMSecsSinceEpoch() + m_s.deviceTimeoutMs;
+                m_timer->start();
+            });
+            return;
         }
         if (now >= m_deadline) {
             fail(QStringLiteral("no bootloader session within %1 s").arg(m_s.bootloaderTimeoutMs / 1000));
@@ -244,7 +293,11 @@ void FlashJob::poll()
     }
     if (m_phase == QLatin1String("waiting-device")) {
         for (const UsbDeviceInfo &d : m_probe()) {
-            if (d.vendor == QLatin1String("1189") && d.product == QLatin1String("8890")) {
+            // The flashed pad comes back on the bootloader's port; another pad
+            // that was already there does not count.
+            const bool samePort = !m_bootloaderPort.isEmpty() && portOf(d) == m_bootloaderPort;
+            const bool isNew = !m_oldPads.contains(bootloaderKey(d)) && (m_bootloaderPort.isEmpty() || portOf(d).isEmpty());
+            if (d.vendor == QLatin1String("1189") && d.product == QLatin1String("8890") && (samePort || isNew)) {
                 m_timer->stop();
                 const FirmwareInfo fw = classifyFirmware(d);
                 m_result.insert(QStringLiteral("firmware"), fw.toJson());

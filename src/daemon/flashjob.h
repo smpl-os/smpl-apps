@@ -8,7 +8,9 @@
 #include <QSet>
 #include <QStringList>
 #include <functional>
+#include <memory>
 
+class QTemporaryFile;
 class QTimer;
 
 namespace cs {
@@ -39,6 +41,7 @@ public:
     using Runner = std::function<void(const QString &image, Done done)>;
 
     FlashJob(const QString &id, const FlashSettings &settings, const QString &image, const QString &sha256, bool dryRun, QObject *parent = nullptr);
+    ~FlashJob() override;
     void setProbe(Probe p) { m_probe = std::move(p); }
     void setRunner(Runner r) { m_runner = std::move(r); }
     // Open firmware can switch to the ROM bootloader on request, so the user
@@ -67,9 +70,10 @@ private:
     void step(const QString &phase, const QString &message);
     void fail(const QString &message);
     void finish(bool ok, const QString &phase, const QString &message);
-    QStringList checkImage(QString *warning) const;
+    QStringList checkImage(QString *warning);
     void poll();
     QString bootloaderKey(const UsbDeviceInfo &d) const;
+    static QString portOf(const UsbDeviceInfo &d);
 
     QString m_id, m_image, m_sha;
     FlashSettings m_s;
@@ -80,6 +84,12 @@ private:
     QString m_phase, m_message;
     QJsonObject m_result;
     QSet<QString> m_oldBootloaders;
+    QSet<QString> m_oldPads;          // 1189:8890 present at the start (another pad is not "back")
+    QString m_bootloaderPort;         // sysfs port name of the session that was flashed
+    QString m_waitNote;               // last "unplug other WCH devices" hint, said once
+    // The verified bytes, copied once at the check into a private 0600 file:
+    // the tool flashes exactly what was hashed, whatever happens to the image later.
+    std::unique_ptr<QTemporaryFile> m_copy;
     Probe m_probe;
     Runner m_runner;
     BootloaderRequest m_requestBootloader;

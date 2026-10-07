@@ -388,6 +388,11 @@ private Q_SLOTS:
         // A symlink out of the firmware directory does not count as inside it.
         QFile::link(f.dir.path() + QStringLiteral("/elsewhere.bin"), f.dir.path() + QStringLiteral("/fw/link.bin"));
         failsWith(f.job(false, f.dir.path() + QStringLiteral("/fw/link.bin")), QStringLiteral("allowed firmware directory"));
+        writeFile(f.dir.path() + QStringLiteral("/fw/locked.bin"), QByteArray(1000, '\x5a'));
+        QFile(f.dir.path() + QStringLiteral("/fw/locked.bin")).setPermissions(QFileDevice::WriteOwner);
+        if (!QFile(f.dir.path() + QStringLiteral("/fw/locked.bin")).open(QIODevice::ReadOnly)) {  // not as root
+            failsWith(f.job(false, f.dir.path() + QStringLiteral("/fw/locked.bin")), QStringLiteral("cannot read"));
+        }
         f.settings.allowed = false;
         failsWith(f.job(false), QStringLiteral("--allow-flash"));
         f.settings.allowed = true;
@@ -404,15 +409,31 @@ private Q_SLOTS:
         QSignalSpy rel(j.get(), &FlashJob::releaseDevice);
         QSignalSpy acq(j.get(), &FlashJob::reacquireDevice);
         QSignalSpy done(j.get(), &FlashJob::finished);
+        QSignalSpy prog(j.get(), &FlashJob::progress);
         j->start();
         QCOMPARE(rel.count(), 1);
         QCOMPARE(j->phase(), QStringLiteral("waiting-bootloader"));
         QTest::qWait(60);
         QCOMPARE(j->phase(), QStringLiteral("waiting-bootloader"));  // the old session is ignored
+        // A new session while the old one is still there: wchisp would open the
+        // first WCH ISP device it finds, so nothing is flashed yet.
         f.devices = {usb(QStringLiteral("4348"), QStringLiteral("55e0"), {}, {}, QStringLiteral("0240"), 1, 5),
                      usb(QStringLiteral("4348"), QStringLiteral("55e0"), {}, {}, QStringLiteral("0240"), 1, 6)};
+        QTRY_VERIFY(prog.last().at(2).toString().contains(QStringLiteral("unplug all but the pad")));
+        QTest::qWait(60);
+        QCOMPARE(j->phase(), QStringLiteral("waiting-bootloader"));
+        QVERIFY(f.ranImage.isEmpty());
+        // The same with another WCH chip's ISP id.
+        f.devices = {usb(QStringLiteral("1a86"), QStringLiteral("55e0"), {}, {}, QStringLiteral("0100"), 1, 3),
+                     usb(QStringLiteral("4348"), QStringLiteral("55e0"), {}, {}, QStringLiteral("0240"), 1, 6)};
+        QTest::qWait(60);
+        QVERIFY(f.ranImage.isEmpty());
+        // Only the new session left: flash it.
+        f.devices = {usb(QStringLiteral("4348"), QStringLiteral("55e0"), {}, {}, QStringLiteral("0240"), 1, 6)};
         QTRY_COMPARE(j->phase(), QStringLiteral("flashing"));
-        QCOMPARE(f.ranImage, f.image);
+        QVERIFY(f.ranImage != f.image);  // a private copy of the verified bytes
+        QCOMPARE(readFile(f.ranImage), readFile(f.image));
+        QCOMPARE(int(QFile(f.ranImage).permissions() & (QFileDevice::ReadGroup | QFileDevice::ReadOther | QFileDevice::WriteGroup | QFileDevice::WriteOther)), 0);
         QVERIFY(!j->cancel());  // never interrupt the write
         f.devices = {usb(QStringLiteral("1189"), QStringLiteral("8890"), QStringLiteral("OpenMacroPad"), QStringLiteral("Control Surface 15+3"), QStringLiteral("0200"), 1, 8)};
         f.pending(0, QStringLiteral("Verify OK"));
@@ -422,6 +443,63 @@ private Q_SLOTS:
         QCOMPARE(done.count(), 1);
         QCOMPARE(j->toJson().value(QStringLiteral("firmware")).toObject().value(QStringLiteral("type")).toString(), QStringLiteral("control-surface"));
         QCOMPARE(j->toJson().value(QStringLiteral("toolOutput")).toString(), QStringLiteral("Verify OK"));
+    }
+
+    void flashUsesTheVerifiedBytes()
+    {
+        // The image is swapped (here: a symlink re-pointed outside the image
+        // directory) while the job waits for the bootloader.
+        FlashFixture f;
+        const QString outside = f.dir.path() + QStringLiteral("/outside.bin");
+        writeFile(outside, QByteArray(1000, 'E'));
+        const QString link = f.dir.path() + QStringLiteral("/fw/link.bin");
+        QVERIFY(QFile::link(f.image, link));
+        std::unique_ptr<FlashJob> j(f.job(false, link));
+        j->start();
+        QCOMPARE(j->phase(), QStringLiteral("waiting-bootloader"));
+        QVERIFY(QFile::remove(link));
+        QVERIFY(QFile::link(outside, link));
+        writeFile(f.image, QByteArray(1000, 'X'));  // and the original rewritten too
+        f.devices = {usb(QStringLiteral("4348"), QStringLiteral("55e0"))};
+        QTRY_COMPARE(j->phase(), QStringLiteral("flashing"));
+        QCOMPARE(readFile(f.ranImage), QByteArray(1000, '\x5a'));
+        const QString staged = f.ranImage;
+        f.pending(0, QString());
+        j.reset();
+        QVERIFY(!QFile::exists(staged));  // the private copy goes with the job
+    }
+
+    void flashWaitsForThePadThatWasFlashed()
+    {
+        FlashFixture f;
+        f.settings.deviceTimeoutMs = 300;
+        UsbDeviceInfo other = usb(QStringLiteral("1189"), QStringLiteral("8890"), QStringLiteral("wch.cn"), QStringLiteral("CH552"), QStringLiteral("0100"), 4, 11);
+        other.sysPath = QStringLiteral("/sys/bus/usb/devices/1-7");  // a second pad, already there
+        f.devices = {other};
+        std::unique_ptr<FlashJob> j(f.job(false));
+        j->start();
+        UsbDeviceInfo boot = usb(QStringLiteral("4348"), QStringLiteral("55e0"), {}, {}, QStringLiteral("0240"), 1, 12);
+        boot.sysPath = QStringLiteral("/sys/bus/usb/devices/1-4");
+        f.devices = {other, boot};
+        QTRY_COMPARE(j->phase(), QStringLiteral("flashing"));
+        f.devices = {other};  // the flashed pad does not come back
+        f.pending(0, QString());
+        QTRY_VERIFY(j->isFinished());
+        QVERIFY(!j->succeeded());  // the other pad is not mistaken for it
+        // And when it does come back on its port:
+        FlashFixture g;
+        g.devices = {other};
+        std::unique_ptr<FlashJob> k(g.job(false));
+        k->start();
+        g.devices = {other, boot};
+        QTRY_COMPARE(k->phase(), QStringLiteral("flashing"));
+        UsbDeviceInfo back = usb(QStringLiteral("1189"), QStringLiteral("8890"), QStringLiteral("OpenMacroPad"), QStringLiteral("Control Surface 15+3"), QStringLiteral("0200"), 1, 13);
+        back.sysPath = QStringLiteral("/sys/bus/usb/devices/1-4");
+        g.devices = {other, back};
+        g.pending(0, QString());
+        QTRY_VERIFY(k->isFinished());
+        QVERIFY(k->succeeded());
+        QCOMPARE(k->toJson().value(QStringLiteral("firmware")).toObject().value(QStringLiteral("type")).toString(), QStringLiteral("control-surface"));
     }
 
     void flashFailures()

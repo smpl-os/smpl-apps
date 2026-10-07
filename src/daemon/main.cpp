@@ -944,6 +944,9 @@ int main(int argc, char **argv)
         engine.setConfig(c);
         dev.setHardwareMap(c.hardware);
         raw.setLayout(effectiveLayout(c));
+        if (dev.isConnected() && !raw.isActive() && c.device.input != QLatin1String("evdev")) {
+            raw.start(dev.usbPath());
+        }
         settings.setFallbackLayout(effectiveLayout(c));
         publishPlugins();
         return QString();
@@ -1033,6 +1036,9 @@ int main(int argc, char **argv)
         engine.setConfig(c);
         settings.setFallbackLayout(effectiveLayout(c));
         raw.setLayout(effectiveLayout(c));
+        if (dev.isConnected() && !raw.isActive() && c.device.input != QLatin1String("evdev")) {
+            raw.start(dev.usbPath());  // a layout that fits again: raw mode resumes
+        }
         settings.setConfigState(hash, QString(), c.warnings);
         publishPlugins();
         dev.setHardwareMap(c.hardware);

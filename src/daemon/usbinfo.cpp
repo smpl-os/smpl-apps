@@ -57,11 +57,17 @@ QJsonObject FirmwareInfo::toJson() const
     return QJsonObject{{QStringLiteral("type"), type}, {QStringLiteral("version"), version}, {QStringLiteral("board"), board}};
 }
 
+bool isWchIsp(const UsbDeviceInfo &d)
+{
+    const QString id = d.vendor + QLatin1Char(':') + d.product;
+    return id == QLatin1String(kBootloaderId) || id == QLatin1String(kBootloaderIdAlt);
+}
+
 FirmwareInfo classifyFirmware(const UsbDeviceInfo &d)
 {
     FirmwareInfo f;
     const QString id = d.vendor + QLatin1Char(':') + d.product;
-    if (id == QLatin1String(kBootloaderId)) {
+    if (isWchIsp(d)) {
         f.type = QStringLiteral("bootloader");
         return f;
     }

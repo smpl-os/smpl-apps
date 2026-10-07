@@ -25,6 +25,9 @@ QList<UsbDeviceInfo> listUsbDevices(const QString &sysRoot = {});
 std::optional<UsbDeviceInfo> usbDeviceAt(const QString &sysPath);
 
 constexpr const char *kBootloaderId = "4348:55e0";  // WCH CH55x ROM bootloader
+constexpr const char *kBootloaderIdAlt = "1a86:55e0";  // the same ISP protocol on other WCH chips (wchisp opens both)
+// Any WCH ISP bootloader session wchisp could pick.
+bool isWchIsp(const UsbDeviceInfo &d);
 
 // What runs on a 1189:8890 pad (or the ROM bootloader), from descriptors only.
 struct FirmwareInfo {

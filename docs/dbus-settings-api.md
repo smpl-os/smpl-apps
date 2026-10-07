@@ -137,8 +137,16 @@ Flash rules:
   * the image is 1..14336 bytes;
   * the caller's SHA-256 matches the file;
   * the flash tool (`wchisp`) is found.
-* The tool is always run as `wchisp flash <image>`. It writes code flash only,
+* The tool is always run as `wchisp flash <file>`. It writes code flash only,
   never the chip's configuration registers.
+* `<file>` is a private 0600 copy of the bytes that were hashed at the check.
+  Changing or re-pointing the image afterwards has no effect.
+* wchisp cannot be told which device to use (`-d` is a libusb index), so the
+  job flashes only when the new bootloader session is the **only** WCH ISP
+  device (4348:55e0 or 1a86:55e0) connected. Otherwise it keeps waiting and
+  says so.
+* The pad must come back on the same USB port. Another 1189:8890 pad that was
+  already connected does not count.
 
 Phases (`FlashProgress`):
 
@@ -146,7 +154,7 @@ Phases (`FlashProgress`):
 |---|---|
 | `checking` | the checks above |
 | `release-grab` | the daemon lets go of the pad |
-| `waiting-bootloader` | Open firmware is asked to switch to the ROM bootloader by itself. Otherwise, or if that fails, the message tells the user to unplug the pad, hold the top-left key, plug it in and let go. Only a *new* 4348:55e0 session counts. Timeout 120 s. |
+| `waiting-bootloader` | Open firmware is asked to switch to the ROM bootloader by itself (other WCH ISP devices must be unplugged). Otherwise, or if that fails, the message tells the user to unplug the pad, hold the top-left key, plug it in and let go. Only a *new* 4348:55e0 session counts. Timeout 120 s. |
 | `flashing` | the tool runs; cancelling is refused |
 | `waiting-device` | the pad must come back as 1189:8890 within 30 s |
 | `verifying` | the firmware it reports |

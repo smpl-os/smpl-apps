@@ -38,6 +38,14 @@ void RawPadDevice::setLayout(const BoardProfile &layout)
 {
     m_layout = layout;
     rebuildSlots();
+    // The same check as at GET_INFO: a slot map that does not fit the firmware
+    // would send inputs to the wrong controls. Back to evdev instead.
+    if (m_info && int(m_info->slotCount) != m_layout.slotCount()) {
+        if (m_active) {
+            send(padfw::rawMode(0));
+        }
+        close(QStringLiteral("firmware reports %1 slots, layout %2 has %3; using evdev").arg(m_info->slotCount).arg(m_layout.id).arg(m_layout.slotCount()));
+    }
 }
 
 void RawPadDevice::setTiming(int heartbeatMs, int rawTimeoutMs, int infoTimeoutMs)

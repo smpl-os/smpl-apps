@@ -253,6 +253,32 @@ private Q_SLOTS:
         }
     }
 
+    void layoutChangeThatDoesNotFitEndsRawMode()
+    {
+        RawPadDevice dev{DeviceMatch{}};
+        auto fw = link(dev);
+        QSignalSpy events(&dev, &RawPadDevice::padEvent);
+        QSignalSpy msgs(&dev, &RawPadDevice::message);
+        dev.startOnFd(m_pair[0]);
+        QTRY_VERIFY(dev.isActive());
+        // A hot-reloaded config with a 12+3 layout on this 24-slot firmware.
+        dev.setLayout(*builtinBoardProfile(QStringLiteral("generic-12k3e")));
+        QVERIFY(!dev.isActive());
+        QVERIFY(msgs.last().at(0).toString().contains(QStringLiteral("using evdev")));
+        QTRY_COMPARE(fw->rawTimeouts.last(), 0);  // the firmware is told at once
+        fw->send({5, 1, 12, 1, 0});  // the daemon's end is closed: this goes nowhere
+        QTest::qWait(50);
+        QCOMPARE(events.count(), 0);  // nothing goes to the wrong control
+        // A layout that fits keeps raw mode.
+        RawPadDevice dev2{DeviceMatch{}};
+        auto fw2 = link(dev2);
+        dev2.startOnFd(m_pair[0]);
+        QTRY_VERIFY(dev2.isActive());
+        dev2.setLayout(*builtinBoardProfile(QStringLiteral("sy181-15k3e")));
+        QVERIFY(dev2.isActive());
+        dev2.stop();
+    }
+
     void unplugEndsRawMode()
     {
         RawPadDevice dev{DeviceMatch{}};
