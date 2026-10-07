@@ -32,9 +32,28 @@ struct Step {
     int settleMs;
 };
 
-// Raw blob03 frames carry their own 0x03 marker as byte 0; vendor frames get
-// the report number prepended.
-bool g_blob = false;
+// keyid and blob03 frames are written raw (byte 0 is the key id or the 0x03
+// marker); vendor frames get the report number prepended.
+enum class Dialect { KeyId, Vendor, Blob03 };
+Dialect g_dialect = Dialect::KeyId;
+
+QString dialectName(Dialect d)
+{
+    return d == Dialect::KeyId ? QStringLiteral("keyid") : d == Dialect::Blob03 ? QStringLiteral("blob03") : QStringLiteral("vendor");
+}
+
+bool allowed(const Frame &f)
+{
+    switch (g_dialect) {
+    case Dialect::KeyId:
+        return keyid::isAllowedFrame(f);
+    case Dialect::Blob03:
+        return blob::isAllowedFrame(f);
+    case Dialect::Vendor:
+        break;
+    }
+    return isAllowedFrame(f);
+}
 
 QString hexBytes(const unsigned char *p, int n)
 {
@@ -63,9 +82,27 @@ std::vector<Step> buildBlobPlan(bool blank, std::pair<int, int> slotRange, int c
     return plan;
 }
 
+std::vector<Step> buildKeyIdPlan(bool blank, std::pair<int, int> slotRange, int frameMs)
+{
+    // One self-contained record per key id; nothing to open, close or save.
+    std::vector<Step> plan;
+    for (const auto &sc : defaultScheme()) {
+        if (sc.slot < slotRange.first || sc.slot > slotRange.second) {
+            continue;
+        }
+        const QString what = blank ? QStringLiteral("key id %1 blank").arg(sc.slot)
+                                   : QStringLiteral("key id %1 -> %2").arg(sc.slot).arg(QString::fromStdString(sc.name));
+        plan.push_back({what, keyid::record(sc.slot, blank ? Chord{} : sc.chord), frameMs});
+    }
+    return plan;
+}
+
 std::vector<Step> buildPlan(Generation g, bool blank, std::pair<int, int> slotRange = {1, 24}, int commitSettleMs = 120)
 {
-    if (g_blob) {
+    if (g_dialect == Dialect::KeyId) {
+        return buildKeyIdPlan(blank, slotRange, commitSettleMs);
+    }
+    if (g_dialect == Dialect::Blob03) {
         return buildBlobPlan(blank, slotRange, commitSettleMs);
     }
     std::vector<Step> plan;
@@ -87,8 +124,8 @@ std::vector<Step> buildPlan(Generation g, bool blank, std::pair<int, int> slotRa
 
 void printPlan(const std::vector<Step> &plan, Generation g)
 {
-    if (g_blob) {
-        std::printf("dialect blob03: %zu raw 64-byte writes, byte 0 = 0x03 (first 9 bytes shown)\n", plan.size());
+    if (g_dialect != Dialect::Vendor) {
+        std::printf("dialect %s: %zu raw 64-byte writes (first 9 bytes shown)\n", qPrintable(dialectName(g_dialect)), plan.size());
         for (const auto &s : plan) {
             std::printf("  %-28s %s\n", qPrintable(s.what), hex(s.frame, 9).c_str());
         }
@@ -126,6 +163,7 @@ int main(int argc, char **argv)
     QCommandLineParser p;
     p.setApplicationDescription(QStringLiteral(
         "Program the 24-slot control-surface scheme (F14-F19 x {none,shift,ctrl,alt}) into a 1189:8890 CH552 pad.\n"
+        "Default dialect keyid: one raw [keyId][mods][00][usage] record per key id 1-24, effective at once and persistent.\n"
         "Commands: list | plan | flash | blank"));
     p.addHelpOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("list, plan, flash or blank"));
@@ -136,18 +174,26 @@ int main(int argc, char **argv)
     QCommandLineOption genOpt(QStringLiteral("generation"), QStringLiteral("plan only: rid0 or rid3"), QStringLiteral("gen"), QStringLiteral("rid0"));
     QCommandLineOption slotsOpt(QStringLiteral("slots"), QStringLiteral("only these slots: N or A-B within 1-24 (default 1-24)"), QStringLiteral("range"),
                                 QStringLiteral("1-24"));
-    QCommandLineOption settleOpt(QStringLiteral("settle-ms"), QStringLiteral("pause after each commit frame, 0-10000 ms (default 120)"), QStringLiteral("ms"),
-                                 QStringLiteral("120"));
+    QCommandLineOption settleOpt(QStringLiteral("settle-ms"),
+                                 QStringLiteral("keyid: pause after each record (min 100); vendor/blob03: after each commit. 0-10000 ms (default 150)"),
+                                 QStringLiteral("ms"), QStringLiteral("150"));
     QCommandLineOption dialectOpt(QStringLiteral("dialect"),
-                                  QStringLiteral("vendor (the vendor app's report-id-0 frames, default) or blob03 (0x03-marked raw records, see docs/hardware-ch552.md)"),
-                                  QStringLiteral("name"), QStringLiteral("vendor"));
+                                  QStringLiteral("keyid (default: [keyId][8-byte report], confirmed on this unit), vendor (the vendor app's frames; "
+                                                 "ignored by this unit) or blob03 (0x03-marked; ignored by this unit)"),
+                                  QStringLiteral("name"), QStringLiteral("keyid"));
     p.addOptions({serialOpt, devOpt, logOpt, yesOpt, genOpt, slotsOpt, settleOpt, dialectOpt});
     p.process(app);
-    if (p.value(dialectOpt) != QLatin1String("vendor") && p.value(dialectOpt) != QLatin1String("blob03")) {
-        std::fprintf(stderr, "--dialect: expected vendor or blob03\n");
+    const QString dialect = p.value(dialectOpt);
+    if (dialect == QLatin1String("keyid")) {
+        g_dialect = Dialect::KeyId;
+    } else if (dialect == QLatin1String("vendor")) {
+        g_dialect = Dialect::Vendor;
+    } else if (dialect == QLatin1String("blob03")) {
+        g_dialect = Dialect::Blob03;
+    } else {
+        std::fprintf(stderr, "--dialect: expected keyid, vendor or blob03\n");
         return 2;
     }
-    g_blob = p.value(dialectOpt) == QLatin1String("blob03");
     const QStringList args = p.positionalArguments();
     const QString cmd = args.value(0, QStringLiteral("plan"));
     const auto slotRange = parseSlotRange(p.value(slotsOpt).toStdString());
@@ -157,8 +203,8 @@ int main(int argc, char **argv)
     }
     bool settleOk = false;
     const int settleMs = p.value(settleOpt).toInt(&settleOk);
-    if (!settleOk || settleMs < 0 || settleMs > 10000) {
-        std::fprintf(stderr, "--settle-ms: expected 0-10000, got '%s'\n", qPrintable(p.value(settleOpt)));
+    if (!settleOk || settleMs < 0 || settleMs > 10000 || (g_dialect == Dialect::KeyId && settleMs < 100)) {
+        std::fprintf(stderr, "--settle-ms: expected 0-10000 (keyid: at least 100), got '%s'\n", qPrintable(p.value(settleOpt)));
         return 2;
     }
 
@@ -205,13 +251,13 @@ int main(int argc, char **argv)
     }
     const auto plan = buildPlan(*gen, cmd == QLatin1String("blank"), *slotRange, settleMs);
     for (const auto &s : plan) {
-        if (g_blob ? !blob::isAllowedFrame(s.frame) : !isAllowedFrame(s.frame)) {
+        if (!allowed(s.frame)) {
             std::fprintf(stderr, "internal error: frame not allowed: %s\n", hex(s.frame).c_str());
             return 5;
         }
     }
-    if (g_blob && *gen != Generation::Rid0) {
-        std::fprintf(stderr, "refusing: blob03 was measured on the no-report-id descriptor only\n");
+    if (g_dialect != Dialect::Vendor && *gen != Generation::Rid0) {
+        std::fprintf(stderr, "refusing: %s is known only for the no-report-id descriptor\n", qPrintable(dialectName(g_dialect)));
         return 4;
     }
     std::printf("target %s (usb %s serial %s, interface 1, %s)\n", target->devnode.c_str(), target->usbPath.c_str(), target->serial.c_str(),
@@ -258,8 +304,8 @@ int main(int argc, char **argv)
     for (const auto &s : plan) {
         unsigned char buf[1 + kFrameSize];
         std::size_t len = 0;
-        if (g_blob) {
-            std::memcpy(buf, s.frame.data(), kFrameSize);  // byte 0 = 0x03: the kernel sends all 64 bytes
+        if (g_dialect != Dialect::Vendor) {
+            std::memcpy(buf, s.frame.data(), kFrameSize);  // byte 0 != 0: the kernel sends all 64 bytes
             len = kFrameSize;
         } else {
             buf[0] = reportIdFor(*gen);
@@ -299,8 +345,8 @@ int main(int argc, char **argv)
                          {QStringLiteral("device"), QString::fromStdString(target->devnode)},
                          {QStringLiteral("usb"), QString::fromStdString(target->usbPath)},
                          {QStringLiteral("serial"), QString::fromStdString(target->serial)},
-                         {QStringLiteral("reportId"), g_blob ? -1 : int(reportIdFor(*gen))},
-                         {QStringLiteral("dialect"), g_blob ? QStringLiteral("blob03") : QStringLiteral("vendor")},
+                         {QStringLiteral("reportId"), g_dialect != Dialect::Vendor ? -1 : int(reportIdFor(*gen))},
+                         {QStringLiteral("dialect"), dialectName(g_dialect)},
                          {QStringLiteral("preexistingReplies"), preReplies},
                          {QStringLiteral("frames"), records},
                          {QStringLiteral("writeFailures"), failures},

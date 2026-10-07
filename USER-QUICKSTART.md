@@ -31,9 +31,9 @@ shows what each input sends and saves the layout in
 `~/.config/control-surface/hardware-map.json`. While it runs, only this pad is
 grabbed, so its keys reach nothing else.
 
-If a control prints nothing, the pad is not sending anything. That has been
-the case since programming. See `docs/hardware-ch552.md`, "Silent after
-programming", for the recovery steps, and tell the coordinator what you saw.
+If a control prints nothing, it may use a key ID that is not programmed yet
+(see `docs/hardware-ch552.md`, "Key-ID-first format"). To reprogram the pad,
+run `ch552-padprog flash`: add `--yes` to write, and use `blank` to clear.
 
 To see live what each control would do, without sending anything:
 

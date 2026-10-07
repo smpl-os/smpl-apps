@@ -105,5 +105,6 @@ The minimum spacing per subscriber was 34 ms; the minimum arrival spacing was
 * MR1a's curated actions (marks, edits, undo/redo, …) against a real editor.
 * A multi-key edit while playing, through the GUI (S3d).
 * Additive solo, which no default binding uses.
-* The physical pad. It has been silent since programming; see
+* The physical pad. It was silent at the time; it is now programmed with the
+  key-ID-first format, and the physical→ID map is being captured. See
   `hardware-ch552.md`.

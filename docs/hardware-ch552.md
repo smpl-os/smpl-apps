@@ -1,5 +1,18 @@
 # CH552 macro pad (USB 1189:8890, serial key153): programming record
 
+> **Current state (2026-10-07 10:12, working).** On this unit the write format
+> is **key ID first**. Each key gets one raw 64-byte hidraw write to interface 1,
+> `[keyId][mods][00][usage][00 00 00 00 00]` plus zeros. Byte 0 is the key ID;
+> the next 8 bytes are stored verbatim as that key's boot-keyboard report. It
+> applies at once and survives a replug. There is no open, close or save frame.
+> Key IDs 1–24 now hold the F14–F19 × {none, LShift, LCtrl, LAlt} scheme
+> (`ch552-padprog flash`, default `--dialect keyid`). See "Key-ID-first format"
+> at the end of this file.
+>
+> The vendor app's frames (`[slot][type][n][i][mods][code]` + `AA AA`) and the
+> 0x03-marked blob03 frames had **no effect** on this unit. The sections in
+> between are kept as the investigation record.
+
 ## Device facts (read from sysfs, 2026-10-07)
 
 * wch.cn "CH552", bcdDevice 1.00, **low-speed** USB 1.0, 4 HID interfaces:
@@ -148,7 +161,7 @@ a report-ID-3 pad. On this report-ID-0 pad it is **untested**. The alternative
 is to reflash any known map (`ch552-padprog flash --yes`) or use the vendor app.
 The pad's firmware itself was never touched.
 
-## Silent after programming (open)
+## Silent after programming (resolved: wrong frame format, see the end)
 
 Before programming, every key and knob sent an all-zero HID report on hidraw4,
 hidraw6 and hidraw7, and no evdev keys. After the flash, the coordinator saw
@@ -192,7 +205,7 @@ to those slots. `--settle-ms` (0–10000, default 120) sets the pause after each
 commit frame. Every frame still passes the same allow-list: ping, binding,
 empty-key and commit frames only. No firmware or bootloader mode is ever used.
 
-## Step 2 result and the corrected write method (proposed, awaiting approval)
+## Step 2 result and the blob03 proposal (did not work)
 
 On 2026-10-07 at 09:36:57 I ran `ch552-padprog flash --slots 1-1 --settle-ms 1500 --yes`. It sent 4 vendor-format frames (65-byte hidraw writes), with no write errors and no device replies. The log is `docs/records/flash-20261007-slot1-step2.json`. After a replug, the coordinator's capture of key 1 showed 30 reports, all zero. Neither flash changed anything.
 
@@ -218,7 +231,7 @@ Three conclusions follow:
 * padclaude measured how this revision stores data: the 8 bytes after `[03][keyId]` are kept **verbatim** as that key's boot-keyboard report. That also explains the blank state: empty records replay as all-zero reports.
 * No tool reads a reply, waits for an ack, or sends a version query, reboot or save beyond `AA AA`. `AA A1` saves LED settings and `A1 nn` selects a layer.
 
-### Proposed method: `--dialect blob03`
+### The blob03 method (`--dialect blob03`; tried, no effect)
 
 * Write raw 64-byte frames to the interface-1 hidraw node. There is no leading report-number byte: byte 0 is 0x03, so the kernel sends all 64 bytes on EP 0x02.
 * Use one session: `03 A1 01`, then `03 01 00 00 69 00 00 00 00` (key ID 1 → F14, no modifiers), then `03 AA AA`, 3 ms apart, with 1500 ms after the close.
@@ -250,3 +263,48 @@ A simpler model fits all three: **wire byte 0 is the key ID, and bytes 1–8 are
 Issue #168 fits the same model. kriomant's 0x03-led frames ended with `[03 AA AA]`, and the reporter saw "key 3 as a rapid Shift + Win key": 0xAA is LShift + LGui + RShift + RGui.
 
 If this model is right, our blob03 frames all addressed **key ID 3**, not key 1.
+
+## Key-ID-first format (confirmed, 2026-10-07)
+
+1. **10:05:11.** A single approved frame `01 00 00 69 00 00 00 00` plus zeros
+   (`docs/records/flash-20261007-keyid-slot1.json`).
+   * Before any replug, one key sent the hidraw4 report `00 00 69 00 …` and
+     evdev KEY_F14 (184) press and release.
+   * After a replug, the **top-left key** still sent F14, and the other top-row
+     keys still sent zeros.
+   * The coordinator's capture logs are `keyid-first-raw.log` and
+     `keyid-first-replug-raw.log`.
+2. **10:12:53–59.** `ch552-padprog flash --dialect keyid --slots 1-24 --settle-ms 150 --yes`
+   wrote key IDs 1–24, 150 ms apart. Each write returned 64 bytes, with no
+   failures and no device replies (`docs/records/flash-20261007-keyid-1-24.json`).
+
+The scheme written is ID n → modifier of group (n−1)/6 (none, LShift 0x02, LCtrl 0x01, LAlt 0x04), reserved 0, usage 0x69 + (n−1) % 6, which is F14–F19.
+
+Why the earlier writes failed:
+* **Vendor frames.** Byte 0 was the slot, so the frames were addressed
+  correctly. But byte 1 (type 1) landed in the modifier slot, byte 3 (index)
+  landed in the key slot, and so on. The pad never showed even that garbage
+  after the vendor flashes. The likely reason: the vendor sequence's 64-byte
+  ping and its `AA AA` commit hit key IDs 0 and 0xAA, and something in that
+  sequence prevented the record from being applied. The cause is not
+  isolated; only the key-ID-first single frame is known to work.
+* **blob03.** Its frames were addressed to key ID 3 (byte 0 = 0x03). They did
+  not persist on key 3 either: an all-key capture after a replug was all zeros.
+
+The hardware map (which physical control has which key ID) is learned by the
+coordinator's 24-input capture, or by `scripts/verify-pad.sh`. The earlier
+all-key capture produced only 14 report bursts for 24 inputs. Some inputs,
+probably knob turns, may use key IDs above 24 or emit on another interface.
+Speculative IDs above 24 are deliberately not written: padclaude reports that a
+wrong ID corrupted its pad's table until a reflash.
+
+### Restore
+
+* **One key:** `ch552-padprog blank --slots N --yes` writes a zero record,
+  `[N] 00 00 00 …`.
+* **All 24 keys:** `ch552-padprog blank --yes`. It uses the same key-ID format
+  and is not yet tried on the device.
+* **Any other map:** `ch552-padprog flash --yes`.
+
+The firmware itself was never touched, and no command beyond these records was
+sent.

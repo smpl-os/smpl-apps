@@ -71,6 +71,19 @@ bool isAllowedFrame(const Frame &f);
 
 std::string hex(const Frame &f, std::size_t bytes = 8);
 
+// "keyid" dialect: confirmed on this unit (serial key153, descriptor without
+// report ids) on 2026-10-07. One raw 64-byte hidraw write per key:
+//   [keyId][mods][00][usage][00 00 00 00 00] + zeros
+// Wire byte 0 is the key id (1..24); the next 8 bytes are stored verbatim as
+// that key's boot-keyboard report and replayed on press. It takes effect at
+// once and persists across replug: no open, close or save frame. A record of
+// zeros blanks the key. Vendor-format frames ([slot][type][n][i]...) and the
+// 0x03-marked blob03 frames had no effect on this unit.
+namespace keyid {
+Frame record(std::uint8_t keyId, const Chord &chord);  // throws like blob::record
+bool isAllowedFrame(const Frame &f);
+} // namespace keyid
+
 // "blob03" dialect, measured on a low-speed 1189:8890 with this descriptor
 // family (barkleesanders/padclaude, padflash.swift): the firmware takes frames
 // whose first wire byte is 0x03 (even though the descriptor declares no report

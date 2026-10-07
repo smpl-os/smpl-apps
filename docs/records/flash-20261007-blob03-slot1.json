@@ -1,0 +1,43 @@
+{
+    "command": "flash",
+    "device": "/dev/hidraw5",
+    "dialect": "blob03",
+    "frames": [
+        {
+            "error": "",
+            "frame": "03 a1 01 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 100,
+            "what": "blob open",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "03 01 00 00 69 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 162,
+            "what": "key id 1 -> F14",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "03 aa aa 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 226,
+            "what": "blob close",
+            "written": 64
+        }
+    ],
+    "preexistingReplies": [
+    ],
+    "replies": 0,
+    "reportId": -1,
+    "serial": "key153",
+    "tool": "ch552-padprog",
+    "usb": "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-5",
+    "when": "2026-10-07T09:50:14.603",
+    "writeFailures": 0
+}

@@ -1,0 +1,232 @@
+{
+    "command": "flash",
+    "device": "/dev/hidraw5",
+    "dialect": "keyid",
+    "frames": [
+        {
+            "error": "",
+            "frame": "01 00 00 69 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 100,
+            "what": "key id 1 -> F14",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "02 00 00 6a 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 312,
+            "what": "key id 2 -> F15",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "03 00 00 6b 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 520,
+            "what": "key id 3 -> F16",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "04 00 00 6c 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 728,
+            "what": "key id 4 -> F17",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "05 00 00 6d 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 936,
+            "what": "key id 5 -> F18",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "06 00 00 6e 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1144,
+            "what": "key id 6 -> F19",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "07 02 00 69 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1352,
+            "what": "key id 7 -> shift+F14",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "08 02 00 6a 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1560,
+            "what": "key id 8 -> shift+F15",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "09 02 00 6b 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1768,
+            "what": "key id 9 -> shift+F16",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "0a 02 00 6c 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1976,
+            "what": "key id 10 -> shift+F17",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "0b 02 00 6d 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2184,
+            "what": "key id 11 -> shift+F18",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "0c 02 00 6e 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2392,
+            "what": "key id 12 -> shift+F19",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "0d 01 00 69 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2600,
+            "what": "key id 13 -> ctrl+F14",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "0e 01 00 6a 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2808,
+            "what": "key id 14 -> ctrl+F15",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "0f 01 00 6b 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3016,
+            "what": "key id 15 -> ctrl+F16",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "10 01 00 6c 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3224,
+            "what": "key id 16 -> ctrl+F17",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "11 01 00 6d 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3432,
+            "what": "key id 17 -> ctrl+F18",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "12 01 00 6e 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3640,
+            "what": "key id 18 -> ctrl+F19",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "13 04 00 69 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3848,
+            "what": "key id 19 -> alt+F14",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "14 04 00 6a 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4056,
+            "what": "key id 20 -> alt+F15",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "15 04 00 6b 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4264,
+            "what": "key id 21 -> alt+F16",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "16 04 00 6c 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4472,
+            "what": "key id 22 -> alt+F17",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "17 04 00 6d 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4680,
+            "what": "key id 23 -> alt+F18",
+            "written": 64
+        },
+        {
+            "error": "",
+            "frame": "18 04 00 6e 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4888,
+            "what": "key id 24 -> alt+F19",
+            "written": 64
+        }
+    ],
+    "preexistingReplies": [
+    ],
+    "replies": 0,
+    "reportId": -1,
+    "serial": "key153",
+    "tool": "ch552-padprog",
+    "usb": "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-5",
+    "when": "2026-10-07T10:12:59.001",
+    "writeFailures": 0
+}

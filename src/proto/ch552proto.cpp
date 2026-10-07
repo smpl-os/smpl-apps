@@ -194,4 +194,37 @@ bool isAllowedFrame(const Frame &f)
 
 } // namespace blob
 
+namespace keyid {
+
+Frame record(std::uint8_t keyId, const Chord &chord)
+{
+    if (keyId < 1 || keyId > kMaxSlot) {
+        throw std::invalid_argument("key id out of range");
+    }
+    if (chord.usage > 0x91) {
+        throw std::invalid_argument("usage outside the keyboard page range");
+    }
+    Frame f{};
+    f[0] = keyId;
+    f[1] = chord.mods;
+    f[2] = 0;  // reserved byte of the boot keyboard report
+    f[3] = chord.usage;
+    return f;
+}
+
+bool isAllowedFrame(const Frame &f)
+{
+    if (f[0] < 1 || f[0] > kMaxSlot || f[2] != 0 || f[3] > 0x91) {
+        return false;
+    }
+    for (std::size_t i = 4; i < f.size(); ++i) {
+        if (f[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace keyid
+
 } // namespace ch552

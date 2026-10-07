@@ -118,6 +118,39 @@ private Q_SLOTS:
         QCOMPARE(s[6].name, std::string("shift+F14"));
         QCOMPARE(s[23].name, std::string("alt+F19"));
     }
+    // keyid: the format confirmed on this unit (10:05, persistent across replug).
+    void keyIdFrames()
+    {
+        QCOMPARE(QString::fromStdString(hex(keyid::record(1, Chord{0, 0x69}), 10)), QStringLiteral("01 00 00 69 00 00 00 00 00 00"));
+        // The scheme: id n -> modifier of group (n-1)/6 (none/LShift/LCtrl/LAlt), usage 0x69 + (n-1)%6.
+        const std::uint8_t mods[4] = {0x00, 0x02, 0x01, 0x04};
+        for (const auto &sc : defaultScheme()) {
+            const Frame f = keyid::record(sc.slot, sc.chord);
+            QCOMPARE(int(f[0]), int(sc.slot));
+            QCOMPARE(int(f[1]), int(mods[(sc.slot - 1) / 6]));
+            QCOMPARE(int(f[2]), 0);
+            QCOMPARE(int(f[3]), 0x69 + (sc.slot - 1) % 6);
+            QVERIFY(keyid::isAllowedFrame(f));
+        }
+        QCOMPARE(QString::fromStdString(hex(keyid::record(24, Chord{0x04, 0x6e}), 5)), QStringLiteral("18 04 00 6e 00"));
+        QVERIFY(keyid::isAllowedFrame(keyid::record(7, Chord{})));  // blank record
+        QVERIFY_THROWS_EXCEPTION(std::invalid_argument, keyid::record(0, Chord{0, 4}));
+        QVERIFY_THROWS_EXCEPTION(std::invalid_argument, keyid::record(25, Chord{0, 4}));
+        QVERIFY_THROWS_EXCEPTION(std::invalid_argument, keyid::record(1, Chord{0, 0xe0}));
+        auto with = [](std::initializer_list<std::pair<int, int>> bytes) {
+            Frame f{};
+            for (auto [i, v] : bytes) {
+                f[std::size_t(i)] = std::uint8_t(v);
+            }
+            return f;
+        };
+        // No speculative ids, no command bytes, nothing beyond the first key slot.
+        for (const Frame &bad : {with({{0, 0}}), with({{0, 25}, {3, 0x69}}), with({{0, 0xaa}, {1, 0xaa}}), with({{0, 0xa1}, {1, 1}}), with({{0, 3}, {1, 1}, {4, 0x69}}),
+                                 with({{0, 0xfe}}), with({{0, 1}, {2, 1}, {3, 0x69}}), with({{0, 1}, {3, 0x69}, {4, 0x6a}}), with({{0, 1}, {3, 0x69}, {63, 1}})}) {
+            QVERIFY2(!keyid::isAllowedFrame(bad), hex(bad, 10).c_str());
+        }
+    }
+
     // blob03: padclaude's measured frames, byte for byte.
     void blobFrames()
     {

@@ -65,7 +65,7 @@ with what Kdenlive offers with `control-surfaced list-capabilities`.
 | `control-surfaced list-devices` / `check-config` / `example-config` | diagnostics (`check-config` prints errors and warnings) |
 | `control-surfaced bench-dbus N --kdenlive-service NAME` | contract round-trip latency |
 | `mock-kdenlive [--apply-delay MS] [--tick-ms MS]` | reference implementation of the Kdenlive contract with a console (`wheel gamma`, `hover lift`, `param level`, `grouped on`, …) |
-| `ch552-padprog list\|plan\|flash\|blank [--slots A-B] [--settle-ms N] [--yes]` | program the pad (see `docs/hardware-ch552.md`) |
+| `ch552-padprog list\|plan\|flash\|blank [--slots A-B] [--settle-ms N] [--dialect keyid\|vendor\|blob03] [--yes]` | program the pad: default `keyid`, one `[keyId][8-byte report]` record per key, effective at once and persistent (see `docs/hardware-ch552.md`) |
 
 ## Building and testing
 
