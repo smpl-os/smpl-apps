@@ -1,0 +1,164 @@
+// control-surface configuration (JSON with comments and trailing commas).
+// Copy to ~/.config/control-surface/config.jsonc and edit.
+//
+// Physical names: key1..key15 are row-major (row 1 = key1..key5), knob1..knob3.
+// Knob slots: "turn" (signed detents, preferred for continuous controls),
+// or "ccw"/"cw" (one binding per direction), and "press".
+//
+// Binding forms:
+//   "ctrl+z"                         tap keys through the virtual keyboard
+//   {"keys": ["ctrl+k", "x"]}        key sequence
+//   {"action": "mark_in", "fallback": "i"}
+//        Kdenlive action by its KActionCollection id; fallback keys are typed
+//        when the Kdenlive control interface is not available (stock builds).
+//   {"control": "playhead.jog", "scale": 1, "options": {...}, "fallback": ["left", "right"]}
+//        continuous control (coalesced); fallback = [negative key, positive key]
+//   {"cycle": "liftAxis", "label": "Lift"}  advance a mode; "$liftAxis" in options expands
+//   {"request": "colorwheel.reset", "params": {"wheel": "lift"}}   Invoke() on Kdenlive
+//   {"command": ["notify-send", "hello"]}
+//   "none"                            explicitly unbound (stops fallthrough)
+{
+    "device": { "vendor": "1189", "product": "8890", "serial": "key153" },
+
+    // Written by `control-surfaced verify`; until then the flashed default applies.
+    "hardware": "~/.config/control-surface/hardware-map.json",
+
+    "settings": {
+        "coalesceMs": 8,      // at most one continuous update per control every 8 ms
+        "ackTimeoutMs": 60,   // and only one in flight until Kdenlive acknowledges it
+        "accelWindowMs": 35,  // detents closer than this ...
+        "accelFactor": 3,     // ... move 3x as far
+        "keyRateHz": 120      // pacing for key taps produced by knobs
+    },
+
+    "profiles": [
+        {
+            "name": "kdenlive",
+            "match": { "class": "^org\\.kde\\.kdenlive" },
+            "kdenlive": true,
+            "modes": {
+                "liftAxis": ["luma", "r", "g", "b"],
+                "gammaAxis": ["luma", "r", "g", "b"],
+                "gainAxis": ["luma", "r", "g", "b"],
+                "paramStep": ["normal", "fine"],
+                "curveAxis": ["value", "time"]
+            },
+            "layers": [
+                {
+                    // Lift/Gamma/Gain effect focused: one knob per wheel, press cycles the axis.
+                    "name": "color-wheels",
+                    "when": { "effect.id": "lift_gamma_gain" },
+                    "bindings": {
+                        "knob1": {
+                            "turn": { "control": "colorwheel.nudge", "options": { "wheel": "lift", "axis": "$liftAxis" } },
+                            "press": { "cycle": "liftAxis", "label": "Lift" }
+                        },
+                        "knob2": {
+                            "turn": { "control": "colorwheel.nudge", "options": { "wheel": "gamma", "axis": "$gammaAxis" } },
+                            "press": { "cycle": "gammaAxis", "label": "Gamma" }
+                        },
+                        "knob3": {
+                            "turn": { "control": "colorwheel.nudge", "options": { "wheel": "gain", "axis": "$gainAxis" } },
+                            "press": { "cycle": "gainAxis", "label": "Gain" }
+                        },
+                        "key6": { "request": "colorwheel.reset", "params": { "wheel": "lift" } },
+                        "key7": { "request": "colorwheel.reset", "params": { "wheel": "gamma" } },
+                        "key8": { "request": "colorwheel.reset", "params": { "wheel": "gain" } }
+                    }
+                },
+                {
+                    // Automation curve editor: knob1 moves selected points, press toggles value/time.
+                    "name": "automation",
+                    "when": { "focus": "automationEditor" },
+                    "bindings": {
+                        "knob1": {
+                            "turn": { "control": "automation.nudge", "options": { "axis": "$curveAxis" } },
+                            "press": { "cycle": "curveAxis", "label": "Curve axis" }
+                        },
+                        "key8": { "action": "keyframe_previous" },
+                        "key9": { "action": "keyframe_next" },
+                        "key10": { "action": "keyframe_add" }
+                    }
+                },
+                {
+                    // Any other effect parameter focused in the effect stack.
+                    "name": "effect-param",
+                    "when": { "focus": "effectStack", "param.name": "/.+/" },
+                    "bindings": {
+                        "knob1": {
+                            "turn": { "control": "param.nudge", "options": { "step": "$paramStep" } },
+                            "press": { "cycle": "paramStep", "label": "Step" }
+                        },
+                        "knob3": { "turn": { "control": "param.focus" } },
+                        "key8": { "action": "keyframe_previous" },
+                        "key9": { "action": "keyframe_next" },
+                        "key10": { "action": "keyframe_add" }
+                    }
+                },
+                {
+                    // Trim tools active: knob2 trims the selected edit point.
+                    "name": "trim",
+                    "when": { "tool": ["ripple", "roll", "slip", "slide"] },
+                    "bindings": {
+                        "knob2": { "turn": { "control": "edit.trim" } }
+                    }
+                }
+            ],
+            "bindings": {
+                // Row 1: marking and three-point editing
+                "key1": { "action": "mark_in", "fallback": "i" },
+                "key2": { "action": "mark_out", "fallback": "o" },
+                "key3": { "action": "insert_to_in_point", "fallback": "v" },
+                "key4": { "action": "overwrite_to_in_point", "fallback": "b" },
+                "key5": { "action": "switch_monitor", "fallback": "t" },
+                // Row 2: cutting and navigation
+                "key6": { "action": "cut_timeline_clip", "fallback": "shift+r" },
+                "key7": { "action": "delete_timeline_clip", "fallback": "delete" },
+                "key8": { "action": "monitor_seek_snap_backward", "fallback": "alt+left" },
+                "key9": { "action": "monitor_seek_snap_forward", "fallback": "alt+right" },
+                "key10": { "action": "add_marker_guide_quickly", "fallback": "kpasterisk" },
+                // Row 3: tools and history
+                "key11": { "action": "select_tool", "fallback": "s" },
+                "key12": { "action": "razor_tool", "fallback": "x" },
+                "key13": { "action": "ripple_tool" },
+                "key14": { "action": "edit_undo", "fallback": "ctrl+z" },
+                "key15": { "action": "edit_redo", "fallback": "ctrl+shift+z" },
+
+                // knob1: jog by frames, press = play/pause
+                "knob1": {
+                    "turn": { "control": "playhead.jog", "fallback": ["left", "right"] },
+                    "press": { "action": "monitor_play", "fallback": "space" }
+                },
+                // knob2: shuttle (J/K/L style), press = stop
+                "knob2": {
+                    "turn": { "control": "playhead.shuttle", "fallback": ["j", "l"] },
+                    "press": { "action": "monitor_pause", "fallback": "k" }
+                },
+                // knob3: timeline zoom, press = fit
+                "knob3": {
+                    "turn": { "control": "timeline.zoom", "fallback": ["ctrl+minus", "ctrl+equal"] },
+                    "press": { "action": "zoom_fit" }
+                }
+            }
+        },
+        {
+            // FL Studio under Wine: placeholder until MIDI output exists.
+            "name": "fl-studio",
+            "match": { "class": "^(fl64\\.exe|fl\\.exe|FL64\\.exe)$" },
+            "bindings": {
+                "key1": "space",
+                "knob1": { "ccw": "left", "cw": "right" }
+            }
+        },
+        {
+            // Global fallback for every other window: conservative on purpose.
+            "name": "global",
+            "bindings": {
+                "knob1": { "ccw": "volumedown", "cw": "volumeup", "press": "mute" },
+                "key11": "previoussong",
+                "key12": "playpause",
+                "key13": "nextsong"
+            }
+        }
+    ]
+}

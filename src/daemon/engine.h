@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Routes pad events to bindings of the focused app's profile and Kdenlive
+// context layer, then to uinput keys, Kdenlive actions/controls or commands.
+#pragma once
+
+#include "coalescer.h"
+#include "config.h"
+#include "decoder.h"
+#include "kdenliveclient.h"
+#include "keysink.h"
+#include "windowtracker.h"
+
+#include <QElapsedTimer>
+#include <QHash>
+#include <QObject>
+#include <QSet>
+#include <optional>
+
+class QTimer;
+
+namespace cs {
+
+class Engine : public QObject
+{
+    Q_OBJECT
+public:
+    Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent = nullptr);
+
+    void setConfig(const Config &cfg);
+    const Config &config() const { return m_cfg; }
+    void setActiveWindow(const WindowInfo &w);
+    void handle(const PadEvent &e);
+
+    struct Resolution {
+        Binding binding;
+        QString profile;
+        QString layer;  // empty: profile base bindings
+    };
+    std::optional<Resolution> resolve(const QString &slot) const;
+    const Profile *activeProfile() const { return m_profile; }
+    bool kdenliveActive() const;
+    QString modeValue(const QString &mode) const;
+    int pendingTaps() const { return int(m_tapQueue.size()); }
+
+Q_SIGNALS:
+    void runCommand(const QStringList &argv);
+    void message(const QString &text);
+
+private:
+    struct Tap {
+        QString group;
+        int dir = 0;
+        KeyChord chord;
+    };
+    void execute(const Resolution &r, const QString &slot, double detents, bool isTurn, double accel = 1.0);
+    void enqueueTaps(const QString &group, int dir, const QList<KeyChord> &chords, int count);
+    void drainTap();
+    QVariantMap expandOptions(const QVariantMap &opts) const;
+    const QHash<QString, QStringList> *modesFor(const QString &mode, QString *owner) const;
+    void onFlush(const QString &key, double delta, int merged, const QVariantMap &payload);
+
+    KeySink *m_keys;
+    KdenliveClient *m_kd;
+    Config m_cfg;
+    WindowInfo m_window;
+    const Profile *m_profile = nullptr;
+    DeltaCoalescer m_coalescer;
+    QHash<QString, QSet<QString>> m_inflight;  // control name -> coalescer keys
+    QHash<QString, int> m_modeIndex;            // "profile/mode" -> index
+    QHash<QString, QElapsedTimer> m_lastTurn;
+    QHash<QString, QList<KeyChord>> m_actionFallback;
+    QList<Tap> m_tapQueue;
+    QTimer *m_tapTimer;
+};
+
+} // namespace cs

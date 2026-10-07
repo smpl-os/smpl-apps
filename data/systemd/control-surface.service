@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Installed by scripts/install-user.sh but NOT enabled. After `scripts/verify-pad.sh`:
+#   systemctl --user enable --now control-surface.service
+[Unit]
+Description=Control surface daemon for the CH552 macro pad (1189:8890)
+Documentation=file://%h/Documents/source/control-surface/README.md
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/control-surfaced run --quiet
+Restart=on-failure
+RestartSec=2
+# Grabs only 1189:8890 evdev nodes and creates one uinput keyboard; both rely on
+# the session's input-group membership and the uaccess ACL on /dev/uinput.
+# No sandboxing on purpose: "command" bindings start ordinary desktop apps as
+# children of this service and would inherit any restriction set here.
+
+[Install]
+WantedBy=graphical-session.target

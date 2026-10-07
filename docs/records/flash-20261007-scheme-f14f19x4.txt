@@ -1,0 +1,150 @@
+target /dev/hidraw5 (usb /sys/devices/pci0000:00/0000:00:14.0/usb1/1-5 serial key153, interface 1, no report id)
+report id 0, 73 frames (first 8 of 64 data bytes shown)
+  ping                         00 00 00 00 00 00 00 00
+  slot 1 -> F14                01 01 01 00 00 00 00 00
+  slot 1 -> F14                01 01 01 01 00 69 00 00
+  slot 1 -> F14 commit         aa aa 00 00 00 00 00 00
+  slot 2 -> F15                02 01 01 00 00 00 00 00
+  slot 2 -> F15                02 01 01 01 00 6a 00 00
+  slot 2 -> F15 commit         aa aa 00 00 00 00 00 00
+  slot 3 -> F16                03 01 01 00 00 00 00 00
+  slot 3 -> F16                03 01 01 01 00 6b 00 00
+  slot 3 -> F16 commit         aa aa 00 00 00 00 00 00
+  slot 4 -> F17                04 01 01 00 00 00 00 00
+  slot 4 -> F17                04 01 01 01 00 6c 00 00
+  slot 4 -> F17 commit         aa aa 00 00 00 00 00 00
+  slot 5 -> F18                05 01 01 00 00 00 00 00
+  slot 5 -> F18                05 01 01 01 00 6d 00 00
+  slot 5 -> F18 commit         aa aa 00 00 00 00 00 00
+  slot 6 -> F19                06 01 01 00 00 00 00 00
+  slot 6 -> F19                06 01 01 01 00 6e 00 00
+  slot 6 -> F19 commit         aa aa 00 00 00 00 00 00
+  slot 7 -> shift+F14          07 01 01 00 02 00 00 00
+  slot 7 -> shift+F14          07 01 01 01 02 69 00 00
+  slot 7 -> shift+F14 commit   aa aa 00 00 00 00 00 00
+  slot 8 -> shift+F15          08 01 01 00 02 00 00 00
+  slot 8 -> shift+F15          08 01 01 01 02 6a 00 00
+  slot 8 -> shift+F15 commit   aa aa 00 00 00 00 00 00
+  slot 9 -> shift+F16          09 01 01 00 02 00 00 00
+  slot 9 -> shift+F16          09 01 01 01 02 6b 00 00
+  slot 9 -> shift+F16 commit   aa aa 00 00 00 00 00 00
+  slot 10 -> shift+F17         0a 01 01 00 02 00 00 00
+  slot 10 -> shift+F17         0a 01 01 01 02 6c 00 00
+  slot 10 -> shift+F17 commit  aa aa 00 00 00 00 00 00
+  slot 11 -> shift+F18         0b 01 01 00 02 00 00 00
+  slot 11 -> shift+F18         0b 01 01 01 02 6d 00 00
+  slot 11 -> shift+F18 commit  aa aa 00 00 00 00 00 00
+  slot 12 -> shift+F19         0c 01 01 00 02 00 00 00
+  slot 12 -> shift+F19         0c 01 01 01 02 6e 00 00
+  slot 12 -> shift+F19 commit  aa aa 00 00 00 00 00 00
+  slot 13 -> ctrl+F14          0d 01 01 00 01 00 00 00
+  slot 13 -> ctrl+F14          0d 01 01 01 01 69 00 00
+  slot 13 -> ctrl+F14 commit   aa aa 00 00 00 00 00 00
+  slot 14 -> ctrl+F15          0e 01 01 00 01 00 00 00
+  slot 14 -> ctrl+F15          0e 01 01 01 01 6a 00 00
+  slot 14 -> ctrl+F15 commit   aa aa 00 00 00 00 00 00
+  slot 15 -> ctrl+F16          0f 01 01 00 01 00 00 00
+  slot 15 -> ctrl+F16          0f 01 01 01 01 6b 00 00
+  slot 15 -> ctrl+F16 commit   aa aa 00 00 00 00 00 00
+  slot 16 -> ctrl+F17          10 01 01 00 01 00 00 00
+  slot 16 -> ctrl+F17          10 01 01 01 01 6c 00 00
+  slot 16 -> ctrl+F17 commit   aa aa 00 00 00 00 00 00
+  slot 17 -> ctrl+F18          11 01 01 00 01 00 00 00
+  slot 17 -> ctrl+F18          11 01 01 01 01 6d 00 00
+  slot 17 -> ctrl+F18 commit   aa aa 00 00 00 00 00 00
+  slot 18 -> ctrl+F19          12 01 01 00 01 00 00 00
+  slot 18 -> ctrl+F19          12 01 01 01 01 6e 00 00
+  slot 18 -> ctrl+F19 commit   aa aa 00 00 00 00 00 00
+  slot 19 -> alt+F14           13 01 01 00 04 00 00 00
+  slot 19 -> alt+F14           13 01 01 01 04 69 00 00
+  slot 19 -> alt+F14 commit    aa aa 00 00 00 00 00 00
+  slot 20 -> alt+F15           14 01 01 00 04 00 00 00
+  slot 20 -> alt+F15           14 01 01 01 04 6a 00 00
+  slot 20 -> alt+F15 commit    aa aa 00 00 00 00 00 00
+  slot 21 -> alt+F16           15 01 01 00 04 00 00 00
+  slot 21 -> alt+F16           15 01 01 01 04 6b 00 00
+  slot 21 -> alt+F16 commit    aa aa 00 00 00 00 00 00
+  slot 22 -> alt+F17           16 01 01 00 04 00 00 00
+  slot 22 -> alt+F17           16 01 01 01 04 6c 00 00
+  slot 22 -> alt+F17 commit    aa aa 00 00 00 00 00 00
+  slot 23 -> alt+F18           17 01 01 00 04 00 00 00
+  slot 23 -> alt+F18           17 01 01 01 04 6d 00 00
+  slot 23 -> alt+F18 commit    aa aa 00 00 00 00 00 00
+  slot 24 -> alt+F19           18 01 01 00 04 00 00 00
+  slot 24 -> alt+F19           18 01 01 01 04 6e 00 00
+  slot 24 -> alt+F19 commit    aa aa 00 00 00 00 00 00
+ping                         00 00 00 00 00 00 00 00 -> 65
+slot 1 -> F14                01 01 01 00 00 00 00 00 -> 65
+slot 1 -> F14                01 01 01 01 00 69 00 00 -> 65
+slot 1 -> F14 commit         aa aa 00 00 00 00 00 00 -> 65
+slot 2 -> F15                02 01 01 00 00 00 00 00 -> 65
+slot 2 -> F15                02 01 01 01 00 6a 00 00 -> 65
+slot 2 -> F15 commit         aa aa 00 00 00 00 00 00 -> 65
+slot 3 -> F16                03 01 01 00 00 00 00 00 -> 65
+slot 3 -> F16                03 01 01 01 00 6b 00 00 -> 65
+slot 3 -> F16 commit         aa aa 00 00 00 00 00 00 -> 65
+slot 4 -> F17                04 01 01 00 00 00 00 00 -> 65
+slot 4 -> F17                04 01 01 01 00 6c 00 00 -> 65
+slot 4 -> F17 commit         aa aa 00 00 00 00 00 00 -> 65
+slot 5 -> F18                05 01 01 00 00 00 00 00 -> 65
+slot 5 -> F18                05 01 01 01 00 6d 00 00 -> 65
+slot 5 -> F18 commit         aa aa 00 00 00 00 00 00 -> 65
+slot 6 -> F19                06 01 01 00 00 00 00 00 -> 65
+slot 6 -> F19                06 01 01 01 00 6e 00 00 -> 65
+slot 6 -> F19 commit         aa aa 00 00 00 00 00 00 -> 65
+slot 7 -> shift+F14          07 01 01 00 02 00 00 00 -> 65
+slot 7 -> shift+F14          07 01 01 01 02 69 00 00 -> 65
+slot 7 -> shift+F14 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 8 -> shift+F15          08 01 01 00 02 00 00 00 -> 65
+slot 8 -> shift+F15          08 01 01 01 02 6a 00 00 -> 65
+slot 8 -> shift+F15 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 9 -> shift+F16          09 01 01 00 02 00 00 00 -> 65
+slot 9 -> shift+F16          09 01 01 01 02 6b 00 00 -> 65
+slot 9 -> shift+F16 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 10 -> shift+F17         0a 01 01 00 02 00 00 00 -> 65
+slot 10 -> shift+F17         0a 01 01 01 02 6c 00 00 -> 65
+slot 10 -> shift+F17 commit  aa aa 00 00 00 00 00 00 -> 65
+slot 11 -> shift+F18         0b 01 01 00 02 00 00 00 -> 65
+slot 11 -> shift+F18         0b 01 01 01 02 6d 00 00 -> 65
+slot 11 -> shift+F18 commit  aa aa 00 00 00 00 00 00 -> 65
+slot 12 -> shift+F19         0c 01 01 00 02 00 00 00 -> 65
+slot 12 -> shift+F19         0c 01 01 01 02 6e 00 00 -> 65
+slot 12 -> shift+F19 commit  aa aa 00 00 00 00 00 00 -> 65
+slot 13 -> ctrl+F14          0d 01 01 00 01 00 00 00 -> 65
+slot 13 -> ctrl+F14          0d 01 01 01 01 69 00 00 -> 65
+slot 13 -> ctrl+F14 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 14 -> ctrl+F15          0e 01 01 00 01 00 00 00 -> 65
+slot 14 -> ctrl+F15          0e 01 01 01 01 6a 00 00 -> 65
+slot 14 -> ctrl+F15 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 15 -> ctrl+F16          0f 01 01 00 01 00 00 00 -> 65
+slot 15 -> ctrl+F16          0f 01 01 01 01 6b 00 00 -> 65
+slot 15 -> ctrl+F16 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 16 -> ctrl+F17          10 01 01 00 01 00 00 00 -> 65
+slot 16 -> ctrl+F17          10 01 01 01 01 6c 00 00 -> 65
+slot 16 -> ctrl+F17 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 17 -> ctrl+F18          11 01 01 00 01 00 00 00 -> 65
+slot 17 -> ctrl+F18          11 01 01 01 01 6d 00 00 -> 65
+slot 17 -> ctrl+F18 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 18 -> ctrl+F19          12 01 01 00 01 00 00 00 -> 65
+slot 18 -> ctrl+F19          12 01 01 01 01 6e 00 00 -> 65
+slot 18 -> ctrl+F19 commit   aa aa 00 00 00 00 00 00 -> 65
+slot 19 -> alt+F14           13 01 01 00 04 00 00 00 -> 65
+slot 19 -> alt+F14           13 01 01 01 04 69 00 00 -> 65
+slot 19 -> alt+F14 commit    aa aa 00 00 00 00 00 00 -> 65
+slot 20 -> alt+F15           14 01 01 00 04 00 00 00 -> 65
+slot 20 -> alt+F15           14 01 01 01 04 6a 00 00 -> 65
+slot 20 -> alt+F15 commit    aa aa 00 00 00 00 00 00 -> 65
+slot 21 -> alt+F16           15 01 01 00 04 00 00 00 -> 65
+slot 21 -> alt+F16           15 01 01 01 04 6b 00 00 -> 65
+slot 21 -> alt+F16 commit    aa aa 00 00 00 00 00 00 -> 65
+slot 22 -> alt+F17           16 01 01 00 04 00 00 00 -> 65
+slot 22 -> alt+F17           16 01 01 01 04 6c 00 00 -> 65
+slot 22 -> alt+F17 commit    aa aa 00 00 00 00 00 00 -> 65
+slot 23 -> alt+F18           17 01 01 00 04 00 00 00 -> 65
+slot 23 -> alt+F18           17 01 01 01 04 6d 00 00 -> 65
+slot 23 -> alt+F18 commit    aa aa 00 00 00 00 00 00 -> 65
+slot 24 -> alt+F19           18 01 01 00 04 00 00 00 -> 65
+slot 24 -> alt+F19           18 01 01 01 04 6e 00 00 -> 65
+slot 24 -> alt+F19 commit    aa aa 00 00 00 00 00 00 -> 65
+
+73 frames, 0 write failures, 0 device replies
