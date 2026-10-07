@@ -5,7 +5,9 @@
 
 #include "ch552proto.h"
 
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ch552 {
@@ -36,6 +38,9 @@ struct SlotTarget {
 };
 
 SlotTarget slotTarget(Numbering n, std::uint8_t slot);
+
+// "--slots" for the flasher: "N" or "A-B", 1 <= A <= B <= 24.
+std::optional<std::pair<int, int>> parseSlotRange(const std::string &text);
 std::string numberingName(Numbering n);
 
 } // namespace ch552

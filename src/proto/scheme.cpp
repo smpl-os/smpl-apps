@@ -46,4 +46,28 @@ std::string numberingName(Numbering n)
     return n == Numbering::KeysThenKnobs ? "keys-then-knobs" : "vendor-twelve";
 }
 
+std::optional<std::pair<int, int>> parseSlotRange(const std::string &text)
+{
+    auto number = [](const std::string &t) -> int {
+        if (t.empty() || t.size() > 2) {
+            return -1;
+        }
+        int v = 0;
+        for (const char c : t) {
+            if (c < '0' || c > '9') {
+                return -1;
+            }
+            v = v * 10 + (c - '0');
+        }
+        return v;
+    };
+    const auto dash = text.find('-');
+    const int a = number(dash == std::string::npos ? text : text.substr(0, dash));
+    const int b = dash == std::string::npos ? a : number(text.substr(dash + 1));
+    if (a < 1 || b < a || b > 24) {
+        return std::nullopt;
+    }
+    return std::pair{a, b};
+}
+
 } // namespace ch552

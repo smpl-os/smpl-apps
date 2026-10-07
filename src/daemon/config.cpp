@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "config.h"
+#include "kdenlivecontract.h"
 
 #include <QDir>
 #include <QFile>
@@ -165,8 +166,26 @@ bool parseBindings(const QJsonObject &o, BindingMap &into, QString *error)
             const QJsonObject sub = it.value().toObject();
             for (auto s = sub.begin(); s != sub.end(); ++s) {
                 static const QStringList events{QStringLiteral("turn"), QStringLiteral("ccw"), QStringLiteral("cw"), QStringLiteral("press")};
+                if (s.key() == QLatin1String("shift") && s.value().isObject()) {
+                    // knobN.shift: turning while the knob is held down
+                    const QJsonObject shift = s.value().toObject();
+                    for (auto e = shift.begin(); e != shift.end(); ++e) {
+                        if (e.key() == QLatin1String("press") || !events.contains(e.key())) {
+                            return fail(error, QStringLiteral("%1.shift: unknown event '%2' (turn, ccw or cw)").arg(slot, e.key()));
+                        }
+                        auto b = parseBinding(e.value(), error);
+                        if (!b) {
+                            if (error) {
+                                *error = slot + QStringLiteral(".shift.") + e.key() + QStringLiteral(": ") + *error;
+                            }
+                            return false;
+                        }
+                        into.insert(slot + QStringLiteral(".shift.") + e.key(), *b);
+                    }
+                    continue;
+                }
                 if (!events.contains(s.key())) {
-                    return fail(error, QStringLiteral("%1: unknown knob event '%2'").arg(slot, s.key()));
+                    return fail(error, QStringLiteral("%1: unknown knob event '%2' (turn, ccw, cw, press or shift)").arg(slot, s.key()));
                 }
                 auto b = parseBinding(s.value(), error);
                 if (!b) {
@@ -179,9 +198,9 @@ bool parseBindings(const QJsonObject &o, BindingMap &into, QString *error)
             }
             continue;
         }
-        static const QRegularExpression slotRe(QStringLiteral("^(key([1-9]|1[0-5])|knob[1-3]\\.(turn|ccw|cw|press))$"));
+        static const QRegularExpression slotRe(QStringLiteral("^(key([1-9]|1[0-5])|knob[1-3]\\.(turn|ccw|cw|press|shift\\.(turn|ccw|cw)))$"));
         if (!slotRe.match(slot).hasMatch()) {
-            return fail(error, QStringLiteral("unknown control slot '%1'").arg(slot));
+            return fail(error, QStringLiteral("unknown control slot '%1' (key1..key15, knob1..knob3 with turn/ccw/cw/press/shift)").arg(slot));
         }
         auto b = parseBinding(it.value(), error);
         if (!b) {
@@ -260,6 +279,13 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
         b.kind = Binding::Control;
         b.name = o.value(QStringLiteral("control")).toString();
         b.scale = o.value(QStringLiteral("scale")).toDouble(1.0);
+        b.accel = o.value(QStringLiteral("accel")).toDouble(0);
+        if (b.scale <= 0 || b.accel < 0) {
+            if (error) {
+                *error = QStringLiteral("\"scale\" must be > 0 and \"accel\" >= 0");
+            }
+            return std::nullopt;
+        }
     } else if (o.contains(QStringLiteral("command"))) {
         b.kind = Binding::Command;
         for (const auto &a : o.value(QStringLiteral("command")).toArray()) {
@@ -413,6 +439,7 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
         }
         p.kdenlive = po.value(QStringLiteral("kdenlive")).toBool(false);
         p.fallthrough = po.value(QStringLiteral("fallthrough")).toBool(true);
+        p.keyFallback = po.value(QStringLiteral("keyFallback")).toBool(false);
         const QJsonObject modes = po.value(QStringLiteral("modes")).toObject();
         for (auto it = modes.begin(); it != modes.end(); ++it) {
             QStringList values;
@@ -449,7 +476,74 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
         }
         cfg.profiles << p;
     }
+    QString checkError;
+    if (!checkConfig(cfg, &checkError)) {
+        if (error) {
+            *error = checkError;
+        }
+        return std::nullopt;
+    }
     return cfg;
+}
+
+bool checkConfig(Config &cfg, QString *error)
+{
+    // Errors: references that can never work. Warnings: names this daemon does
+    // not know (a newer Kdenlive may offer them) and bindings that do nothing.
+    const Profile *global = cfg.globalProfile();
+    for (const Profile &p : cfg.profiles) {
+        auto modeKnown = [&](const QString &m) { return p.modes.contains(m) || (global && global->modes.contains(m)); };
+        auto checkBinding = [&](const QString &where, const Binding &b) -> bool {
+            if (b.kind == Binding::Cycle && !modeKnown(b.name)) {
+                return fail(error, QStringLiteral("%1: cycles undefined mode '%2' (define it under \"modes\")").arg(where, b.name));
+            }
+            if (b.kind == Binding::Control && b.name.startsWith(QLatin1Char('$')) && !modeKnown(b.name.mid(1))) {
+                return fail(error, QStringLiteral("%1: control comes from undefined mode '%2'").arg(where, b.name.mid(1)));
+            }
+            for (auto it = b.options.cbegin(); it != b.options.cend(); ++it) {
+                const QString v = it.value().toString();
+                if (it.value().typeId() == QMetaType::QString && v.startsWith(QLatin1Char('$')) && !v.startsWith(QLatin1String("$ctx:"))
+                    && !v.startsWith(QLatin1String("$!ctx:")) && !modeKnown(v.mid(1))) {
+                    return fail(error, QStringLiteral("%1: option %2 uses undefined mode '%3'").arg(where, it.key(), v.mid(1)));
+                }
+            }
+            const bool kdenliveOnly = b.kind == Binding::Action || b.kind == Binding::Control || b.kind == Binding::Request;
+            if (kdenliveOnly && !p.kdenlive) {
+                cfg.warnings << QStringLiteral("%1: %2 bindings only work in a profile with \"kdenlive\": true").arg(where, b.kind == Binding::Action ? QStringLiteral("action") : b.kind == Binding::Control ? QStringLiteral("control") : QStringLiteral("request"));
+            }
+            if (b.kind == Binding::Control && !b.name.startsWith(QLatin1Char('$')) && !contract::kKnownControls.contains(b.name)) {
+                cfg.warnings << QStringLiteral("%1: unknown control '%2' (known: %3)").arg(where, b.name, contract::kKnownControls.join(QStringLiteral(", ")));
+            }
+            if (b.kind == Binding::Request && !contract::kKnownCommands.contains(b.name)) {
+                cfg.warnings << QStringLiteral("%1: unknown command '%2' (known: %3)").arg(where, b.name, contract::kKnownCommands.join(QStringLiteral(", ")));
+            }
+            return true;
+        };
+        for (auto it = p.bindings.cbegin(); it != p.bindings.cend(); ++it) {
+            if (!checkBinding(QStringLiteral("profile %1 %2").arg(p.name, it.key()), it.value())) {
+                return false;
+            }
+        }
+        for (const Layer &l : p.layers) {
+            for (auto w = l.when.cbegin(); w != l.when.cend(); ++w) {
+                if (w.key().startsWith(QLatin1String("$mode.")) && !modeKnown(w.key().mid(6))) {
+                    return fail(error, QStringLiteral("profile %1 layer %2: condition uses undefined mode '%3'").arg(p.name, l.name, w.key().mid(6)));
+                }
+            }
+            if (l.when.isEmpty()) {
+                cfg.warnings << QStringLiteral("profile %1 layer %2: no \"when\" condition, so it always applies").arg(p.name, l.name);
+            }
+            for (auto it = l.bindings.cbegin(); it != l.bindings.cend(); ++it) {
+                if (!checkBinding(QStringLiteral("profile %1 layer %2 %3").arg(p.name, l.name, it.key()), it.value())) {
+                    return false;
+                }
+            }
+        }
+        if (p.keyFallback && !p.kdenlive) {
+            cfg.warnings << QStringLiteral("profile %1: \"keyFallback\" only applies to Kdenlive profiles").arg(p.name);
+        }
+    }
+    return true;
 }
 
 std::optional<Config> loadConfig(const QString &path, QString *error)

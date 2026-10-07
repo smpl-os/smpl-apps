@@ -33,6 +33,10 @@ inline const QString kCmdParamReset = QStringLiteral("param.reset");
 inline const QString kCmdWheelReset = QStringLiteral("colorwheel.reset");
 inline const QString kCmdTrackSet = QStringLiteral("track.set");
 
+// Every control and command of contract revision 2 (MR1-MR3), for config checks.
+inline const QStringList kKnownControls{kJog, kShuttle, kZoom, kParamFocus, kParamNudge, kColorWheel, kTrackFocus, kScroll, kAudioGain, kTrim};
+inline const QStringList kKnownCommands{kCmdParamReset, kCmdWheelReset, kCmdTrackSet};
+
 // Editing controls carry target + gesture (+ phase); the others only the common options.
 inline bool isEditingControl(const QString &c)
 {

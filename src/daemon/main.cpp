@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "capabilities.h"
 #include "config.h"
+#include "configwatcher.h"
 #include "engine.h"
 #include "kdenlivedbusclient.h"
 #include "learn.h"
@@ -10,6 +12,8 @@
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusPendingCall>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -96,6 +100,16 @@ std::optional<Config> obtainConfig(const QString &path, bool explicitPath)
     return c;
 }
 
+// One desktop notification (org.freedesktop.Notifications); fire and forget.
+void desktopNotify(const QString &body)
+{
+    auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.Notifications"), QStringLiteral("/org/freedesktop/Notifications"),
+                                              QStringLiteral("org.freedesktop.Notifications"), QStringLiteral("Notify"));
+    msg << QStringLiteral("control-surface") << uint(0) << QStringLiteral("input-keyboard") << QStringLiteral("Control surface") << body << QStringList{}
+        << QVariantMap{} << int(10000);
+    QDBusConnection::sessionBus().asyncCall(msg, 2000);
+}
+
 struct SimEnv {
     Engine &engine;
     KdenliveClient &kd;
@@ -103,6 +117,7 @@ struct SimEnv {
     StaticWindowTracker &tracker;
     RecordingKeySink &keys;
     QList<QPair<QString, QString>> refusals;  // (what, code) since the last check
+    QStringList notices;                       // since the last "expect notice"
     int failures = 0;
 };
 
@@ -140,11 +155,13 @@ void check(SimEnv &env, bool ok, const QString &what)
 }
 
 // simulate: "window CLASS [TITLE]" | "pid N" | "key3" | "knob1 +3" | "knob1 -1" |
-//           "knob2 press" | "wait MS" | "# comment"
+//           "knob2 press" (down + up) | "knob2 hold" | "knob2 release" |
+//           "wait MS" | "# comment"
 // Fake client only:   "context {json}" | "kdenlive on|off|pending" | "stage 1|2|3"
-// Any client:         "await available [MS]" | "await ctx PATH VALUE [MS]" |
+// Any client:         "await available|absent [MS]" | "await ctx PATH VALUE [MS]" |
 //                     "print ctx [PATH]" | "expect refused CODE [MS]" |
-//                     "expect no-refusal" | "expect no-keys" | "refusals clear"
+//                     "expect no-refusal" | "expect no-keys" | "expect keys K1 K2 ..." |
+//                     "expect notice [TEXT]" | "expect no-notice" | "refusals clear"
 int simulate(SimEnv &env, QIODevice &in)
 {
     QTextStream ts(&in);
@@ -202,6 +219,9 @@ int simulate(SimEnv &env, QIODevice &in)
         } else if (cmd == QLatin1String("await") && w.value(1) == QLatin1String("available")) {
             settle = false;
             check(env, waitUntil([&] { return env.kd.isAvailable(); }, w.value(2, QStringLiteral("5000")).toInt()), QStringLiteral("interface available"));
+        } else if (cmd == QLatin1String("await") && w.value(1) == QLatin1String("absent")) {
+            settle = false;
+            check(env, waitUntil([&] { return env.kd.isAbsent(); }, w.value(2, QStringLiteral("5000")).toInt()), QStringLiteral("interface absent (stock Kdenlive)"));
         } else if (cmd == QLatin1String("await") && w.value(1) == QLatin1String("ctx")) {
             settle = false;
             const QString path = w.value(2);
@@ -230,6 +250,20 @@ int simulate(SimEnv &env, QIODevice &in)
         } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("no-keys")) {
             settle = false;
             check(env, env.keys.taps.isEmpty(), QStringLiteral("no keyboard fallback (taps: %1)").arg(env.keys.taps.isEmpty() ? QStringLiteral("none") : env.keys.taps.join(QLatin1Char(' '))));
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("keys")) {
+            settle = false;
+            const QStringList want = w.mid(2);
+            waitUntil([&] { return env.keys.taps.size() >= want.size(); }, 2000);
+            check(env, env.keys.taps == want, QStringLiteral("recorded (never emitted) keys %1, wanted %2").arg(env.keys.taps.join(QLatin1Char(' ')), want.join(QLatin1Char(' '))));
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("notice")) {
+            settle = false;
+            const QString text = l.section(QLatin1Char(' '), 2);
+            const bool ok = waitUntil([&] { return std::any_of(env.notices.cbegin(), env.notices.cend(), [&](const QString &n) { return n.contains(text); }); }, 2000);
+            check(env, ok, QStringLiteral("a notice%1").arg(text.isEmpty() ? QString() : QStringLiteral(" containing \"%1\"").arg(text)));
+            env.notices.clear();
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("no-notice")) {
+            settle = false;
+            check(env, env.notices.isEmpty(), QStringLiteral("no notice (%1)").arg(env.notices.isEmpty() ? QStringLiteral("none") : env.notices.join(QStringLiteral("; "))));
         } else if (cmd == QLatin1String("refusals") && w.value(1) == QLatin1String("clear")) {
             settle = false;
             env.refusals.clear();
@@ -240,9 +274,13 @@ int simulate(SimEnv &env, QIODevice &in)
         } else if (cmd.startsWith(QLatin1String("key"))) {
             env.engine.handle(PadEvent{cmd, PadEvent::KeyDown, 0, 0});
         } else if (cmd.startsWith(QLatin1String("knob"))) {
-            if (rest == QLatin1String("press")) {
+            if (rest == QLatin1String("press") || rest == QLatin1String("hold")) {
                 env.engine.handle(PadEvent{cmd, PadEvent::PressDown, 0, 0});
-            } else {
+            }
+            if (rest == QLatin1String("press") || rest == QLatin1String("release")) {
+                env.engine.handle(PadEvent{cmd, PadEvent::PressUp, 0, 0});
+            }
+            if (rest != QLatin1String("press") && rest != QLatin1String("hold") && rest != QLatin1String("release")) {
                 const int n = rest.toInt();
                 for (int i = 0; i < std::abs(n); ++i) {
                     env.engine.handle(PadEvent{cmd, PadEvent::Turn, n > 0 ? 1 : -1, 0});
@@ -281,7 +319,7 @@ int main(int argc, char **argv)
     QCommandLineParser p;
     p.setApplicationDescription(QStringLiteral(
         "Per-application control surface for the CH552 macro pad (1189:8890).\n"
-        "Commands: run (default) | simulate [FILE|-] | verify | list-devices | check-config | example-config | bench-dbus [N]"));
+        "Commands: run (default) | simulate [FILE|-] | verify | list-devices | list-capabilities | check-config | example-config | bench-dbus [N]"));
     p.addHelpOption();
     p.addVersionOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
@@ -295,7 +333,8 @@ int main(int argc, char **argv)
     QCommandLineOption forceWindowOpt(QStringLiteral("force-window"), QStringLiteral("pretend this window class is focused (testing)"), QStringLiteral("class"));
     QCommandLineOption quietOpt({QStringLiteral("q"), QStringLiteral("quiet")}, QStringLiteral("log only problems"));
     QCommandLineOption traceOpt(QStringLiteral("trace"), QStringLiteral("log every Kdenlive call, reply, ack and epoch change"));
-    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt});
+    QCommandLineOption jsonOpt(QStringLiteral("json"), QStringLiteral("list-capabilities: machine-readable output"));
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt});
     p.process(app);
     const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
     const bool explicitConfig = p.isSet(configOpt);
@@ -316,9 +355,39 @@ int main(int argc, char **argv)
     if (cmd == QLatin1String("check-config")) {
         say(QStringLiteral("ok: %1 profiles, hardware map %2 (%3 chords)").arg(cfg->profiles.size()).arg(cfg->hardwareSource).arg(cfg->hardware.size()));
         for (const auto &pr : cfg->profiles) {
-            say(QStringLiteral("  profile %1: %2 layers, %3 base bindings%4").arg(pr.name).arg(pr.layers.size()).arg(pr.bindings.size()).arg(pr.kdenlive ? QStringLiteral(", kdenlive") : QString()));
+            say(QStringLiteral("  profile %1: %2 layers, %3 base bindings%4%5")
+                    .arg(pr.name)
+                    .arg(pr.layers.size())
+                    .arg(pr.bindings.size())
+                    .arg(pr.kdenlive ? QStringLiteral(", kdenlive") : QString(), pr.keyFallback ? QStringLiteral(", keyFallback") : QString()));
+        }
+        for (const QString &w : std::as_const(cfg->warnings)) {
+            say(QStringLiteral("warning: %1").arg(w));
         }
         return 0;
+    }
+    if (cmd == QLatin1String("list-capabilities")) {
+        // Read-only: Capabilities, ListActions and GetContext; no lease is taken.
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        const QStringList services = p.isSet(serviceOpt) ? QStringList{p.value(serviceOpt)} : discoverKdenliveServices(bus);
+        QJsonArray all;
+        bool anyAvailable = false;
+        for (const QString &s : services) {
+            const CapabilityReport r = queryKdenlive(bus, s);
+            anyAvailable = anyAvailable || r.status == CapabilityReport::Status::Available;
+            if (p.isSet(jsonOpt)) {
+                all.append(reportJson(r, &*cfg));
+            } else {
+                say(formatReport(r, &*cfg));
+            }
+        }
+        if (p.isSet(jsonOpt)) {
+            const QByteArray j = QJsonDocument(QJsonObject{{QStringLiteral("kdenlive"), all}}).toJson(QJsonDocument::Indented);
+            std::fwrite(j.constData(), 1, size_t(j.size()), stdout);
+        } else if (services.isEmpty()) {
+            say(QStringLiteral("no running Kdenlive on the session bus (looked for org.kde.kdenlive-<pid>; use --kdenlive-service NAME)"));
+        }
+        return anyAvailable ? 0 : 3;
     }
     if (cmd == QLatin1String("list-devices")) {
         const auto nodes = findPadInputNodes(cfg->device);
@@ -372,7 +441,11 @@ int main(int argc, char **argv)
                 return 2;
             }
         }
-        SimEnv env{engine, *kd, fake.get(), tracker, keys, {}, 0};
+        SimEnv env{engine, *kd, fake.get(), tracker, keys, {}, {}, 0};
+        QObject::connect(&engine, &Engine::notice, [&env](const QString &n) {
+            say(QStringLiteral("  NOTICE: %1").arg(n));
+            env.notices << n;
+        });
         QObject::connect(kd, &KdenliveClient::refused, [&env](const QString &what, const QString &code, const QString &) { env.refusals.append({what, code}); });
         const int rc = simulate(env, in);
         if (real) {
@@ -490,6 +563,17 @@ int main(int argc, char **argv)
     Engine engine(keys.get(), kd.get());
     engine.setConfig(*cfg);
     QObject::connect(&engine, &Engine::message, log);
+    QObject::connect(&engine, &Engine::notice, [dry, quiet](const QString &text) {
+        if (quiet) {
+            say(QStringLiteral("notice: %1").arg(text));  // otherwise logged with Engine::message
+        }
+        if (!dry) {
+            desktopNotify(text);
+        }
+    });
+    for (const QString &w : std::as_const(cfg->warnings)) {
+        say(QStringLiteral("config warning: %1").arg(w));
+    }
     QObject::connect(&engine, &Engine::runCommand, [dry](const QStringList &a) {
         if (dry) {
             say(QStringLiteral("  -> command %1").arg(a.join(QLatin1Char(' '))));
@@ -522,19 +606,36 @@ int main(int argc, char **argv)
     QObject::connect(&dev, &PadDevice::connected, [log](const QStringList &n) { log(QStringLiteral("pad connected: %1").arg(n.join(QStringLiteral(", ")))); });
     QObject::connect(&dev, &PadDevice::disconnected, [log] { log(QStringLiteral("pad disconnected, waiting")); });
     QObject::connect(&dev, &PadDevice::unmappedChord, [log](const KeyChord &c) { log(QStringLiteral("unmapped chord %1 (run 'control-surfaced verify')").arg(chordName(c))); });
-    QObject::connect(&dev, &PadDevice::padEvent, &engine, [&engine, dry](const PadEvent &e) {
-        if (dry) {
-            const QStringList candidates = e.type == PadEvent::Turn ? Engine::turnSlots(e.control, e.delta)
-                : e.type == PadEvent::PressDown                  ? QStringList{e.control + QStringLiteral(".press")}
-                                                                 : QStringList{e.control};
-            if (e.type != PadEvent::KeyUp && e.type != PadEvent::PressUp) {
-                const auto r = engine.resolve(candidates);
-                say(QStringLiteral("%1 -> %2%3").arg(e.describe(), r ? r->binding.describe() : QStringLiteral("(unbound)"),
-                                                      r && !r->layer.isEmpty() ? QStringLiteral(" [layer %1]").arg(r->layer) : QString()));
-            }
+    if (dry) {
+        QObject::connect(&dev, &PadDevice::padEvent, &engine, [](const PadEvent &e) { say(e.describe()); });
+        QObject::connect(&engine, &Engine::dispatched, [](const QString &slot, const QString &binding, const QString &layer) {
+            say(QStringLiteral("  %1 -> %2%3").arg(slot, binding, layer.isEmpty() ? QString() : QStringLiteral(" [layer %1]").arg(layer)));
+        });
+    }
+    QObject::connect(&dev, &PadDevice::padEvent, &engine, &Engine::handle);
+    // Hot reload: a valid edit replaces the config (pending knob motion is
+    // dropped); an invalid one is reported and the running config stays.
+    ConfigWatcher watcher(p.value(configOpt));
+    watcher.setExtraFiles({defaultHardwareMapPath()});
+    const DeviceMatch startedWith = cfg->device;
+    QObject::connect(&watcher, &ConfigWatcher::reloaded, &engine, [&](const Config &c) {
+        engine.setConfig(c);
+        dev.setHardwareMap(c.hardware);
+        say(QStringLiteral("config reloaded from %1 (%2 profiles, hardware map %3)").arg(watcher.path()).arg(c.profiles.size()).arg(c.hardwareSource));
+        for (const QString &w : c.warnings) {
+            say(QStringLiteral("config warning: %1").arg(w));
         }
-        engine.handle(e);
+        if (c.device.vendor != startedWith.vendor || c.device.product != startedWith.product || c.device.serial != startedWith.serial) {
+            say(QStringLiteral("config: device changes take effect after a restart"));
+        }
     });
+    QObject::connect(&watcher, &ConfigWatcher::failed, [dry](const QString &e) {
+        std::fprintf(stderr, "config not reloaded: %s\n", qPrintable(e));
+        if (!dry) {
+            desktopNotify(QStringLiteral("Config not reloaded: %1").arg(e));
+        }
+    });
+    watcher.start();
     dev.start();
     const int rc = app.exec();
     dev.stop();

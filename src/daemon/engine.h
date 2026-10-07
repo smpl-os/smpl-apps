@@ -45,7 +45,10 @@ public:
 
     const Profile *activeProfile() const { return m_profile; }
     bool kdenliveActive() const;  // interface available
-    bool kdenliveStock() const;   // Kdenlive focused, interface proven absent: stock keys allowed
+    bool kdenliveStock() const;   // interface proven absent and the profile opted into keyFallback
+    bool kdenliveAbsent() const;  // Kdenlive focused, interface proven absent (or no client)
+    static QStringList shiftSlots(const QString &control, int delta);
+    static QString absentNotice();
     QString modeValue(const QString &mode) const;
     int pendingTaps() const { return int(m_tapQueue.size()); }
     int activeGestures() const { return int(m_gestures.size()); }
@@ -54,6 +57,10 @@ public:
 Q_SIGNALS:
     void runCommand(const QStringList &argv);
     void message(const QString &text);
+    // User-facing notices worth a desktop notification (also sent as message).
+    void notice(const QString &text);
+    // A binding is about to run (dry-run and simulate print these).
+    void dispatched(const QString &slot, const QString &binding, const QString &layer);
 
 private:
     struct Tap {
@@ -105,6 +112,13 @@ private:
     QHash<QString, Gesture> m_gestures;  // binding identity -> open editing gesture
     quint64 m_gestureCounter = 0;
     QTimer *m_gestureTimer;
+    // Navigation that retargets (timeline.track, param.focus): after an ack that
+    // changed something, the key's next batch waits for the new epoch, so it is
+    // not sent against the context it just replaced.
+    QHash<QString, quint64> m_navInFlight;  // key -> epoch when sent
+    QSet<QString> m_navAwaitingEpoch;
+    QTimer *m_navTimer = nullptr;
+    void releaseNavigation();
     QHash<QString, int> m_modeIndex;  // "profile/mode" -> index
     QHash<QString, QElapsedTimer> m_lastTurn;
     struct Fallback {
@@ -114,6 +128,13 @@ private:
     };
     QHash<QString, Fallback> m_actionFallback;
     QSet<QString> m_said;
+    // Press+turn shift: knobs held down, presses deferred to release because a
+    // shift binding exists, and holds that turned (their press is swallowed).
+    QSet<QString> m_held;
+    QSet<QString> m_deferredPress;
+    QSet<QString> m_shiftTurned;
+    void noticeAbsent(const QString &what);
+    void clearHeld();
     QList<Tap> m_tapQueue;
     QTimer *m_tapTimer;
 };

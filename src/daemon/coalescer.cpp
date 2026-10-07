@@ -70,6 +70,16 @@ void DeltaCoalescer::clear()
     }
 }
 
+void DeltaCoalescer::clearExcept(const QSet<QString> &keep)
+{
+    const auto keys = m_slots.keys();
+    for (const auto &k : keys) {
+        if (!keep.contains(k)) {
+            removeSlot(k);
+        }
+    }
+}
+
 double DeltaCoalescer::pending(const QString &key) const
 {
     return m_slots.value(key).pending;

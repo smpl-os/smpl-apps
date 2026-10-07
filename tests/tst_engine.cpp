@@ -49,13 +49,25 @@ class TestEngine : public QObject
     Q_OBJECT
     Config m_cfg;
 
+    // Stock-key fallback is an explicit per-profile opt-in.
+    Config optIn() const
+    {
+        Config c = m_cfg;
+        for (auto &p : c.profiles) {
+            if (p.kdenlive) {
+                p.keyFallback = true;
+            }
+        }
+        return c;
+    }
+
 private Q_SLOTS:
     void initTestCase()
     {
         QTemporaryDir home;
         qputenv("HOME", home.path().toLocal8Bit());
         QString err;
-        auto c = loadConfig(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"), &err);
+        auto c = loadConfig(QStringLiteral(CS_SOURCE_DIR "/tests/data/engine-test-config.jsonc"), &err);
         QVERIFY2(c, qPrintable(err));
         m_cfg = *c;
         m_cfg.settings.accelFactor = 1.0;  // deterministic detent counts
@@ -101,6 +113,87 @@ private Q_SLOTS:
         QVERIFY(keys.taps.isEmpty());
     }
 
+    // Press+turn: a turn while the knob is held uses knobN.shift.*; the press
+    // of a knob with shift bindings fires on release, and only if it did not turn.
+    void pressAndTurnShift()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        QString err;
+        auto c = parseConfig("{\"profiles\":[{\"name\":\"kd\",\"match\":{\"class\":\"^kd$\"},\"kdenlive\":true,\"bindings\":{"
+                             "\"knob1\":{\"turn\":{\"control\":\"playhead.jog\"},\"press\":{\"action\":\"monitor_play\"},"
+                             "\"shift\":{\"turn\":{\"control\":\"timeline.scroll\"}}},"
+                             "\"knob2\":{\"turn\":{\"control\":\"timeline.zoom\"},\"press\":{\"action\":\"zoom_fit\"}}}}]}",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        c->settings.accelFactor = 1;
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        const PadEvent up1{QStringLiteral("knob1"), PadEvent::PressUp, 0, 0};
+        // Hold and turn: shift binding, and the press is swallowed.
+        e.handle(press(1));
+        QVERIFY(kd.calls.isEmpty());  // deferred to release
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.calls, QStringList{QStringLiteral("control timeline.scroll 1")});
+        e.handle(up1);
+        QTest::qWait(20);
+        QCOMPARE(kd.calls.size(), 1);
+        // Not held: the normal turn.
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.calls.size(), 2);
+        QCOMPARE(kd.calls.last(), QStringLiteral("control playhead.jog 1"));
+        // Press and release without turning: the press fires on release.
+        e.handle(press(1));
+        QCOMPARE(kd.calls.size(), 2);
+        e.handle(up1);
+        QCOMPARE(kd.calls.last(), QStringLiteral("action monitor_play"));
+        // A knob without shift bindings fires on press, and a held turn is a normal turn.
+        e.handle(press(2));
+        QCOMPARE(kd.calls.last(), QStringLiteral("action zoom_fit"));
+        e.handle(turn(2, -1));
+        QTRY_COMPARE(kd.calls.last(), QStringLiteral("control timeline.zoom -1"));
+        e.handle(PadEvent{QStringLiteral("knob2"), PadEvent::PressUp, 0, 0});
+        QTest::qWait(20);
+        QCOMPARE(kd.calls.size(), 5);
+        QVERIFY(keys.taps.isEmpty());
+        // A deferred press never fires into another profile.
+        e.handle(press(1));
+        e.setActiveWindow(kFirefox);
+        e.handle(up1);
+        QTest::qWait(20);
+        QCOMPARE(kd.calls.size(), 5);
+        QVERIFY(keys.taps.isEmpty());
+    }
+
+    // "accel" on a binding overrides settings.accelFactor; 1 turns it off.
+    void perBindingAcceleration()
+    {
+        QString err;
+        auto c = parseConfig("{\"settings\":{\"accelFactor\":3,\"accelWindowMs\":1000},"
+                             "\"profiles\":[{\"name\":\"kd\",\"match\":{\"class\":\"^kd$\"},\"kdenlive\":true,\"bindings\":{"
+                             "\"knob1\":{\"turn\":{\"control\":\"playhead.jog\"}},"
+                             "\"knob2\":{\"turn\":{\"control\":\"timeline.zoom\",\"accel\":1}},"
+                             "\"knob3\":{\"turn\":{\"control\":\"timeline.track\",\"accel\":5}}}}]}",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(c->profiles.first().bindings.value(QStringLiteral("knob3.turn")).accel, 5.0);
+        for (const auto &[knob, expected] : {std::pair{1, 3.0}, std::pair{2, 1.0}, std::pair{3, 5.0}}) {
+            RecordingKeySink keys;
+            FakeKdenliveClient kd;
+            kd.setAutoAck(false);
+            Engine e(&keys, &kd);
+            e.setConfig(*c);
+            e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+            e.handle(turn(knob, 1));  // first detent: never accelerated
+            e.handle(turn(knob, 1));  // within the window
+            kd.ackAll();
+            QTRY_COMPARE(kd.controlDeltas.size(), 2);
+            QCOMPARE(kd.controlDeltas.at(0), 1.0);
+            QCOMPARE(kd.controlDeltas.at(1), expected);
+        }
+    }
+
     // Item 2: acks release only their exact key.
     void ackReleasesOnlyItsOwnKey()
     {
@@ -138,7 +231,7 @@ private Q_SLOTS:
         FakeKdenliveClient kd;
         kd.setState(State::Absent);  // stock Kdenlive or interface off (the default)
         Engine e(&keys, &kd);
-        e.setConfig(m_cfg);
+        e.setConfig(optIn());
         e.setActiveWindow(kKdenlive);
         e.handle(key(1));
         e.handle(key(6));
@@ -150,6 +243,64 @@ private Q_SLOTS:
                      (QStringList{QStringLiteral("I"), QStringLiteral("shift+R"), QStringLiteral("LEFT"), QStringLiteral("LEFT"), QStringLiteral("ctrl+EQUAL"),
                                   QStringLiteral("SPACE")}));
         QVERIFY(kd.calls.isEmpty());
+    }
+
+    // The default: Kdenlive is driven only through its API. With the interface
+    // absent or off nothing is typed; the user gets one clear notice.
+    void absentIsApiOnlyByDefault()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        kd.setState(State::Absent);
+        Engine e(&keys, &kd);
+        QSignalSpy notices(&e, &Engine::notice);
+        QSignalSpy msgs(&e, &Engine::message);
+        e.setConfig(m_cfg);
+        QVERIFY(!e.activeProfile() || !e.activeProfile()->keyFallback);
+        e.setActiveWindow(kKdenlive);
+        QVERIFY(!e.activeProfile()->keyFallback);
+        e.handle(key(1));        // action
+        e.handle(key(13));       // daemon mode cycle still works
+        e.handle(turn(1, -1));   // control
+        e.handle(turn(3, 1));
+        e.handle(press(1));
+        QTest::qWait(60);
+        QVERIFY2(keys.taps.isEmpty(), "API-only: no stock shortcuts without keyFallback");
+        QVERIFY(kd.calls.isEmpty());
+        QCOMPARE(notices.size(), 1);  // once per attachment, not per input
+        QVERIFY(notices.first().first().toString().contains(QStringLiteral("Kdenlive control interface not enabled")));
+        QVERIFY(notices.first().first().toString().contains(QStringLiteral("keyFallback")));
+        int absent = 0;
+        for (const auto &m : msgs) {
+            absent += m[0].toString().contains(QStringLiteral("not enabled")) ? 1 : 0;
+        }
+        QCOMPARE(absent, 1);
+        // A new attachment (another Kdenlive instance) is told again.
+        e.setActiveWindow(kFirefox);
+        e.setActiveWindow(WindowInfo{kKdenlive.cls, QStringLiteral("B"), 5151, QStringLiteral("0xb")});
+        e.handle(key(1));
+        QTRY_COMPARE(notices.size(), 2);
+        QVERIFY(keys.taps.isEmpty());
+        // Other apps keep their uinput profiles.
+        e.setActiveWindow(kFirefox);
+        e.handle(key(12));
+        QTRY_COMPARE(keys.taps, QStringList{QStringLiteral("PLAYPAUSE")});
+    }
+
+    void absentAtCallTimeWithoutOptInOnlyNotices()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        QSignalSpy notices(&e, &Engine::notice);
+        e.setConfig(m_cfg);
+        e.setActiveWindow(kKdenlive);
+        e.handle(key(2));  // mark_out through the interface
+        QTRY_COMPARE(kd.calls, QStringList{QStringLiteral("action mark_out")});
+        Q_EMIT kd.actionFailed(QStringLiteral("mark_out"));  // the interface vanished
+        QTest::qWait(30);
+        QVERIFY(keys.taps.isEmpty());
+        QCOMPARE(notices.size(), 1);
     }
 
     void pendingNeverTypesKeys()
@@ -193,10 +344,10 @@ private Q_SLOTS:
         RecordingKeySink keys;
         FakeKdenliveClient kd;
         Engine e(&keys, &kd);
-        e.setConfig(m_cfg);
+        e.setConfig(optIn());
         e.setActiveWindow(kKdenlive);
         e.handle(key(2));  // mark_out
-        Q_EMIT kd.actionFailed(QStringLiteral("mark_out"));  // interface vanished: stock allowed
+        Q_EMIT kd.actionFailed(QStringLiteral("mark_out"));  // interface vanished: stock allowed (opt-in)
         QTRY_COMPARE(keys.taps, QStringList{QStringLiteral("O")});
         e.handle(key(14));
         e.setActiveWindow(kFirefox);
@@ -478,7 +629,7 @@ private Q_SLOTS:
         FakeKdenliveClient kd;
         kd.setState(State::Absent);
         Engine e(&keys, &kd);
-        Config c = m_cfg;
+        Config c = optIn();
         c.settings.keyRateHz = 50;  // 20 ms per tap
         e.setConfig(c);
         e.setActiveWindow(kKdenlive);
@@ -627,6 +778,52 @@ private Q_SLOTS:
         QVERIFY(keys.taps.isEmpty());
     }
 
+    // Found in the real-Kdenlive acceptance: a second quick detent on a track or
+    // parameter-focus knob was sent with the epoch the first step had just
+    // replaced (stale_context) and the rest was dropped. The next batch now waits
+    // for the new epoch, and the self-caused epoch change keeps those steps.
+    void navigationWaitsForItsOwnEpochChange()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        kd.setAutoAck(false);
+        Engine e(&keys, &kd);
+        QString err;
+        auto c = parseConfig("{\"profiles\":[{\"name\":\"kd\",\"match\":{\"class\":\"^kd$\"},\"kdenlive\":true,\"bindings\":{"
+                             "\"knob1\":{\"turn\":{\"control\":\"timeline.track\"}},\"knob2\":{\"turn\":{\"control\":\"playhead.jog\"}}}}]}",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        c->settings.accelFactor = 1.0;
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)}});
+        const QVariantMap changed{{QStringLiteral("ok"), true}, {QStringLiteral("result"), QVariantMap{{QStringLiteral("changed"), true}}}};
+        e.handle(turn(1, 1));
+        e.handle(turn(1, 1));
+        e.handle(turn(1, 1));
+        e.handle(turn(2, 1));  // other work: a jog that the epoch change must still drop
+        QCOMPARE(kd.controlDeltas.size(), 2);  // one track step and one jog in flight
+        kd.ackAll(changed);
+        QTest::qWait(30);
+        QCOMPARE(kd.controlDeltas.size(), 2);  // held: the context still shows the old track
+        kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(2)}});
+        QTRY_COMPARE(kd.controlDeltas.size(), 3);
+        QCOMPARE(kd.controlDeltas.at(2), 2.0);  // both queued steps, sent under the new epoch
+        QVERIFY(kd.calls.last().startsWith(QStringLiteral("control timeline.track 2")));
+        // No epoch change follows (e.g. already at the last track): the timer releases it.
+        kd.ackAll(changed);  // the batch of 2: held again
+        e.handle(turn(1, 1));
+        QTest::qWait(30);
+        QCOMPARE(kd.controlDeltas.size(), 3);
+        QTRY_COMPARE_WITH_TIMEOUT(kd.controlDeltas.size(), 4, 1000);
+        QCOMPARE(kd.controlDeltas.at(3), 1.0);
+        // An unchanged step releases at once.
+        kd.ackAll({{QStringLiteral("ok"), true}, {QStringLiteral("result"), QVariantMap{{QStringLiteral("changed"), false}}}});
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(kd.controlDeltas.size(), 5);
+        QVERIFY(keys.taps.isEmpty());
+    }
+
     // limits.trimGestureSteps: the daemon ends a trim gesture before the host's
     // bound and continues with a fresh one.
     void trimGestureRespectsStepLimit()
@@ -708,7 +905,7 @@ private Q_SLOTS:
             FakeKdenliveClient kd;
             kd.setState(st);
             Engine e(&keys, &kd);
-            e.setConfig(m_cfg);
+            e.setConfig(optIn());
             e.setActiveWindow(kKdenlive);  // instance A, pid 4242
             // Focus moves to Kdenlive instance B; its pid is not known yet.
             e.setActiveWindow(WindowInfo{kKdenlive.cls, QStringLiteral("B"), 0, QStringLiteral("0xb")});

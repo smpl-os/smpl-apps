@@ -410,26 +410,6 @@ QStringList MockKdenlive::commandsForStage() const
 
 QVariantMap MockKdenlive::capabilities() const
 {
-    QList<QVariantMap> descs;
-    for (const auto &d : descriptors()) {
-        if (d.stage > m_stage) {
-            continue;
-        }
-        QVariantMap m{{QStringLiteral("id"), d.id},
-                      {QStringLiteral("unit"), d.unit},
-                      {QStringLiteral("integral"), d.integral},
-                      {QStringLiteral("maxDelta"), d.maxDelta},
-                      {QStringLiteral("editing"), d.editing},
-                      {QStringLiteral("absolute"), d.absolute},
-                      {QStringLiteral("options"), d.options}};
-        if (d.id == kColorWheel) {
-            m.insert(QStringLiteral("axes"), QStringList{QStringLiteral("value"), QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")});
-        }
-        if (d.id == kTrim) {
-            m.insert(QStringLiteral("modes"), kQualifiedTrimModes);
-        }
-        descs << m;
-    }
     // Advertised (possible) keys, as Kdenlive does; optional ones appear only when they apply.
     QStringList contextKeys{QStringLiteral("serial"), QStringLiteral("emittedAtMs"), QStringLiteral("epoch"), QStringLiteral("ready"),
                             QStringLiteral("active"), QStringLiteral("dialog"), QStringLiteral("focus"), QStringLiteral("project"),
@@ -452,8 +432,8 @@ QVariantMap MockKdenlive::capabilities() const
                {QStringLiteral("commands"), commandsForStage()},
                {QStringLiteral("contextKeys"), contextKeys},
                {QStringLiteral("limits"), limits},
-               {QStringLiteral("trimModes"), m_stage >= 3 ? kQualifiedTrimModes : QStringList{}},
-               {QStringLiteral("controlDescriptors"), QVariant::fromValue(descs)}});
+               {QStringLiteral("trimModes"), m_stage >= 3 ? kQualifiedTrimModes : QStringList{}}});
+    // controlDescriptors is optional and absent in Kdenlive's qualified host.
 }
 
 QVariantMap MockKdenlive::subscribe()
@@ -1400,14 +1380,16 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
     if (command.size() > kMaxIdentifier) {
         return fail(err::ResourceLimit, QStringLiteral("command identifier too long"), QStringLiteral("command"));
     }
-    if (!commandsForStage().contains(command)) {
-        return fail(err::UnsupportedControl, QStringLiteral("command not offered"), QStringLiteral("command"));
-    }
+    // As Kdenlive: option validation first, then dispatch; an unknown command
+    // is unsupported_control with an empty field.
     const QStringList allowed = optionsFor(command);
     int budget = kMaxStringInput - int(command.size());
     QVariantMap e = admit(c, args, allowed, &budget);
     if (!e.isEmpty()) {
         return e;
+    }
+    if (!commandsForStage().contains(command)) {
+        return fail(err::UnsupportedControl, QStringLiteral("command not offered"));
     }
     const QString target = args.value(kOptTarget).toString();
     for (auto it = m_gestures.cbegin(); it != m_gestures.cend(); ++it) {

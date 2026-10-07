@@ -41,17 +41,20 @@ QString hexBytes(const unsigned char *p, int n)
     return s;
 }
 
-std::vector<Step> buildPlan(Generation g, bool blank)
+std::vector<Step> buildPlan(Generation g, bool blank, std::pair<int, int> slotRange = {1, 24}, int commitSettleMs = 120)
 {
     std::vector<Step> plan;
     plan.push_back({QStringLiteral("ping"), pingFrame(), 50});
     for (const auto &sc : defaultScheme()) {
+        if (sc.slot < slotRange.first || sc.slot > slotRange.second) {
+            continue;
+        }
         const auto frames = blank ? emptyKey(g, sc.slot) : keyBinding(g, sc.slot, {sc.chord});
         for (std::size_t i = 0; i < frames.size(); ++i) {
             const bool commit = frames[i][0] == 0xAA;
             const QString what = blank ? QStringLiteral("slot %1 empty").arg(sc.slot)
                                        : QStringLiteral("slot %1 -> %2").arg(sc.slot).arg(QString::fromStdString(sc.name));
-            plan.push_back({commit ? what + QStringLiteral(" commit") : what, frames[i], commit ? 120 : 30});
+            plan.push_back({commit ? what + QStringLiteral(" commit") : what, frames[i], commit ? commitSettleMs : 30});
         }
     }
     return plan;
@@ -99,17 +102,32 @@ int main(int argc, char **argv)
     QCommandLineOption logOpt(QStringLiteral("log"), QStringLiteral("write a JSON record of every frame and device reply"), QStringLiteral("file"));
     QCommandLineOption yesOpt(QStringLiteral("yes"), QStringLiteral("actually write to the device"));
     QCommandLineOption genOpt(QStringLiteral("generation"), QStringLiteral("plan only: rid0 or rid3"), QStringLiteral("gen"), QStringLiteral("rid0"));
-    p.addOptions({serialOpt, devOpt, logOpt, yesOpt, genOpt});
+    QCommandLineOption slotsOpt(QStringLiteral("slots"), QStringLiteral("only these slots: N or A-B within 1-24 (default 1-24)"), QStringLiteral("range"),
+                                QStringLiteral("1-24"));
+    QCommandLineOption settleOpt(QStringLiteral("settle-ms"), QStringLiteral("pause after each commit frame, 0-10000 ms (default 120)"), QStringLiteral("ms"),
+                                 QStringLiteral("120"));
+    p.addOptions({serialOpt, devOpt, logOpt, yesOpt, genOpt, slotsOpt, settleOpt});
     p.process(app);
     const QStringList args = p.positionalArguments();
     const QString cmd = args.value(0, QStringLiteral("plan"));
+    const auto slotRange = parseSlotRange(p.value(slotsOpt).toStdString());
+    if (!slotRange) {
+        std::fprintf(stderr, "--slots: expected N or A-B within 1-24, got '%s'\n", qPrintable(p.value(slotsOpt)));
+        return 2;
+    }
+    bool settleOk = false;
+    const int settleMs = p.value(settleOpt).toInt(&settleOk);
+    if (!settleOk || settleMs < 0 || settleMs > 10000) {
+        std::fprintf(stderr, "--settle-ms: expected 0-10000, got '%s'\n", qPrintable(p.value(settleOpt)));
+        return 2;
+    }
 
     if (cmd == QLatin1String("list")) {
         return listDevices(p.value(serialOpt));
     }
     if (cmd == QLatin1String("plan")) {
         const Generation g = p.value(genOpt) == QLatin1String("rid3") ? Generation::Rid3 : Generation::Rid0;
-        printPlan(buildPlan(g, false), g);
+        printPlan(buildPlan(g, false, *slotRange, settleMs), g);
         std::printf("\nexpected positions if slots are keys 1-15 then knobs (ccw,press,cw):\n");
         for (const auto &sc : defaultScheme()) {
             const auto a = slotTarget(Numbering::KeysThenKnobs, sc.slot);
@@ -145,7 +163,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "refusing: unexpected configuration report descriptor (out=%d bits)\n", info.outputBits);
         return 4;
     }
-    const auto plan = buildPlan(*gen, cmd == QLatin1String("blank"));
+    const auto plan = buildPlan(*gen, cmd == QLatin1String("blank"), *slotRange, settleMs);
     for (const auto &s : plan) {
         if (!isAllowedFrame(s.frame)) {
             std::fprintf(stderr, "internal error: frame not allowed: %s\n", hex(s.frame).c_str());

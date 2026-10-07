@@ -2,6 +2,7 @@
 // Contract revision 2 over real D-Bus marshalling on a peer connection:
 // envelopes, staged capabilities, validation, sequences, actions, gestures,
 // and Engine -> KdenliveDBusClient -> MockKdenlive end to end.
+#include "capabilities.h"
 #include "engine.h"
 #include "kdenlivecontract.h"
 #include "kdenlivedbusclient.h"
@@ -10,6 +11,7 @@
 
 #include <QDBusConnection>
 #include <QDBusServer>
+#include <QJsonObject>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -71,7 +73,7 @@ private Q_SLOTS:
         QTemporaryDir home;
         qputenv("HOME", home.path().toLocal8Bit());
         QString err;
-        auto c = loadConfig(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"), &err);
+        auto c = loadConfig(QStringLiteral(CS_SOURCE_DIR "/tests/data/engine-test-config.jsonc"), &err);
         QVERIFY2(c, qPrintable(err));
         m_cfg = *c;
         m_cfg.settings.accelFactor = 1.0;
@@ -128,7 +130,7 @@ private Q_SLOTS:
         QCOMPARE(limits.value(QStringLiteral("maximumDelta")).toInt(), 10000);
         QVERIFY(r.value(QStringLiteral("contextKeys")).toStringList().contains(QStringLiteral("emittedAtMs")));
         QVERIFY(!r.value(QStringLiteral("contextKeys")).toStringList().contains(QStringLiteral("colorWheels")));  // stage 1
-        QCOMPARE(r.value(QStringLiteral("controlDescriptors")).toList().size(), 3);
+        QVERIFY(!r.contains(QStringLiteral("controlDescriptors")));  // optional; absent in the qualified host
         // Wire types: ListActions result carries aa{sv}.
         const QDBusMessage la = raw.rawCall(QStringLiteral("ListActions"));
         QCOMPARE(la.signature(), QStringLiteral("a{sv}"));
@@ -533,7 +535,12 @@ private Q_SLOTS:
         QCOMPARE(wheelValue(m_mock, "lift", "r"), 0.0);
         reset.insert(QStringLiteral("wheel"), QStringLiteral("gamma"));
         QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {contract::kCmdWheelReset, QVariant::fromValue(reset)})), contract::err::UnsupportedParameter);
-        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {QStringLiteral("project.render"), QVariant::fromValue(raw.common())})), contract::err::UnsupportedControl);
+        const QVariantMap unknown = raw.call(QStringLiteral("Invoke"), {QStringLiteral("project.render"), QVariant::fromValue(raw.common())});
+        QCOMPARE(RawClient::code(unknown), contract::err::UnsupportedControl);
+        QCOMPARE(unknown.value(QStringLiteral("error")).toMap().value(QStringLiteral("field")).toString(), QString());  // empty, as the host
+        QVariantMap extra = raw.common();
+        extra.insert(QStringLiteral("frobnicate"), true);  // options are validated before dispatch
+        QCOMPARE(RawClient::code(raw.call(QStringLiteral("Invoke"), {QStringLiteral("project.render"), QVariant::fromValue(extra)})), contract::err::InvalidArguments);
         // Transport refuses parameter options; parameter controls share one option set.
         raw.control(contract::kJog, 1, {{QStringLiteral("wheel"), QStringLiteral("lift")}}, 5);
         QTRY_COMPARE(RawClient::code(raw.ackFor(5).value(QStringLiteral("outcome")).toMap()), contract::err::InvalidArguments);
@@ -1034,11 +1041,73 @@ private Q_SLOTS:
         client.setServiceOverride(QString());
         RecordingKeySink keys;
         Engine e(&keys, &client);
+        QSignalSpy notices(&e, &Engine::notice);
         e.setConfig(m_cfg);
         e.setActiveWindow(WindowInfo{QStringLiteral("org.kde.kdenlive"), QStringLiteral("t"), 99, QStringLiteral("0x1")});
         QTRY_COMPARE(client.state(), State::Absent);
         e.handle(PadEvent{QStringLiteral("key1"), PadEvent::KeyDown, 0, 0});
+        QTRY_COMPARE(notices.size(), 1);  // API-only by default: a notice, no keys
+        QTest::qWait(30);
+        QVERIFY(keys.taps.isEmpty());
+        // The explicit per-profile opt-in types the stock shortcut.
+        Config c = m_cfg;
+        for (auto &p : c.profiles) {
+            p.keyFallback = p.kdenlive;
+        }
+        e.setConfig(c);
+        e.handle(PadEvent{QStringLiteral("key1"), PadEvent::KeyDown, 0, 0});
         QTRY_COMPARE(keys.taps, QStringList{QStringLiteral("I")});  // stock shortcut
+    }
+
+    // list-capabilities: read-only queries (no lease), related to the config.
+    void listCapabilitiesAgainstMock()
+    {
+        QString err;
+        auto def = loadConfig(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"), &err);
+        QVERIFY2(def, qPrintable(err));
+        m_mock->setStage(2);
+        m_mock->focusWheels(QStringLiteral("gamma"));
+        const CapabilityReport r = queryKdenlive(connectClient(), QString(), 3000);
+        QCOMPARE(int(r.status), int(CapabilityReport::Status::Available));
+        QCOMPARE(m_mock->leaseCount(), 0);  // never subscribed
+        QVERIFY(r.capabilities.value(QStringLiteral("controls")).toStringList().contains(contract::kColorWheel));
+        QVERIFY(!r.actions.isEmpty());
+        QCOMPARE(r.context.value(QStringLiteral("colorWheels")).toList().size(), 3);
+        const ConfigFindings f = checkAgainstConfig(r, *def);
+        QVERIFY2(f.layersNow.contains(QStringLiteral("kdenlive/color-wheels")), qPrintable(f.layersNow.join(QLatin1Char(' '))));
+        // Stage 2 has no MR3 track/trim controls: the config's track and trim pages say so.
+        QVERIFY2(f.notOffered.contains(QStringLiteral("control timeline.track (profile kdenlive knob3.turn)")), qPrintable(f.notOffered.join(QLatin1Char('\n'))));
+        QVERIFY(f.notOffered.contains(QStringLiteral("control edit.trim (profile kdenlive layer trim knob2.turn)")));
+        QVERIFY(f.notOffered.contains(QStringLiteral("command track.set (profile kdenlive layer track-mixer key1)")));
+        QVERIFY(!f.notOffered.join(QLatin1Char(' ')).contains(QStringLiteral("colorwheel.nudge")));
+        const QString text = formatReport(r, &*def);
+        QVERIFY(text.contains(QStringLiteral("colorWheels[3]")));
+        QVERIFY(text.contains(QStringLiteral("bound but not offered")));
+        const QJsonObject j = reportJson(r, &*def);
+        QCOMPARE(j.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
+        QVERIFY(j.value(QStringLiteral("contextPaths")).toObject().contains(QStringLiteral("colorWheel.target")));
+        // A mode selects layers: the trim page applies once chosen.
+        const ConfigFindings trim = checkAgainstConfig(r, *def, {{QStringLiteral("page"), QStringLiteral("trim")}});
+        QVERIFY(trim.layersNow.contains(QStringLiteral("kdenlive/trim")));
+        QVERIFY(flattenContext({{QStringLiteral("a"), QVariantMap{{QStringLiteral("b"), 1}}}, {QStringLiteral("l"), QVariantList{1, 2}}})
+                == (QVariantMap{{QStringLiteral("a.b"), 1}, {QStringLiteral("l"), QStringLiteral("[2 items]")}}));
+    }
+
+    void listCapabilitiesInterfaceOffOrOld()
+    {
+        m_register = false;  // Kdenlive with the interface off (its default)
+        const CapabilityReport off = queryKdenlive(connectClient(), QString(), 3000);
+        QCOMPARE(int(off.status), int(CapabilityReport::Status::Absent));
+        QVERIFY(off.detail.contains(QStringLiteral("UnknownObject")));
+        QVERIFY(formatReport(off, nullptr).contains(QStringLiteral("control interface not enabled")));
+        QCOMPARE(reportJson(off, nullptr).value(QStringLiteral("status")).toString(), QStringLiteral("absent"));
+        m_register = true;
+        m_old = new QObject;
+        m_oldAdaptor = new OldAdaptor(m_old);
+        const CapabilityReport old = queryKdenlive(connectClient(), QString(), 3000);
+        QCOMPARE(int(old.status), int(CapabilityReport::Status::Incompatible));
+        QVERIFY(old.detail.contains(QStringLiteral("revision 1")));
+        QCOMPARE(m_oldAdaptor->subscribes, 0);
     }
 
     void incompatibleRevisionIsTreatedAsAbsent()

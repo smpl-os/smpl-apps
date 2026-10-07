@@ -118,6 +118,16 @@ private Q_SLOTS:
         QCOMPARE(s[6].name, std::string("shift+F14"));
         QCOMPARE(s[23].name, std::string("alt+F19"));
     }
+    void slotRanges()
+    {
+        QCOMPARE(parseSlotRange("1-24"), (std::optional<std::pair<int, int>>{{1, 24}}));
+        QCOMPARE(parseSlotRange("1-1"), (std::optional<std::pair<int, int>>{{1, 1}}));
+        QCOMPARE(parseSlotRange("7"), (std::optional<std::pair<int, int>>{{7, 7}}));
+        for (const char *bad : {"", "0", "25", "3-2", "1-25", "-3", "1-", "a", "1--2", "001", " 1"}) {
+            QVERIFY2(!parseSlotRange(bad), bad);
+        }
+    }
+
     void numberingsCoverAllControls()
     {
         for (auto n : {Numbering::KeysThenKnobs, Numbering::VendorTwelve}) {

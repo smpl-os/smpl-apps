@@ -6,6 +6,8 @@
 // retires the key.
 #pragma once
 
+#include <QSet>
+
 #include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
@@ -35,6 +37,7 @@ public:
     // Forget key without sending anything (the consumer already ended it).
     void drop(const QString &key) { removeSlot(key); }
     void clear();
+    void clearExcept(const QSet<QString> &keep);
     bool contains(const QString &key) const { return m_slots.contains(key); }
     double pending(const QString &key) const;
     int keyCount() const { return int(m_slots.size()); }

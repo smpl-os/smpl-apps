@@ -18,6 +18,7 @@ struct Binding {
     QList<KeyChord> keys;  // Keys, or Action/Control fallback when Kdenlive does not answer
     QString name;          // action id, control id, cycle mode, request method
     double scale = 1.0;    // Control: multiplier applied to detents
+    double accel = 0;      // Control: acceleration factor for fast detents; 0 = settings.accelFactor
     QVariantMap options;   // Control/Request options; "$mode" expands to a mode value, "$ctx:path" to a context value
     QString targetFrom;    // context path of the target handle (default per control; e.g. "hoveredColorWheel.target")
     QStringList argv;      // Command
@@ -26,7 +27,8 @@ struct Binding {
     QString describe() const;
 };
 
-// Event slots: "key1".."key15", "knobN.turn", "knobN.ccw", "knobN.cw", "knobN.press"
+// Event slots: "key1".."key15", "knobN.turn", "knobN.ccw", "knobN.cw", "knobN.press",
+// and "knobN.shift.turn|ccw|cw" (turning while the knob is held down).
 using BindingMap = QHash<QString, Binding>;
 
 struct Layer {
@@ -42,6 +44,10 @@ struct Profile {
     bool hasMatch = false;   // false: global fallback profile
     bool kdenlive = false;   // talk to Kdenlive's control-surface interface
     bool fallthrough = true; // unbound slots fall back to the global profile
+    // Kdenlive only: type the configured stock shortcuts when its control
+    // interface is absent (it is off by default). Off: API only, the pad then
+    // does nothing in Kdenlive and a notice explains how to enable the interface.
+    bool keyFallback = false;
     QList<Layer> layers;     // first matching layer wins, then base bindings
     BindingMap bindings;
     QHash<QString, QStringList> modes;
@@ -73,6 +79,7 @@ struct Config {
     QString hardwareSource = QStringLiteral("default:keys-then-knobs");
     Settings settings;
     QList<Profile> profiles;
+    QStringList warnings;  // non-fatal findings of the config check
 
     const Profile *profileFor(const QString &cls, const QString &title) const;
     const Profile *globalProfile() const;
@@ -82,6 +89,8 @@ QByteArray stripJsonComments(const QByteArray &in);
 std::optional<Binding> parseBinding(const QJsonValue &v, QString *error);
 std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDir, QString *error);
 std::optional<Config> loadConfig(const QString &path, QString *error);
+// Semantic checks run by parseConfig: errors fail, warnings go to cfg.warnings.
+bool checkConfig(Config &cfg, QString *error);
 QString expandHome(const QString &path);
 QString defaultConfigPath();
 QString defaultHardwareMapPath();

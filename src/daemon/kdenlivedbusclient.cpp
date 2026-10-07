@@ -236,7 +236,7 @@ void KdenliveDBusClient::handleTransportError(const QString &what, const QString
     const QString who = m_service.isEmpty() ? QStringLiteral("peer") : m_service;
     if (contract::kAbsentErrors.contains(errorName)) {
         // Proven absent: plain stock Kdenlive (the interface defaults to off).
-        Q_EMIT message(QStringLiteral("%1: %2 not available (%3); stock shortcuts will be used").arg(who, contract::kInterface, errorName));
+        Q_EMIT message(QStringLiteral("%1: %2 not available (%3); treated as interface absent").arg(who, contract::kInterface, errorName));
         setState(State::Absent);
         if (!actionId.isEmpty()) {
             Q_EMIT actionFailed(actionId);
@@ -280,7 +280,7 @@ void KdenliveDBusClient::stepCapabilities(quint64 gen)
             }
             // Version 1 at revision >= 2 is compatible; anything else is
             // unavailable at negotiation, before any mutation: stock Kdenlive.
-            Q_EMIT message(QStringLiteral("incompatible %1 version %2 revision %3; stock shortcuts will be used").arg(contract::kInterface).arg(version).arg(revision));
+            Q_EMIT message(QStringLiteral("incompatible %1 version %2 revision %3; treated as interface absent").arg(contract::kInterface).arg(version).arg(revision));
             setState(State::Absent);
             return;
         }

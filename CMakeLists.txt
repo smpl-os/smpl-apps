@@ -35,6 +35,8 @@ add_library(cs_core STATIC
     src/daemon/hardwaremap.cpp
     src/daemon/decoder.cpp
     src/daemon/config.cpp
+    src/daemon/configwatcher.cpp
+    src/daemon/capabilities.cpp
     src/daemon/coalescer.cpp
     src/daemon/engine.cpp
     src/daemon/keysink.cpp

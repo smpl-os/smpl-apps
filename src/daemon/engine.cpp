@@ -75,6 +75,10 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
     m_tapTimer = new QTimer(this);
     m_tapTimer->setTimerType(Qt::PreciseTimer);
     connect(m_tapTimer, &QTimer::timeout, this, &Engine::drainTap);
+    m_navTimer = new QTimer(this);
+    m_navTimer->setSingleShot(true);
+    m_navTimer->setInterval(250);
+    connect(m_navTimer, &QTimer::timeout, this, &Engine::releaseNavigation);
     m_gestureTimer = new QTimer(this);
     m_gestureTimer->setInterval(50);
     connect(m_gestureTimer, &QTimer::timeout, this, &Engine::checkIdleGestures);
@@ -82,7 +86,19 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
     if (m_kd) {
         // Acks are correlated by the client to the exact key (lease/sequence/target);
         // only that key is released.
-        connect(m_kd, &KdenliveClient::controlAcked, this, [this](const QString &key, const QVariantMap &) { m_coalescer.ack(key); });
+        connect(m_kd, &KdenliveClient::controlAcked, this, [this](const QString &key, const QVariantMap &outcome) {
+            if (m_navInFlight.contains(key)) {
+                const quint64 sentEpoch = m_navInFlight.take(key);
+                const bool changed = outcome.value(QStringLiteral("ok")).toBool()
+                    && outcome.value(QStringLiteral("result")).toMap().value(QStringLiteral("changed")).toBool();
+                if (changed && m_kd->epoch() == sentEpoch) {
+                    m_navAwaitingEpoch.insert(key);  // released by the new epoch (or the fallback timer)
+                    m_navTimer->start();
+                    return;
+                }
+            }
+            m_coalescer.ack(key);
+        });
         connect(m_kd, &KdenliveClient::refused, this, [this](const QString &what, const QString &code, const QString &msg) {
             sayOnce(what + QLatin1Char('|') + code, QStringLiteral("Kdenlive refused %1: %2%3").arg(what, code, msg.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(msg)));
             if (code == contract::err::StaleContext || code == contract::err::TargetNotFound) {
@@ -93,7 +109,14 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
             // Interface proven absent at call time (stock Kdenlive): stock keys,
             // but only into the same Kdenlive window that was asked.
             const Fallback fb = m_actionFallback.take(id);
-            if (fb.keys.isEmpty() || !kdenliveProfile() || fb.pid != m_window.pid || fb.address != m_window.address) {
+            if (!kdenliveProfile() || fb.pid != m_window.pid || fb.address != m_window.address) {
+                return;
+            }
+            if (!m_profile->keyFallback) {
+                noticeAbsent(id);
+                return;
+            }
+            if (fb.keys.isEmpty()) {
                 return;
             }
             say(QStringLiteral("action %1: interface absent, using stock shortcut").arg(id));
@@ -118,7 +141,14 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
         connect(m_kd, &KdenliveClient::epochChanged, this, [this](quint64) {
             // Targets changed and the host has already invalidated pending work
             // and ended open gestures: never deliver queued deltas to a new target.
-            dropPendingWork();
+            // Relative navigation that caused this change keeps its queued steps.
+            const QSet<QString> keep = m_navAwaitingEpoch;
+            m_coalescer.clearExcept(keep);
+            m_gestures.clear();
+            m_gestureTimer->stop();
+            m_tapQueue.clear();
+            m_navInFlight.clear();
+            releaseNavigation();
         });
     }
     setConfig(Config{});
@@ -137,8 +167,23 @@ void Engine::sayOnce(const QString &key, const QString &text)
     }
 }
 
+void Engine::releaseNavigation()
+{
+    m_navTimer->stop();
+    const QSet<QString> keys = m_navAwaitingEpoch;
+    m_navAwaitingEpoch.clear();
+    for (const auto &k : keys) {
+        m_coalescer.ack(k);  // flushes queued steps with the current epoch
+    }
+}
+
 void Engine::dropPendingWork()
 {
+    m_navInFlight.clear();
+    m_navAwaitingEpoch.clear();
+    if (m_navTimer) {
+        m_navTimer->stop();
+    }
     m_coalescer.clear();
     m_gestures.clear();
     m_gestureTimer->stop();
@@ -154,6 +199,7 @@ void Engine::setConfig(const Config &cfg)
     m_coalescer.setMaxKeys(contract::kMaxPendingKeys);
     m_tapTimer->setInterval(qMax(1, 1000 / qMax(1, cfg.settings.keyRateHz)));
     m_profile = nullptr;
+    clearHeld();
     setActiveWindow(m_window);
 }
 
@@ -169,6 +215,7 @@ void Engine::setActiveWindow(const WindowInfo &w)
         dropPendingWork();
     }
     if (m_profile != before) {
+        clearHeld();  // a press deferred for another profile's shift binding must not fire here
         m_said.clear();
         Q_EMIT message(QStringLiteral("profile %1 for %2").arg(m_profile ? m_profile->name : QStringLiteral("(none)"), w.cls.isEmpty() ? QStringLiteral("(no window)") : w.cls));
     }
@@ -200,9 +247,45 @@ bool Engine::kdenliveActive() const
     return kdenliveProfile() && kdenliveAttachedToFocus() && m_kd->isAvailable();
 }
 
-bool Engine::kdenliveStock() const
+bool Engine::kdenliveAbsent() const
 {
     return kdenliveProfile() && (!m_kd || (kdenliveAttachedToFocus() && m_kd->isAbsent()));
+}
+
+bool Engine::kdenliveStock() const
+{
+    // API-only by default: stock shortcuts are typed only when the profile opts in.
+    return kdenliveAbsent() && m_profile->keyFallback;
+}
+
+QString Engine::absentNotice()
+{
+    return QStringLiteral(
+        "Kdenlive control interface not enabled: nothing sent. Enable \"Control surface interface\" in Kdenlive "
+        "(setting enableControlSurfaceInterface, off by default), or set \"keyFallback\": true in the profile to type stock shortcuts.");
+}
+
+void Engine::noticeAbsent(const QString &what)
+{
+    // Once per attachment (m_said is cleared when the client state or profile changes).
+    const QString key = QStringLiteral("absent|%1").arg(m_kd ? m_kd->attachedPid() : 0);
+    if (!m_said.contains(key)) {
+        m_said.insert(key);
+        Q_EMIT message(QStringLiteral("%1 (%2)").arg(absentNotice(), what));
+        Q_EMIT notice(absentNotice());
+    }
+}
+
+QStringList Engine::shiftSlots(const QString &control, int delta)
+{
+    return {control + QStringLiteral(".shift.turn"), control + (delta > 0 ? QStringLiteral(".shift.cw") : QStringLiteral(".shift.ccw"))};
+}
+
+void Engine::clearHeld()
+{
+    m_held.clear();
+    m_deferredPress.clear();
+    m_shiftTurned.clear();
 }
 
 QStringList Engine::turnSlots(const QString &control, int delta)
@@ -336,14 +419,36 @@ void Engine::handle(const PadEvent &e)
     }
     switch (e.type) {
     case PadEvent::KeyUp:
-    case PadEvent::PressUp:
-        return;  // bindings fire on press; the pad reports taps anyway
+        return;  // key bindings fire on press
+    case PadEvent::PressUp: {
+        // A press deferred because the knob has shift bindings fires on release,
+        // unless the knob turned while held (then the hold was a shift).
+        const bool deferred = m_deferredPress.remove(e.control);
+        const bool turned = m_shiftTurned.remove(e.control);
+        m_held.remove(e.control);
+        if (deferred && !turned) {
+            const QString slot = e.control + QStringLiteral(".press");
+            if (auto r = resolve(slot)) {
+                execute(*r, slot, 1, false);
+            }
+        }
+        return;
+    }
     case PadEvent::KeyDown:
         if (auto r = resolve(e.control)) {
             execute(*r, e.control, 1, false);
         }
         return;
     case PadEvent::PressDown: {
+        m_held.insert(e.control);
+        m_shiftTurned.remove(e.control);
+        const auto shift = resolve(QStringList{e.control + QStringLiteral(".shift.turn"), e.control + QStringLiteral(".shift.cw"),
+                                               e.control + QStringLiteral(".shift.ccw")});
+        if (shift && shift->binding.isValid()) {
+            m_deferredPress.insert(e.control);
+            return;
+        }
+        m_deferredPress.remove(e.control);
         const QString slot = e.control + QStringLiteral(".press");
         if (auto r = resolve(slot)) {
             execute(*r, slot, 1, false);
@@ -351,17 +456,29 @@ void Engine::handle(const PadEvent &e)
         return;
     }
     case PadEvent::Turn: {
-        double accel = 1.0;
         auto &t = m_lastTurn[e.control];
-        if (t.isValid() && t.elapsed() < m_cfg.settings.accelWindowMs) {
-            accel = m_cfg.settings.accelFactor;
-        }
+        const bool fast = t.isValid() && t.elapsed() < m_cfg.settings.accelWindowMs;
         t.start();
-        const QStringList candidates = turnSlots(e.control, e.delta);
-        const auto r = resolve(candidates);
+        QStringList candidates = turnSlots(e.control, e.delta);
+        std::optional<Resolution> r;
+        if (m_held.contains(e.control)) {
+            const QStringList shifted = shiftSlots(e.control, e.delta);
+            r = resolve(shifted);
+            if (r && r->binding.isValid()) {
+                m_shiftTurned.insert(e.control);
+                candidates = shifted;
+            } else {
+                r.reset();
+            }
+        }
+        if (!r) {
+            r = resolve(candidates);
+        }
         if (!r || !r->binding.isValid()) {
             return;  // unbound, or explicitly "none" at the winning level
         }
+        // Per-binding "accel" overrides settings.accelFactor (1 disables it).
+        const double accel = !fast ? 1.0 : (r->binding.accel > 0 ? r->binding.accel : m_cfg.settings.accelFactor);
         if (r->slot == candidates.first()) {
             execute(*r, r->slot, e.delta, true, accel);
         } else {
@@ -376,6 +493,7 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
 {
     // Acceleration only scales continuous controls; discrete bindings stay one per detent.
     const Binding &b = r.binding;
+    Q_EMIT dispatched(slot, b.describe(), r.layer);
     const QString group = slot.section(QLatin1Char('.'), 0, 0);
     const int dir = !isTurn ? 0 : (slot.endsWith(QLatin1String(".ccw")) ? -1 : slot.endsWith(QLatin1String(".cw")) ? 1 : (detents < 0 ? -1 : 1));
     const int count = qMax(1, int(std::lround(std::abs(detents))));
@@ -388,19 +506,21 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
         return;
     case Binding::Action:
         if (!kd || kdenliveStock()) {
-            // Not Kdenlive, or plain stock Kdenlive: the action's stock shortcut.
+            // Not Kdenlive, or stock Kdenlive with keyFallback: the action's stock shortcut.
             if (!b.keys.isEmpty()) {
                 enqueueTaps(group, dir, b.keys, isTurn ? count : 1);
             } else if (kd) {
                 sayOnce(QStringLiteral("nofallback|") + b.name, QStringLiteral("%1: no stock shortcut configured for %2").arg(slot, b.name));
             }
+        } else if (kdenliveAbsent()) {
+            noticeAbsent(b.name);
         } else if (kdenliveActive()) {
             if (!m_kd->supportsAction(b.name)) {
                 sayOnce(QStringLiteral("action|") + b.name, QStringLiteral("Kdenlive does not offer action %1 to control surfaces").arg(b.name));
                 return;
             }
             endAllGestures(false);  // discrete operations close editing gestures first
-            m_actionFallback.insert(b.name, Fallback{b.keys, m_window.pid, m_window.address});
+            m_actionFallback.insert(b.name, Fallback{m_profile->keyFallback ? b.keys : QList<KeyChord>{}, m_window.pid, m_window.address});
             for (int i = 0; i < (isTurn ? count : 1); ++i) {
                 m_kd->triggerAction(b.name);
             }
@@ -463,8 +583,14 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
             }
             endAllGestures(false);
             m_kd->invoke(b.name, args);
-        } else if (kdenliveStock() && !b.keys.isEmpty()) {
-            enqueueTaps(group, dir, b.keys, 1);
+        } else if (kdenliveStock()) {
+            if (!b.keys.isEmpty()) {
+                enqueueTaps(group, dir, b.keys, 1);
+            }
+        } else if (kdenliveAbsent()) {
+            noticeAbsent(b.name);
+        } else {
+            sayOnce(QStringLiteral("pending"), QStringLiteral("Kdenlive has not answered yet; %1 dropped (no keyboard fallback)").arg(b.name));
         }
         return;
     }
@@ -479,6 +605,10 @@ void Engine::executeControl(const Binding &b, const QString &slot, const QString
         } else if (b.keys.size() == 1) {
             enqueueTaps(group, dir, b.keys, qMax(1, int(std::lround(std::abs(delta)))));
         }
+        return;
+    }
+    if (kdenliveAbsent()) {
+        noticeAbsent(b.name);
         return;
     }
     if (!kdenliveActive()) {
@@ -601,6 +731,10 @@ void Engine::onFlush(const QString &key, double delta, int merged, const QVarian
     if (!m_kd->control(key, payload.value(QStringLiteral("name")).toString(), delta, options)) {
         m_coalescer.ack(key);  // not sent: do not wait for an ack that cannot come
         return;
+    }
+    const QString control = payload.value(QStringLiteral("name")).toString();
+    if (control == contract::kTrackFocus || control == contract::kParamFocus) {
+        m_navInFlight.insert(key, m_kd->epoch());
     }
     if (!isEnd && options.contains(contract::kOptGesture)) {
         for (auto it = m_gestures.begin(); it != m_gestures.end(); ++it) {
