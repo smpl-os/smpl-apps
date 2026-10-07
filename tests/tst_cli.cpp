@@ -100,6 +100,29 @@ private Q_SLOTS:
         QCOMPARE(r.code, 0);
         QVERIFY(r.out.contains("layout:"));
     }
+
+    void brokenConfigWaitsInsteadOfExiting()
+    {
+        // run with a broken config must not exit (Restart=on-failure would
+        // loop); it waits without touching the pad and stops cleanly on SIGTERM.
+        const QString cfg = m_home.path() + QStringLiteral("/broken.jsonc");
+        writeFile(cfg, "{ this is not json");
+        QProcess p;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("XDG_CONFIG_HOME"), m_home.path() + QStringLiteral("/config"));
+        p.setProcessEnvironment(env);
+        p.start(QStringLiteral(CS_DAEMON_BINARY), {QStringLiteral("run"), QStringLiteral("--dry-run"), QStringLiteral("--no-settings-api"),
+                                                  QStringLiteral("--window-backend"), QStringLiteral("none"), QStringLiteral("-c"), cfg});
+        QVERIFY(p.waitForStarted());
+        QByteArray out;
+        QTRY_VERIFY_WITH_TIMEOUT((out += p.readAllStandardOutput()).contains("waiting for a valid"), 5000);
+        QTest::qWait(500);
+        QCOMPARE(p.state(), QProcess::Running);
+        p.terminate();
+        QVERIFY(p.waitForFinished(5000));
+        QCOMPARE(p.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(p.exitCode(), 0);
+    }
 };
 
 QTEST_GUILESS_MAIN(TestCli)

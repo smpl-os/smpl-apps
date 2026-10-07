@@ -3,6 +3,7 @@
 
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QDir>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QSignalSpy>
@@ -147,6 +148,38 @@ private Q_SLOTS:
         hypr->active = QJsonObject{{QStringLiteral("class"), QStringLiteral("b")}, {QStringLiteral("pid"), 2}};
         QTRY_COMPARE_WITH_TIMEOUT(t.current().cls, QStringLiteral("b"), 5000);
         delete hypr;
+    }
+
+    void autoBackendWaitsForALateCompositor()
+    {
+        // As under a unit started before Hyprland: no signature, no hypr dir yet.
+        QTemporaryDir runtime;
+        const QByteArray oldRuntime = qgetenv("XDG_RUNTIME_DIR"), oldSig = qgetenv("HYPRLAND_INSTANCE_SIGNATURE"), oldDesk = qgetenv("XDG_CURRENT_DESKTOP");
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        qunsetenv("HYPRLAND_INSTANCE_SIGNATURE");
+        qunsetenv("XDG_CURRENT_DESKTOP");
+        {
+            auto t = createWindowTracker(QStringLiteral("auto"));
+            QCOMPARE(t->backendName(), QStringLiteral("hyprland"));
+            t->start();
+            QTest::qWait(300);  // nothing to connect to: it keeps waiting quietly
+            QVERIFY(t->current().cls.isEmpty());
+            const QString dir = runtime.path() + QStringLiteral("/hypr/late_instance");
+            QVERIFY(QDir().mkpath(dir));
+            FakeHyprland hypr(dir);
+            hypr.active = QJsonObject{{QStringLiteral("class"), QStringLiteral("kdenlive")}, {QStringLiteral("pid"), 7}};
+            QTRY_COMPARE_WITH_TIMEOUT(t->current().cls, QStringLiteral("kdenlive"), 6000);
+        }
+        // A desktop that names itself (and has no Hyprland) gets no Hyprland tracker.
+        qputenv("XDG_RUNTIME_DIR", QTemporaryDir().path().toLocal8Bit());
+        qputenv("XDG_CURRENT_DESKTOP", "KDE");
+        QCOMPARE(createWindowTracker(QStringLiteral("auto"))->backendName(), QStringLiteral("static"));
+        QCOMPARE(createWindowTracker(QStringLiteral("none"))->backendName(), QStringLiteral("static"));
+        qputenv("XDG_CURRENT_DESKTOP", "Hyprland");
+        QCOMPARE(createWindowTracker(QStringLiteral("auto"))->backendName(), QStringLiteral("hyprland"));
+        qputenv("XDG_RUNTIME_DIR", oldRuntime);
+        oldSig.isEmpty() ? qunsetenv("HYPRLAND_INSTANCE_SIGNATURE") : qputenv("HYPRLAND_INSTANCE_SIGNATURE", oldSig);
+        oldDesk.isEmpty() ? qunsetenv("XDG_CURRENT_DESKTOP") : qputenv("XDG_CURRENT_DESKTOP", oldDesk);
     }
 };
 

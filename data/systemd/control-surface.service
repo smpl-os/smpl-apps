@@ -7,6 +7,10 @@ Documentation=file://%h/Documents/source/control-surface/README.md
 PartOf=graphical-session.target
 After=graphical-session.target
 Requisite=graphical-session.target
+# The daemon waits (no pad, no compositor yet, a broken config, no uinput)
+# rather than exiting; this only caps a crash loop.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple

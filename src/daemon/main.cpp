@@ -64,7 +64,8 @@ void installSignalHandlers(QCoreApplication &app)
     QObject::connect(sn, &QSocketNotifier::activated, &app, [&app] {
         char c;
         [[maybe_unused]] auto r = ::read(g_sigFd[0], &c, 1);
-        app.quit();  // destructors release the grab and the uinput device
+        Q_UNUSED(app)
+        QCoreApplication::exit(0);  // every running loop, also before app.exec(); destructors release the grab and uinput
     });
     struct sigaction sa {};
     sa.sa_handler = onSignal;
@@ -472,6 +473,26 @@ int main(int argc, char **argv)
         return out.value(QStringLiteral("ok")).toBool() ? 0 : 2;
     }
     auto cfg = obtainConfig(p.value(configOpt), explicitConfig);
+    if (!cfg && cmd == QLatin1String("run") && QFile::exists(p.value(configOpt))) {
+        // A broken config at start: wait for a fixed one instead of exiting, so
+        // Restart=on-failure never loops. The pad is not touched meanwhile and
+        // keeps its own keymap.
+        say(QStringLiteral("waiting for a valid %1 (the pad is left alone until then)").arg(p.value(configOpt)));
+        ConfigWatcher waitFor(p.value(configOpt));
+        waitFor.setExtraFiles({defaultHardwareMapPath()});
+        QEventLoop loop;
+        QObject::connect(&waitFor, &ConfigWatcher::reloaded, &loop, [&](const Config &c) {
+            cfg = c;
+            loop.quit();
+        });
+        QObject::connect(&waitFor, &ConfigWatcher::failed, [](const QString &e) { std::fprintf(stderr, "config still invalid: %s\n", qPrintable(e)); });
+        waitFor.start();
+        loop.exec();
+        if (!cfg) {
+            return 0;  // stopped while waiting
+        }
+        say(QStringLiteral("config is valid now; starting"));
+    }
     if (!cfg) {
         return 2;
     }
@@ -700,8 +721,9 @@ int main(int argc, char **argv)
         auto u = std::make_unique<UinputKeySink>();
         QString err;
         if (!u->open(&err)) {
-            std::fprintf(stderr, "%s\n", qPrintable(err));
-            return 3;
+            // No virtual keyboard yet (permissions applied late, module not
+            // loaded): keep running, Kdenlive's API still works, retry below.
+            say(QStringLiteral("keys unavailable: %1; retrying every 10 s").arg(err));
         }
         keys = std::move(u);
     }
@@ -795,7 +817,7 @@ int main(int argc, char **argv)
     }
     settings.setFallbackLayout(effectiveLayout(*cfg));
     settings.setConfigState(ConfigStore::hashOf(ConfigStore(p.value(configOpt)).read().text), QString(), cfg->warnings);
-    auto publishPlugins = [&settings, &engine, &kd, dry] {
+    auto publishPlugins = [&settings, &engine, &kd, &keys, dry] {
         static const char *states[] = {"detached", "pending", "absent", "available"};
         QStringList kdApps;
         for (const Profile &pr : engine.config().profiles) {
@@ -805,7 +827,8 @@ int main(int argc, char **argv)
         }
         const qint64 pid = kd->attachedPid();
         settings.setPlugins({
-            PluginInfo{QStringLiteral("keys"), QStringLiteral("Keys and shortcuts"), QStringLiteral("keys"), dry ? QStringLiteral("dry-run") : QStringLiteral("ready"),
+            PluginInfo{QStringLiteral("keys"), QStringLiteral("Keys and shortcuts"), QStringLiteral("keys"),
+                       dry ? QStringLiteral("dry-run") : keys->isReady() ? QStringLiteral("ready") : QStringLiteral("unavailable"),
                        dry ? QStringLiteral("keys are printed, not sent") : QStringLiteral("virtual keyboard via /dev/uinput"), {}, {}},
             PluginInfo{QStringLiteral("command"), QStringLiteral("Run a program"), QStringLiteral("command"), dry ? QStringLiteral("dry-run") : QStringLiteral("ready"), QString(), {}, {}},
             PluginInfo{QStringLiteral("kdenlive"), QStringLiteral("Kdenlive"), QStringLiteral("api"), QLatin1String(states[int(kd->state())]),
@@ -815,6 +838,17 @@ int main(int argc, char **argv)
     };
     publishPlugins();
     QObject::connect(kd.get(), &KdenliveClient::stateChanged, &settings, [publishPlugins] { publishPlugins(); });
+    QTimer uinputRetry;
+    if (!dry && !keys->isReady()) {
+        QObject::connect(&uinputRetry, &QTimer::timeout, &settings, [&keys, &uinputRetry, publishPlugins, log] {
+            if (static_cast<UinputKeySink *>(keys.get())->open()) {
+                uinputRetry.stop();
+                log(QStringLiteral("keys: virtual keyboard ready"));
+                publishPlugins();
+            }
+        });
+        uinputRetry.start(10000);
+    }
     settings.setConfigApplier([&engine, &dev, &raw, publishPlugins, &settings](const Config &c) {
         engine.setConfig(c);
         dev.setHardwareMap(c.hardware);
