@@ -10,10 +10,42 @@
 #include <QDBusConnection>
 #include <QDir>
 #include <QFile>
+#include <QSocketNotifier>
 #include <QStandardPaths>
+#include <csignal>
 #include <cstdio>
+#include <sys/socket.h>
+#include <unistd.h>
 
 using namespace cs;
+
+namespace {
+int g_sigFd[2] = {-1, -1};
+void onSignal(int)
+{
+    const char c = 1;
+    [[maybe_unused]] auto r = ::write(g_sigFd[1], &c, 1);
+}
+// SIGINT/SIGTERM end the event loop, so the mock's destructor hides the
+// cheatsheet in eww.
+void installSignalHandlers(QCoreApplication &app)
+{
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, g_sigFd) != 0) {
+        return;
+    }
+    auto *sn = new QSocketNotifier(g_sigFd[0], QSocketNotifier::Read, &app);
+    QObject::connect(sn, &QSocketNotifier::activated, &app, [] {
+        char c;
+        [[maybe_unused]] auto r = ::read(g_sigFd[0], &c, 1);
+        QCoreApplication::exit(0);
+    });
+    struct sigaction sa {};
+    sa.sa_handler = onSignal;
+    sigemptyset(&sa.sa_mask);
+    ::sigaction(SIGINT, &sa, nullptr);
+    ::sigaction(SIGTERM, &sa, nullptr);
+}
+} // namespace
 
 int main(int argc, char **argv)
 {
@@ -40,8 +72,12 @@ int main(int argc, char **argv)
     QCommandLineOption boardOpt(QStringLiteral("board"), QStringLiteral("board profile the pad reports"), QStringLiteral("id"), QStringLiteral("sy181-15k3e"));
     QCommandLineOption fwOpt(QStringLiteral("firmware"), QStringLiteral("control-surface | openmacropad | stock"), QStringLiteral("type"), QStringLiteral("control-surface"));
     QCommandLineOption unpluggedOpt(QStringLiteral("unplugged"), QStringLiteral("start with no pad"));
-    p.addOptions({configOpt, fwDirOpt, boardOpt, fwOpt, unpluggedOpt});
+    QCommandLineOption ewwOpt(QStringLiteral("eww"), QStringLiteral("push the cheatsheet to eww, as control-surfaced run --eww"));
+    QCommandLineOption ewwWindowOpt(QStringLiteral("eww-window"), QStringLiteral("open/close this eww window with the cheatsheet (implies --eww)"), QStringLiteral("name"));
+    QCommandLineOption ewwConfigOpt(QStringLiteral("eww-config"), QStringLiteral("eww's config directory (implies --eww)"), QStringLiteral("dir"));
+    p.addOptions({configOpt, fwDirOpt, boardOpt, fwOpt, unpluggedOpt, ewwOpt, ewwWindowOpt, ewwConfigOpt});
     p.process(app);
+    installSignalHandlers(app);
 
     MockSurface::Options o;
     o.configPath = p.value(configOpt);
@@ -49,6 +85,9 @@ int main(int argc, char **argv)
     o.board = p.value(boardOpt);
     o.firmware = p.value(fwOpt);
     o.plugged = !p.isSet(unpluggedOpt);
+    o.eww.enabled = p.isSet(ewwOpt) || p.isSet(ewwWindowOpt) || p.isSet(ewwConfigOpt);
+    o.eww.window = p.value(ewwWindowOpt);
+    o.eww.configDir = expandHome(p.value(ewwConfigOpt));
 
     QDir().mkpath(QFileInfo(o.configPath).absolutePath());
     if (!QFile::exists(o.configPath)) {

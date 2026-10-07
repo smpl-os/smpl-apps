@@ -65,7 +65,8 @@ with what Kdenlive offers with `control-surfaced list-capabilities`.
 | `control-surfaced status [--json]` | daemon, pad, firmware, effective layout and config (offline when the daemon is not running) |
 | `control-surfaced monitor [--json]` | live input, one line per press/release/detent |
 | `control-surfaced list-actions [--json]` / `features [--json]` | offline: the curated Kdenlive actions, controls and commands; binding kinds and key/mouse names |
-| `control-surfaced cheatsheet [--json] [--follow] [--window CLASS]` | what every input does now (the overlay's content); `--follow` for eww, `--window` for an offline preview |
+| `control-surfaced cheatsheet [--json] [--follow] [--window CLASS]` | what every input does now (the overlay's content); `--follow` for debugging, `--window` for an offline preview |
+| `control-surfaced run --eww-window NAME --eww-config DIR` | also push the cheatsheet into eww (`eww update pad_sheet=…`, `open`/`close` the window); `--eww` for the variable only; the config's `cheatsheet.eww` overrides (docs/dbus-settings-api.md) |
 | `control-surfaced firmware-info [--json]` / `enter-bootloader --yes` | protocol v3 on a pad running the control-surface firmware |
 | `control-surfaced list-devices` / `check-config [--json]` / `example-config` | diagnostics (`check-config --json` names the failing profile, layer and slot) |
 | `mock-control-surfaced` | the settings API (`org.smplos.ControlSurface1`) with a simulated pad, for UI work |

@@ -311,6 +311,13 @@ void SettingsService::setCheatsheet(Cheatsheet *c)
     connect(c, &Cheatsheet::changed, this, [this](const QJsonObject &content) { Q_EMIT CheatsheetChanged(json(content)); });
 }
 
+QJsonObject SettingsService::cheatsheetStatus() const
+{
+    QJsonObject o = m_cheatsheetStatus ? m_cheatsheetStatus() : QJsonObject{};
+    o.insert(QStringLiteral("visible"), cheatsheetVisible());
+    return o;
+}
+
 bool SettingsService::cheatsheetVisible() const
 {
     return m_cheatsheet && m_cheatsheet->isVisible();
@@ -380,7 +387,7 @@ QString SettingsService::GetStatus()
                                                                    {QStringLiteral("warnings"), QJsonArray::fromStringList(m_configWarnings)}}},
                             {QStringLiteral("identify"), identify},
                             {QStringLiteral("layout"), layoutJson()},
-                            {QStringLiteral("cheatsheet"), QJsonObject{{QStringLiteral("visible"), cheatsheetVisible()}}},
+                            {QStringLiteral("cheatsheet"), cheatsheetStatus()},
                             {QStringLiteral("flash"), m_job ? QJsonValue(m_job->toJson()) : QJsonValue()}});
 }
 

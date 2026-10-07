@@ -64,7 +64,18 @@ QJsonObject featuresJson()
                                                    {QStringLiteral("slots"), QStringLiteral("keyN or knobN.press")},
                                                    {QStringLiteral("options"), QJsonObject{{QStringLiteral("opacity"), QStringLiteral("0.05..1, default 0.85")},
                                                                                            {QStringLiteral("autoHideMs"), QStringLiteral("0..600000, 0 = until hidden; restarted by pad input")},
-                                                                                           {QStringLiteral("position"), QJsonArray::fromStringList(CheatsheetOptions::positions())}}},
+                                                                                           {QStringLiteral("position"), QJsonArray::fromStringList(CheatsheetOptions::positions())},
+                                                                                           {QStringLiteral("eww"), QStringLiteral(R"(true | false | {"enabled", "variable": "pad_sheet", "window", "binary": "eww", "config"}; over run --eww / --eww-window NAME / --eww-config DIR)")}}},
+                                                   {QStringLiteral("eww"), QJsonObject{{QStringLiteral("update"), QStringLiteral("eww [--config DIR] update VARIABLE=<GetCheatsheet JSON>: on show, change and hide, and hidden at start and exit")},
+                                                                                       {QStringLiteral("open"), QStringLiteral("eww [--config DIR] open WINDOW --anchor A after a successful update on show; reopened when the position changes")},
+                                                                                       {QStringLiteral("close"), QStringLiteral("eww [--config DIR] close WINDOW before the update on hide")},
+                                                                                       {QStringLiteral("anchors"), [] {
+                                                                                            QJsonObject a;
+                                                                                            for (const QString &pos : CheatsheetOptions::positions()) {
+                                                                                                a.insert(pos, EwwHook::anchorFor(pos));
+                                                                                            }
+                                                                                            return a;
+                                                                                        }()}}},
                                                    {QStringLiteral("label"), QStringLiteral("any binding object may carry \"label\"; otherwise one is made from what it does")}}},
         {QStringLiteral("kdenlive"), QJsonObject{{QStringLiteral("interface"), cs::contract::kInterface},
                                                  {QStringLiteral("catalog"), QStringLiteral("control-surfaced list-actions --json")}}},

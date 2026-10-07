@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Offline CLI commands of control-surfaced, run as a process. None of them
 // opens an input device; ctest runs this on a private D-Bus.
+#include "ewwmock.h"
+
 #include <QCryptographicHash>
+#include <QDBusConnection>
+#include <QDBusConnectionInterface>
+#include <QDBusMessage>
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
@@ -239,6 +244,91 @@ private Q_SLOTS:
         // No daemon on this private bus.
         r = run({QStringLiteral("cheatsheet"), QStringLiteral("--follow"), QStringLiteral("-c"), cfg}, m_home.path());
         QCOMPARE(r.code, 3);
+    }
+
+    void ewwPushFromDaemon()
+    {
+        // The real daemon (dry run, a serial no pad has, so nothing is opened)
+        // with smplOS's unit flags, a recording eww, and the settings API on
+        // this private bus.
+        if (qEnvironmentVariable("CS_PRIVATE_BUS") != QLatin1String("1")) {
+            QSKIP("starts a daemon with the settings API: private bus only (ctest)");
+        }
+        QTemporaryDir bin;
+        QVERIFY(ewwmock::install(bin.path()));
+        const QString log = bin.path() + QStringLiteral("/calls.log");
+        const QString ewwDir = m_home.path() + QStringLiteral("/eww-config");
+        auto daemon = [&](const QByteArray &cheatsheet, QProcess &p) {
+            const QString cfg = m_home.path() + QStringLiteral("/eww-daemon.jsonc");
+            writeFile(cfg, R"({"device": {"serial": "cs-test-no-such-pad"}, "cheatsheet": )" + cheatsheet +
+                               R"(, "profiles": [{"name": "global", "bindings": {"key1": "ctrl+t", "key15": {"cheatsheet": "toggle"}}}]})");
+            QFile::remove(log);
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert(QStringLiteral("XDG_CONFIG_HOME"), m_home.path() + QStringLiteral("/config"));
+            env.insert(QStringLiteral("PATH"), bin.path() + QLatin1Char(':') + env.value(QStringLiteral("PATH")));
+            env.insert(QStringLiteral("EWW_MOCK_LOG"), log);
+            p.setProcessEnvironment(env);
+            p.start(QStringLiteral(CS_DAEMON_BINARY), {QStringLiteral("run"), QStringLiteral("--quiet"), QStringLiteral("--dry-run"),
+                                                      QStringLiteral("--window-backend"), QStringLiteral("none"), QStringLiteral("-c"), cfg,
+                                                      QStringLiteral("--eww-window"), QStringLiteral("pad-cheatsheet"), QStringLiteral("--eww-config"), ewwDir});
+            QVERIFY(p.waitForStarted());
+            QDBusConnection bus = QDBusConnection::sessionBus();
+            QTRY_VERIFY_WITH_TIMEOUT(bus.interface()->isServiceRegistered(QStringLiteral("org.smplos.ControlSurface")), 5000);
+        };
+        auto call = [](const char *method) {
+            auto m = QDBusMessage::createMethodCall(QStringLiteral("org.smplos.ControlSurface"), QStringLiteral("/org/smplos/ControlSurface"),
+                                                    QStringLiteral("org.smplos.ControlSurface1"), QLatin1String(method));
+            return QDBusConnection::sessionBus().call(m, QDBus::Block, 3000);
+        };
+        auto stop = [](QProcess &p) {
+            p.terminate();
+            QVERIFY(p.waitForFinished(8000));
+            QCOMPARE(p.exitStatus(), QProcess::NormalExit);
+            QCOMPARE(p.exitCode(), 0);
+        };
+
+        {
+            QProcess p;
+            daemon(R"({"position": "top-right"})", p);
+            QTRY_COMPARE_WITH_TIMEOUT(ewwmock::summaries(log), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}), 5000);
+            QCOMPARE(call("ShowCheatsheet").type(), QDBusMessage::ReplyMessage);
+            QTRY_COMPARE_WITH_TIMEOUT(ewwmock::summaries(log).mid(2), (QStringList{QStringLiteral("update pad_sheet visible=true"), QStringLiteral("open pad-cheatsheet @top right")}), 5000);
+            for (const QStringList &c : ewwmock::calls(log)) {
+                QCOMPARE(c.mid(0, 2), (QStringList{QStringLiteral("--config"), ewwDir}));
+            }
+            const QJsonObject st = QJsonDocument::fromJson(call("GetStatus").arguments().value(0).toString().toUtf8()).object();
+            const QJsonObject sheet = st.value(QStringLiteral("cheatsheet")).toObject();
+            QCOMPARE(sheet.value(QStringLiteral("visible")).toBool(), true);
+            const QJsonObject eww = sheet.value(QStringLiteral("eww")).toObject();
+            QCOMPARE(eww.value(QStringLiteral("enabled")).toBool(), true);
+            QCOMPARE(eww.value(QStringLiteral("window")).toString(), QStringLiteral("pad-cheatsheet"));
+            QCOMPARE(eww.value(QStringLiteral("variable")).toString(), QStringLiteral("pad_sheet"));
+            QCOMPARE(eww.value(QStringLiteral("calls")).toInt(), 4);
+            stop(p);
+            // Hidden in eww before the daemon is gone.
+            QCOMPARE(ewwmock::summaries(log).mid(4), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+        }
+        {
+            // The config overrides the unit's flags: off.
+            QProcess p;
+            daemon(R"({"eww": false})", p);
+            QCOMPARE(call("ShowCheatsheet").type(), QDBusMessage::ReplyMessage);
+            QTest::qWait(300);
+            stop(p);
+            QVERIFY(ewwmock::calls(log).isEmpty());
+        }
+        {
+            // ... or another window; the unset eww config dir stays the unit's.
+            QProcess p;
+            daemon(R"({"eww": {"window": "my-sheet"}})", p);
+            QCOMPARE(call("ShowCheatsheet").type(), QDBusMessage::ReplyMessage);
+            QTRY_COMPARE_WITH_TIMEOUT(ewwmock::summaries(log).size(), 4, 5000);
+            stop(p);
+            QCOMPARE(ewwmock::summaries(log), (QStringList{QStringLiteral("close my-sheet"), QStringLiteral("update pad_sheet visible=false"),
+                                                           QStringLiteral("update pad_sheet visible=true"), QStringLiteral("open my-sheet @center"),
+                                                           QStringLiteral("close my-sheet"), QStringLiteral("update pad_sheet visible=false")}));
+            QCOMPARE(ewwmock::calls(log).first().mid(0, 2), (QStringList{QStringLiteral("--config"), ewwDir}));
+        }
     }
 };
 

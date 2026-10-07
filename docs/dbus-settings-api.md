@@ -51,7 +51,7 @@ emit `org.freedesktop.DBus.Properties.PropertiesChanged`.
 
 | Method | Returns |
 |---|---|
-| `GetStatus() → s` | everything at once: `{ok, apiVersion, daemonVersion, mode, device, layout, activeProfile, activeLayer, window: {class, title}, config: {path, hash, error, warnings[]}, identify: {active, remainingMs}, flash: job \| null}` |
+| `GetStatus() → s` | everything at once: `{ok, apiVersion, daemonVersion, mode, device, layout, activeProfile, activeLayer, window: {class, title}, config: {path, hash, error, warnings[]}, identify: {active, remainingMs}, cheatsheet: {visible, eww}, flash: job \| null}` |
 | `GetDevice() → s` | `{ok, present, vendor, product, serial, manufacturer, productName, bcdDevice, firmware: {type, version, board}, inputMode, devnodes[], layout}`; only `{ok, present: false, layout}` when absent. `inputMode`: `raw` (firmware events, report 5) or `evdev-chords`. |
 | `GetLayout() → s` | `{ok, layout}` or `{ok: false, error: {code: "unknown"}}` |
 | `ListBoardProfiles() → s` | `{ok, profiles: [layout...]}` |
@@ -172,7 +172,8 @@ An overlay of what every key and knob does **right now**. It follows the
 focused app's profile, Kdenlive's context layers (for example the colour-wheel
 layer instead of the timeline), and daemon modes; an unknown app shows the
 global profile. The daemon supplies only content and visibility; the desktop
-draws it (smplOS: the running eww), so no extra process is involved.
+draws it (smplOS: the running eww, which the daemon updates itself), so no
+extra process is involved.
 
 | Method | Returns |
 |---|---|
@@ -215,21 +216,60 @@ Content:
   answered yet).
 
 Config: `"cheatsheet": {"opacity": 0.05..1, "autoHideMs": 0..600000 (0 = until
-hidden; restarted by pad input), "position": "center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right"}`.
+hidden; restarted by pad input), "position": "center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right",
+"eww": see below}`.
 
-For eww, `control-surfaced cheatsheet --follow` prints the content as one JSON
-line at start and on every change, shown or hidden:
+#### Pushed into eww (no listener process)
+
+The daemon puts the sheet into eww itself, so the desktop runs nothing extra
+for it; the daemon only runs while a pad is in use. Every call is
+`eww [--config DIR] …`, one at a time and in order; while one runs only the
+latest state is kept (content changes are already coalesced over 40 ms):
+
+| When | Calls |
+|---|---|
+| daemon start (and when the push is turned on) | `close WINDOW` (a crash may have left it open), `update pad_sheet=<hidden JSON>` |
+| shown | `update pad_sheet=<GetCheatsheet JSON>`, then `open WINDOW --anchor A`, skipped when the update failed (an `open` would start an eww daemon) |
+| content changes while shown | `update pad_sheet=<JSON>` |
+| position changes while shown | `close WINDOW`, `update …`, `open WINDOW --anchor A` |
+| hidden, unplugged, daemon exit (SIGTERM) | `close WINDOW`, then `update pad_sheet=<JSON with "visible": false>` |
+
+`pad_sheet` is the full `GetCheatsheet` content (the hidden one keeps every
+field, so widget expressions stay valid). Without a window only the variable
+is updated. Anchors per `position`: center → `center`, top → `top center`,
+bottom → `bottom center`, left → `center left`, right → `center right`,
+top-left → `top left`, top-right → `top right`, bottom-left → `bottom left`,
+bottom-right → `bottom right`. A failing eww is logged once until it works
+again; `GetStatus().cheatsheet.eww` is
+`{enabled, variable, window, config, calls, failures, lastError}`.
+
+Turning it on: the command line gives defaults, the config overrides them.
+
+* `control-surfaced run --eww` (variable only), `--eww-window NAME`,
+  `--eww-config DIR`; any of them turns the push on. smplOS's unit:
+  `ExecStart=/usr/bin/control-surfaced run --quiet --eww-window pad-cheatsheet --eww-config %h/.config/eww`.
+* Config `"cheatsheet": {"eww": …}`: `false` turns it off; `true` turns it
+  on with the flags' window and directory; an object
+  `{"enabled": true, "variable": "pad_sheet", "window": "…", "config": "…", "binary": "eww"}`
+  replaces only the fields it names (`"window": ""` = variable only).
+  Changes apply on reload; a sheet shown under the old settings is taken down
+  first.
+* `mock-control-surfaced` takes the same three flags.
+
+eww side:
 
 ```lisp
-(deflisten pad_sheet :initial '{"visible":false}' "control-surfaced cheatsheet --follow")
+(defvar pad_sheet '{"visible":false}')
 (defwindow pad-cheatsheet :stacking "overlay" :geometry (geometry :anchor "center")
-  (revealer :reveal {pad_sheet.visible}
-    (box :class "pad-sheet" :style "opacity: ${pad_sheet.options.opacity}" :orientation "v"
-      (label :text {pad_sheet.title})
-      (box :orientation "h"
-        (for k in {pad_sheet.keys}
-          (label :class {k.active ? "on" : "off"} :text {k.label}))))))
+  (box :class "pad-sheet" :style "opacity: ${pad_sheet.options.opacity}" :orientation "v"
+    (label :text {pad_sheet.title})
+    (box :orientation "h"
+      (for k in {pad_sheet.keys}
+        (label :class {k.active ? "on" : "off"} :text {k.label})))))
 ```
+
+`control-surfaced cheatsheet --follow` (one JSON line at start and on every
+change, shown or hidden) stays for debugging.
 
 ## CLI mirrors
 
@@ -240,7 +280,7 @@ line at start and on every change, shown or hidden:
 | `control-surfaced check-config [-c FILE] --json` | `{ok, error: {message, profile, layer, slot} \| null, warnings[], warningDetails[], profiles[], path, source}`; exit 0 or 2 |
 | `control-surfaced list-actions [--json]` | `GetCatalog("kdenlive")` offline |
 | `control-surfaced features [--json]` | `GetFeatures` |
-| `control-surfaced cheatsheet [--json] [--follow]` | the running daemon's `GetCheatsheet`; `--follow` prints a JSON line on every change (eww `deflisten`) |
+| `control-surfaced cheatsheet [--json] [--follow]` | the running daemon's `GetCheatsheet`; `--follow` prints a JSON line on every change (debugging; eww gets it pushed, see Cheatsheet) |
 | `control-surfaced cheatsheet --window CLASS [--title T] [--context JSON]` | offline preview from the config (no daemon) |
 | `control-surfaced firmware-info [--json]` | `GET_INFO` from a pad running the control-surface firmware: `{ok, node, version, format, slots, layers, activeLayer, startLayer, rawActive, eepromBytes, stats?}`. From 2.0.1, `stats` is `{knobs: [{cw, ccw, illegal}], overruns, queueDrops, maxQueue}`, the encoder counters since power-on or the last clear. |
 | `control-surfaced enter-bootloader --yes [--json]` | `CMD_BOOTLOADER`; the pad shows as 4348:55e0 until flashed or replugged |

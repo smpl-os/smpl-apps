@@ -3,6 +3,7 @@
 
 #include "cheatsheet.h"
 #include "engine.h"
+#include "ewwsink.h"
 #include "kdenliveclient.h"
 #include "keysink.h"
 #include "settingsservice.h"
@@ -32,6 +33,7 @@ public:
         QString firmware = QStringLiteral("control-surface");
         bool plugged = true;
         int flashStepMs = 400;  // pacing of the simulated flash
+        EwwHook eww;            // push the cheatsheet to eww (as run --eww*); the config overrides
     };
 
     explicit MockSurface(const Options &o, QObject *parent = nullptr);
@@ -40,6 +42,7 @@ public:
     SettingsService &settings() { return *m_settings; }
     Engine &engine() { return *m_engine; }
     Cheatsheet &cheatsheet() { return *m_cheatsheet; }
+    EwwSink &eww() { return *m_eww; }
     RecordingKeySink &keys() { return *m_keys; }
 
     // Simulated USB devices, as the flash job's probe sees them.
@@ -77,6 +80,7 @@ private:
     std::unique_ptr<Engine> m_engine;
     std::unique_ptr<SettingsService> m_settings;
     std::unique_ptr<Cheatsheet> m_cheatsheet;
+    std::unique_ptr<EwwSink> m_eww;
     bool m_plugged = false;
     bool m_bootloader = false;
     int m_bootloaderDevnum = 40;

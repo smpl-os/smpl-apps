@@ -3,6 +3,7 @@
 // Bus tests run only on a PRIVATE bus (ctest starts this under dbus-run-session).
 #include "boardprofile.h"
 #include "configstore.h"
+#include "ewwmock.h"
 #include "flashjob.h"
 #include "inputmonitor.h"
 #include "mocksurface.h"
@@ -1083,6 +1084,38 @@ private Q_SLOTS:
         }
         QDBusConnection::disconnectFromBus(QStringLiteral("csrv"));
         QDBusConnection::disconnectFromBus(QStringLiteral("ccli"));
+    }
+
+    void mockPushesToEww()
+    {
+        // mock-control-surfaced --eww-window pad-cheatsheet: the same push as the
+        // daemon, so the overlay can be built against the mock.
+        QTemporaryDir t;
+        QVERIFY(ewwmock::install(t.path()));
+        const QString log = t.path() + QStringLiteral("/calls.log");
+        const QByteArray oldPath = qgetenv("PATH");
+        qputenv("EWW_MOCK_LOG", log.toUtf8());
+        qputenv("PATH", (t.path() + QLatin1Char(':')).toUtf8() + oldPath);
+        const QString cfgPath = t.path() + QStringLiteral("/config.jsonc");
+        writeFile(cfgPath, R"({"cheatsheet": {"position": "bottom-left"}, "profiles": [{"name": "global", "bindings": {"key1": {"cheatsheet": "toggle"}}}]})");
+        {
+            MockSurface::Options o;
+            o.configPath = cfgPath;
+            o.firmwareDir = t.path() + QStringLiteral("/fw");
+            o.eww.enabled = true;
+            o.eww.window = QStringLiteral("pad-cheatsheet");
+            MockSurface mock(o);
+            QTRY_COMPARE(ewwmock::summaries(log), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+            mock.Press(QStringLiteral("key1"));
+            QTRY_COMPARE(ewwmock::summaries(log).mid(2), (QStringList{QStringLiteral("update pad_sheet visible=true"), QStringLiteral("open pad-cheatsheet @bottom left")}));
+            QTRY_VERIFY(!mock.eww().isBusy());
+            const QJsonObject eww = obj(mock.settings().GetStatus()).value(QStringLiteral("cheatsheet")).toObject().value(QStringLiteral("eww")).toObject();
+            QCOMPARE(eww.value(QStringLiteral("enabled")).toBool(), true);
+            QCOMPARE(eww.value(QStringLiteral("calls")).toInt(), 4);
+        }
+        // Quitting the mock hides it.
+        QCOMPARE(ewwmock::summaries(log).mid(4), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+        qputenv("PATH", oldPath);
     }
 };
 

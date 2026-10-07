@@ -65,6 +65,7 @@ add_library(cs_core STATIC
     src/daemon/featurelist.cpp
     src/daemon/bindinglabel.cpp
     src/daemon/cheatsheet.cpp
+    src/daemon/ewwsink.cpp
 )
 target_include_directories(cs_core PUBLIC src/daemon src/proto)
 target_link_libraries(cs_core PUBLIC cs_proto cs_catalog Qt6::Core Qt6::Network Qt6::DBus PkgConfig::UDEV)
@@ -93,7 +94,7 @@ install(TARGETS control-surfaced ch552-padprog RUNTIME DESTINATION ${CMAKE_INSTA
 
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    foreach(t proto decoder hardwaremap config coalescer engine hyprland kdenlive_dbus kdenlive_bus uinput paddevice cheatsheet)
+    foreach(t proto decoder hardwaremap config coalescer engine hyprland kdenlive_dbus kdenlive_bus uinput paddevice cheatsheet eww)
         add_executable(tst_${t} tests/tst_${t}.cpp)
         target_link_libraries(tst_${t} PRIVATE cs_core cs_mock Qt6::Test)
         target_compile_definitions(tst_${t} PRIVATE CS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
@@ -129,7 +130,7 @@ if(BUILD_TESTING)
     add_test(NAME rawpad COMMAND tst_rawpad)
     # Offline CLI commands, run as processes (no input device is opened).
     add_executable(tst_cli tests/tst_cli.cpp)
-    target_link_libraries(tst_cli PRIVATE Qt6::Core Qt6::Test)
+    target_link_libraries(tst_cli PRIVATE Qt6::Core Qt6::DBus Qt6::Test)
     target_compile_definitions(tst_cli PRIVATE CS_DAEMON_BINARY="$<TARGET_FILE:control-surfaced>" CS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_dependencies(tst_cli control-surfaced)
     add_test(NAME cli COMMAND ${CMAKE_COMMAND} -E env CS_PRIVATE_BUS=1 ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_cli>)

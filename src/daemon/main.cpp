@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "capabilities.h"
 #include "cheatsheet.h"
+#include "ewwsink.h"
 #include "config.h"
 #include "configstore.h"
 #include "configwatcher.h"
@@ -355,12 +356,15 @@ int main(int argc, char **argv)
     QCommandLineOption sysRootOpt(QStringLiteral("sys-root"), QStringLiteral("tests: a fake /sys for firmware-info and enter-bootloader"), QStringLiteral("dir"));
     sysRootOpt.setFlags(QCommandLineOption::HiddenFromHelp);
     QCommandLineOption yesOpt(QStringLiteral("yes"), QStringLiteral("enter-bootloader: really do it"));
-    QCommandLineOption followOpt(QStringLiteral("follow"), QStringLiteral("cheatsheet: one JSON line per change (for eww deflisten)"));
+    QCommandLineOption followOpt(QStringLiteral("follow"), QStringLiteral("cheatsheet: one JSON line per change (debugging; run --eww pushes to eww itself)"));
+    QCommandLineOption ewwOpt(QStringLiteral("eww"), QStringLiteral("run: push the cheatsheet to eww (eww update pad_sheet=<json>); the config's cheatsheet.eww overrides"));
+    QCommandLineOption ewwWindowOpt(QStringLiteral("eww-window"), QStringLiteral("run: open/close this eww window with the cheatsheet (implies --eww)"), QStringLiteral("name"));
+    QCommandLineOption ewwConfigOpt(QStringLiteral("eww-config"), QStringLiteral("run: eww's config directory (implies --eww)"), QStringLiteral("dir"));
     QCommandLineOption sheetWindowOpt(QStringLiteral("window"), QStringLiteral("cheatsheet: preview for this window class (offline)"), QStringLiteral("class"));
     QCommandLineOption sheetTitleOpt(QStringLiteral("title"), QStringLiteral("cheatsheet: window title for --window"), QStringLiteral("text"));
     QCommandLineOption sheetContextOpt(QStringLiteral("context"), QStringLiteral("cheatsheet: Kdenlive context JSON for --window"), QStringLiteral("json"));
     QCommandLineOption imageDirOpt(QStringLiteral("firmware-dir"), QStringLiteral("settings API: directory of flashable images (repeatable)"), QStringLiteral("dir"));
-    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt, followOpt, sheetWindowOpt, sheetTitleOpt, sheetContextOpt});
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt, followOpt, sheetWindowOpt, sheetTitleOpt, sheetContextOpt, ewwOpt, ewwWindowOpt, ewwConfigOpt});
     p.process(app);
     const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
     const bool explicitConfig = p.isSet(configOpt);
@@ -1005,6 +1009,30 @@ int main(int argc, char **argv)
     Cheatsheet cheatsheet(&engine, kd.get());
     settings.setCheatsheet(&cheatsheet);
     QObject::connect(&cheatsheet, &Cheatsheet::visibilityChanged, [log](bool on) { log(on ? QStringLiteral("cheatsheet shown") : QStringLiteral("cheatsheet hidden")); });
+    // The cheatsheet pushed into eww: defaults from the command line (smplOS's
+    // unit), the config's "cheatsheet": {"eww": ...} over them.
+    EwwHook ewwDefaults;
+    ewwDefaults.enabled = p.isSet(ewwOpt) || p.isSet(ewwWindowOpt) || p.isSet(ewwConfigOpt);
+    ewwDefaults.window = p.value(ewwWindowOpt);
+    ewwDefaults.configDir = expandHome(p.value(ewwConfigOpt));
+    EwwSink eww(&cheatsheet);
+    QObject::connect(&eww, &EwwSink::message, [](const QString &m) { say(m); });
+    auto applyEww = [&eww, ewwDefaults, log](const Config &c) {
+        const EwwHook h = c.cheatsheet.eww.over(ewwDefaults);
+        if (h == eww.options()) {
+            return;
+        }
+        if (h.enabled) {
+            log(QStringLiteral("cheatsheet: pushed to eww as %1%2%3")
+                    .arg(h.variable, h.window.isEmpty() ? QString() : QStringLiteral(", window ") + h.window,
+                         h.configDir.isEmpty() ? QString() : QStringLiteral(" (config %1)").arg(h.configDir)));
+        } else if (eww.options().enabled) {
+            log(QStringLiteral("cheatsheet: no longer pushed to eww"));
+        }
+        eww.setOptions(h);
+    };
+    applyEww(*cfg);
+    settings.setCheatsheetStatus([&eww] { return QJsonObject{{QStringLiteral("eww"), eww.status()}}; });
     settings.setActiveProfile(engine.activeProfile() ? engine.activeProfile()->name : QString());
     settings.setMode(dry ? QStringLiteral("dry-run") : QStringLiteral("run"));
     settings.setDaemonVersion(QCoreApplication::applicationVersion());
@@ -1049,8 +1077,9 @@ int main(int argc, char **argv)
         });
         uinputRetry.start(10000);
     }
-    settings.setConfigApplier([&engine, &dev, &raw, publishPlugins, &settings](const Config &c) {
+    settings.setConfigApplier([&engine, &dev, &raw, publishPlugins, &settings, applyEww](const Config &c) {
         engine.setConfig(c);
+        applyEww(c);
         dev.setHardwareMap(c.hardware);
         raw.setLayout(effectiveLayout(c));
         if (dev.isConnected() && !raw.isActive() && c.device.input != QLatin1String("evdev")) {
@@ -1143,6 +1172,7 @@ int main(int argc, char **argv)
         // Also after SetConfig wrote the file: applying the same config twice is harmless.
         const QString hash = ConfigStore::hashOf(ConfigStore(watcher.path()).read().text);
         engine.setConfig(c);
+        applyEww(c);
         settings.setFallbackLayout(effectiveLayout(c));
         raw.setLayout(effectiveLayout(c));
         if (dev.isConnected() && !raw.isActive() && c.device.input != QLatin1String("evdev")) {
@@ -1172,5 +1202,7 @@ int main(int argc, char **argv)
     const int rc = app.exec();
     raw.stop();  // back to the keymap at once
     dev.stop();
+    cheatsheet.hide();
+    eww.finish();  // eww shows it hidden before we go
     return rc;
 }

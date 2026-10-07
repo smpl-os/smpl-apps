@@ -414,12 +414,54 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
     if (sheet.isObject()) {
         const QJsonObject o = sheet.toObject();
         for (auto it = o.begin(); it != o.end(); ++it) {
-            if (!QStringList{QStringLiteral("opacity"), QStringLiteral("autoHideMs"), QStringLiteral("position")}.contains(it.key())) {
+            if (!QStringList{QStringLiteral("opacity"), QStringLiteral("autoHideMs"), QStringLiteral("position"), QStringLiteral("eww")}.contains(it.key())) {
                 if (error) {
-                    *error = QStringLiteral("cheatsheet: unknown option '%1' (opacity, autoHideMs, position)").arg(it.key());
+                    *error = QStringLiteral("cheatsheet: unknown option '%1' (opacity, autoHideMs, position, eww)").arg(it.key());
                 }
                 return std::nullopt;
             }
+        }
+        const QJsonValue eww = o.value(QStringLiteral("eww"));
+        if (eww.isBool()) {
+            cfg.cheatsheet.eww.enabled = eww.toBool();
+        } else if (eww.isObject()) {
+            const QJsonObject e = eww.toObject();
+            static const QStringList known{QStringLiteral("enabled"), QStringLiteral("variable"), QStringLiteral("window"), QStringLiteral("binary"), QStringLiteral("config")};
+            for (auto it = e.begin(); it != e.end(); ++it) {
+                if (!known.contains(it.key()) || (it.key() == QLatin1String("enabled") ? !it->isBool() : !it->isString())) {
+                    if (error) {
+                        *error = QStringLiteral("cheatsheet.eww: '%1' is not an option (enabled: bool; variable, window, binary, config: strings)").arg(it.key());
+                    }
+                    return std::nullopt;
+                }
+            }
+            EwwConfig &h = cfg.cheatsheet.eww;
+            h.enabled = e.value(QStringLiteral("enabled")).toBool(true);
+            auto field = [&e](const char *key, std::optional<QString> &out) {
+                if (e.contains(QLatin1String(key))) {
+                    out = e.value(QLatin1String(key)).toString();
+                }
+            };
+            field("variable", h.variable);
+            field("window", h.window);
+            field("binary", h.binary);
+            field("config", h.configDir);
+            if (h.configDir) {
+                h.configDir = expandHome(*h.configDir);
+            }
+            static const QRegularExpression name(QStringLiteral("^[A-Za-z_][A-Za-z0-9_-]*$"));
+            if ((h.variable && !name.match(*h.variable).hasMatch()) || (h.window && !h.window->isEmpty() && !name.match(*h.window).hasMatch())
+                || (h.binary && h.binary->isEmpty())) {
+                if (error) {
+                    *error = QStringLiteral("cheatsheet.eww: variable and window are eww names (letters, digits, _ and -), binary must not be empty");
+                }
+                return std::nullopt;
+            }
+        } else if (!eww.isUndefined() && !eww.isNull()) {
+            if (error) {
+                *error = QStringLiteral("cheatsheet.eww: true, false or {variable, window, binary, config}");
+            }
+            return std::nullopt;
         }
         cfg.cheatsheet.opacity = o.value(QStringLiteral("opacity")).toDouble(cfg.cheatsheet.opacity);
         cfg.cheatsheet.autoHideMs = o.value(QStringLiteral("autoHideMs")).toInt(cfg.cheatsheet.autoHideMs);
@@ -863,6 +905,42 @@ QStringList CheatsheetOptions::positions()
 {
     return {QStringLiteral("center"), QStringLiteral("top"), QStringLiteral("bottom"), QStringLiteral("left"), QStringLiteral("right"),
             QStringLiteral("top-left"), QStringLiteral("top-right"), QStringLiteral("bottom-left"), QStringLiteral("bottom-right")};
+}
+
+QString EwwHook::anchorFor(const QString &position)
+{
+    static const QHash<QString, QString> anchors{
+        {QStringLiteral("center"), QStringLiteral("center")},
+        {QStringLiteral("top"), QStringLiteral("top center")},
+        {QStringLiteral("bottom"), QStringLiteral("bottom center")},
+        {QStringLiteral("left"), QStringLiteral("center left")},
+        {QStringLiteral("right"), QStringLiteral("center right")},
+        {QStringLiteral("top-left"), QStringLiteral("top left")},
+        {QStringLiteral("top-right"), QStringLiteral("top right")},
+        {QStringLiteral("bottom-left"), QStringLiteral("bottom left")},
+        {QStringLiteral("bottom-right"), QStringLiteral("bottom right")},
+    };
+    return anchors.value(position, QStringLiteral("center"));
+}
+
+EwwHook EwwConfig::over(EwwHook h) const
+{
+    if (enabled) {
+        h.enabled = *enabled;
+    }
+    if (variable) {
+        h.variable = *variable;
+    }
+    if (window) {
+        h.window = *window;
+    }
+    if (binary) {
+        h.binary = *binary;
+    }
+    if (configDir) {
+        h.configDir = *configDir;
+    }
+    return h;
 }
 
 } // namespace cs

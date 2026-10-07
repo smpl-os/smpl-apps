@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "mocksurface.h"
 
+#include <cstdio>
+
 #include <QCoreApplication>
 #include <QDBusError>
 #include <QFile>
@@ -45,6 +47,9 @@ MockSurface::MockSurface(const Options &o, QObject *parent)
     m_settings->setConfigApplier([this](const Config &c) {
         m_engine->setConfig(c);
         m_settings->setFallbackLayout(effectiveLayout(c));
+        if (m_eww) {
+            m_eww->setOptions(c.cheatsheet.eww.over(m_o.eww));
+        }
         return QString();
     });
 
@@ -75,6 +80,10 @@ MockSurface::MockSurface(const Options &o, QObject *parent)
 
     m_cheatsheet = std::make_unique<Cheatsheet>(m_engine.get(), m_kd.get());
     m_settings->setCheatsheet(m_cheatsheet.get());
+    m_eww = std::make_unique<EwwSink>(m_cheatsheet.get());
+    connect(m_eww.get(), &EwwSink::message, this, [](const QString &m) { std::fprintf(stderr, "%s\n", qPrintable(m)); });
+    m_eww->setOptions(cfg.cheatsheet.eww.over(o.eww));
+    m_settings->setCheatsheetStatus([this] { return QJsonObject{{QStringLiteral("eww"), m_eww->status()}}; });
     connect(m_engine.get(), &Engine::dispatched, this, [this](const QString &slot, const QString &binding, const QString &layer) {
         m_settings->setActiveLayer(layer);
         Q_EMIT Dispatched(slot, binding, layer);
@@ -89,6 +98,9 @@ MockSurface::MockSurface(const Options &o, QObject *parent)
 
 MockSurface::~MockSurface()
 {
+    m_cheatsheet->hide();
+    m_eww->finish();  // eww shows it hidden before we go
+    m_eww.reset();
     m_cheatsheet.reset();  // before the engine and the service it talks to
 }
 

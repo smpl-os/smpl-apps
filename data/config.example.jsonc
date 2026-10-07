@@ -62,6 +62,11 @@
     // autoHideMs: hide after this long without pad input (0 = until hidden).
     // position: center, top, bottom, left, right, top-left, top-right,
     // bottom-left, bottom-right.
+    // eww: the daemon pushes the overlay into eww itself (`eww update
+    // pad_sheet=<json>`, and `eww open WINDOW --anchor ...` / `eww close`):
+    // true, false, or {"window": "pad-cheatsheet", "config": "~/.config/eww",
+    // "variable": "pad_sheet"}. Unset, `run --eww-window NAME --eww-config DIR`
+    // (smplOS's unit) decides; set here, it overrides those flags.
     "cheatsheet": { "opacity": 0.85, "autoHideMs": 0, "position": "center" },
 
     // Written by `control-surfaced verify`; until then the flashed default applies.

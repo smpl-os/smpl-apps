@@ -65,12 +65,36 @@ struct Settings {
     int gestureIdleMs = 500;   // end an editing gesture after this idle time (host ends at 600)
 };
 
+// The daemon pushes the cheatsheet to eww itself, so the desktop needs no
+// listener process: `eww [--config DIR] update VARIABLE=<content JSON>` on
+// show, change and hide, and `eww open WINDOW --anchor A` / `eww close WINDOW`
+// when a window is named.
+struct EwwHook {
+    bool enabled = false;
+    QString variable = QStringLiteral("pad_sheet");
+    QString window;     // opened on show, closed on hide; empty: the variable only
+    QString binary = QStringLiteral("eww");
+    QString configDir;  // eww --config; empty: eww's default
+    bool operator==(const EwwHook &) const = default;
+    // The `eww open --anchor` value for a cheatsheet position ("top center"...).
+    static QString anchorFor(const QString &position);
+};
+
+// What the config's "cheatsheet": {"eww": ...} says. Fields it leaves out keep
+// the daemon's defaults (run --eww, --eww-window, --eww-config).
+struct EwwConfig {
+    std::optional<bool> enabled;
+    std::optional<QString> variable, window, binary, configDir;
+    EwwHook over(EwwHook defaults) const;
+};
+
 // The on-screen cheatsheet of what each input does now (rendered by the desktop,
 // e.g. smplOS's eww; the daemon only supplies its content and visibility).
 struct CheatsheetOptions {
     double opacity = 0.85;  // 0.05..1
     int autoHideMs = 0;     // hide after this long without pad input; 0 = until hidden
     QString position = QStringLiteral("center");
+    EwwConfig eww;
     static QStringList positions();
 };
 

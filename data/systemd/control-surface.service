@@ -15,6 +15,8 @@ StartLimitBurst=5
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/control-surfaced run --quiet
+# smplOS draws the cheatsheet with its eww; to have the daemon push it there:
+#   ExecStart=%h/.local/bin/control-surfaced run --quiet --eww-window pad-cheatsheet --eww-config %h/.config/eww
 Restart=on-failure
 RestartSec=2
 # Grabs only 1189:8890 evdev nodes and creates one uinput keyboard; both rely on
