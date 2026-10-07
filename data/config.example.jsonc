@@ -26,6 +26,8 @@
 //        to its negation (toggles); a missing context value sends nothing.
 //        "control": "$mode" lets a mode choose the control a knob drives.
 //   {"request": "colorwheel.reset", "params": {"wheel": "lift"}}   Invoke() on Kdenlive
+//   {"mouse": "left"}               left right middle back forward, or one wheel detent:
+//        wheel-up wheel-down wheel-left wheel-right (per knob detent)
 //   {"command": ["notify-send", "hello"]}
 //   "none"                            explicitly unbound (stops fallthrough)
 //

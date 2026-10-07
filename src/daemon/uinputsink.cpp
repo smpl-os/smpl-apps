@@ -67,18 +67,87 @@ void UinputKeySink::close()
         ::close(m_fd);
         m_fd = -1;
     }
+    if (m_pointerFd >= 0) {
+        ::ioctl(m_pointerFd, UI_DEV_DESTROY);
+        ::close(m_pointerFd);
+        m_pointerFd = -1;
+    }
 }
 
-QString UinputKeySink::sysName() const
+bool UinputKeySink::openPointer()
 {
-    if (m_fd < 0) {
+    if (m_pointerFd >= 0) {
+        return true;
+    }
+    if (m_pointerFailed) {
+        return false;
+    }
+    const int fd = ::open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    bool ok = fd >= 0 && ::ioctl(fd, UI_SET_EVBIT, EV_KEY) == 0 && ::ioctl(fd, UI_SET_EVBIT, EV_REL) == 0 && ::ioctl(fd, UI_SET_EVBIT, EV_SYN) == 0;
+    for (int b : {BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA}) {
+        ok = ok && ::ioctl(fd, UI_SET_KEYBIT, b) == 0;
+    }
+    // X and Y make it a pointer to libinput; they are never moved.
+    for (int r : {REL_X, REL_Y, REL_WHEEL, REL_HWHEEL}) {
+        ok = ok && ::ioctl(fd, UI_SET_RELBIT, r) == 0;
+    }
+    uinput_setup setup{};
+    setup.id.bustype = BUS_VIRTUAL;
+    setup.id.vendor = kUinputVendor;
+    setup.id.product = kUinputPointerProduct;
+    setup.id.version = 1;
+    std::strncpy(setup.name, kUinputPointerName, UINPUT_MAX_NAME_SIZE - 1);
+    ok = ok && ::ioctl(fd, UI_DEV_SETUP, &setup) == 0 && ::ioctl(fd, UI_DEV_CREATE) == 0;
+    if (!ok) {
+        if (fd >= 0) {
+            ::close(fd);
+        }
+        m_pointerFailed = true;  // do not retry on every detent
+        return false;
+    }
+    m_pointerFd = fd;
+    return true;
+}
+
+void UinputKeySink::mouse(const QString &action)
+{
+    const auto events = mouseEvents(action);
+    if (!events || m_fd < 0 || !openPointer()) {
+        return;
+    }
+    for (const InputTriple &t : *events) {
+        input_event ev{};
+        ev.type = quint16(t.type);
+        ev.code = quint16(t.code);
+        ev.value = t.value;
+        if (::write(m_pointerFd, &ev, sizeof ev) != ssize_t(sizeof ev)) {
+            return;  // a full kernel buffer drops this action
+        }
+    }
+}
+
+namespace {
+QString sysNameOf(int fd)
+{
+    if (fd < 0) {
         return {};
     }
     char buf[64] = {};
-    if (::ioctl(m_fd, UI_GET_SYSNAME(sizeof buf), buf) < 0) {
+    if (::ioctl(fd, UI_GET_SYSNAME(sizeof buf), buf) < 0) {
         return {};
     }
     return QString::fromLatin1(buf);
+}
+} // namespace
+
+QString UinputKeySink::sysName() const
+{
+    return sysNameOf(m_fd);
+}
+
+QString UinputKeySink::pointerSysName() const
+{
+    return sysNameOf(m_pointerFd);
 }
 
 void UinputKeySink::emitKey(int code, int value)

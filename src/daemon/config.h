@@ -14,10 +14,10 @@
 namespace cs {
 
 struct Binding {
-    enum Kind { None, Keys, Action, Control, Command, Cycle, Request };
+    enum Kind { None, Keys, Action, Control, Command, Cycle, Request, Mouse };
     Kind kind = None;
     QList<KeyChord> keys;  // Keys, or Action/Control fallback when Kdenlive does not answer
-    QString name;          // action id, control id, cycle mode, request method
+    QString name;          // action id, control id, cycle mode, request method, mouse action
     double scale = 1.0;    // Control: multiplier applied to detents
     double accel = 0;      // Control: acceleration factor for fast detents; 0 = settings.accelFactor
     QVariantMap options;   // Control/Request options; "$mode" expands to a mode value, "$ctx:path" to a context value

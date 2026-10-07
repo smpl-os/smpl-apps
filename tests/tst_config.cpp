@@ -290,6 +290,22 @@ private Q_SLOTS:
         QVERIFY(j.value(QStringLiteral("slot")).isNull());
         QCOMPARE(j.value(QStringLiteral("message")).toString(), i.message);
     }
+
+    void mouseBindings()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles":[{"name":"g","bindings":{"key1":{"mouse":"left"},"knob2.cw":{"mouse":"wheel-down"},"knob2":{"press":{"mouse":"middle"}}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        const Binding b = c->profiles.first().bindings.value(QStringLiteral("key1"));
+        QCOMPARE(b.kind, Binding::Mouse);
+        QCOMPARE(b.name, QStringLiteral("left"));
+        QCOMPARE(b.describe(), QStringLiteral("mouse:left"));
+        QCOMPARE(c->profiles.first().bindings.value(QStringLiteral("knob2.press")).name, QStringLiteral("middle"));
+        QVERIFY(!parseConfig(R"({"profiles":[{"name":"g","bindings":{"key1":{"mouse":"scroll"}}}]})", {}, &err));
+        QVERIFY(err.contains(QStringLiteral("unknown mouse action")));
+        QCOMPARE(describeConfigIssue(err).slot, QStringLiteral("key1"));
+        QVERIFY(!parseConfig(R"({"profiles":[{"name":"g","bindings":{"key1":{"mouse":7}}}]})", {}, &err));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestConfig)

@@ -558,6 +558,9 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
     case Binding::Command:
         Q_EMIT runCommand(b.argv);
         return;
+    case Binding::Mouse:
+        enqueueMouse(group, dir, b.name, count);  // wheels: one detent per knob detent
+        return;
     case Binding::Cycle: {
         QString owner;
         const auto *modes = modesFor(b.name, &owner);
@@ -774,12 +777,28 @@ void Engine::enqueueTaps(const QString &group, int dir, const QList<KeyChord> &c
             if (m_tapQueue.size() >= kMaxQueuedTaps) {
                 break;
             }
-            m_tapQueue.append(Tap{group, dir, c});
+            m_tapQueue.append(Tap{group, dir, c, QString()});
         }
     }
     if (!m_tapTimer->isActive()) {
         // First tap goes out at once; the timer then acts as a cooldown so later
         // taps are spaced by 1/keyRateHz.
+        drainTap();
+        m_tapTimer->start();
+    }
+}
+
+void Engine::enqueueMouse(const QString &group, int dir, const QString &action, int count)
+{
+    if (dir != 0) {
+        m_tapQueue.erase(std::remove_if(m_tapQueue.begin(), m_tapQueue.end(),
+                                        [&](const Tap &t) { return t.group == group && t.dir == -dir; }),
+                         m_tapQueue.end());
+    }
+    for (int i = 0; i < count && m_tapQueue.size() < kMaxQueuedTaps; ++i) {
+        m_tapQueue.append(Tap{group, dir, KeyChord{}, action});
+    }
+    if (!m_tapTimer->isActive()) {
         drainTap();
         m_tapTimer->start();
     }
@@ -792,7 +811,11 @@ void Engine::drainTap()
         return;
     }
     const Tap t = m_tapQueue.takeFirst();
-    m_keys->tap(t.chord);
+    if (!t.mouse.isEmpty()) {
+        m_keys->mouse(t.mouse);
+    } else {
+        m_keys->tap(t.chord);
+    }
 }
 
 } // namespace cs

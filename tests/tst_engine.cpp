@@ -90,6 +90,34 @@ private Q_SLOTS:
         QCOMPARE(kd.attachedPid(), 0);
     }
 
+    void mouseBindingsPerDetent()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles":[{"name":"g","bindings":{"key1":{"mouse":"back"},"knob1.cw":{"mouse":"wheel-down"},"knob1.ccw":{"mouse":"wheel-up"}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        c->settings.accelFactor = 1.0;
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(*c);
+        e.setActiveWindow(kFirefox);
+        e.handle(key(1));
+        e.handle(turn(1, 1));
+        e.handle(turn(1, 1));
+        e.handle(turn(1, 1));
+        QTRY_COMPARE(keys.taps, (QStringList{QStringLiteral("mouse:back"), QStringLiteral("mouse:wheel-down"), QStringLiteral("mouse:wheel-down"), QStringLiteral("mouse:wheel-down")}));
+        keys.taps.clear();
+        // Reversing drops wheel motion not yet sent in the old direction.
+        for (int i = 0; i < 20; ++i) {
+            e.handle(turn(1, 1));
+        }
+        e.handle(turn(1, -1));
+        QTRY_VERIFY(keys.taps.contains(QStringLiteral("mouse:wheel-up")));
+        QTest::qWait(300);
+        QVERIFY(keys.taps.count(QStringLiteral("mouse:wheel-down")) < 20);
+        QCOMPARE(keys.taps.last(), QStringLiteral("mouse:wheel-up"));
+    }
+
     void kdenliveActionsAndCoalescedJog()
     {
         RecordingKeySink keys;

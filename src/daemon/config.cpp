@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "config.h"
+#include "keysink.h"
 #include "kdenlivecontract.h"
 
 #include <QDir>
@@ -34,6 +35,8 @@ QString Binding::describe() const
         return QStringLiteral("cycle:") + name;
     case Request:
         return QStringLiteral("request:") + name;
+    case Mouse:
+        return QStringLiteral("mouse:") + name;
     }
     return {};
 }
@@ -300,13 +303,22 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
     } else if (o.contains(QStringLiteral("cycle"))) {
         b.kind = Binding::Cycle;
         b.name = o.value(QStringLiteral("cycle")).toString();
+    } else if (o.contains(QStringLiteral("mouse"))) {
+        b.kind = Binding::Mouse;
+        b.name = o.value(QStringLiteral("mouse")).toString();
+        if (!mouseActionNames().contains(b.name)) {
+            if (error) {
+                *error = QStringLiteral("unknown mouse action '%1' (%2)").arg(b.name, mouseActionNames().join(QStringLiteral(", ")));
+            }
+            return std::nullopt;
+        }
     } else if (o.contains(QStringLiteral("request"))) {
         b.kind = Binding::Request;
         b.name = o.value(QStringLiteral("request")).toString();
         b.options = o.value(QStringLiteral("params")).toObject().toVariantMap();
     } else {
         if (error) {
-            *error = QStringLiteral("binding object needs one of keys/action/control/command/cycle/request");
+            *error = QStringLiteral("binding object needs one of keys/mouse/action/control/command/cycle/request");
         }
         return std::nullopt;
     }

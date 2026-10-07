@@ -68,6 +68,7 @@ private:
         QString group;
         int dir = 0;
         KeyChord chord;
+        QString mouse;  // a mouse action instead of the chord
     };
     struct Gesture {
         int batches = 0;          // update batches sent (edit.trim: limits.trimGestureSteps)
@@ -84,6 +85,7 @@ private:
     void execute(const Resolution &r, const QString &slot, double detents, bool isTurn, double accel = 1.0);
     void executeControl(const Binding &b, const QString &slot, const QString &group, int dir, double delta);
     void enqueueTaps(const QString &group, int dir, const QList<KeyChord> &chords, int count);
+    void enqueueMouse(const QString &group, int dir, const QString &action, int count);
     void drainTap();
     // "$mode" and "$ctx:path" / "$!ctx:path" (negated) references. A context
     // reference that is absent is reported through missing (nothing is guessed).

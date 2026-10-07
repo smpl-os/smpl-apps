@@ -76,6 +76,83 @@ private Q_SLOTS:
         const QList<QPair<int, int>> want{{KEY_LEFTCTRL, 1}, {KEY_F14, 1}, {KEY_F14, 0}, {KEY_LEFTCTRL, 0}};
         QCOMPARE(seen, want);
     }
+
+    void mouseEventSequences()
+    {
+        QCOMPARE(mouseActionNames().size(), 9);
+        for (const QString &n : mouseActionNames()) {
+            QVERIFY2(mouseEvents(n), qPrintable(n));
+            QCOMPARE(mouseEvents(n)->last(), (InputTriple{EV_SYN, SYN_REPORT, 0}));
+        }
+        QCOMPARE(*mouseEvents(QStringLiteral("left")),
+                 (QList<InputTriple>{{EV_KEY, BTN_LEFT, 1}, {EV_SYN, SYN_REPORT, 0}, {EV_KEY, BTN_LEFT, 0}, {EV_SYN, SYN_REPORT, 0}}));
+        QCOMPARE(mouseEvents(QStringLiteral("back"))->first().code, BTN_SIDE);
+        QCOMPARE(mouseEvents(QStringLiteral("forward"))->first().code, BTN_EXTRA);
+        QCOMPARE(mouseEvents(QStringLiteral("wheel-up"))->first(), (InputTriple{EV_REL, REL_WHEEL, 1}));
+        QCOMPARE(mouseEvents(QStringLiteral("wheel-down"))->first(), (InputTriple{EV_REL, REL_WHEEL, -1}));
+        QCOMPARE(mouseEvents(QStringLiteral("wheel-left"))->first(), (InputTriple{EV_REL, REL_HWHEEL, -1}));
+        QCOMPARE(mouseEvents(QStringLiteral("wheel-right"))->first(), (InputTriple{EV_REL, REL_HWHEEL, 1}));
+        QVERIFY(!mouseEvents(QStringLiteral("scroll")));
+        RecordingKeySink rec;
+        rec.mouse(QStringLiteral("middle"));
+        QCOMPARE(rec.taps, QStringList{QStringLiteral("mouse:middle")});
+    }
+
+    void mouseReadsBackThroughGrabbedNode()
+    {
+        if (::access("/dev/uinput", W_OK) != 0) {
+            QSKIP("/dev/uinput not writable");
+        }
+        UinputKeySink sink;
+        QString err;
+        QVERIFY2(sink.open(&err), qPrintable(err));
+        QVERIFY(sink.openPointer());
+        const QString sys = QStringLiteral("/sys/devices/virtual/input/") + sink.pointerSysName();
+        QString node;
+        QElapsedTimer t;
+        t.start();
+        while (node.isEmpty() && t.elapsed() < 3000) {
+            const auto ev = QDir(sys).entryList({QStringLiteral("event*")}, QDir::Dirs);
+            if (!ev.isEmpty()) {
+                node = QStringLiteral("/dev/input/") + ev.first();
+            }
+            QTest::qWait(20);
+        }
+        QVERIFY2(!node.isEmpty(), qPrintable(sys));
+        int fd = -1;
+        while (t.elapsed() < 3000 && (fd = ::open(QFile::encodeName(node).constData(), O_RDONLY | O_NONBLOCK)) < 0) {
+            QTest::qWait(20);
+        }
+        if (fd < 0) {
+            QSKIP("cannot open the virtual pointer's event node");
+        }
+        input_id id{};
+        QVERIFY(::ioctl(fd, EVIOCGID, &id) == 0);
+        QCOMPARE(id.vendor, kUinputVendor);
+        QCOMPARE(id.product, kUinputPointerProduct);
+        if (::ioctl(fd, EVIOCGRAB, 1) != 0) {
+            ::close(fd);
+            QSKIP("cannot grab the virtual pointer; not clicking into the session");
+        }
+        sink.mouse(QStringLiteral("right"));
+        sink.mouse(QStringLiteral("wheel-down"));
+        QList<InputTriple> seen;
+        while (seen.size() < 3 && t.elapsed() < 6000) {
+            pollfd p{fd, POLLIN, 0};
+            if (::poll(&p, 1, 200) <= 0) {
+                continue;
+            }
+            input_event ev;
+            while (::read(fd, &ev, sizeof ev) == ssize_t(sizeof ev)) {
+                if (ev.type != EV_SYN) {
+                    seen << InputTriple{ev.type, ev.code, ev.value};
+                }
+            }
+        }
+        ::ioctl(fd, EVIOCGRAB, 0);
+        ::close(fd);
+        QCOMPARE(seen, (QList<InputTriple>{{EV_KEY, BTN_RIGHT, 1}, {EV_KEY, BTN_RIGHT, 0}, {EV_REL, REL_WHEEL, -1}}));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestUinput)
