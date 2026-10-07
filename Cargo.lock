@@ -4417,6 +4417,7 @@ dependencies = [
  "slint-build",
  "smpl-common",
  "xkbcommon",
+ "zbus",
  "zeroize",
 ]
 

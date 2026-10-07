@@ -89,6 +89,29 @@ struct BtDevice {
     signal: int,
 }
 
+/// One key or knob of the keypad layout (Settings > Keypad).
+struct KeypadControl {
+    id: string,
+    label: string,
+    knob: bool,
+    col: int,
+    row: int,
+    summary: string,
+    selected: bool,
+    // Flashes while live input reports this control.
+    active: bool,
+    // Confirmed in the firmware wizard's input test.
+    seen: bool,
+}
+
+/// A binding of the selected keypad profile ("knob1.cw" -> "Media key").
+struct KeypadBindingRow {
+    slot: string,
+    label: string,
+    summary: string,
+    advanced: bool,
+}
+
 // ── Theme ────────────────────────────────────────────────────────────────────
 
 global Typography {
@@ -614,6 +637,164 @@ component SignalBars inherits HorizontalLayout {
 // MAIN WINDOW
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ── Keypad components (Settings > Keypad) ────────────────────────────────────
+
+component KeypadButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: Typography.compact-control;
+    min-width: label.preferred-width + 24px;
+    border-radius: 4px;
+    // Disabled buttons are outlined instead of filled (shape, not only color).
+    border-width: root.enabled ? 0px : 1px;
+    border-color: Theme.bg_lighter;
+    background: !root.enabled ? transparent
+        : root.primary ? (touch.has-hover ? Theme.accent.brighter(15%) : Theme.accent)
+        : touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+
+    label := Text {
+        text: root.text;
+        color: !root.enabled ? Theme.fg_dim : root.primary ? Theme.bg : Theme.fg;
+        font-size: Typography.secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+component KeypadToggle inherits Rectangle {
+    in property <bool> on;
+    callback toggled(bool);
+
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.on ? Theme.accent : Theme.bg_lighter;
+
+    // The knob's side (not only its color) shows the state.
+    Rectangle {
+        x: root.on ? parent.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: white;
+        animate x { duration: 150ms; easing: ease-in-out; }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.on); }
+    }
+}
+
+// Keys in a grid (row-major, `cols` per row) and knobs in a column to the right.
+component KeypadCanvas inherits Rectangle {
+    in property <[KeypadControl]> controls;
+    in property <int> cols: 5;
+    in property <int> rows: 3;
+    in property <int> knobs: 0;
+    in property <bool> show-summary: true;
+    callback clicked(string);
+
+    property <length> cell: 66px;
+    property <length> gap: 8px;
+    height: max(root.rows, 1) * root.cell;
+    min-width: root.cols * root.cell + (root.knobs > 0 ? root.cell + 16px : 0px);
+
+    for control in root.controls: Rectangle {
+        x: control.knob ? root.cols * root.cell + 16px : control.col * root.cell;
+        y: control.row * root.cell;
+        width: root.cell - root.gap;
+        height: root.cell - root.gap;
+        border-radius: control.knob ? (root.cell - root.gap) / 2 : 6px;
+        background: control.active ? Theme.accent
+            : control.selected ? Theme.accent.transparentize(75%)
+            : cell-touch.has-hover ? Theme.hover : Theme.bg;
+        border-width: control.selected || control.seen ? 2px : 1px;
+        border-color: control.seen ? Theme.success : control.selected ? Theme.accent : Theme.bg_lighter;
+
+        Text {
+            x: control.knob ? (parent.width - self.width) / 2 : 6px;
+            y: control.knob ? 8px : 4px;
+            text: control.label;
+            color: control.active ? Theme.bg : Theme.fg_dim;
+            font-size: Typography.caption;
+        }
+
+        if root.show-summary: Text {
+            x: 4px;
+            y: parent.height - self.height - (control.knob ? 12px : 6px);
+            width: parent.width - 8px;
+            text: control.summary;
+            color: control.active ? Theme.bg : Theme.fg;
+            font-size: Typography.caption;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        // Check mark shape (not only the green border) for confirmed inputs.
+        if control.seen: Text {
+            x: control.knob ? (parent.width - self.width) / 2 : parent.width - self.width - 6px;
+            y: control.knob ? parent.height - self.height - 10px : 4px;
+            text: "\u{2713}";
+            color: Theme.success;
+            font-size: Typography.secondary;
+            font-weight: 700;
+        }
+
+        cell-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.clicked(control.id); }
+        }
+    }
+}
+
+component KeypadInput inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    callback accepted();
+
+    height: Typography.compact-control;
+    border-radius: 4px;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.bg_lighter;
+
+    input := TextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        vertical-alignment: center;
+        single-line: true;
+        color: Theme.fg;
+        font-size: Typography.secondary;
+        text <=> root.text;
+        accepted => { root.accepted(); }
+    }
+
+    if root.text == "": Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        vertical-alignment: center;
+        text: root.placeholder;
+        color: Theme.fg_dim;
+        font-size: Typography.secondary;
+        overflow: elide;
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Settings";
     default-font-family: "Noto Sans";
@@ -936,6 +1117,99 @@ export component MainWindow inherits Window {
     // Hints (Vimium-style keyboard navigation)
     callback hints-set-enabled(bool);
 
+    // ── Keypad (CH552 macro keypads, control-surface daemon) ──────────────
+    in property <bool> kp-connected: false;
+    in property <bool> kp-bootloader: false;
+    in property <string> kp-device-title;
+    in property <string> kp-device-detail;
+    in property <string> kp-firmware;
+    in property <string> kp-firmware-text;
+    in property <string> kp-service-text;
+    in property <bool> kp-service-installed: false;
+    in property <bool> kp-service-running: false;
+    in property <bool> kp-layout-editable: false;
+    in property <[string]> kp-board-names;
+    in property <int> kp-board-index: -1;
+    in property <string> kp-layout-note;
+    in property <[KeypadControl]> kp-controls;
+    in property <int> kp-cols: 5;
+    in property <int> kp-rows: 3;
+    in property <int> kp-knobs: 3;
+    in property <bool> kp-identify: false;
+    in property <string> kp-live-note;
+    in property <[string]> kp-profile-names;
+    in property <int> kp-profile-index: 0;
+    in property <bool> kp-profile-global: true;
+    in-out property <string> kp-profile-class;
+    in property <bool> kp-profile-kdenlive: false;
+    in property <bool> kp-profile-key-fallback: false;
+    in property <string> kp-profile-note;
+    in property <bool> kp-adding-profile: false;
+    in property <[string]> kp-app-classes;
+    in-out property <string> kp-new-app;
+    in property <string> kp-selected-title;
+    in property <bool> kp-selected-knob: false;
+    in property <int> kp-knob-event: 0;
+    in property <[string]> kp-action-names;
+    in property <int> kp-action-index: 0;
+    in-out property <string> kp-action-text;
+    in property <[string]> kp-choice-names;
+    in property <int> kp-choice-index: -1;
+    // 0 = explanation only, 1 = text field, 2 = choice list, 3 = advanced (read-only)
+    in property <int> kp-editor-mode: 0;
+    in property <string> kp-editor-hint;
+    in property <string> kp-advanced-text;
+    in property <[KeypadBindingRow]> kp-binding-rows;
+    in property <bool> kp-dirty: false;
+    in property <bool> kp-saving: false;
+    in property <string> kp-config-path;
+    in property <bool> kp-config-exists: false;
+    in property <string> kp-status;
+    in property <bool> kp-status-is-error: false;
+    in property <bool> kp-wizard-open: false;
+    in property <int> kp-wizard-step: 0;
+    in property <string> kp-wizard-title;
+    in property <bool> kp-wizard-ack: false;
+    in property <[string]> kp-fw-names;
+    in property <int> kp-fw-index: -1;
+    in property <string> kp-fw-detail;
+    in property <string> kp-wizard-hint;
+    in property <bool> kp-wizard-can-next: false;
+    in property <[string]> kp-flash-log;
+    in property <bool> kp-flash-running: false;
+    in property <bool> kp-dry-run: true;
+    in property <int> kp-verify-seen: 0;
+    in property <int> kp-verify-total: 0;
+    callback kp-refresh();
+    callback kp-select-board(int);
+    callback kp-service(string);
+    callback kp-select-control(string);
+    callback kp-select-knob-event(int);
+    callback kp-select-profile(int);
+    callback kp-start-add-profile();
+    callback kp-pick-app(int);
+    callback kp-confirm-add-profile();
+    callback kp-cancel-add-profile();
+    callback kp-remove-profile();
+    callback kp-apply-profile-class();
+    callback kp-set-kdenlive(bool);
+    callback kp-set-key-fallback(bool);
+    callback kp-load-kdenlive-preset();
+    callback kp-select-action(int);
+    callback kp-select-choice(int);
+    callback kp-apply-binding();
+    callback kp-save();
+    callback kp-revert();
+    callback kp-open-config();
+    callback kp-toggle-identify();
+    callback kp-open-wizard();
+    callback kp-set-wizard-ack(bool);
+    callback kp-select-firmware(int);
+    callback kp-wizard-next();
+    callback kp-wizard-back();
+    callback kp-close-wizard();
+    callback kp-flash();
+
     // Search
     callback filter-search(string);
 
@@ -952,6 +1226,7 @@ export component MainWindow inherits Window {
         if root.active-tab == 7 { root.wifi-list(); }
         if root.active-tab == 8 { root.bt-list(); }
         if root.active-tab == 9 { root.xr-refresh(); }
+        if root.active-tab == 11 { root.kp-refresh(); }
     }
 
     // ── Keyboard shortcuts ──
@@ -1306,6 +1581,17 @@ export component MainWindow inherits Window {
                         active: root.active-tab == 1;
                         clicked => {
                             root.active-tab = 1;
+                            root.dropdown-open = false;
+                            focus-scope.focus();
+                        }
+                    }
+
+                    TabButton {
+                        label: "Keypad";
+                        icon: "\u{1F39B}";
+                        active: root.active-tab == 11;
+                        clicked => {
+                            root.active-tab = 11;
                             root.dropdown-open = false;
                             focus-scope.focus();
                         }
@@ -7207,6 +7493,761 @@ export component MainWindow inherits Window {
                     viewport-height: tab10-flick.viewport-height;
                     viewport-y: tab10-flick.viewport-y;
                     visible-height: tab10-flick.height;
+                }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // KEYPAD TAB (CH552 macro keypads, control-surface daemon)
+            // ══════════════════════════════════════════════════════════════
+
+            if root.active-tab == 11: Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                clip: true;
+
+                tab11-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: max(self.width, 640px);
+                    viewport-height: tab11-content.preferred-height;
+
+                tab11-content := VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 10px;
+                    padding-bottom: 14px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.kp-wizard-open ? "Keypad firmware" : "Keypad";
+                            color: Theme.fg;
+                            font-size: Typography.heading;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        KeypadButton { text: "Refresh"; clicked => { root.kp-refresh(); } }
+                    }
+
+                    if root.kp-status != "" && !root.kp-wizard-open: Text {
+                        text: root.kp-status;
+                        color: root.kp-status-is-error ? Theme.danger : Theme.fg_dim;
+                        font-size: Typography.secondary;
+                        wrap: word-wrap;
+                    }
+
+                    // ── Device ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                // Filled dot = connected, ring = not connected.
+                                Rectangle {
+                                    width: 10px;
+                                    height: 10px;
+                                    y: 5px;
+                                    border-radius: 5px;
+                                    border-width: 2px;
+                                    border-color: root.kp-connected || root.kp-bootloader ? Theme.success : Theme.fg_dim;
+                                    background: root.kp-connected || root.kp-bootloader ? Theme.success : transparent;
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: root.kp-device-title;
+                                    color: Theme.fg;
+                                    font-size: Typography.body;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            if root.kp-device-detail != "": Text {
+                                text: root.kp-device-detail;
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: root.kp-service-text;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                if root.kp-service-installed && !root.kp-service-running && root.kp-connected: KeypadButton {
+                                    text: "Start";
+                                    clicked => { root.kp-service("start"); }
+                                }
+                                if root.kp-service-installed && root.kp-service-running: KeypadButton {
+                                    text: "Restart";
+                                    clicked => { root.kp-service("restart"); }
+                                }
+                            }
+                            if root.kp-layout-editable: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Board";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    horizontal-stretch: 1;
+                                    model: root.kp-board-names;
+                                    current-index: root.kp-board-index;
+                                    selected(i) => { root.kp-select-board(i); }
+                                }
+                            }
+                            if root.kp-layout-note != "": Text {
+                                text: root.kp-layout-note;
+                                color: Theme.warning;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // ── Layout + live identify ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Layout: click a key or knob to map it";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                KeypadButton {
+                                    text: root.kp-identify ? "Stop identifying" : "Press to identify";
+                                    primary: root.kp-identify;
+                                    clicked => { root.kp-toggle-identify(); }
+                                }
+                            }
+                            if root.kp-live-note != "": Text {
+                                text: root.kp-live-note;
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                            KeypadCanvas {
+                                controls: root.kp-controls;
+                                cols: root.kp-cols;
+                                rows: root.kp-rows;
+                                knobs: root.kp-knobs;
+                                clicked(id) => { root.kp-select-control(id); }
+                            }
+                        }
+                    }
+
+                    // ── Mapping editor ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Mapping";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Profile";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    horizontal-stretch: 1;
+                                    model: root.kp-profile-names;
+                                    current-index: root.kp-profile-index;
+                                    selected(i) => { root.kp-select-profile(i); }
+                                }
+                                KeypadButton { text: "Add app"; clicked => { root.kp-start-add-profile(); } }
+                                if !root.kp-profile-global: KeypadButton {
+                                    text: "Remove";
+                                    clicked => { root.kp-remove-profile(); }
+                                }
+                            }
+
+                            if root.kp-adding-profile: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "New app";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                if root.kp-app-classes.length > 0: ResDropdown {
+                                    width: 160px;
+                                    model: root.kp-app-classes;
+                                    current-index: -1;
+                                    selected(i) => { root.kp-pick-app(i); }
+                                }
+                                KeypadInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.kp-new-app;
+                                    placeholder: "Window class, e.g. org.kde.kdenlive";
+                                    accepted => { root.kp-confirm-add-profile(); }
+                                }
+                                KeypadButton { text: "Add"; primary: true; clicked => { root.kp-confirm-add-profile(); } }
+                                KeypadButton { text: "Cancel"; clicked => { root.kp-cancel-add-profile(); } }
+                            }
+
+                            if !root.kp-profile-global: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Window class";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                KeypadInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.kp-profile-class;
+                                    placeholder: "Regular expression, e.g. ^firefox$";
+                                    accepted => { root.kp-apply-profile-class(); }
+                                }
+                                KeypadButton { text: "Apply"; clicked => { root.kp-apply-profile-class(); } }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "API plugin";
+                                    width: 100px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                for plugin[idx] in ["None (key mapping)", "Kdenlive (D-Bus API)"]: Rectangle {
+                                    height: Typography.compact-control;
+                                    horizontal-stretch: 1;
+                                    border-radius: 4px;
+                                    background: (idx == 1) == root.kp-profile-kdenlive ? Theme.accent
+                                        : plugin-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                    Text {
+                                        text: plugin;
+                                        color: (idx == 1) == root.kp-profile-kdenlive ? Theme.bg : Theme.fg;
+                                        font-size: Typography.secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: parent.width;
+                                        height: parent.height;
+                                    }
+                                    plugin-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.kp-set-kdenlive(idx == 1); }
+                                    }
+                                }
+                            }
+
+                            if root.kp-profile-kdenlive: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Type the plain shortcuts while Kdenlive's control-surface interface is off";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                KeypadToggle {
+                                    on: root.kp-profile-key-fallback;
+                                    toggled(on) => { root.kp-set-key-fallback(on); }
+                                }
+                            }
+                            if root.kp-profile-kdenlive: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Enable \"control-surface interface\" in Kdenlive's settings for API actions.";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                KeypadButton {
+                                    text: "Load recommended layout";
+                                    clicked => { root.kp-load-kdenlive-preset(); }
+                                }
+                            }
+                            if root.kp-profile-note != "": Text {
+                                text: root.kp-profile-note;
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+
+                            Rectangle { height: 1px; background: Theme.bg_lighter; }
+
+                            Text {
+                                text: root.kp-selected-title;
+                                color: Theme.fg;
+                                font-size: Typography.body;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                            }
+
+                            if root.kp-selected-knob: HorizontalLayout {
+                                spacing: 4px;
+                                for event[idx] in ["Turn left", "Turn right", "Press"]: Rectangle {
+                                    height: Typography.compact-control;
+                                    horizontal-stretch: 1;
+                                    border-radius: 4px;
+                                    background: root.kp-knob-event == idx ? Theme.accent
+                                        : event-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                    Text {
+                                        text: event;
+                                        color: root.kp-knob-event == idx ? Theme.bg : Theme.fg;
+                                        font-size: Typography.secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: parent.width;
+                                        height: parent.height;
+                                    }
+                                    event-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.kp-select-knob-event(idx); }
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Action";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    horizontal-stretch: 1;
+                                    enabled: root.kp-editor-mode != 3 || root.kp-action-names.length > 1;
+                                    model: root.kp-action-names;
+                                    current-index: root.kp-action-index;
+                                    selected(i) => { root.kp-select-action(i); }
+                                }
+                            }
+                            if root.kp-editor-mode == 1: KeypadInput {
+                                text <=> root.kp-action-text;
+                                placeholder: root.kp-editor-hint;
+                                accepted => { root.kp-apply-binding(); }
+                            }
+                            if root.kp-editor-mode == 2: ResDropdown {
+                                model: root.kp-choice-names;
+                                current-index: root.kp-choice-index;
+                                selected(i) => { root.kp-select-choice(i); }
+                            }
+                            if root.kp-editor-mode == 3: Text {
+                                text: root.kp-advanced-text;
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                            if root.kp-editor-hint != "": Text {
+                                text: root.kp-editor-hint;
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                alignment: end;
+                                if root.kp-editor-mode != 3: KeypadButton {
+                                    text: "Apply to control";
+                                    primary: true;
+                                    clicked => { root.kp-apply-binding(); }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Bindings of the selected profile ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 2px;
+
+                            Text {
+                                text: "Mapped in this profile";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+                            if root.kp-binding-rows.length == 0: Text {
+                                text: "Nothing mapped yet.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                            }
+                            for row in root.kp-binding-rows: Rectangle {
+                                height: Typography.row;
+                                border-radius: 4px;
+                                background: row-touch.has-hover ? Theme.hover : transparent;
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 12px;
+                                    Text {
+                                        text: row.label;
+                                        width: 170px;
+                                        color: Theme.fg;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: row.summary;
+                                        color: row.advanced ? Theme.fg_dim : Theme.fg;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+                                }
+                                row-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.kp-select-control(row.slot); }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Save ──
+                    if !root.kp-wizard-open: HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.kp-dirty ? "Unsaved changes" : root.kp-config-exists ? root.kp-config-path : "Not saved yet";
+                            color: root.kp-dirty ? Theme.warning : Theme.fg_dim;
+                            font-size: Typography.secondary;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        KeypadButton { text: "Open file"; enabled: root.kp-config-exists; clicked => { root.kp-open-config(); } }
+                        KeypadButton { text: "Revert"; enabled: root.kp-dirty; clicked => { root.kp-revert(); } }
+                        KeypadButton {
+                            text: root.kp-saving ? "Saving…" : "Save";
+                            primary: true;
+                            enabled: (root.kp-dirty || !root.kp-config-exists) && !root.kp-saving;
+                            clicked => { root.kp-save(); }
+                        }
+                    }
+
+                    // ── Firmware ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            Text {
+                                text: "Firmware";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: root.kp-firmware-text;
+                                color: Theme.fg;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                KeypadButton {
+                                    text: root.kp-firmware == "open" ? "Update firmware…" : "Install open firmware…";
+                                    clicked => { root.kp-open-wizard(); }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Firmware wizard ──
+                    if root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 10px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: root.kp-wizard-title;
+                                    color: Theme.fg;
+                                    font-size: Typography.body;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                if root.kp-dry-run: Rectangle {
+                                    height: 22px;
+                                    width: dry-label.preferred-width + 16px;
+                                    border-radius: 11px;
+                                    border-width: 1px;
+                                    border-color: Theme.warning;
+                                    dry-label := Text {
+                                        text: "Dry run";
+                                        color: Theme.warning;
+                                        font-size: Typography.caption;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: parent.width;
+                                        height: parent.height;
+                                    }
+                                }
+                            }
+
+                            // Step dots: filled = done or current, ring = ahead.
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                for i in 7: Rectangle {
+                                    width: 10px;
+                                    height: 10px;
+                                    border-radius: 5px;
+                                    border-width: 2px;
+                                    border-color: i <= root.kp-wizard-step ? Theme.accent : Theme.bg_lighter;
+                                    background: i <= root.kp-wizard-step ? Theme.accent : transparent;
+                                }
+                            }
+
+                            if root.kp-wizard-step == 0: VerticalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Macro keypads ship with their maker's stock firmware. The open firmware (the control-surface build of CH552-OpenMacroPad, CC BY-SA 3.0) describes its own layout, keeps its key map on the keypad, and lets smplOS read every key and knob directly.";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                                Rectangle {
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: Theme.warning;
+                                    VerticalLayout {
+                                        padding: 10px;
+                                        Text {
+                                            text: "\u{26A0} The stock firmware can't be read out or backed up. Once you flash, there is no way back to it. The keypad itself can always be reflashed: its update mode is built into the chip.";
+                                            color: Theme.warning;
+                                            font-size: Typography.secondary;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    KeypadToggle {
+                                        on: root.kp-wizard-ack;
+                                        toggled(on) => { root.kp-set-wizard-ack(on); }
+                                    }
+                                    Text {
+                                        text: "I understand that the stock firmware can't be restored";
+                                        color: Theme.fg;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                if root.kp-dry-run: Text {
+                                    text: "This version runs the flash step as a dry run: it checks everything and shows what would happen, but writes nothing to the keypad.";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            if root.kp-wizard-step == 1: VerticalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Choose the firmware to install.";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                }
+                                if root.kp-fw-names.length > 0: ResDropdown {
+                                    model: root.kp-fw-names;
+                                    current-index: root.kp-fw-index;
+                                    selected(i) => { root.kp-select-firmware(i); }
+                                }
+                                Text {
+                                    text: root.kp-fw-detail;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            if root.kp-wizard-step == 2: Text {
+                                text: "Unplug the keypad from USB.";
+                                color: Theme.fg;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+
+                            if root.kp-wizard-step == 3: VerticalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Hold down the top-left key, keep holding it, and plug the keypad back in. Release the key after a second. In update mode the keypad does nothing on its own, and it leaves update mode by itself after a few seconds of inactivity.";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                                // The key to hold, marked by a filled square and an arrow.
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    alignment: start;
+                                    for i in 5: Rectangle {
+                                        width: 26px;
+                                        height: 26px;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: i == 0 ? Theme.accent : Theme.bg_lighter;
+                                        background: i == 0 ? Theme.accent : Theme.bg;
+                                    }
+                                    Text {
+                                        text: "\u{2190} hold this key";
+                                        color: Theme.fg_dim;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            if root.kp-wizard-step == 4: VerticalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: root.kp-dry-run
+                                        ? "Dry run: checks the image and the keypad in update mode, then lists the erase, program and verify steps without running wchisp."
+                                        : "Flashing erases the code flash, writes the firmware and verifies it with wchisp. The chip's configuration registers are never changed. Keep the keypad plugged in.";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    KeypadButton {
+                                        text: root.kp-flash-running ? "Working…" : root.kp-dry-run ? "Flash (dry run)" : "Flash";
+                                        primary: true;
+                                        enabled: !root.kp-flash-running;
+                                        clicked => { root.kp-flash(); }
+                                    }
+                                }
+                                for line in root.kp-flash-log: Text {
+                                    text: line;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            if root.kp-wizard-step == 5: Text {
+                                text: "Unplug the keypad and plug it in again normally, without holding any key.";
+                                color: Theme.fg;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+
+                            if root.kp-wizard-step == 6: VerticalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Press every key and turn and press every knob. Each confirmed input gets a check mark (" + root.kp-verify-seen + " of " + root.kp-verify-total + ").";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                                if root.kp-live-note != "": Text {
+                                    text: root.kp-live-note;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                                KeypadCanvas {
+                                    controls: root.kp-controls;
+                                    cols: root.kp-cols;
+                                    rows: root.kp-rows;
+                                    knobs: root.kp-knobs;
+                                    show-summary: false;
+                                }
+                            }
+
+                            if root.kp-wizard-hint != "": Text {
+                                text: root.kp-wizard-hint;
+                                color: Theme.info;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                KeypadButton {
+                                    text: "Cancel";
+                                    enabled: !root.kp-flash-running;
+                                    clicked => { root.kp-close-wizard(); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                KeypadButton {
+                                    text: "Back";
+                                    enabled: root.kp-wizard-step > 0 && !root.kp-flash-running;
+                                    clicked => { root.kp-wizard-back(); }
+                                }
+                                KeypadButton {
+                                    text: root.kp-wizard-step == 6 ? "Finish" : "Next";
+                                    primary: true;
+                                    enabled: root.kp-wizard-can-next;
+                                    clicked => { root.kp-wizard-next(); }
+                                }
+                            }
+                        }
+                    }
+                }
+                }
+
+                HorizontalScrollIndicator {
+                    y: parent.height - self.height;
+                    width: parent.width - 10px;
+                    viewport-width: tab11-flick.viewport-width;
+                    viewport-x <=> tab11-flick.viewport-x;
+                    visible-width: tab11-flick.width;
+                }
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    height: parent.height;
+                    viewport-height: tab11-flick.viewport-height;
+                    viewport-y: tab11-flick.viewport-y;
+                    visible-height: tab11-flick.height;
                 }
             }
 

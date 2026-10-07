@@ -15,6 +15,8 @@ libc                  = { workspace = true }
 dirs                  = { workspace = true }
 qrcode                = { workspace = true }
 zeroize               = { workspace = true }
+# Keypad tab: the control-surface daemon's Settings API (live input, identify).
+zbus                  = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }

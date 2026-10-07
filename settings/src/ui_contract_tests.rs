@@ -101,7 +101,7 @@ fn sidebar_uses_theme_tinted_outline_assets_only_for_requested_icons() {
 #[test]
 fn every_tab_and_sidebar_remain_scrollable_at_minimum_window_size() {
     assert!(UI.contains("sidebar-flick := Flickable"));
-    for tab in 0..=10 {
+    for tab in 0..=11 {
         assert!(UI.contains(&format!("tab{tab}-flick := Flickable")));
         assert!(UI.contains(&format!("viewport-x <=> tab{tab}-flick.viewport-x")));
         assert!(
@@ -335,4 +335,39 @@ fn dictation_says_when_the_model_is_missing_and_how_to_get_it() {
     assert!(rust.contains("dictation::launch_model_download(&cfg.model)"));
     // Startup, the status poll and the end of an install all refresh model state.
     assert_eq!(rust.matches("refresh_dictation_models(&ui, cfg.as_ref());").count(), 3);
+}
+
+#[test]
+fn keypad_tab_is_wired_and_flashes_only_as_a_dry_run_by_default() {
+    let keypad = UI
+        .split("// KEYPAD TAB")
+        .nth(1)
+        .unwrap()
+        .split("// ABOUT TAB")
+        .next()
+        .unwrap();
+    for needle in [
+        "clicked(id) => { root.kp-select-control(id); }",
+        "clicked => { root.kp-save(); }",
+        "clicked => { root.kp-flash(); }",
+        "root.kp-dry-run ? \"Flash (dry run)\" : \"Flash\"",
+        "I understand that the stock firmware can't be restored",
+        "Hold down the top-left key",
+        "for plugin[idx] in [\"None (key mapping)\", \"Kdenlive (D-Bus API)\"]",
+        "for event[idx] in [\"Turn left\", \"Turn right\", \"Press\"]",
+    ] {
+        assert!(keypad.contains(needle), "missing: {needle}");
+    }
+    assert!(!keypad.contains("Theme.bg.transparentize"), "cards use Theme.panel, not another window fill");
+    assert!(UI.contains("label: \"Keypad\""));
+    assert!(UI.contains("if root.active-tab == 11 { root.kp-refresh(); }"));
+
+    let main = include_str!("main.rs");
+    assert!(main.contains("\"keypad\" => 11,"));
+    assert!(main.contains("(\"Keypad\", \"keypad\", 11)"));
+    assert!(main.contains("keypad::ui::install(&ui)"));
+    let keypad_rs = include_str!("keypad/mod.rs");
+    assert!(keypad_rs.contains("std::env::var(\"SMPLOS_KEYPAD_REAL_FLASH\").as_deref() == Ok(\"1\")"));
+    let ui_rs = include_str!("keypad/ui.rs");
+    assert!(ui_rs.contains("let execute = super::real_flash_enabled();"));
 }

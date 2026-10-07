@@ -212,6 +212,10 @@ jobs:
             settings/src/main.rs \
             '"Bluetooth"'
 
+          check "settings search index contains Keypad entries" \
+            settings/src/main.rs \
+            '("Keypad", "keypad", 11)'
+
           # ── deploy-local.sh: rebuild-app-cache must run after export ──────
           # Regression: deploy-local.sh exported settings --export-index but
           # never called rebuild-app-cache, so search keywords like WiFi and

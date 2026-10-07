@@ -3,6 +3,7 @@ mod dictation;
 mod display;
 mod hints;
 mod keybindings;
+mod keypad;
 mod layouts;
 mod power;
 mod taskbar;
@@ -111,6 +112,14 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("XKB Layout", "keyboard", 1),
         ("Input Language", "keyboard", 1),
         ("Keyboard Preview", "keyboard", 1),
+        // Keypad (CH552 macro keypads)
+        ("Keypad", "keypad", 11),
+        ("Macro Keypad", "keypad", 11),
+        ("Macro Pad", "keypad", 11),
+        ("Keypad Mapping", "keypad", 11),
+        ("Keypad App Profiles", "keypad", 11),
+        ("Kdenlive Control Surface", "keypad", 11),
+        ("Keypad Firmware", "keypad", 11),
         // Dictation
         ("Dictation", "dictation", 2),
         ("Speech to Text", "dictation", 2),
@@ -644,6 +653,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "taskbar" => 6,
                         "wifi" => 7,
                         "bluetooth" => 8,
+                        "keypad" => 11,
                         _ => 0,
                     };
                     i += 1;
@@ -849,6 +859,9 @@ fn main() -> Result<(), slint::PlatformError> {
             display::backend::detect_backend()
         };
     let _display_timer = display::ui::install(&ui, display_backend);
+
+    // ── Keypad tab init (CH552 macro keypads) ────────────────────────────────
+    let _keypad_tab = keypad::ui::install(&ui);
 
     // ── Power tab init ───────────────────────────────────────────────────────
 
@@ -2698,6 +2711,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "wifi" => "Wi-Fi",
                 "bluetooth" => "Bluetooth",
                 "glasses" => "Glasses",
+                "keypad" => "Keypad",
                 _ => key,
             }
         }
