@@ -7,8 +7,11 @@ flash wizard. The smplOS session (`smplos` repo) builds the UI; this repository
 provides the firmware, the daemon and the daemon's D-Bus service. The two meet
 only at the D-Bus API in `docs/dbus-settings-api.md`.
 
-Status: (b) is implemented, with a mock and tests. (a) and (c) are plans built
-on what exists now.
+Status: (b) is implemented, with a mock and tests, together with the smplOS
+requests R1–R9 (live input, check-config/status/list-actions/features JSON,
+mouse bindings, layouts up to 16 keys, any-serial matching, the raw-HID input
+backend, startup robustness, firmware releases with firmware-info and
+enter-bootloader). (a) beyond this pad and (c) are plans built on what exists.
 
 ```mermaid
 flowchart LR
@@ -177,9 +180,10 @@ Q_SIGNALS:
 
 ## Order of work
 
-1. Done: firmware 2.0.0 for this pad, D-Bus service, mock, tests.
-2. After the user flashes 2.0.0: the daemon's raw-HID input backend (report 5,
-   heartbeats, `GET_INFO`), so the daemon no longer depends on chords.
+1. Done: firmware 2.0.0 for this pad, the D-Bus service, the mock, the raw-HID
+   input backend (report 5, heartbeats, `GET_INFO`), release images, tests.
+2. After the user flashes 2.0.0: confirm raw mode on the real pad (§7.8 of
+   FIRMWARE-PLAN), then set `verifiedOnHardware` in the release JSON.
 3. `CMD_IDENTIFY` and board profiles in the firmware; `GetLayout` reads it.
 4. `ControlPlugin` steps 1 and 2.
 5. capture2board tool and a second board, when one is available.

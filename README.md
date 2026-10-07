@@ -62,7 +62,12 @@ with what Kdenlive offers with `control-surfaced list-capabilities`.
 | `control-surfaced verify [--no-write]` | interactive pad check / hardware map learning |
 | `control-surfaced simulate FILE\|-` | run scripted events (`window org.kde.kdenlive`, `key3`, `knob1 +5`, `knob2 press`/`hold`/`release`, `context {…}`, `kdenlive off`, `expect notice`, `expect no-keys`, …) and print the resulting actions; `--kdenlive-service NAME` drives a real Kdenlive with a non-emitting key sink |
 | `control-surfaced list-capabilities [--json] [--kdenlive-service NAME]` | what the running Kdenlive offers (controls, commands, actions, limits, context paths for `when`) and which configured bindings it does not offer; read-only, no lease |
-| `control-surfaced list-devices` / `check-config` / `example-config` | diagnostics (`check-config` prints errors and warnings) |
+| `control-surfaced status [--json]` | daemon, pad, firmware, effective layout and config (offline when the daemon is not running) |
+| `control-surfaced monitor [--json]` | live input, one line per press/release/detent |
+| `control-surfaced list-actions [--json]` / `features [--json]` | offline: the curated Kdenlive actions, controls and commands; binding kinds and key/mouse names |
+| `control-surfaced firmware-info [--json]` / `enter-bootloader --yes` | protocol v3 on a pad running the control-surface firmware |
+| `control-surfaced list-devices` / `check-config [--json]` / `example-config` | diagnostics (`check-config --json` names the failing profile, layer and slot) |
+| `mock-control-surfaced` | the settings API (`org.smplos.ControlSurface1`) with a simulated pad, for UI work |
 | `control-surfaced bench-dbus N --kdenlive-service NAME` | contract round-trip latency |
 | `mock-kdenlive [--apply-delay MS] [--tick-ms MS]` | reference implementation of the Kdenlive contract with a console (`wheel gamma`, `hover lift`, `param level`, `grouped on`, …) |
 | `ch552-padprog list\|plan\|flash\|blank [--slots A-B] [--settle-ms N] [--dialect keyid\|vendor\|blob03] [--yes]` | program the pad: default `keyid`, one `[keyId][8-byte report]` record per key, effective at once and persistent (see `docs/hardware-ch552.md`) |
@@ -76,8 +81,9 @@ ctest --test-dir /mnt/ai/keypad-lab/build/control-surface --output-on-failure
 CS_TEST_REAL_PAD=1 /mnt/ai/keypad-lab/build/control-surface/tst_paddevice   # grabs and releases the real pad
 ```
 
-The uinput test grabs its own virtual keyboard before emitting, so no key ever
-reaches the desktop.
+The uinput test grabs its own virtual keyboard and pointer before emitting, so
+no key or click ever reaches the desktop. The settings, CLI and Kdenlive bus
+tests run on a private D-Bus (`dbus-run-session`).
 
 ## Documents
 
@@ -89,3 +95,7 @@ reaches the desktop.
 * `docs/E2E-ACCEPTANCE.md`: the real-editor acceptance against the qualified
   Kdenlive; the evidence is in `docs/records/k23-acceptance-20261007/`.
 * `docs/design.md`: daemon architecture, latency and safety decisions.
+* `docs/FIRMWARE-PLAN.md`: the open firmware for this pad (§7: map, protocol,
+  tests, flash and verification); `firmware/README.md`: origin and licence.
+* `docs/GENERALIZATION-PLAN.md`: the pad family, the settings API and plugins.
+* `docs/dbus-settings-api.md`: the `org.smplos.ControlSurface1` reference.
