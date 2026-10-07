@@ -72,7 +72,10 @@ constexpr quint16 kPadProduct = 0x8890;
 struct DeviceMatch {
     QString vendor = QStringLiteral("1189");
     QString product = QStringLiteral("8890");
-    QString serial;  // the only configurable match field
+    QString serial;  // empty: any 1189:8890 pad (the first one found)
+    // auto: raw events (report 5) when the control-surface firmware answers,
+    // else evdev chords; evdev: chords only; raw: prefer raw, evdev if it fails.
+    QString input = QStringLiteral("auto");
 };
 
 struct Config {

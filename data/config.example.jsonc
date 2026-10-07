@@ -50,7 +50,10 @@
 // context; "targetFrom": "hoveredColorWheel.target" aims at the wheel under
 // the mouse instead.
 {
-    "device": { "vendor": "1189", "product": "8890", "serial": "key153" },
+    // "serial": "" drives the first 1189:8890 pad found (set one to pick among
+    // several). "input": "auto" uses the control-surface firmware's raw events
+    // when it answers, else the keys the pad types; "evdev" forces the latter.
+    "device": { "vendor": "1189", "product": "8890", "serial": "", "input": "auto" },
 
     // Written by `control-surfaced verify`; until then the flashed default applies.
     "hardware": "~/.config/control-surface/hardware-map.json",

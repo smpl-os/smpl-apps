@@ -43,7 +43,8 @@ private Q_SLOTS:
         auto cfg = loadConfig(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"), &err);
         QVERIFY2(cfg, qPrintable(err));
         QCOMPARE(cfg->profiles.size(), 3);
-        QCOMPARE(cfg->device.serial, QStringLiteral("key153"));
+        QVERIFY(cfg->device.serial.isEmpty());  // any 1189:8890 pad
+        QCOMPARE(cfg->device.input, QStringLiteral("auto"));
         QCOMPARE(cfg->settings.coalesceMs, 8);
         const Profile *kd = cfg->profileFor(QStringLiteral("org.kde.kdenlive"), QStringLiteral("x"));
         QCOMPARE(kd->name, QStringLiteral("kdenlive"));
@@ -357,6 +358,18 @@ private Q_SLOTS:
         const auto targets = learnTargets(*builtinBoardProfile(QStringLiteral("generic-3k1e")));
         QCOMPARE(targets.size(), 3 + 3);
         QCOMPARE(targets.at(3).control, QStringLiteral("knob1"));
+    }
+
+    void deviceInput()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles":[]})", {}, &err);
+        QCOMPARE(c->device.input, QStringLiteral("auto"));
+        QVERIFY(c->device.serial.isEmpty());
+        c = parseConfig(R"({"device":{"serial":"","input":"evdev"},"profiles":[]})", {}, &err);
+        QCOMPARE(c->device.input, QStringLiteral("evdev"));
+        QVERIFY(!parseConfig(R"({"device":{"input":"usb"},"profiles":[]})", {}, &err));
+        QVERIFY(err.contains(QStringLiteral("device.input")));
     }
 };
 

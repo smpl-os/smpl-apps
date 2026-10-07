@@ -61,7 +61,22 @@ private Q_SLOTS:
         QCOMPARE(names, (QStringList{QStringLiteral("event18"), QStringLiteral("event19"), QStringLiteral("event20"), QStringLiteral("event21")}));
         QCOMPARE(nodes[2].interfaceNumber, 2);
         m.serial.clear();
-        QCOMPARE(findPadInputNodes(m, root.path()).size(), 5);  // no serial: both pads, never the keyboard
+        const auto both = findPadInputNodes(m, root.path());
+        QCOMPARE(both.size(), 5);  // no serial: both pads, never the keyboard
+        // The daemon drives one of them: the first by USB path, and keeps it
+        // when another pad appears later.
+        auto one = onePad(both);
+        QCOMPARE(one.size(), 4);
+        QVERIFY(one.first().usbPath.endsWith(QStringLiteral("1-5")));
+        one = onePad(both, both.last().usbPath);
+        QCOMPARE(one.size(), 1);
+        QCOMPARE(one.first().serial, QStringLiteral("other"));
+        QCOMPARE(onePad(both, QStringLiteral("/gone/1-9")).size(), 4);
+        QVERIFY(onePad({}).isEmpty());
+        // Any serial works with an empty match: the discovery build's CH552GPAD too.
+        QTemporaryDir root2;
+        addNode(root2.path(), QStringLiteral("3-1"), "1189", "8890", "CH552GPAD", 0, 40);
+        QCOMPARE(findPadInputNodes(DeviceMatch{}, root2.path()).size(), 1);
         // Even a tampered match never selects another device.
         m.vendor = QStringLiteral("0c45");
         m.product = QStringLiteral("760a");

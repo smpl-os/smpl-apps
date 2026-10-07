@@ -25,6 +25,7 @@ add_library(cs_proto STATIC
     src/proto/ch552proto.cpp
     src/proto/scheme.cpp
     src/proto/hidrawdev.cpp
+    src/proto/padfwproto.cpp
 )
 target_include_directories(cs_proto PUBLIC src/proto)
 
@@ -55,6 +56,7 @@ add_library(cs_core STATIC
     src/daemon/flashjob.cpp
     src/daemon/settingsservice.cpp
     src/daemon/inputmonitor.cpp
+    src/daemon/rawpaddevice.cpp
 )
 target_include_directories(cs_core PUBLIC src/daemon src/proto)
 target_link_libraries(cs_core PUBLIC cs_proto Qt6::Core Qt6::Network Qt6::DBus PkgConfig::UDEV)
@@ -110,6 +112,12 @@ if(BUILD_TESTING)
     # Settings API, its building blocks and the mock; bus parts on a private bus.
     add_executable(tst_settings tests/tst_settings.cpp)
     target_link_libraries(tst_settings PRIVATE cs_core cs_mocksurface Qt6::Test)
+    # Raw input backend against a simulated firmware; protocol constants are
+    # checked against the firmware headers (constants only, no firmware code).
+    add_executable(tst_rawpad tests/tst_rawpad.cpp)
+    target_link_libraries(tst_rawpad PRIVATE cs_core Qt6::Test)
+    target_include_directories(tst_rawpad PRIVATE firmware/src)
+    add_test(NAME rawpad COMMAND tst_rawpad)
     # Offline CLI commands, run as processes (no input device is opened).
     add_executable(tst_cli tests/tst_cli.cpp)
     target_link_libraries(tst_cli PRIVATE Qt6::Core Qt6::Test)

@@ -147,9 +147,32 @@ void PadDevice::scheduleRescan(int ms)
     m_rescan->start(ms);
 }
 
+QList<InputNodeInfo> onePad(const QList<InputNodeInfo> &nodes, const QString &preferUsbPath)
+{
+    QString pick;
+    for (const auto &n : nodes) {
+        if (!preferUsbPath.isEmpty() && n.usbPath == preferUsbPath) {
+            pick = preferUsbPath;
+            break;
+        }
+        if (pick.isEmpty() || n.usbPath < pick) {
+            pick = n.usbPath;
+        }
+    }
+    QList<InputNodeInfo> out;
+    for (const auto &n : nodes) {
+        if (n.usbPath == pick) {
+            out << n;
+        }
+    }
+    return out;
+}
+
 void PadDevice::rescan()
 {
-    const auto found = findPadInputNodes(m_match);
+    // A second pad plugged in later never takes over the one in use.
+    const auto found = onePad(findPadInputNodes(m_match), m_usbPath);
+    m_usbPath = found.isEmpty() ? QString() : found.first().usbPath;
     QStringList want;
     for (const auto &f : found) {
         want << f.devnode;

@@ -8,6 +8,7 @@
 #include "kdenlivedbusclient.h"
 #include "learn.h"
 #include "paddevice.h"
+#include "rawpaddevice.h"
 #include "settingsservice.h"
 #include "uinputsink.h"
 #include "usbinfo.h"
@@ -763,11 +764,17 @@ int main(int argc, char **argv)
     dev.setHardwareMap(cfg->hardware);
     dev.setGrab(!p.isSet(noGrabOpt));
     QObject::connect(&dev, &PadDevice::message, log);
+    // Raw input from the control-surface firmware, when it answers; the evdev
+    // grab stays as the second line of defence and its events are then ignored.
+    RawPadDevice raw(cfg->device);
+    raw.setLayout(effectiveLayout(*cfg));
+    QObject::connect(&raw, &RawPadDevice::message, log);
     QObject::connect(&dev, &PadDevice::connected, [log](const QStringList &n) { log(QStringLiteral("pad connected: %1").arg(n.join(QStringLiteral(", ")))); });
     QObject::connect(&dev, &PadDevice::disconnected, [log] { log(QStringLiteral("pad disconnected, waiting")); });
     QObject::connect(&dev, &PadDevice::unmappedChord, [log](const KeyChord &c) { log(QStringLiteral("unmapped chord %1 (run 'control-surfaced verify')").arg(chordName(c))); });
     if (dry) {
         QObject::connect(&dev, &PadDevice::padEvent, &engine, [](const PadEvent &e) { say(e.describe()); });
+        QObject::connect(&raw, &RawPadDevice::padEvent, &engine, [](const PadEvent &e) { say(e.describe() + QStringLiteral(" (raw)")); });
         QObject::connect(&engine, &Engine::dispatched, [](const QString &slot, const QString &binding, const QString &layer) {
             say(QStringLiteral("  %1 -> %2%3").arg(slot, binding, layer.isEmpty() ? QString() : QStringLiteral(" [layer %1]").arg(layer)));
         });
@@ -808,31 +815,47 @@ int main(int argc, char **argv)
     };
     publishPlugins();
     QObject::connect(kd.get(), &KdenliveClient::stateChanged, &settings, [publishPlugins] { publishPlugins(); });
-    settings.setConfigApplier([&engine, &dev, publishPlugins, &settings](const Config &c) {
+    settings.setConfigApplier([&engine, &dev, &raw, publishPlugins, &settings](const Config &c) {
         engine.setConfig(c);
         dev.setHardwareMap(c.hardware);
+        raw.setLayout(effectiveLayout(c));
         settings.setFallbackLayout(effectiveLayout(c));
         publishPlugins();
         return QString();
     });
-    auto publishDevice = [&settings, &dev, &cfg] {
+    auto publishDevice = [&settings, &dev, &raw] {
         DeviceState d;
-        const auto nodes = findPadInputNodes(cfg->device);
-        if (dev.isConnected() && !nodes.isEmpty()) {
+        if (dev.isConnected()) {
             d.present = true;
-            if (auto u = usbDeviceAt(nodes.first().usbPath)) {
+            if (auto u = usbDeviceAt(dev.usbPath())) {
                 d.usb = *u;
                 d.firmware = classifyFirmware(*u);
             }
+            if (raw.isActive() && raw.info()) {
+                d.firmware.version = QString::fromStdString(raw.info()->version());
+            }
             d.devnodes = dev.devnodes();
-            d.inputMode = QStringLiteral("evdev-chords");
+            d.inputMode = raw.isActive() ? QStringLiteral("raw") : QStringLiteral("evdev-chords");
         }
         settings.setDevice(d);
     };
-    QObject::connect(&dev, &PadDevice::connected, &settings, [publishDevice] { publishDevice(); });
-    QObject::connect(&dev, &PadDevice::disconnected, &settings, [publishDevice] { publishDevice(); });
-    QObject::connect(&settings, &SettingsService::releaseDeviceRequested, &dev, [&dev, log, publishDevice] {
+    QObject::connect(&dev, &PadDevice::connected, &settings, [publishDevice, &raw, &dev, &cfg, log] {
+        publishDevice();
+        if (cfg->device.input != QLatin1String("evdev") && !raw.start(dev.usbPath()) && cfg->device.input == QLatin1String("raw")) {
+            log(QStringLiteral("raw input unavailable (not the control-surface firmware?); using evdev chords"));
+        }
+    });
+    QObject::connect(&dev, &PadDevice::disconnected, &settings, [publishDevice, &raw] {
+        raw.stop();
+        publishDevice();
+    });
+    QObject::connect(&raw, &RawPadDevice::activeChanged, &settings, [publishDevice, log](bool on) {
+        log(on ? QStringLiteral("input: raw events from the firmware") : QStringLiteral("input: evdev chords"));
+        publishDevice();
+    });
+    QObject::connect(&settings, &SettingsService::releaseDeviceRequested, &dev, [&dev, &raw, log, publishDevice] {
         log(QStringLiteral("flash: releasing the pad"));
+        raw.stop();
         dev.stop();
         publishDevice();
     });
@@ -852,11 +875,17 @@ int main(int argc, char **argv)
             say(QStringLiteral("settings API unavailable: %1").arg(err));
         }
     }
-    QObject::connect(&dev, &PadDevice::padEvent, &engine, [&engine, &settings](const PadEvent &e) {
+    auto dispatchPad = [&engine, &settings](const PadEvent &e) {
         if (!settings.filterPadEvent(e)) {
             engine.handle(e);
         }
+    };
+    QObject::connect(&dev, &PadDevice::padEvent, &engine, [dispatchPad, &raw](const PadEvent &e) {
+        if (!raw.isActive()) {
+            dispatchPad(e);
+        }
     });
+    QObject::connect(&raw, &RawPadDevice::padEvent, &engine, dispatchPad);
     // Hot reload: a valid edit replaces the config (pending knob motion is
     // dropped); an invalid one is reported and the running config stays.
     ConfigWatcher watcher(p.value(configOpt));
@@ -867,6 +896,7 @@ int main(int argc, char **argv)
         const QString hash = ConfigStore::hashOf(ConfigStore(watcher.path()).read().text);
         engine.setConfig(c);
         settings.setFallbackLayout(effectiveLayout(c));
+        raw.setLayout(effectiveLayout(c));
         settings.setConfigState(hash, QString(), c.warnings);
         publishPlugins();
         dev.setHardwareMap(c.hardware);
@@ -889,6 +919,7 @@ int main(int argc, char **argv)
     dev.start();
     publishDevice();
     const int rc = app.exec();
+    raw.stop();  // back to the keymap at once
     dev.stop();
     return rc;
 }

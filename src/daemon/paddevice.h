@@ -27,6 +27,9 @@ struct InputNodeInfo {
 
 // sysRoot/devRoot let tests use a fake tree.
 QList<InputNodeInfo> findPadInputNodes(const DeviceMatch &m, const QString &sysRoot = {}, const QString &devRoot = {});
+// The nodes of one pad: the one at preferUsbPath if it is still there, else
+// the first by USB path. With an empty serial several pads may match.
+QList<InputNodeInfo> onePad(const QList<InputNodeInfo> &nodes, const QString &preferUsbPath = {});
 
 class PadDevice : public QObject
 {
@@ -41,6 +44,7 @@ public:
     void stop();
     bool isConnected() const { return !m_nodes.isEmpty(); }
     QStringList devnodes() const;
+    QString usbPath() const { return m_usbPath; }
 
 Q_SIGNALS:
     void padEvent(const cs::PadEvent &e);
@@ -66,6 +70,7 @@ private:
     void onUdev();
 
     DeviceMatch m_match;
+    QString m_usbPath;
     HardwareMap m_map = HardwareMap::fromScheme(ch552::Numbering::KeysThenKnobs);
     bool m_grab = true;
     QList<Node *> m_nodes;

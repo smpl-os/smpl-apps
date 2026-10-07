@@ -391,6 +391,13 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
         return std::nullopt;
     }
     cfg.device.serial = dev.value(QStringLiteral("serial")).toString();
+    cfg.device.input = dev.value(QStringLiteral("input")).toString(QStringLiteral("auto"));
+    if (!QStringList{QStringLiteral("auto"), QStringLiteral("evdev"), QStringLiteral("raw")}.contains(cfg.device.input)) {
+        if (error) {
+            *error = QStringLiteral("device.input must be auto, evdev or raw");
+        }
+        return std::nullopt;
+    }
 
     const QJsonValue layout = root.value(QStringLiteral("layout"));
     if (layout.isString()) {
