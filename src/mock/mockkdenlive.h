@@ -108,6 +108,9 @@ public:
     QVariantMap context() const { return m_context; }
     QVariantMap state() const;
     void setApplyDelayMs(int ms) { m_applyDelayMs = ms; }
+    // Test hook: ContextChanged goes out this late (0 = only the 30 Hz limit),
+    // so a client that sends the epoch of an outdated context fails every time.
+    void setContextLagMs(int ms) { m_contextLagMs = ms; }
     void setPrint(bool on) { m_print = on; }
     void addUnrelatedHistory(const QString &label);
     int leaseCount() const { return int(m_leases.size()); }
@@ -188,7 +191,7 @@ private:
     void finishAllGestures();
     void invalidatePending(const QString &reason);
     void dropLease(const QString &owner);
-    void emitContext(bool force);
+    void emitContext(bool deferred);
     void bumpSerial(bool epoch);
     void dispatchActions();
     void record(const QString &line);
@@ -237,6 +240,7 @@ private:
     QStringList m_pendingOrder;
     bool m_applyScheduled = false;
     int m_applyDelayMs = 0;
+    int m_contextLagMs = 0;
     QHash<QString, Gesture> m_gestures;
     QTimer *m_gestureTimer;
     QList<QueuedAction> m_actions;

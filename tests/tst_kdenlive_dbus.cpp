@@ -884,6 +884,10 @@ private Q_SLOTS:
 
     void mr1bTypedControlsAndCommands()
     {
+        // ContextChanged trails acks and replies (as on a loaded machine), so a
+        // step that sends the epoch of an outdated context fails every time:
+        // after anything that starts a new epoch, refresh() before the next call.
+        m_mock->setContextLagMs(100);
         m_mock->setStage(3);
         RawClient gates(connectClient(), QString());
         QVariantMap caps = gates.call(QStringLiteral("Capabilities")).value(QStringLiteral("result")).toMap();
@@ -984,6 +988,7 @@ private Q_SLOTS:
         QVariantMap tt{{QStringLiteral("kind"), QStringLiteral("video")}};
         raw.control(contract::kTimelineTarget, -1, tt, ++seq);
         QCOMPARE(result(seq).value(QStringLiteral("track")).toInt(), 4);
+        refresh();  // a route change starts a new epoch; the ack can come before ContextChanged
         QVERIFY(invoke(contract::kCmdTrackSet, {{QStringLiteral("target"), QStringLiteral("trk-4")},
                                                 {QStringLiteral("what"), QStringLiteral("target")},
                                                 {QStringLiteral("value"), false}})
@@ -1203,11 +1208,13 @@ private Q_SLOTS:
         QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), 3.0}})), contract::err::InvalidArguments);
         QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), QStringLiteral("3")}})), contract::err::InvalidArguments);
         QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), true}})), contract::err::InvalidArguments);
-        const QVariantMap localSub = m_mock->subscribe();
-        QVariantMap int64Rating{{QStringLiteral("session"), localSub.value(QStringLiteral("result")).toMap().value(QStringLiteral("session"))},
-                                {QStringLiteral("epoch"), m_mock->context().value(QStringLiteral("epoch"))},
-                                {QStringLiteral("rating"), QVariant::fromValue<qlonglong>(3)}};
-        QCOMPARE(RawClient::code(m_mock->invoke(contract::kCmdBinFilter, int64Rating)), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), -1}})), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), QVariant::fromValue<qlonglong>(6)}})), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), QVariant::fromValue<qlonglong>(-1)}})), contract::err::InvalidArguments);
+        // Contract 3f5b13ef: 32- and 64-bit, signed or unsigned integers in 0..5.
+        for (const QVariant &r : {QVariant::fromValue<qlonglong>(3), QVariant::fromValue<qulonglong>(2), QVariant::fromValue<uint>(1)}) {
+            QVERIFY2(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), r}}).value(QStringLiteral("ok")).toBool(), r.typeName());
+        }
         QVERIFY(invoke(contract::kCmdBinFilter, {{QStringLiteral("tag"), QStringLiteral("#ff0000")}, {QStringLiteral("rating"), 3}}).value(QStringLiteral("ok")).toBool());
         refresh();
         QCOMPARE(raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("filter")).toMap().value(QStringLiteral("usage")).typeId(), QMetaType::Int);
@@ -1269,6 +1276,10 @@ private Q_SLOTS:
 
     void mr1bRippleAndNudgeExactness()
     {
+        // ContextChanged trails acks and replies (as on a loaded machine), so a
+        // step that sends the epoch of an outdated context fails every time:
+        // after anything that starts a new epoch, refresh() before the next call.
+        m_mock->setContextLagMs(100);
         m_mock->setStage(4);
         m_mock->selectClip(QStringLiteral("clip-22"));
         RawClient raw(connectClient(), QString());
@@ -1764,6 +1775,10 @@ private Q_SLOTS:
     // dynamic families, with their admission rules, and the exclusions.
     void mr1bActionFamilies()
     {
+        // ContextChanged trails acks and replies (as on a loaded machine), so a
+        // step that sends the epoch of an outdated context fails every time:
+        // after anything that starts a new epoch, refresh() before the next call.
+        m_mock->setContextLagMs(100);
         RawClient raw(connectClient(), QString());
         raw.subscribe();
         auto trigger = [&](const QString &id) { return raw.call(QStringLiteral("TriggerAction"), {id, QVariant::fromValue(raw.common())}); };
@@ -1786,6 +1801,7 @@ private Q_SLOTS:
         QCOMPARE(RawClient::code(trigger(QStringLiteral("activate_video_1"))), contract::err::ActionDisabled);
         QVERIFY(trigger(QStringLiteral("multicam_tool")).value(QStringLiteral("ok")).toBool());
         QTRY_VERIFY(enabled(QStringLiteral("activate_video_1")));
+        refresh();  // the tool is part of the epoch fence
         QVERIFY(raw.actionMap().value(QStringLiteral("multicam_tool")).toMap().value(QStringLiteral("checked")).toBool());
         QVERIFY(!enabled(QStringLiteral("activate_video_9")));
         QCOMPARE(RawClient::code(trigger(QStringLiteral("activate_video_9"))), contract::err::TargetNotFound);

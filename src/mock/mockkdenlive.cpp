@@ -274,7 +274,7 @@ MockKdenlive::MockKdenlive(QObject *parent)
     m_contextTimer = new QTimer(this);
     m_contextTimer->setSingleShot(true);
     m_contextTimer->setTimerType(Qt::PreciseTimer);
-    connect(m_contextTimer, &QTimer::timeout, this, [this] { emitContext(false); });
+    connect(m_contextTimer, &QTimer::timeout, this, [this] { emitContext(true); });
     m_gestureTimer = new QTimer(this);
     m_gestureTimer->setInterval(100);
     connect(m_gestureTimer, &QTimer::timeout, this, &MockKdenlive::checkGestureIdle);
@@ -2406,8 +2406,12 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
             return fail(err::InvalidArguments, QStringLiteral("clear cannot be combined with filters."), QStringLiteral("clear"));
         }
         if (args.contains(QStringLiteral("rating"))) {
-            const int type = args.value(QStringLiteral("rating")).typeId();
-            if ((type != QMetaType::Int && type != QMetaType::UInt) || args.value(QStringLiteral("rating")).toInt() < 0 || args.value(QStringLiteral("rating")).toInt() > 5) {
+            // Kdenlive (bincontrol.cpp): signed or unsigned 32/64-bit integers in 0..5.
+            const QVariant value = args.value(QStringLiteral("rating"));
+            const int type = value.typeId();
+            const bool signedInteger = type == QMetaType::Int || type == QMetaType::LongLong;
+            const bool unsignedInteger = type == QMetaType::UInt || type == QMetaType::ULongLong;
+            if ((!signedInteger && !unsignedInteger) || (signedInteger && value.toLongLong() < 0) || value.toULongLong() > 5) {
                 return fail(err::InvalidArguments, QStringLiteral("rating is an integer in0..5 stars."), QStringLiteral("rating"));
             }
         }
@@ -2736,11 +2740,17 @@ void MockKdenlive::bumpSerial(bool epoch)
     emitContext(false);
 }
 
-void MockKdenlive::emitContext(bool force)
+void MockKdenlive::emitContext(bool deferred)
 {
-    Q_UNUSED(force)
     if (m_leases.isEmpty()) {
         return;  // no subscribers: no timers, no signals
+    }
+    if (!deferred && m_contextLagMs > 0) {
+        // A busy GUI: the context follows acks and replies late.
+        if (!m_contextTimer->isActive()) {
+            m_contextTimer->start(m_contextLagMs);
+        }
+        return;
     }
     if (m_lastContextEmit.isValid() && m_lastContextEmit.elapsed() < kMinContextIntervalMs) {
         if (!m_contextTimer->isActive()) {

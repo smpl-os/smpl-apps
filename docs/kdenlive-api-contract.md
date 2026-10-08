@@ -698,7 +698,8 @@ four families: `activate_video_1..9` (Multicam cameras), `load_layout1..9`,
 offline list is `control-surfaced list-actions --json`.
 
 **MR1b-B** (`Kdenlive K23 MR1b-B`; contract `k23-mr1b-b-contract.md`, SHA-256
-`28a05651773393f4bccbc60ebf29b4bc7fed6057f20d6f46269d9687f07f33a3`) adds:
+`3f5b13ef6909bcec3bfc1616c328ac51de835a4fc4fa26a1bf49ab83387c7885`, which
+superseded `28a05651…` with the two fixes below) adds:
 
 * controls `edit.nudge` (`unit` frame|second; target
   `timeline.nudge.target`), `timeline.target` (`kind` video|audio, no undo),
@@ -716,17 +717,16 @@ offline list is `control-surfaced list-actions --json`.
   `effect.move` (`delta`, |delta| <= 64), `effect.remove`, `effectstack.set`
   (`what: enabled|compare`; compare needs `effect.stack.compareAvailable`),
   `bin.tag` (`tag` from `bin.tags`, `value`), `bin.select` (`tag`),
-  `bin.filter` (`tag`/`rating` 0..5, or `clear: true`, which keeps the search
-  text). Results are `{state: "applied", changed}`;
+  `bin.filter` (`tag`/`rating` 0..5 as a 32- or 64-bit integer, or
+  `clear: true`, which keeps the search text). Results are `{state: "applied", changed}`;
 * context `effect` {ownerId, sequence, stack {target, count, enabled,
   compare, compareAvailable}, and for a focused effect target, id, index,
   enabled; `params` keyed by native parameter name, each with its own
   target for the unchanged `param.nudge`}; `bin` {selection {count,
   available, target?, tags?, rating?, mixedRating?, reason?}, tags [{id,
-  name}], filter {tags, ratings, types, usage}} while the bin is shown. The
-  contract's "mixed ratings are null" cannot cross D-Bus (an invalid QVariant
-  aborts libdbus; reported to MAIN), so clients treat a missing `rating` with
-  `mixedRating: true` as mixed;
+  name}], filter {tags, ratings, types, usage}} while the bin is shown.
+  `rating` is absent when `mixedRating` is true: D-Bus has no null, and the
+  first revision's invalid QVariant aborted libdbus;
   `timeline.targets` {video, audio {stream: track}} (route changes bump the
   epoch), `timeline.nudge` and `timeline.trim.rippleScope`; focus `bin`;
 * limits `nudgeSelectionClips` 64, `rippleFollowingClips` 64,
