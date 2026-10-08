@@ -1,0 +1,17 @@
+{
+ "when_start": "2026-10-07T10:05:11.909",
+ "when_end": "2026-10-07T10:05:11.972",
+ "node": "/dev/hidraw5",
+ "identity": {
+  "interface": "01",
+  "vid": "1189",
+  "pid": "8890",
+  "serial": "key153",
+  "usb": "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-5",
+  "devnum": "24"
+ },
+ "frame_hex": "01 00 00 69 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+ "written": 64,
+ "error": null,
+ "note": "single key-id-first record, approved by coordinator 10:04; no open/close frames"
+}

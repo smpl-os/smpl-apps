@@ -1,0 +1,218 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Configuration: JSON with // and /* */ comments and trailing commas allowed.
+#pragma once
+
+#include "boardprofile.h"
+#include "hardwaremap.h"
+
+#include <QHash>
+#include <QJsonValue>
+#include <QSet>
+#include <QJsonObject>
+#include <QRegularExpression>
+#include <QStringList>
+#include <QVariantMap>
+#include <optional>
+#include <vector>
+
+namespace cs {
+
+struct Binding {
+    enum Kind { None, Keys, Action, Control, Command, Cycle, Request, Mouse, Cheatsheet, Mode, Sequence };
+    Kind kind = None;
+    QList<KeyChord> keys;  // Keys, or Action/Control fallback when Kdenlive does not answer
+    QString name;          // action id, control id, cycle/mode mode, request method, mouse action, cheatsheet toggle|hold
+    double scale = 1.0;    // Control: multiplier applied to detents (negative: the other way, e.g. a "-R" key)
+    int step = 1;          // Cycle: values to advance; -1 goes back
+    QString value;         // Mode: the value to set
+    // Cycle/Mode: what Kdenlive is told ({label} {mode} {value} {value|text}); "" = nothing;
+    // unset: the mode's own "notify", else "{label}: {value}"
+    std::optional<QString> notify;
+    std::vector<Binding> steps;  // Sequence ("do"): run in order
+    int delayMs = 0;             // Sequence: pause before each step after the first
+    double accel = 0;      // Control: acceleration factor for fast detents; 0 = settings.accelFactor
+    QVariantMap options;   // Control/Request options; "$mode" expands to a mode value, "$ctx:path" to a context value
+    QString targetFrom;    // context path of the target handle (default per control; e.g. "hoveredColorWheel.target")
+    QStringList argv;      // Command ("~" and "~/..." arguments are expanded)
+    QString label;
+    QString icon;              // cheatsheet icon: a Tabler outline name, "none" = no icon; empty = automatic
+    QStringList ifInstalled;   // programs or desktop ids that must exist, else the slot falls through
+    bool isValid() const { return kind != None; }
+    QString describe() const;
+};
+
+// Event slots: "key1".."key16", "knobN.turn", "knobN.ccw", "knobN.cw", "knobN.press",
+// and "knobN.shift.turn|ccw|cw" (turning while the knob is held down).
+using BindingMap = QHash<QString, Binding>;
+
+struct Layer {
+    QString name;
+    QVariantMap when;  // dotted context path -> value | "/regex/" | "!value" | [alternatives] | bool
+    // "when": {"held": ...}: active while these pad controls are held down.
+    // Alternatives, each a set that must all be down: "key1" -> [[key1]],
+    // ["key1", "key13"] -> [[key1], [key13]], "key1+knob3" -> [[key1, knob3]]
+    // (knobN = its press). Empty: no held condition.
+    QList<QStringList> held;
+    bool heldMatches(const QSet<QString> &down) const;
+    BindingMap bindings;
+};
+
+struct Profile {
+    QString name;
+    QRegularExpression matchClass;
+    QRegularExpression matchTitle;
+    bool hasMatch = false;   // false: global fallback profile
+    bool kdenlive = false;   // talk to Kdenlive's control-surface interface
+    bool fallthrough = true; // unbound slots fall back to the global profile
+    // Kdenlive only: type the configured stock shortcuts when its control
+    // interface is absent (it is off by default). Off: API only, the pad then
+    // does nothing in Kdenlive and a notice explains how to enable the interface.
+    bool keyFallback = false;
+    QList<Layer> layers;     // first matching layer wins, then base bindings
+    BindingMap bindings;
+    QHash<QString, QStringList> modes;
+    QHash<QString, QString> modeNotify;  // "modes": {"ws": {"values": [...], "notify": "Workspace: {value|Main}"}}
+    // "autoModes": set modes when Kdenlive's context starts to match (edge
+    // triggered: a manual change wins), optionally back when it stops.
+    struct ModeRule {
+        QString name;
+        QVariantMap when;
+        QList<QPair<QString, QString>> set;
+        bool restore = false;
+        bool notify = true;
+    };
+    QList<ModeRule> autoModes;
+    // Controls named by a layer's "held" condition: their own tap bindings
+    // fire on release, and only if no other input was used meanwhile.
+    QSet<QString> heldControls;
+    bool matches(const QString &cls, const QString &title) const;
+};
+
+// Parses a "held" condition value (see Layer::held); nullopt and *error when
+// it names something that is not a key or knob of a pad.
+std::optional<QList<QStringList>> parseHeldCondition(const QJsonValue &v, QString *error);
+
+struct Settings {
+    int coalesceMs = 8;        // minimum spacing between continuous-control sends
+    int ackTimeoutMs = 60;     // stop waiting for an in-flight ack after this
+    int accelWindowMs = 40;    // detents closer than this count as "fast"
+    double accelFactor = 1.0;  // multiplier for fast detents (1 = off)
+    int keyRateHz = 120;       // cap for key taps generated by knobs
+    int gestureIdleMs = 500;   // end an editing gesture after this idle time (host ends at 600)
+};
+
+// The daemon pushes the cheatsheet to eww itself, so the desktop needs no
+// listener process: `eww [--config DIR] update VARIABLE=<content JSON>` on
+// show, change and hide, and `eww open WINDOW --anchor A` / `eww close WINDOW`
+// when a window is named.
+struct EwwHook {
+    bool enabled = false;
+    QString variable = QStringLiteral("pad_sheet");
+    QString window;     // opened on show, closed on hide; empty: the variable only
+    QString binary = QStringLiteral("eww");
+    QString configDir;  // eww --config; empty: eww's default
+    bool operator==(const EwwHook &) const = default;
+    // The `eww open --anchor` value for a cheatsheet position ("top center"...).
+    static QString anchorFor(const QString &position);
+};
+
+// What the config's "cheatsheet": {"eww": ...} says. Fields it leaves out keep
+// the daemon's defaults (run --eww, --eww-window, --eww-config).
+struct EwwConfig {
+    std::optional<bool> enabled;
+    std::optional<QString> variable, window, binary, configDir;
+    EwwHook over(EwwHook defaults) const;
+};
+
+// The on-screen cheatsheet of what each input does now (rendered by the desktop,
+// e.g. smplOS's eww; the daemon only supplies its content and visibility).
+struct CheatsheetOptions {
+    static constexpr int kDefaultAutoHideMs = 8000;
+    double opacity = 0.35;  // 0.05..1
+    // Hide after this long without pad input, unless a "hold" key holds it.
+    // Unset: kDefaultAutoHideMs (nobody gets stuck with it); 0: until hidden.
+    std::optional<int> autoHideMs;
+    int effectiveAutoHideMs() const { return autoHideMs.value_or(kDefaultAutoHideMs); }
+    QString position = QStringLiteral("center");
+    EwwConfig eww;
+    static QStringList positions();
+};
+
+// The daemon only ever grabs this device; vendor/product are not configurable.
+constexpr quint16 kPadVendor = 0x1189;
+constexpr quint16 kPadProduct = 0x8890;
+
+struct DeviceMatch {
+    QString vendor = QStringLiteral("1189");
+    QString product = QStringLiteral("8890");
+    QString serial;  // empty: any 1189:8890 pad (the first one found)
+    // auto: raw events (report 5) when the control-surface firmware answers,
+    // else evdev chords; evdev: chords only; raw: prefer raw, evdev if it fails.
+    QString input = QStringLiteral("auto");
+};
+
+struct Config {
+    DeviceMatch device;
+    HardwareMap hardware = HardwareMap::fromScheme(ch552::Numbering::KeysThenKnobs);
+    QString hardwareSource = QStringLiteral("default:keys-then-knobs");
+    // "layout": a board profile id or {"keys": 1..16, "knobs": 0..3, "columns": n}.
+    std::optional<BoardProfile> layout;
+    CheatsheetOptions cheatsheet;
+    Settings settings;
+    QList<Profile> profiles;
+    QStringList warnings;  // non-fatal findings of the config check
+
+    const Profile *profileFor(const QString &cls, const QString &title) const;
+    const Profile *globalProfile() const;
+};
+
+// The controls (key1.., knob1..) the hardware map names.
+QStringList hardwareControls(const Config &cfg);
+// The layout in effect: the config's "layout" when it sets one (an explicit
+// override, e.g. a variant), else the firmware's board (when the descriptors
+// name one), else what a hardware map names, else the default (the measured
+// 15+3 board). Source: config | firmware | hardware-map | default.
+BoardProfile effectiveLayout(const Config &cfg, const QString &firmwareBoard = {});
+// The layout as the API reports it: the profile plus "firmwareLayout" (the
+// firmware's board, or null) and "matchesFirmware" (slot counts agree; null
+// without firmware information). firmwareSlots: GET_INFO's count, 0 unknown.
+QJsonObject layoutReport(const BoardProfile &effective, const std::optional<BoardProfile> &firmwareBoard, int firmwareSlots = 0);
+// A config warning when the config's layout override has another slot count
+// than the firmware (raw input then stays off); empty otherwise.
+QString layoutMismatchWarning(const BoardProfile &effective, const std::optional<BoardProfile> &firmwareBoard, int firmwareSlots = 0);
+// Bindings this board can never deliver: "shift" (turn while pressed) on a
+// knob whose press pins an encoder line or whose firmware ignores such turns,
+// held layers naming a control the layout lacks, and with "input": "evdev",
+// held-layer inputs whose keymap chord shares a key with the held key's.
+QStringList boardWarnings(const Config &cfg, const BoardProfile &layout);
+
+QByteArray stripJsonComments(const QByteArray &in);
+std::optional<Binding> parseBinding(const QJsonValue &v, QString *error);
+// A valid "icon" value: a Tabler Icons outline name, kebab-case without "ti-"
+// (player-play, brand-github), or "none". Unknown names are accepted.
+bool isIconName(const QString &name);
+std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDir, QString *error);
+std::optional<Config> loadConfig(const QString &path, QString *error);
+// Semantic checks run by parseConfig: errors fail, warnings go to cfg.warnings.
+bool checkConfig(Config &cfg, QString *error);
+QString expandHome(const QString &path);
+QString defaultConfigPath();
+QString defaultHardwareMapPath();
+
+// A config error or warning split into what an editor can point at.
+struct ConfigIssue {
+    QString message;  // the full text
+    QString profile, layer, slot;  // empty when the text does not name one
+    QJsonObject toJson() const;   // {message, profile, layer, slot}; missing parts are null
+};
+ConfigIssue describeConfigIssue(const QString &text);
+
+// Dotted-path condition matching used for Kdenlive context layers.
+bool conditionMatches(const QVariantMap &when, const QVariantMap &context);
+QVariant valueAtPath(const QVariantMap &map, const QString &dottedPath);
+// A bin tag for bin.tag/select/filter: Kdenlive wants the native colour id from
+// the context's bin.tags; a 1-based position ("1" = the first tag, as tag_1) or
+// a tag name (any case) is turned into it. Anything else is returned unchanged.
+QString binTagId(const QVariantMap &context, const QString &tag);
+
+} // namespace cs

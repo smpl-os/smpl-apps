@@ -1,0 +1,11 @@
+## S6a client B: a second editing caller while A owns the gesture -> busy, never keys
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.trim.clip 5
+refusals clear
+knob2 +1
+expect refused busy 3000
+knob3 +1
+expect refused busy 3000
+expect no-keys

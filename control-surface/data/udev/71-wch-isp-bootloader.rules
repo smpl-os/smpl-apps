@@ -1,0 +1,4 @@
+# WCH CH55x ROM bootloader (USB 4348:55e0), present only while the pad is in
+# ISP mode. Lets the logged-in user flash it with wchisp, without root.
+# Install (needs approval): pkexec install -m644 THIS /etc/udev/rules.d/ && pkexec udevadm control --reload
+SUBSYSTEM=="usb", ATTR{idVendor}=="4348", ATTR{idProduct}=="55e0", TAG+="uaccess"

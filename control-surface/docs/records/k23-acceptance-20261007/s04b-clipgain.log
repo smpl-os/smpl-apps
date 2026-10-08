@@ -1,0 +1,28 @@
+## S4b clip gain through timeline.clipGain.target (unique single-key Volume on clip 6): one gesture, one undo entry
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 152 epoch 17 {"active":true,"activeMonitor":"project","dialog":false,"epoch":17,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":329,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":152,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":true,"gain":{"enabled":true,"max":24,"min":-50,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","value":0},"hidden":false,"id":2,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"8cac62ae-97bc-42b9-a967-48cb26afdab3","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.clipGain.clip 6
+  EXPECT ok: context timeline.clipGain.clip = 6 (now 6)
+> print ctx timeline.clipGain
+  ctx timeline.clipGain = {"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"}
+> refusals clear
+## knob3 in the timeline page = audio.gain on the selected clip's gain handle
+> knob3 +5
+  [kdenlive] -> Control audio.gain 1 seq 1 {"epoch":17,"gesture":"cs-3432006-1","phase":"update","session":"daee04c4-1b9a-4fb9-beb3-4b25525e28dc","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 1 audio.gain {"ok":true,"result":{"changed":true,"epoch":17,"firstSeq":1,"gainDb":0.1,"gesture":"cs-3432006-1","lastSeq":1,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"daee04c4-1b9a-4fb9-beb3-4b25525e28dc"}
+  [kdenlive] -> Control audio.gain 4 seq 2 {"epoch":17,"gesture":"cs-3432006-1","phase":"update","session":"daee04c4-1b9a-4fb9-beb3-4b25525e28dc","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 2 audio.gain {"ok":true,"result":{"changed":true,"epoch":17,"firstSeq":2,"gainDb":0.5,"gesture":"cs-3432006-1","lastSeq":2,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"daee04c4-1b9a-4fb9-beb3-4b25525e28dc"}
+> wait 800
+  [kdenlive] -> Control audio.gain 0 seq 3 {"epoch":17,"gesture":"cs-3432006-1","phase":"end","session":"daee04c4-1b9a-4fb9-beb3-4b25525e28dc","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 3 audio.gain {"ok":true,"result":{"changed":false,"epoch":17,"firstSeq":3,"gesture":"cs-3432006-1","lastSeq":3,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"daee04c4-1b9a-4fb9-beb3-4b25525e28dc"}
+> expect no-refusal
+  EXPECT ok: no refusal (none)
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)

@@ -1,0 +1,45 @@
+[0224] {
+  "command": {
+    "op": "editor",
+    "method": "job.status",
+    "params": {
+      "request_id": "59f53687-752c-4bdb-ab29-ace1f05d9f02"
+    }
+  },
+  "started": 1791386606.085832,
+  "reply": {
+    "ok": true,
+    "result": {
+      "method": "project.open",
+      "outcome": {
+        "ok": true,
+        "result": {
+          "modified": false,
+          "path": "/home/blin/.copilot/session-state/9147f090-d696-4b70-af0f-aa5a935f364f/files/k23-real-daemon-20261007-03/work/keypad-generated.kdenlive",
+          "profile": {
+            "fps": {
+              "den": 1,
+              "num": 30
+            },
+            "height": 180,
+            "progressive": true,
+            "sar": {
+              "den": 1,
+              "num": 1
+            },
+            "width": 320
+          },
+          "project_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+          "sequence_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+          "state": "ready"
+        }
+      },
+      "progress": {},
+      "project_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+      "request_id": "59f53687-752c-4bdb-ab29-ace1f05d9f02",
+      "state": "succeeded"
+    }
+  },
+  "finished": 1791386606.0895703
+}
+

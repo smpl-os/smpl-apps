@@ -1,0 +1,26 @@
+ContextChanged signals captured: 160 to 24 subscriber connections; with emittedAtMs: 160
+:1.114: 66 signals, min emittedAtMs gap 34 ms, min monitor-arrival gap 33.4 ms
+:1.101: 33 signals, min emittedAtMs gap 34 ms, min monitor-arrival gap 33.7 ms
+:1.161: 12 signals, min emittedAtMs gap 34 ms, min monitor-arrival gap 33.3 ms
+:1.88: 6 signals, min emittedAtMs gap 41 ms, min monitor-arrival gap 41.5 ms
+:1.157: 6 signals, min emittedAtMs gap 38 ms, min monitor-arrival gap 38.8 ms
+:1.52: 4 signals, min emittedAtMs gap 59 ms, min monitor-arrival gap 59.1 ms
+:1.105: 4 signals, min emittedAtMs gap 35 ms, min monitor-arrival gap 35.3 ms
+:1.225: 4 signals, min emittedAtMs gap 44 ms, min monitor-arrival gap 43.6 ms
+:1.189: 3 signals, min emittedAtMs gap 69 ms, min monitor-arrival gap 68.9 ms
+:1.198: 3 signals, min emittedAtMs gap 2271 ms, min monitor-arrival gap 2274.0 ms
+:1.92: 2 signals, min emittedAtMs gap 5576 ms, min monitor-arrival gap 5576.4 ms
+:1.97: 2 signals, min emittedAtMs gap 53 ms, min monitor-arrival gap 53.2 ms
+:1.169: 2 signals, min emittedAtMs gap 57 ms, min monitor-arrival gap 57.4 ms
+:1.173: 2 signals, min emittedAtMs gap 52 ms, min monitor-arrival gap 51.5 ms
+:1.209: 2 signals, min emittedAtMs gap 3055 ms, min monitor-arrival gap 3055.6 ms
+:1.47: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+:1.110: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+:1.165: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+:1.180: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+:1.184: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+:1.188: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+:1.193: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+:1.219: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+:1.238: 1 signals, min emittedAtMs gap - ms, min monitor-arrival gap - ms
+OVERALL min emittedAtMs spacing per subscriber: 34 ms (contract: >= 34); min observed arrival spacing 33.3 ms

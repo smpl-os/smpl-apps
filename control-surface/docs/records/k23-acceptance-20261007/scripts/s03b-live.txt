@@ -1,0 +1,22 @@
+## S3b live grading while playing: single-key value edits are allowed; explicit key creation refuses with busy
+window org.kde.kdenlive keypad-generated
+await available 8000
+await ctx playing true 4000
+await ctx param.name level
+print ctx param
+print ctx position
+refusals clear
+## nudge +3 while playing (constant / single-key: live grading)
+knob1 +3
+wait 800
+await ctx param.value 108
+expect no-refusal
+## key11 = paramKey -> create; creating a key while playing must refuse
+key11
+knob1 +1
+expect refused busy 3000
+wait 700
+await ctx param.value 108
+expect no-keys
+print ctx playing
+print ctx position

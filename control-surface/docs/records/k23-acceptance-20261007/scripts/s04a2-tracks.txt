@@ -1,0 +1,42 @@
+## S4a (rerun with exact track-id awaits) mute, exclusive solo and manual-mute retention
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.track.id 2
+refusals clear
+## clean state: A2 (id 1) is still soloed from the first attempt -> unsolo
+knob1 -1
+await ctx timeline.track.id 1
+await ctx timeline.track.solo true
+key2
+await ctx timeline.track.solo false
+## A1 (id 2): manual mute
+knob1 +1
+await ctx timeline.track.id 2
+await ctx timeline.track.muted false
+key1
+await ctx timeline.track.muted true
+## A2 (id 1): exclusive solo
+knob1 -1
+await ctx timeline.track.id 1
+key2
+await ctx timeline.track.solo true
+## A1 while A2 is soloed
+knob1 +1
+await ctx timeline.track.id 2
+print ctx timeline.track
+## A2: unsolo
+knob1 -1
+await ctx timeline.track.id 1
+key2
+await ctx timeline.track.solo false
+print ctx timeline.track
+## A1: the manual mute survived the solo round trip
+knob1 +1
+await ctx timeline.track.id 2
+await ctx timeline.track.muted true
+print ctx timeline.track
+key1
+await ctx timeline.track.muted false
+expect no-refusal
+expect no-keys

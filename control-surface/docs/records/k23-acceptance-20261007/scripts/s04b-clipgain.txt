@@ -1,0 +1,12 @@
+## S4b clip gain through timeline.clipGain.target (unique single-key Volume on clip 6): one gesture, one undo entry
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.clipGain.clip 6
+print ctx timeline.clipGain
+refusals clear
+## knob3 in the timeline page = audio.gain on the selected clip's gain handle
+knob3 +5
+wait 800
+expect no-refusal
+expect no-keys

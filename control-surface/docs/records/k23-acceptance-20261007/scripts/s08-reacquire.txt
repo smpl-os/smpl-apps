@@ -1,0 +1,13 @@
+## S8 after save + reopen: fresh opaque handles (new native ids), persisted state, one more gain gesture = one undo entry
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.trim.clip 6
+print ctx timeline
+print ctx epoch
+print ctx serial
+refusals clear
+knob3 +2
+wait 800
+expect no-refusal
+expect no-keys

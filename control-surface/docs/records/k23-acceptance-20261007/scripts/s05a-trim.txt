@@ -1,0 +1,16 @@
+## S5a edit.trim mode=resize on the declared aligned A/V scope: end +6, then start -4; later clips do not move
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.trim.clip 5
+print ctx timeline.trim
+refusals clear
+## knob2 = edit.trim {edge: $trimEdge (end), mode: resize}
+knob2 +6
+wait 800
+## knob2 press: edge -> start
+knob2 press
+knob2 -4
+wait 800
+expect no-refusal
+expect no-keys

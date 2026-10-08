@@ -1,0 +1,56 @@
+## S1b playback through allowlisted actions (knob1 press = monitor_play, knob2 press = monitor_pause)
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 17 epoch 4 {"active":true,"activeMonitor":"project","dialog":false,"epoch":4,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":13,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":17,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"slip"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> print ctx activeMonitor
+  ctx activeMonitor = "project"
+> refusals clear
+> knob1 press
+  [kdenlive] -> TriggerAction monitor_play
+  [kdenlive] <= TriggerAction monitor_play {"ok":true,"result":{"id":"monitor_play","requestId":1,"state":"accepted"}}
+  [kdenlive] <- ActionFinished 1 {"ok":true,"result":{"id":"monitor_play","state":"invoked"}}
+> await ctx playing true 4000
+  EXPECT ok: context playing = true (now true)
+> wait 1000
+> print ctx position
+  ctx position = 13
+> print ctx speed
+  ctx speed = 0
+> knob2 press
+  [kdenlive] -> TriggerAction monitor_pause
+  [kdenlive] <= TriggerAction monitor_pause {"ok":true,"result":{"id":"monitor_pause","requestId":2,"state":"accepted"}}
+  [kdenlive] <- ActionFinished 2 {"ok":true,"result":{"id":"monitor_pause","state":"invoked"}}
+> await ctx playing false 4000
+  EXPECT FAIL: context playing = false (now true)
+> print ctx position
+  ctx position = 13
+## shuttle once more while stopped, then while playing
+> knob2 +1
+  [kdenlive] -> Control playhead.shuttle 1 seq 1 {"epoch":4,"session":"67bce643-bd34-4ee1-96d8-6bf47a5dd2fb"}
+  [kdenlive] <- ControlAck seq 1 playhead.shuttle {"error":{"code":"busy","field":"","message":"The monitor is unavailable for shuttle playback."},"ok":false,"session":"67bce643-bd34-4ee1-96d8-6bf47a5dd2fb"}
+  (Kdenlive refused playhead.shuttle: busy (The monitor is unavailable for shuttle playback.))
+> wait 400
+> knob1 press
+  [kdenlive] -> TriggerAction monitor_play
+  [kdenlive] <= TriggerAction monitor_play {"ok":true,"result":{"id":"monitor_play","requestId":3,"state":"accepted"}}
+  [kdenlive] <- ActionFinished 3 {"ok":true,"result":{"id":"monitor_play","state":"invoked"}}
+> await ctx playing true 4000
+  EXPECT FAIL: context playing = true (now false)
+> knob2 +1
+  [kdenlive] -> Control playhead.shuttle 1 seq 2 {"epoch":4,"session":"67bce643-bd34-4ee1-96d8-6bf47a5dd2fb"}
+  [kdenlive] <- ControlAck seq 2 playhead.shuttle {"error":{"code":"busy","field":"","message":"The monitor is unavailable for shuttle playback."},"ok":false,"session":"67bce643-bd34-4ee1-96d8-6bf47a5dd2fb"}
+> wait 400
+> print ctx speed
+  ctx speed = 0
+> knob2 press
+  [kdenlive] -> TriggerAction monitor_pause
+  [kdenlive] <= TriggerAction monitor_pause {"ok":true,"result":{"id":"monitor_pause","requestId":4,"state":"accepted"}}
+  [kdenlive] <- ActionFinished 4 {"ok":true,"result":{"id":"monitor_pause","state":"invoked"}}
+> await ctx playing false 4000
+  EXPECT ok: context playing = false (now false)
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)
+2 expectation(s) failed

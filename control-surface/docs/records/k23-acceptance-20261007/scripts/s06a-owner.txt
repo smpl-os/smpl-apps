@@ -1,0 +1,26 @@
+## S6a client A: holds one clip-gain gesture open for ~3 s
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.clipGain.clip 6
+refusals clear
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 -8
+wait 900
+expect no-refusal
+expect no-keys

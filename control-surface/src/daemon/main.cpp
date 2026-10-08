@@ -1,0 +1,1483 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "capabilities.h"
+#include "cheatsheet.h"
+#include "ewwsink.h"
+#include "config.h"
+#include "configedit.h"
+#include "configstore.h"
+#include "configwatcher.h"
+#include "engine.h"
+#include "featurelist.h"
+#include "inputmonitor.h"
+#include "kdenlivecatalog.h"
+#include "kdenlivecontract.h"
+#include "kdenlivedbusclient.h"
+#include "learn.h"
+#include "paddevice.h"
+#include "rawpaddevice.h"
+#include "padfwproto.h"
+#include "settingsservice.h"
+#include "uinputsink.h"
+#include "usbinfo.h"
+#include "windowtracker.h"
+
+#include <QCommandLineParser>
+#include <QCoreApplication>
+#include <QDBusConnection>
+#include <QDBusConnectionInterface>
+#include <QDBusMessage>
+#include <QDBusPendingCall>
+#include <QDateTime>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QSocketNotifier>
+#include <QTextStream>
+#include <QThread>
+#include <QTimer>
+
+#include <algorithm>
+#include <cmath>
+#include <csignal>
+#include <functional>
+#include <memory>
+#include <cstdio>
+#include <sys/socket.h>
+#include <unistd.h>
+
+using namespace cs;
+
+namespace {
+
+int g_sigFd[2] = {-1, -1};
+
+void onSignal(int)
+{
+    const char c = 1;
+    [[maybe_unused]] auto r = ::write(g_sigFd[1], &c, 1);
+}
+
+void installSignalHandlers(QCoreApplication &app)
+{
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, g_sigFd) != 0) {
+        return;
+    }
+    auto *sn = new QSocketNotifier(g_sigFd[0], QSocketNotifier::Read, &app);
+    QObject::connect(sn, &QSocketNotifier::activated, &app, [&app] {
+        char c;
+        [[maybe_unused]] auto r = ::read(g_sigFd[0], &c, 1);
+        Q_UNUSED(app)
+        QCoreApplication::exit(0);  // every running loop, also before app.exec(); destructors release the grab and uinput
+    });
+    struct sigaction sa {};
+    sa.sa_handler = onSignal;
+    sigemptyset(&sa.sa_mask);
+    ::sigaction(SIGINT, &sa, nullptr);
+    ::sigaction(SIGTERM, &sa, nullptr);
+    ::sigaction(SIGHUP, &sa, nullptr);
+}
+
+void say(const QString &s)
+{
+    std::printf("%s\n", qPrintable(s));
+    std::fflush(stdout);
+}
+
+// The configured pad as sysfs describes it (nothing is opened): offline reports.
+DeviceState offlinePad(const DeviceMatch &m, const QString &sysRoot)
+{
+    DeviceState d;
+    for (const UsbDeviceInfo &u : listUsbDevices(sysRoot)) {
+        if (u.vendor == QLatin1String("1189") && u.product == QLatin1String("8890") && (m.serial.isEmpty() || u.serial == m.serial)) {
+            d.present = true;
+            d.usb = u;
+            d.firmware = classifyFirmware(u);
+            break;
+        }
+    }
+    return d;
+}
+
+std::optional<BoardProfile> boardOf(const DeviceState &d)
+{
+    if (!d.present || d.firmware.board.isEmpty()) {
+        return std::nullopt;
+    }
+    auto p = builtinBoardProfile(d.firmware.board);
+    if (p) {
+        p->source = QStringLiteral("firmware");
+    }
+    return p;
+}
+
+std::optional<Config> obtainConfig(const QString &path, bool explicitPath)
+{
+    QString err;
+    if (QFile::exists(path)) {
+        auto c = loadConfig(path, &err);
+        if (!c) {
+            std::fprintf(stderr, "config %s: %s\n", qPrintable(path), qPrintable(err));
+        }
+        return c;
+    }
+    if (explicitPath) {
+        std::fprintf(stderr, "config %s not found\n", qPrintable(path));
+        return std::nullopt;
+    }
+    QFile f(QStringLiteral(":/control-surface/config.example.jsonc"));
+    if (!f.open(QIODevice::ReadOnly)) {
+        std::fprintf(stderr, "built-in config missing\n");
+        return std::nullopt;
+    }
+    auto c = parseConfig(f.readAll(), QFileInfo(path).absolutePath(), &err);
+    if (!c) {
+        std::fprintf(stderr, "built-in config: %s\n", qPrintable(err));
+    } else {
+        // stderr: stdout stays clean for --json output.
+        std::fprintf(stderr, "no %s, using the built-in example config\n", qPrintable(path));
+    }
+    return c;
+}
+
+// One desktop notification (org.freedesktop.Notifications); fire and forget.
+void desktopNotify(const QString &body)
+{
+    auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.Notifications"), QStringLiteral("/org/freedesktop/Notifications"),
+                                              QStringLiteral("org.freedesktop.Notifications"), QStringLiteral("Notify"));
+    msg << QStringLiteral("control-surface") << uint(0) << QStringLiteral("input-keyboard") << QStringLiteral("Control surface") << body << QStringList{}
+        << QVariantMap{} << int(10000);
+    QDBusConnection::sessionBus().asyncCall(msg, 2000);
+}
+
+struct SimEnv {
+    Engine &engine;
+    KdenliveClient &kd;
+    FakeKdenliveClient *fake;  // null when driving a real Kdenlive over D-Bus
+    StaticWindowTracker &tracker;
+    RecordingKeySink &keys;
+    QList<QPair<QString, QString>> refusals;  // (what, code) since the last check
+    QStringList notices;                       // since the last "expect notice"
+    int failures = 0;
+};
+
+bool waitUntil(const std::function<bool()> &done, int ms)
+{
+    QElapsedTimer t;
+    t.start();
+    while (!done()) {
+        if (t.elapsed() >= ms) {
+            return false;
+        }
+        QEventLoop loop;
+        QTimer::singleShot(10, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+    return true;
+}
+
+QVariant parseValue(const QString &text)
+{
+    // JSON scalars (true, 3, "x"); anything else is a string ("/regex/", "!x").
+    const QJsonDocument d = QJsonDocument::fromJson(QByteArray("[") + text.toUtf8() + "]");
+    return d.isArray() && d.array().size() == 1 ? d.array().at(0).toVariant() : QVariant(text);
+}
+
+QString toJson(const QVariant &v)
+{
+    return QString::fromUtf8(QJsonDocument(QJsonArray{QJsonValue::fromVariant(v)}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
+}
+
+void check(SimEnv &env, bool ok, const QString &what)
+{
+    say(QStringLiteral("  EXPECT %1: %2").arg(ok ? QStringLiteral("ok") : QStringLiteral("FAIL"), what));
+    env.failures += ok ? 0 : 1;
+}
+
+// simulate: "window CLASS [TITLE]" | "pid N" | "key3" | "knob1 +3" | "knob1 -1" |
+//           "knob2 press" (down + up) | "knob2 hold" | "knob2 release" |
+//           "wait MS" | "# comment"
+// Fake client only:   "context {json}" | "kdenlive on|off|pending" | "stage 1|2|3|4"
+// Any client:         "await available|absent [MS]" | "await ctx PATH VALUE [MS]" |
+//                     "print ctx [PATH]" | "expect refused CODE [MS]" |
+//                     "expect no-refusal" | "expect no-keys" | "expect keys K1 K2 ..." |
+//                     "expect notice [TEXT]" | "expect no-notice" | "refusals clear"
+int simulate(SimEnv &env, QIODevice &in)
+{
+    QTextStream ts(&in);
+    int line = 0;
+    while (!ts.atEnd()) {
+        const QString raw = ts.readLine();
+        ++line;
+        const QString l = raw.trimmed();
+        if (l.isEmpty() || l.startsWith(QLatin1Char('#'))) {
+            if (l.startsWith(QLatin1String("##"))) {
+                say(l);  // section headings in acceptance scripts
+            }
+            continue;
+        }
+        say(QStringLiteral("> ") + l);
+        const QStringList w = l.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        const QString cmd = w.value(0);
+        const QString rest = l.section(QLatin1Char(' '), 1);
+        bool settle = true;
+        if (cmd == QLatin1String("window")) {
+            WindowInfo win = env.tracker.current();
+            win.cls = rest.section(QLatin1Char(' '), 0, 0);
+            win.title = rest.section(QLatin1Char(' '), 1);
+            win.pid = win.pid ? win.pid : 4242;
+            env.tracker.set(win);
+        } else if (cmd == QLatin1String("pid")) {
+            WindowInfo win = env.tracker.current();
+            win.pid = rest.toLongLong();
+            env.tracker.set(win);
+        } else if (cmd == QLatin1String("context") || cmd == QLatin1String("kdenlive") || cmd == QLatin1String("stage")) {
+            if (!env.fake) {
+                std::fprintf(stderr, "line %d: '%s' needs the fake client (no --kdenlive-service)\n", line, qPrintable(cmd));
+                return 2;
+            }
+            if (cmd == QLatin1String("context")) {
+                env.fake->setContext(QJsonDocument::fromJson(rest.toUtf8()).object().toVariantMap());
+            } else if (cmd == QLatin1String("kdenlive")) {
+                env.fake->setState(rest == QLatin1String("on") ? KdenliveClient::State::Available
+                                   : rest == QLatin1String("pending") ? KdenliveClient::State::Pending
+                                                                      : KdenliveClient::State::Absent);
+            } else {
+                const int n = rest.toInt();
+                QStringList controls{QStringLiteral("playhead.jog"), QStringLiteral("playhead.shuttle"), QStringLiteral("timeline.zoom")};
+                QStringList commands;
+                if (n >= 2) {
+                    controls << QStringLiteral("param.focus") << QStringLiteral("param.nudge") << QStringLiteral("colorwheel.nudge");
+                    commands << QStringLiteral("param.reset") << QStringLiteral("colorwheel.reset");
+                }
+                if (n >= 3) {
+                    controls << QStringLiteral("timeline.track") << QStringLiteral("timeline.scroll") << QStringLiteral("audio.gain") << QStringLiteral("edit.trim");
+                    commands << QStringLiteral("track.set");
+                }
+                if (n >= 4) {  // K23 MR1b-B
+                    controls << contract::kTimelineTarget << contract::kPan << contract::kNudge << contract::kEffectFocus << contract::kBinCursor << contract::kBinRating;
+                    commands << contract::kCmdEffectAdd << contract::kCmdEffectSet << contract::kCmdEffectMove << contract::kCmdEffectRemove << contract::kCmdStackSet
+                             << contract::kCmdBinTag << contract::kCmdBinSelect << contract::kCmdBinFilter;
+                }
+                env.fake->setControlCapabilities(controls, commands);
+            }
+        } else if (cmd == QLatin1String("await") && w.value(1) == QLatin1String("available")) {
+            settle = false;
+            check(env, waitUntil([&] { return env.kd.isAvailable(); }, w.value(2, QStringLiteral("5000")).toInt()), QStringLiteral("interface available"));
+        } else if (cmd == QLatin1String("await") && w.value(1) == QLatin1String("absent")) {
+            settle = false;
+            check(env, waitUntil([&] { return env.kd.isAbsent(); }, w.value(2, QStringLiteral("5000")).toInt()), QStringLiteral("interface absent (stock Kdenlive)"));
+        } else if (cmd == QLatin1String("await") && w.value(1) == QLatin1String("ctx")) {
+            settle = false;
+            const QString path = w.value(2);
+            const QVariant want = parseValue(w.value(3));
+            const bool ok = waitUntil([&] { return conditionMatches({{path, want}}, env.kd.context()); }, w.value(4, QStringLiteral("3000")).toInt());
+            check(env, ok, QStringLiteral("context %1 = %2 (now %3)").arg(path, w.value(3), toJson(valueAtPath(env.kd.context(), path))));
+        } else if (cmd == QLatin1String("print") && w.value(1) == QLatin1String("ctx")) {
+            settle = false;
+            const QVariant v = w.size() > 2 ? valueAtPath(env.kd.context(), w.value(2)) : QVariant(env.kd.context());
+            say(QStringLiteral("  ctx %1 = %2").arg(w.value(2, QStringLiteral("(all)")), toJson(v)));
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("refused")) {
+            settle = false;
+            const QString code = w.value(2);
+            const bool ok = waitUntil([&] { return std::any_of(env.refusals.cbegin(), env.refusals.cend(), [&](const auto &r) { return r.second == code; }); },
+                                      w.value(3, QStringLiteral("2000")).toInt());
+            check(env, ok, QStringLiteral("a refusal with %1").arg(code));
+            env.refusals.clear();
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("no-refusal")) {
+            settle = false;
+            QStringList seen;
+            for (const auto &r : std::as_const(env.refusals)) {
+                seen << r.first + QLatin1Char(':') + r.second;
+            }
+            check(env, env.refusals.isEmpty(), QStringLiteral("no refusal (%1)").arg(seen.isEmpty() ? QStringLiteral("none") : seen.join(QStringLiteral(", "))));
+            env.refusals.clear();
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("no-keys")) {
+            settle = false;
+            check(env, env.keys.taps.isEmpty(), QStringLiteral("no keyboard fallback (taps: %1)").arg(env.keys.taps.isEmpty() ? QStringLiteral("none") : env.keys.taps.join(QLatin1Char(' '))));
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("keys")) {
+            settle = false;
+            const QStringList want = w.mid(2);
+            waitUntil([&] { return env.keys.taps.size() >= want.size(); }, 2000);
+            check(env, env.keys.taps == want, QStringLiteral("recorded (never emitted) keys %1, wanted %2").arg(env.keys.taps.join(QLatin1Char(' ')), want.join(QLatin1Char(' '))));
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("notice")) {
+            settle = false;
+            const QString text = l.section(QLatin1Char(' '), 2);
+            const bool ok = waitUntil([&] { return std::any_of(env.notices.cbegin(), env.notices.cend(), [&](const QString &n) { return n.contains(text); }); }, 2000);
+            check(env, ok, QStringLiteral("a notice%1").arg(text.isEmpty() ? QString() : QStringLiteral(" containing \"%1\"").arg(text)));
+            env.notices.clear();
+        } else if (cmd == QLatin1String("expect") && w.value(1) == QLatin1String("no-notice")) {
+            settle = false;
+            check(env, env.notices.isEmpty(), QStringLiteral("no notice (%1)").arg(env.notices.isEmpty() ? QStringLiteral("none") : env.notices.join(QStringLiteral("; "))));
+        } else if (cmd == QLatin1String("refusals") && w.value(1) == QLatin1String("clear")) {
+            settle = false;
+            env.refusals.clear();
+        } else if (cmd == QLatin1String("wait")) {
+            QEventLoop loop;
+            QTimer::singleShot(rest.toInt(), &loop, &QEventLoop::quit);
+            loop.exec();
+        } else if (cmd.startsWith(QLatin1String("key"))) {
+            // "key3" is a press and release; "key1 hold" ... "key1 release" holds it
+            // (held-key layers, the cheatsheet's "hold").
+            if (rest.isEmpty() || rest == QLatin1String("press") || rest == QLatin1String("hold")) {
+                env.engine.handle(PadEvent{cmd, PadEvent::KeyDown, 0, 0});
+            }
+            if (rest.isEmpty() || rest == QLatin1String("press") || rest == QLatin1String("release")) {
+                env.engine.handle(PadEvent{cmd, PadEvent::KeyUp, 0, 0});
+            }
+        } else if (cmd.startsWith(QLatin1String("knob"))) {
+            if (rest == QLatin1String("press") || rest == QLatin1String("hold")) {
+                env.engine.handle(PadEvent{cmd, PadEvent::PressDown, 0, 0});
+            }
+            if (rest == QLatin1String("press") || rest == QLatin1String("release")) {
+                env.engine.handle(PadEvent{cmd, PadEvent::PressUp, 0, 0});
+            }
+            if (rest != QLatin1String("press") && rest != QLatin1String("hold") && rest != QLatin1String("release")) {
+                const int n = rest.toInt();
+                for (int i = 0; i < std::abs(n); ++i) {
+                    env.engine.handle(PadEvent{cmd, PadEvent::Turn, n > 0 ? 1 : -1, 0});
+                }
+            }
+        } else {
+            std::fprintf(stderr, "line %d: unknown command '%s'\n", line, qPrintable(cmd));
+            return 2;
+        }
+        if (!settle) {
+            continue;
+        }
+        // let coalescers, acks and tap pacing run
+        QEventLoop loop;
+        QTimer::singleShot(qMax(30, env.engine.config().settings.coalesceMs * 3), &loop, &QEventLoop::quit);
+        loop.exec();
+        while (env.engine.pendingTaps() > 0) {
+            QTimer::singleShot(10, &loop, &QEventLoop::quit);
+            loop.exec();
+        }
+    }
+    if (env.failures > 0) {
+        say(QStringLiteral("%1 expectation(s) failed").arg(env.failures));
+    }
+    return env.failures > 0 ? 1 : 0;
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    QCoreApplication app(argc, argv);
+    QCoreApplication::setApplicationName(QStringLiteral("control-surfaced"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+
+    QCommandLineParser p;
+    p.setApplicationDescription(QStringLiteral(
+        "Per-application control surface for the CH552 macro pad (1189:8890).\n"
+        "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | list-actions |\n"
+        "          firmware-info | enter-bootloader --yes | features | cheatsheet | check-config | example-config | bench-dbus [N] |\n"
+        "          set KEY VALUE | get [KEY]   (simple options without editing: set input raw|evdev|auto)"));
+    p.addHelpOption();
+    p.addVersionOption();
+    p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
+    QCommandLineOption configOpt({QStringLiteral("c"), QStringLiteral("config")}, QStringLiteral("config file"), QStringLiteral("path"), defaultConfigPath());
+    QCommandLineOption dryOpt(QStringLiteral("dry-run"), QStringLiteral("grab the pad but only print what would be sent"));
+    QCommandLineOption noGrabOpt(QStringLiteral("no-grab"), QStringLiteral("read the pad without exclusive grab (debug only)"));
+    QCommandLineOption backendOpt(QStringLiteral("window-backend"), QStringLiteral("auto, hyprland or none"), QStringLiteral("name"), QStringLiteral("auto"));
+    QCommandLineOption serviceOpt(QStringLiteral("kdenlive-service"), QStringLiteral("always talk to this D-Bus service (e.g. the mock)"), QStringLiteral("name"));
+    QCommandLineOption writeOpt(QStringLiteral("write"), QStringLiteral("verify: hardware map output"), QStringLiteral("path"), defaultHardwareMapPath());
+    QCommandLineOption noWriteOpt(QStringLiteral("no-write"), QStringLiteral("verify: only report"));
+    QCommandLineOption forceWindowOpt(QStringLiteral("force-window"), QStringLiteral("pretend this window class is focused (testing)"), QStringLiteral("class"));
+    QCommandLineOption quietOpt({QStringLiteral("q"), QStringLiteral("quiet")}, QStringLiteral("log only problems"));
+    QCommandLineOption traceOpt(QStringLiteral("trace"), QStringLiteral("log every Kdenlive call, reply, ack and epoch change"));
+    QCommandLineOption jsonOpt(QStringLiteral("json"), QStringLiteral("list-capabilities: machine-readable output"));
+    QCommandLineOption noApiOpt(QStringLiteral("no-settings-api"), QStringLiteral("do not offer org.smplos.ControlSurface1 on the session bus"));
+    QCommandLineOption allowFlashOpt(QStringLiteral("allow-flash"), QStringLiteral("settings API: allow real firmware flashing (dry runs are always allowed)"));
+    QCommandLineOption flashToolOpt(QStringLiteral("flash-tool"), QStringLiteral("settings API: wchisp binary (default: wchisp in PATH)"), QStringLiteral("path"));
+    QCommandLineOption sysRootOpt(QStringLiteral("sys-root"), QStringLiteral("tests: a fake /sys for status, check-config, firmware-info and enter-bootloader"), QStringLiteral("dir"));
+    sysRootOpt.setFlags(QCommandLineOption::HiddenFromHelp);
+    QCommandLineOption yesOpt(QStringLiteral("yes"), QStringLiteral("enter-bootloader: really do it"));
+    QCommandLineOption identifyOpt(QStringLiteral("identify"), QStringLiteral("monitor: report inputs without dispatching them while it runs (SetIdentify)"));
+    QCommandLineOption followOpt(QStringLiteral("follow"), QStringLiteral("cheatsheet: one JSON line per change (debugging; run --eww pushes to eww itself)"));
+    QCommandLineOption ewwOpt(QStringLiteral("eww"), QStringLiteral("run: push the cheatsheet to eww (eww update pad_sheet=<json>); the config's cheatsheet.eww overrides"));
+    QCommandLineOption ewwWindowOpt(QStringLiteral("eww-window"), QStringLiteral("run: open/close this eww window with the cheatsheet (implies --eww)"), QStringLiteral("name"));
+    QCommandLineOption ewwConfigOpt(QStringLiteral("eww-config"), QStringLiteral("run: eww's config directory (implies --eww)"), QStringLiteral("dir"));
+    QCommandLineOption sheetWindowOpt(QStringLiteral("window"), QStringLiteral("cheatsheet: preview for this window class (offline)"), QStringLiteral("class"));
+    QCommandLineOption sheetTitleOpt(QStringLiteral("title"), QStringLiteral("cheatsheet: window title for --window"), QStringLiteral("text"));
+    QCommandLineOption sheetContextOpt(QStringLiteral("context"), QStringLiteral("cheatsheet: Kdenlive context JSON for --window"), QStringLiteral("json"));
+    QCommandLineOption sheetHeldOpt(QStringLiteral("held"), QStringLiteral("cheatsheet: with --window, these controls count as held (key1, key1+knob3; repeatable)"), QStringLiteral("controls"));
+    QCommandLineOption imageDirOpt(QStringLiteral("firmware-dir"), QStringLiteral("settings API: directory of flashable images (repeatable)"), QStringLiteral("dir"));
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt, followOpt, sheetWindowOpt, sheetTitleOpt, sheetContextOpt, sheetHeldOpt, ewwOpt, ewwWindowOpt, ewwConfigOpt, identifyOpt});
+    p.process(app);
+    const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
+    const bool explicitConfig = p.isSet(configOpt);
+    installSignalHandlers(app);
+
+    if (cmd == QLatin1String("example-config")) {
+        QFile f(QStringLiteral(":/control-surface/config.example.jsonc"));
+        if (!f.open(QIODevice::ReadOnly)) {
+            return 1;
+        }
+        std::fwrite(f.readAll().constData(), 1, size_t(f.size()), stdout);
+        return 0;
+    }
+    if (cmd == QLatin1String("features")) {
+        // Always JSON: binding kinds, key/modifier/mouse names, slots, layouts.
+        say(QString::fromUtf8(QJsonDocument(featuresJson()).toJson(p.isSet(jsonOpt) ? QJsonDocument::Compact : QJsonDocument::Indented)));
+        return 0;
+    }
+    if (cmd == QLatin1String("list-actions")) {
+        // Offline: what a mapping editor can offer for Kdenlive (no Kdenlive needed).
+        // A running Kdenlive's ListActions (list-capabilities) stays authoritative.
+        if (p.isSet(jsonOpt)) {
+            say(QString::fromUtf8(QJsonDocument(catalog::toJson()).toJson(QJsonDocument::Compact)));
+            return 0;
+        }
+        QString group;
+        for (const auto &a : catalog::actions()) {
+            if (a.group != group) {
+                group = a.group;
+                say(QStringLiteral("[%1]").arg(group));
+            }
+            say(QStringLiteral("  %1  %2%3%4").arg(a.id, -30).arg(a.text, a.shortcut.isEmpty() ? QString() : QStringLiteral("  (%1)").arg(a.shortcut),
+                                                              a.editing ? QStringLiteral("  [editing]") : QString()));
+        }
+        say(QStringLiteral("[controls]"));
+        for (const auto &c : catalog::controls()) {
+            say(QStringLiteral("  %1  %2 per detent: %3%4").arg(c.name, -20).arg(c.stage, c.unit, c.editing ? QStringLiteral("  [editing]") : QString()));
+        }
+        say(QStringLiteral("[commands]"));
+        for (const auto &c : catalog::commands()) {
+            say(QStringLiteral("  %1  %2 %3").arg(c.name, -20).arg(c.stage, c.description));
+        }
+        return 0;
+    }
+    if (cmd == QLatin1String("status")) {
+        // The running daemon's GetStatus, or an offline report from sysfs and the
+        // config (nothing is opened). {ok, daemon, mode, device, layout, config, ...}
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        QJsonObject out;
+        if (bus.interface() && bus.interface()->isServiceRegistered(QLatin1String(SettingsService::kService))) {
+            auto m = QDBusMessage::createMethodCall(QLatin1String(SettingsService::kService), QLatin1String(SettingsService::kPath),
+                                                    QLatin1String(SettingsService::kInterface), QStringLiteral("GetStatus"));
+            const QDBusMessage r = bus.call(m, QDBus::Block, 3000);
+            out = QJsonDocument::fromJson(r.arguments().value(0).toString().toUtf8()).object();
+            out.insert(QStringLiteral("daemon"), r.type() == QDBusMessage::ReplyMessage);
+        }
+        if (!out.value(QStringLiteral("daemon")).toBool()) {
+            const QString path = p.value(configOpt);
+            const auto snap = ConfigStore(path).read();
+            QByteArray text = snap.text;
+            if (!snap.exists) {
+                QFile builtIn(QStringLiteral(":/control-surface/config.example.jsonc"));
+                text = builtIn.open(QIODevice::ReadOnly) ? builtIn.readAll() : QByteArray();
+            }
+            const auto v = ConfigStore(path).validate(text);
+            const Config c = v.config.value_or(Config{});
+            const DeviceState d = offlinePad(c.device, p.value(sysRootOpt));
+            const auto fwBoard = boardOf(d);
+            const BoardProfile layout = effectiveLayout(c, d.firmware.board);
+            QStringList warnings = v.warnings;
+            if (const QString w = layoutMismatchWarning(layout, fwBoard); !w.isEmpty()) {
+                warnings << w;
+            }
+            warnings << boardWarnings(c, layout);
+            bool bootloader = false;
+            for (const UsbDeviceInfo &u : listUsbDevices(p.value(sysRootOpt))) {
+                bootloader = bootloader || classifyFirmware(u).type == QLatin1String("bootloader");
+            }
+            out = QJsonObject{{QStringLiteral("ok"), true},
+                              {QStringLiteral("daemon"), false},
+                              {QStringLiteral("mode"), QStringLiteral("offline")},
+                              {QStringLiteral("device"), d.toJson()},
+                              {QStringLiteral("bootloaderPresent"), bootloader},
+                              {QStringLiteral("layout"), layoutReport(layout, fwBoard)},
+                              {QStringLiteral("config"), QJsonObject{{QStringLiteral("path"), path},
+                                                                     {QStringLiteral("exists"), snap.exists},
+                                                                     {QStringLiteral("hash"), snap.hash},
+                                                                     {QStringLiteral("error"), v.errors.join(QStringLiteral("; "))},
+                                                                     {QStringLiteral("warnings"), QJsonArray::fromStringList(warnings)}}}};
+        }
+        if (p.isSet(jsonOpt)) {
+            say(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact)));
+        } else {
+            const QJsonObject dev = out.value(QStringLiteral("device")).toObject();
+            const QJsonObject lay = out.value(QStringLiteral("layout")).toObject();
+            const QJsonObject cf = out.value(QStringLiteral("config")).toObject();
+            say(QStringLiteral("daemon:   %1").arg(out.value(QStringLiteral("daemon")).toBool() ? out.value(QStringLiteral("mode")).toString() : QStringLiteral("not running")));
+            say(QStringLiteral("pad:      %1").arg(dev.value(QStringLiteral("present")).toBool()
+                                                     ? QStringLiteral("%1 / %2, firmware %3 %4")
+                                                           .arg(dev.value(QStringLiteral("manufacturer")).toString(), dev.value(QStringLiteral("productName")).toString(),
+                                                                dev.value(QStringLiteral("firmware")).toObject().value(QStringLiteral("type")).toString(),
+                                                                dev.value(QStringLiteral("firmware")).toObject().value(QStringLiteral("version")).toString())
+                                                     : QStringLiteral("not connected")));
+            say(QStringLiteral("layout:   %1 (%2 keys, %3 knobs; from %4)")
+                    .arg(lay.value(QStringLiteral("id")).toString())
+                    .arg(lay.value(QStringLiteral("keys")).toArray().size())
+                    .arg(lay.value(QStringLiteral("knobs")).toArray().size())
+                    .arg(lay.value(QStringLiteral("source")).toString()));
+            say(QStringLiteral("config:   %1%2").arg(cf.value(QStringLiteral("path")).toString(),
+                                                    cf.value(QStringLiteral("error")).toString().isEmpty() ? QString() : QStringLiteral(" (invalid: %1)").arg(cf.value(QStringLiteral("error")).toString())));
+        }
+        return 0;
+    }
+    if (cmd == QLatin1String("set") || cmd == QLatin1String("get")) {
+        // Simple options without editing the file: validated as a whole
+        // config, written atomically with a backup; a running daemon that uses
+        // this file applies it at once. Exit 0 ok, 2 bad option or value, 3 not written.
+        const QStringList a = p.positionalArguments();
+        const QString path = p.value(configOpt);
+        const bool asJson = p.isSet(jsonOpt);
+        auto emitJson = [](const QJsonObject &o) { say(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))); };
+        auto text = [](const QJsonValue &v) {
+            return v.isNull() || v.isUndefined() ? QStringLiteral("(not set)") : QString::fromUtf8(QJsonDocument(QJsonArray{v}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
+        };
+        if (cmd == QLatin1String("get") || a.size() == 1) {
+            QJsonArray all;
+            for (const OptionSpec &s : settableOptions()) {
+                if (a.size() < 2 || s.key.compare(a.at(1), Qt::CaseInsensitive) == 0) {
+                    all.append(getOption(path, s.key));
+                }
+            }
+            if (all.isEmpty()) {
+                const QJsonObject e = getOption(path, a.value(1));
+                asJson ? emitJson(e) : say(QStringLiteral("error: %1").arg(e.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString()));
+                return 2;
+            }
+            if (asJson) {
+                emitJson(all.size() == 1 && a.size() == 2 ? all.first().toObject() : QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("options"), all}});
+                return 0;
+            }
+            for (const auto &v : std::as_const(all)) {
+                const QJsonObject o = v.toObject();
+                const bool set = !o.value(QStringLiteral("value")).isNull();
+                QString line = QStringLiteral("%1 = %2%3").arg(o.value(QStringLiteral("key")).toString(), text(o.value(QStringLiteral("effective"))),
+                                                               set ? QString() : QStringLiteral("  (default)"));
+                if (a.size() < 2) {
+                    const QString values = o.contains(QStringLiteral("values"))
+                                               ? o.value(QStringLiteral("values")).toVariant().toStringList().join(QLatin1Char('|'))
+                                               : o.value(QStringLiteral("type")).toString();
+                    line += QStringLiteral("\n    %1: %2").arg(values, o.value(QStringLiteral("help")).toString());
+                }
+                say(line);
+            }
+            if (a.size() < 2) {
+                say(QStringLiteral("\nChange one with: control-surfaced set KEY VALUE   (file: %1)").arg(path));
+            }
+            return 0;
+        }
+        if (a.size() != 3) {
+            const auto spec = a.size() == 2 ? optionSpec(a.at(1)) : std::nullopt;
+            if (spec) {
+                const QJsonObject o = getOption(path, spec->key);
+                const QString values = spec->type == OptionSpec::Enum ? spec->values.join(QLatin1Char('|'))
+                                       : spec->type == OptionSpec::Bool ? QStringLiteral("true|false")
+                                       : spec->type == OptionSpec::String ? QStringLiteral("TEXT")
+                                                                          : QStringLiteral("%1..%2").arg(spec->min).arg(spec->max);
+                std::fprintf(stderr, "usage: control-surfaced set %s %s   (now: %s)\n", qPrintable(spec->key), qPrintable(values),
+                             qPrintable(text(o.value(QStringLiteral("effective")))));
+            } else {
+                std::fprintf(stderr, "usage: control-surfaced set KEY VALUE   (control-surfaced get lists the keys)\n");
+            }
+            return 2;
+        }
+        const OptionChange r = setOption(path, a.at(1), a.at(2));
+        QJsonObject out = r.toJson();
+        QString applied;
+        if (r.ok && r.changed) {
+            // The daemon reloads the file by itself; report what it does now.
+            QDBusConnection bus = QDBusConnection::sessionBus();
+            if (bus.interface() && bus.interface()->isServiceRegistered(QLatin1String(SettingsService::kService))) {
+                QJsonObject st;
+                // Raw input starts after a GET_INFO round trip: give an input
+                // change up to 3 s to show the mode it asked for.
+                const QString wantMode = r.key != QLatin1String("input") ? QString()
+                                         : r.newValue.toString() == QLatin1String("evdev") ? QStringLiteral("evdev-chords") : QStringLiteral("raw");
+                int settle = 0;
+                for (int i = 0; i < 60; ++i) {
+                    auto m = QDBusMessage::createMethodCall(QLatin1String(SettingsService::kService), QLatin1String(SettingsService::kPath),
+                                                            QLatin1String(SettingsService::kInterface), QStringLiteral("GetStatus"));
+                    st = QJsonDocument::fromJson(bus.call(m, QDBus::Block, 2000).arguments().value(0).toString().toUtf8()).object();
+                    const QJsonObject c = st.value(QStringLiteral("config")).toObject();
+                    if (c.value(QStringLiteral("path")).toString() != QFileInfo(path).absoluteFilePath() && c.value(QStringLiteral("path")).toString() != path) {
+                        applied = QStringLiteral("the running daemon uses another config file (%1)").arg(c.value(QStringLiteral("path")).toString());
+                        break;
+                    }
+                    if (c.value(QStringLiteral("hash")).toString() == r.hash) {
+                        const QString mode = st.value(QStringLiteral("input")).toObject().value(QStringLiteral("mode")).toString();
+                        if (!wantMode.isEmpty() && !mode.isEmpty() && mode != wantMode && ++settle < 30) {
+                            QThread::msleep(100);
+                            continue;
+                        }
+                        out.insert(QStringLiteral("daemon"), QJsonObject{{QStringLiteral("applied"), true}, {QStringLiteral("inputMode"), mode}});
+                        applied = mode.isEmpty() ? QStringLiteral("the running daemon applied it") : QStringLiteral("the running daemon applied it (input now: %1)").arg(mode);
+                        break;
+                    }
+                    QThread::msleep(100);
+                }
+                if (applied.isEmpty()) {
+                    out.insert(QStringLiteral("daemon"), QJsonObject{{QStringLiteral("applied"), false}});
+                    applied = QStringLiteral("the running daemon has not applied it yet (see its log)");
+                }
+            } else {
+                applied = QStringLiteral("no daemon running: it applies at the next start");
+            }
+        }
+        if (asJson) {
+            emitJson(out);
+        } else if (!r.ok) {
+            std::fprintf(stderr, "error: %s\n", qPrintable(r.message));
+        } else if (!r.changed) {
+            say(QStringLiteral("%1 is already %2").arg(r.key, text(r.newValue)));
+        } else {
+            say(QStringLiteral("%1: %2 -> %3 (saved %4%5); %6")
+                    .arg(r.key, text(r.oldValue), text(r.newValue), r.path,
+                         r.backup.isEmpty() ? QString() : QStringLiteral(", previous version %1").arg(r.backup), applied));
+        }
+        if (!r.ok) {
+            return r.code == QLatin1String("unknown-option") || r.code == QLatin1String("invalid-value") || r.code == QLatin1String("invalid-config") ? 2 : 3;
+        }
+        return 0;
+    }
+    if (cmd == QLatin1String("check-config") && p.isSet(jsonOpt)) {
+        // {ok, path, source, error: {message, profile, layer, slot} | null, warnings: [...],
+        //  warningDetails: [{message, profile, layer, slot}], profiles: [...]}; exit 0 ok, 2 invalid.
+        const QString path = p.value(configOpt);
+        QByteArray text;
+        QString source = QStringLiteral("file");
+        QString readError;
+        QFile f(path);
+        if (f.exists()) {
+            if (f.open(QIODevice::ReadOnly)) {
+                text = f.readAll();
+            } else {
+                readError = QStringLiteral("cannot read %1").arg(path);
+            }
+        } else if (explicitConfig) {
+            readError = QStringLiteral("config %1 not found").arg(path);
+        } else {
+            QFile builtIn(QStringLiteral(":/control-surface/config.example.jsonc"));
+            source = QStringLiteral("built-in");
+            text = builtIn.open(QIODevice::ReadOnly) ? builtIn.readAll() : QByteArray();
+        }
+        QJsonObject out;
+        if (!readError.isEmpty()) {
+            out = QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("warnings"), QJsonArray()}, {QStringLiteral("warningDetails"), QJsonArray()},
+                              {QStringLiteral("profiles"), QJsonArray()}, {QStringLiteral("error"), describeConfigIssue(readError).toJson()}};
+        } else {
+            const auto v = ConfigStore(path).validate(text);
+            out = v.toJson();
+            out.remove(QStringLiteral("errors"));
+            out.insert(QStringLiteral("error"), v.ok ? QJsonValue() : QJsonValue(describeConfigIssue(v.errors.join(QStringLiteral("; "))).toJson()));
+            QStringList warnings = v.warnings;
+            if (v.config) {
+                // Against the pad plugged in now, from sysfs (nothing is opened).
+                const DeviceState d = offlinePad(v.config->device, p.value(sysRootOpt));
+                const BoardProfile layout = effectiveLayout(*v.config, d.firmware.board);
+                out.insert(QStringLiteral("layout"), layoutReport(layout, boardOf(d)));
+                if (const QString w = layoutMismatchWarning(layout, boardOf(d)); !w.isEmpty()) {
+                    warnings << w;
+                }
+                warnings << boardWarnings(*v.config, layout);
+            }
+            out.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(warnings));
+            QJsonArray details;
+            for (const QString &w : std::as_const(warnings)) {
+                details.append(describeConfigIssue(w).toJson());
+            }
+            out.insert(QStringLiteral("warningDetails"), details);
+        }
+        out.insert(QStringLiteral("path"), path);
+        out.insert(QStringLiteral("source"), source);
+        say(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact)));
+        return out.value(QStringLiteral("ok")).toBool() ? 0 : 2;
+    }
+    auto cfg = obtainConfig(p.value(configOpt), explicitConfig);
+    if (!cfg && cmd == QLatin1String("run") && QFile::exists(p.value(configOpt))) {
+        // A broken config at start: wait for a fixed one instead of exiting, so
+        // Restart=on-failure never loops. The pad is not touched meanwhile and
+        // keeps its own keymap.
+        say(QStringLiteral("waiting for a valid %1 (the pad is left alone until then)").arg(p.value(configOpt)));
+        ConfigWatcher waitFor(p.value(configOpt));
+        waitFor.setExtraFiles({defaultHardwareMapPath()});
+        QEventLoop loop;
+        QObject::connect(&waitFor, &ConfigWatcher::reloaded, &loop, [&](const Config &c) {
+            cfg = c;
+            loop.quit();
+        });
+        QObject::connect(&waitFor, &ConfigWatcher::failed, [](const QString &e) { std::fprintf(stderr, "config still invalid: %s\n", qPrintable(e)); });
+        waitFor.start();
+        loop.exec();
+        if (!cfg) {
+            return 0;  // stopped while waiting
+        }
+        say(QStringLiteral("config is valid now; starting"));
+    }
+    if (!cfg) {
+        return 2;
+    }
+    if (cmd == QLatin1String("check-config")) {
+        say(QStringLiteral("ok: %1 profiles, hardware map %2 (%3 chords)").arg(cfg->profiles.size()).arg(cfg->hardwareSource).arg(cfg->hardware.size()));
+        for (const auto &pr : cfg->profiles) {
+            say(QStringLiteral("  profile %1: %2 layers, %3 base bindings%4%5")
+                    .arg(pr.name)
+                    .arg(pr.layers.size())
+                    .arg(pr.bindings.size())
+                    .arg(pr.kdenlive ? QStringLiteral(", kdenlive") : QString(), pr.keyFallback ? QStringLiteral(", keyFallback") : QString()));
+        }
+        QStringList warnings = cfg->warnings;
+        {
+            // Against the pad plugged in now, from sysfs (nothing is opened).
+            const DeviceState d = offlinePad(cfg->device, p.value(sysRootOpt));
+            const BoardProfile layout = effectiveLayout(*cfg, d.firmware.board);
+            if (const QString w = layoutMismatchWarning(layout, boardOf(d)); !w.isEmpty()) {
+                warnings << w;
+            }
+            warnings << boardWarnings(*cfg, layout);
+        }
+        for (const QString &w : std::as_const(warnings)) {
+            say(QStringLiteral("warning: %1").arg(w));
+        }
+        return 0;
+    }
+    if (cmd == QLatin1String("list-capabilities")) {
+        // Read-only: Capabilities, ListActions and GetContext; no lease is taken.
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        const QStringList services = p.isSet(serviceOpt) ? QStringList{p.value(serviceOpt)} : discoverKdenliveServices(bus);
+        QJsonArray all;
+        bool anyAvailable = false;
+        for (const QString &s : services) {
+            const CapabilityReport r = queryKdenlive(bus, s);
+            anyAvailable = anyAvailable || r.status == CapabilityReport::Status::Available;
+            if (p.isSet(jsonOpt)) {
+                all.append(reportJson(r, &*cfg));
+            } else {
+                say(formatReport(r, &*cfg));
+            }
+        }
+        if (p.isSet(jsonOpt)) {
+            const QByteArray j = QJsonDocument(QJsonObject{{QStringLiteral("kdenlive"), all}}).toJson(QJsonDocument::Indented);
+            std::fwrite(j.constData(), 1, size_t(j.size()), stdout);
+        } else if (services.isEmpty()) {
+            say(QStringLiteral("no running Kdenlive on the session bus (looked for org.kde.kdenlive-<pid>; use --kdenlive-service NAME)"));
+        }
+        return anyAvailable ? 0 : 3;
+    }
+    if (cmd == QLatin1String("cheatsheet")) {
+        // What each input does now. --window CLASS: offline preview from the
+        // config. Otherwise the running daemon's; --follow prints a line on
+        // every change (shown, hidden, new content) until the daemon exits.
+        auto print = [&](const QJsonObject &o) {
+            if (p.isSet(jsonOpt) || p.isSet(followOpt)) {
+                say(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+                return;
+            }
+            const QStringList held = o.value(QStringLiteral("held")).toVariant().toStringList();
+            say(QStringLiteral("%1%2%3").arg(o.value(QStringLiteral("title")).toString(),
+                                             held.isEmpty() ? QString() : QStringLiteral("  (held: %1)").arg(held.join(QLatin1Char('+'))),
+                                             o.value(QStringLiteral("visible")).toBool() ? QStringLiteral("  (shown)") : QString()));
+            if (!o.value(QStringLiteral("notice")).toString().isEmpty()) {
+                say(QStringLiteral("  ! %1").arg(o.value(QStringLiteral("notice")).toString()));
+            }
+            auto text = [](const QJsonObject &e) {
+                if (!e.value(QStringLiteral("bound")).toBool()) {
+                    return QStringLiteral("-");
+                }
+                QString t = e.value(QStringLiteral("label")).toString();
+                if (!e.value(QStringLiteral("state")).toString().isEmpty()) {
+                    t += QStringLiteral(" [%1]").arg(e.value(QStringLiteral("state")).toString());
+                }
+                if (!e.value(QStringLiteral("active")).toBool()) {
+                    t += QStringLiteral(" (inactive)");
+                }
+                return t;
+            };
+            for (const auto &k : o.value(QStringLiteral("keys")).toArray()) {
+                say(QStringLiteral("  %1  %2").arg(k.toObject().value(QStringLiteral("control")).toString(), -6).arg(text(k.toObject())));
+            }
+            for (const auto &k : o.value(QStringLiteral("knobs")).toArray()) {
+                const QJsonObject n = k.toObject();
+                say(QStringLiteral("  %1  ccw %2 | press %3 | cw %4")
+                        .arg(n.value(QStringLiteral("control")).toString(), -6)
+                        .arg(text(n.value(QStringLiteral("ccw")).toObject()), text(n.value(QStringLiteral("press")).toObject()),
+                             text(n.value(QStringLiteral("cw")).toObject())));
+            }
+        };
+        if (p.isSet(sheetWindowOpt)) {
+            QVariantMap ctx;
+            if (p.isSet(sheetContextOpt)) {
+                const QJsonDocument d = QJsonDocument::fromJson(p.value(sheetContextOpt).toUtf8());
+                if (!d.isObject()) {
+                    std::fprintf(stderr, "--context must be a JSON object\n");
+                    return 2;
+                }
+                ctx = d.object().toVariantMap();
+            }
+            if (p.isSet(sheetHeldOpt)) {
+                ctx.insert(QStringLiteral("$held"), p.values(sheetHeldOpt));
+            }
+            print(Cheatsheet::preview(*cfg, effectiveLayout(*cfg), p.value(sheetWindowOpt), p.value(sheetTitleOpt), ctx));
+            return 0;
+        }
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        auto fetch = [&bus]() -> std::optional<QJsonObject> {
+            auto m = QDBusMessage::createMethodCall(QLatin1String(SettingsService::kService), QLatin1String(SettingsService::kPath),
+                                                    QLatin1String(SettingsService::kInterface), QStringLiteral("GetCheatsheet"));
+            const QDBusMessage r = bus.call(m, QDBus::Block, 3000);
+            if (r.type() != QDBusMessage::ReplyMessage) {
+                return std::nullopt;
+            }
+            return QJsonDocument::fromJson(r.arguments().value(0).toString().toUtf8()).object();
+        };
+        CheatsheetFollower follower;
+        const bool attached = p.isSet(followOpt) && follower.attach(bus);
+        const auto first = fetch();
+        if (!first) {
+            std::fprintf(stderr, "no daemon on the session bus (start control-surfaced, or use --window CLASS for a preview)\n");
+            return 3;
+        }
+        print(*first);
+        if (!p.isSet(followOpt)) {
+            return 0;
+        }
+        if (!attached) {
+            return 3;
+        }
+        // Showing sends both a visibility and a content signal: one line each time it changes.
+        QByteArray last = QJsonDocument(*first).toJson(QJsonDocument::Compact);
+        QObject::connect(&follower, &CheatsheetFollower::changed, [&] {
+            if (const auto o = fetch()) {
+                const QByteArray bytes = QJsonDocument(*o).toJson(QJsonDocument::Compact);
+                if (bytes != last) {
+                    last = bytes;
+                    print(*o);
+                }
+            }
+        });
+        QObject::connect(&follower, &CheatsheetFollower::daemonGone, &app, [&app] { app.exit(4); });
+        return app.exec();
+    }
+    if (cmd == QLatin1String("firmware-info") || cmd == QLatin1String("enter-bootloader")) {
+        // Protocol v3 over hidraw (the control-surface firmware only); other
+        // firmware is never written to.
+        const QString node = findControlSurfaceHidraw(cfg->device, {}, p.value(sysRootOpt));
+        QJsonObject out{{QStringLiteral("node"), node}};
+        int rc = 0;
+        if (node.isEmpty()) {
+            out.insert(QStringLiteral("ok"), false);
+            out.insert(QStringLiteral("error"), QStringLiteral("no pad running the control-surface firmware (protocol v3) found"));
+            rc = 1;
+        } else if (cmd == QLatin1String("firmware-info")) {
+            std::string err;
+            const auto info = padfw::queryInfo(node.toStdString(), &err);
+            if (info) {
+                out.insert(QStringLiteral("ok"), true);
+                out.insert(QStringLiteral("version"), QString::fromStdString(info->version()));
+                out.insert(QStringLiteral("format"), info->format);
+                out.insert(QStringLiteral("slots"), info->slotCount);
+                out.insert(QStringLiteral("layers"), info->layers);
+                out.insert(QStringLiteral("activeLayer"), info->activeLayer);
+                out.insert(QStringLiteral("startLayer"), info->startLayer);
+                out.insert(QStringLiteral("rawActive"), info->rawActive != 0);
+                out.insert(QStringLiteral("eepromBytes"), info->eepromBytes);
+                // Encoder diagnostics (2.0.1+): decoded detents per knob and direction,
+                // illegal transitions (missed states) and anything dropped.
+                std::string serr;
+                if (const auto st = padfw::queryStats(node.toStdString(), false, &serr)) {
+                    QJsonArray knobs;
+                    for (int k = 0; k < 3; ++k) {
+                        knobs.append(QJsonObject{{QStringLiteral("cw"), st->cw[k]}, {QStringLiteral("ccw"), st->ccw[k]}, {QStringLiteral("illegal"), st->illegal[k]}});
+                    }
+                    QJsonObject stats{{QStringLiteral("knobs"), knobs},
+                                      {QStringLiteral("overruns"), st->overruns},
+                                      {QStringLiteral("queueDrops"), st->queueDrops},
+                                      {QStringLiteral("maxQueue"), st->maxQueue}};
+                    if (st->hasRaw) {
+                        // 2.0.2+: raw mode started, ended by a missing heartbeat, stopped by the host.
+                        stats.insert(QStringLiteral("raw"), QJsonObject{{QStringLiteral("entries"), st->rawEntries},
+                                                                        {QStringLiteral("expiries"), st->rawExpiries},
+                                                                        {QStringLiteral("stops"), st->rawStops}});
+                    }
+                    out.insert(QStringLiteral("stats"), stats);
+                }
+            } else {
+                out.insert(QStringLiteral("ok"), false);
+                out.insert(QStringLiteral("error"), QString::fromStdString(err));
+                rc = 1;
+            }
+        } else if (!p.isSet(yesOpt)) {
+            out.insert(QStringLiteral("ok"), false);
+            out.insert(QStringLiteral("error"), QStringLiteral("add --yes: the pad leaves normal operation until it is flashed or replugged"));
+            rc = 2;
+        } else {
+            std::string err;
+            const bool ok = padfw::requestBootloader(node.toStdString(), &err);
+            out.insert(QStringLiteral("ok"), ok);
+            if (!ok) {
+                out.insert(QStringLiteral("error"), QString::fromStdString(err));
+                rc = 1;
+            } else {
+                out.insert(QStringLiteral("next"), QStringLiteral("the pad is in the CH552 ROM bootloader (4348:55e0): flash it, or replug to leave"));
+            }
+        }
+        if (p.isSet(jsonOpt)) {
+            say(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact)));
+        } else {
+            for (auto it = out.begin(); it != out.end(); ++it) {
+                say(QStringLiteral("%1: %2").arg(it.key(), it.value().isString() ? it.value().toString() : QString::fromUtf8(QJsonDocument(QJsonArray{it.value()}).toJson(QJsonDocument::Compact)).mid(1).chopped(1)));
+            }
+        }
+        return rc;
+    }
+    if (cmd == QLatin1String("list-devices")) {
+        const auto nodes = findPadInputNodes(cfg->device);
+        for (const auto &n : nodes) {
+            say(QStringLiteral("%1 interface %2 serial %3 (%4)").arg(n.devnode).arg(n.interfaceNumber).arg(n.serial, n.usbPath));
+        }
+        return nodes.isEmpty() ? 1 : 0;
+    }
+    if (cmd == QLatin1String("monitor")) {
+        // Live input, one line per event. Follows a running daemon (or the mock)
+        // over D-Bus; without one, reads the pad itself (grabbed, nothing dispatched).
+        const bool asJson = p.isSet(jsonOpt);
+        auto print = [asJson](const QString &slot, const QString &event, int delta) {
+            say(asJson ? InputMonitor::jsonLine(slot, event, delta, QDateTime::currentMSecsSinceEpoch()) : InputMonitor::textLine(slot, event, delta));
+        };
+        InputMonitor mon;
+        if (mon.attach(QDBusConnection::sessionBus())) {
+            std::fprintf(stderr, "following %s on the session bus\n", SettingsService::kService);
+            QObject::connect(&mon, &InputMonitor::input, print);
+            // A restart (new build, config change) must not end a capture.
+            QObject::connect(&mon, &InputMonitor::daemonGone, &app, [] {
+                std::fprintf(stderr, "the daemon left the bus; waiting for it to come back (Ctrl-C stops)\n");
+            });
+            // --identify: inputs are reported, nothing is dispatched (no keys, no
+            // launchers) for as long as this process is on the bus; renewed
+            // before the daemon's 10-minute limit and after a daemon restart.
+            QTimer renew;
+            auto identify = [] {
+                auto m = QDBusMessage::createMethodCall(QLatin1String(SettingsService::kService), QLatin1String(SettingsService::kPath),
+                                                        QLatin1String(SettingsService::kInterface), QStringLiteral("SetIdentify"));
+                m << true;
+                QDBusConnection::sessionBus().call(m, QDBus::Block, 3000);
+            };
+            if (p.isSet(identifyOpt)) {
+                identify();
+                std::fprintf(stderr, "identify mode: inputs are reported, not dispatched\n");
+                QObject::connect(&renew, &QTimer::timeout, &app, identify);
+                renew.start(4 * 60 * 1000);
+            }
+            QObject::connect(&mon, &InputMonitor::daemonBack, &app, [identify, &p, &identifyOpt] {
+                std::fprintf(stderr, "following %s again\n", SettingsService::kService);
+                if (p.isSet(identifyOpt)) {
+                    identify();
+                }
+            });
+            return app.exec();
+        }
+        std::fprintf(stderr, "no daemon on the session bus; reading the pad directly\n");
+        PadDevice dev(cfg->device);
+        dev.setHardwareMap(cfg->hardware);
+        dev.setGrab(!p.isSet(noGrabOpt));
+        QObject::connect(&dev, &PadDevice::message, [](const QString &m) { std::fprintf(stderr, "(%s)\n", qPrintable(m)); });
+        QObject::connect(&dev, &PadDevice::padEvent, [print](const PadEvent &e) {
+            QString slot, event;
+            int delta = 0;
+            SettingsService::inputEventFor(e, &slot, &event, &delta);
+            print(slot, event, delta);
+        });
+        dev.start();
+        const int rc = app.exec();
+        dev.stop();
+        return rc;
+    }
+    if (cmd == QLatin1String("verify")) {
+        PadDevice dev(cfg->device);
+        dev.setGrab(true);
+        QObject::connect(&dev, &PadDevice::message, [](const QString &m) { std::fprintf(stderr, "(%s)\n", qPrintable(m)); });
+        PadVerifier v(&dev, p.value(writeOpt), !p.isSet(noWriteOpt), effectiveLayout(*cfg));
+        QObject::connect(&v, &PadVerifier::finished, &app, [&app](int code) { app.exit(code); });
+        v.start();
+        return app.exec();
+    }
+    if (cmd == QLatin1String("simulate")) {
+        // No pad and no virtual keyboard: keys are only recorded and printed.
+        // With --kdenlive-service the real client talks to that Kdenlive.
+        RecordingKeySink keys(true);
+        std::unique_ptr<FakeKdenliveClient> fake;
+        std::unique_ptr<KdenliveDBusClient> real;
+        KdenliveClient *kd = nullptr;
+        if (p.isSet(serviceOpt)) {
+            real = std::make_unique<KdenliveDBusClient>(QDBusConnection::sessionBus());
+            real->setServiceOverride(p.value(serviceOpt));
+            real->setTrace(p.isSet(traceOpt));
+            QObject::connect(real.get(), &KdenliveClient::message, [](const QString &m) { say(QStringLiteral("  [kdenlive] %1").arg(m)); });
+            kd = real.get();
+        } else {
+            fake = std::make_unique<FakeKdenliveClient>(true);
+            kd = fake.get();
+        }
+        StaticWindowTracker tracker;
+        Engine engine(&keys, kd);
+        engine.setConfig(*cfg);
+        QObject::connect(&tracker, &WindowTracker::activeWindowChanged, &engine, &Engine::setActiveWindow);
+        QObject::connect(&engine, &Engine::message, [](const QString &m) { say(QStringLiteral("  (%1)").arg(m)); });
+        QObject::connect(&engine, &Engine::runCommand, [](const QStringList &a) { say(QStringLiteral("  -> command %1").arg(a.join(QLatin1Char(' ')))); });
+        const QString file = p.positionalArguments().value(1, QStringLiteral("-"));
+        QFile in;
+        if (file == QLatin1String("-")) {
+            if (!in.open(stdin, QIODevice::ReadOnly)) {
+                return 2;
+            }
+        } else {
+            in.setFileName(file);
+            if (!in.open(QIODevice::ReadOnly)) {
+                std::fprintf(stderr, "cannot read %s\n", qPrintable(file));
+                return 2;
+            }
+        }
+        SimEnv env{engine, *kd, fake.get(), tracker, keys, {}, {}, 0};
+        QObject::connect(&engine, &Engine::notice, [&env](const QString &n) {
+            say(QStringLiteral("  NOTICE: %1").arg(n));
+            env.notices << n;
+        });
+        QObject::connect(kd, &KdenliveClient::refused, [&env](const QString &what, const QString &code, const QString &) { env.refusals.append({what, code}); });
+        const int rc = simulate(env, in);
+        if (real) {
+            real->attachToPid(0);  // Unsubscribe: release the lease
+            QEventLoop loop;
+            QTimer::singleShot(200, &loop, &QEventLoop::quit);
+            loop.exec();
+        }
+        return rc;
+    }
+    if (cmd == QLatin1String("bench-dbus")) {
+        // Round trip Control -> ControlAck against a contract implementation.
+        const QString service = p.value(serviceOpt);
+        if (service.isEmpty()) {
+            std::fprintf(stderr, "bench-dbus needs --kdenlive-service NAME\n");
+            return 2;
+        }
+        KdenliveDBusClient client(QDBusConnection::sessionBus());
+        client.setServiceOverride(service);
+        client.attachToPid(1);
+        QEventLoop loop;
+        QTimer::singleShot(2000, &loop, &QEventLoop::quit);
+        QObject::connect(&client, &KdenliveClient::stateChanged, &loop, [&loop](KdenliveClient::State s) {
+            if (s == KdenliveClient::State::Available || s == KdenliveClient::State::Absent) {
+                loop.quit();
+            }
+        });
+        loop.exec();
+        if (!client.isAvailable()) {
+            std::fprintf(stderr, "%s does not implement %s\n", qPrintable(service), "org.kde.kdenlive.ControlSurface1");
+            return 3;
+        }
+        const int n = p.positionalArguments().value(1, QStringLiteral("500")).toInt();
+        QList<double> us;
+        QElapsedTimer t;
+        QTimer deadline;
+        deadline.setSingleShot(true);
+        QObject::connect(&deadline, &QTimer::timeout, &loop, &QEventLoop::quit);
+        bool acked = false;
+        QObject::connect(&client, &KdenliveClient::controlAcked, &loop, [&] {
+            acked = true;
+            loop.quit();
+        });
+        for (int i = 0; i < n; ++i) {
+            acked = false;
+            t.start();
+            client.control(QStringLiteral("bench"), QStringLiteral("playhead.jog"), (i % 2) ? -1 : 1, {});
+            deadline.start(500);
+            loop.exec();
+            deadline.stop();
+            if (acked) {
+                us << t.nsecsElapsed() / 1000.0;
+            }
+        }
+        std::sort(us.begin(), us.end());
+        if (us.isEmpty()) {
+            std::fprintf(stderr, "no acknowledgements received\n");
+            return 4;
+        }
+        say(QStringLiteral("%1/%2 acked; round trip us: p50 %3  p90 %4  p99 %5  max %6")
+                .arg(us.size())
+                .arg(n)
+                .arg(us.at(us.size() / 2), 0, 'f', 0)
+                .arg(us.at(us.size() * 9 / 10), 0, 'f', 0)
+                .arg(us.at(qMin(us.size() - 1, us.size() * 99 / 100)), 0, 'f', 0)
+                .arg(us.last(), 0, 'f', 0));
+        QTimer::singleShot(100, &loop, &QEventLoop::quit);  // trailing limited context signal
+        loop.exec();
+        const auto timing = client.contextTiming();
+        say(QStringLiteral("context signals %1 (%2 with emittedAtMs); min spacing: emitted %3 ms, arrival %4 ms (arrival can bunch)")
+                .arg(timing.received)
+                .arg(timing.stamped)
+                .arg(timing.minEmitGapMs)
+                .arg(timing.minArrivalGapMs));
+        client.attachToPid(0);
+        QTimer::singleShot(100, &loop, &QEventLoop::quit);
+        loop.exec();
+        return 0;
+    }
+    if (cmd != QLatin1String("run")) {
+        p.showHelp(2);
+    }
+
+    const bool dry = p.isSet(dryOpt);
+    const bool quiet = p.isSet(quietOpt);
+    auto log = [quiet](const QString &m) {
+        if (!quiet) {
+            say(m);
+        }
+    };
+
+    std::unique_ptr<KeySink> keys;
+    if (dry) {
+        keys = std::make_unique<RecordingKeySink>(true);
+    } else {
+        auto u = std::make_unique<UinputKeySink>();
+        QString err;
+        if (!u->open(&err)) {
+            // No virtual keyboard yet (permissions applied late, module not
+            // loaded): keep running, Kdenlive's API still works, retry below.
+            say(QStringLiteral("keys unavailable: %1; retrying every 10 s").arg(err));
+        }
+        keys = std::move(u);
+    }
+    std::unique_ptr<KdenliveClient> kd;
+    if (dry) {
+        kd = std::make_unique<FakeKdenliveClient>(true);
+    } else {
+        auto c = std::make_unique<KdenliveDBusClient>(QDBusConnection::sessionBus());
+        if (p.isSet(serviceOpt)) {
+            c->setServiceOverride(p.value(serviceOpt));
+        }
+        QObject::connect(c.get(), &KdenliveClient::message, log);
+        kd = std::move(c);
+    }
+    Engine engine(keys.get(), kd.get());
+    engine.setConfig(*cfg);
+    QObject::connect(&engine, &Engine::message, log);
+    QObject::connect(&engine, &Engine::notice, [dry, quiet](const QString &text) {
+        if (quiet) {
+            say(QStringLiteral("notice: %1").arg(text));  // otherwise logged with Engine::message
+        }
+        if (!dry) {
+            desktopNotify(text);
+        }
+    });
+    for (const QString &w : std::as_const(cfg->warnings)) {
+        say(QStringLiteral("config warning: %1").arg(w));
+    }
+    QObject::connect(&engine, &Engine::runCommand, [dry](const QStringList &a) {
+        if (dry) {
+            say(QStringLiteral("  -> command %1").arg(a.join(QLatin1Char(' '))));
+        } else if (!a.isEmpty()) {
+            QProcess::startDetached(a.first(), a.mid(1));
+        }
+    });
+
+    SettingsService *settingsRef = nullptr;  // set once the settings API exists (below)
+    std::unique_ptr<WindowTracker> tracker;
+    if (p.isSet(forceWindowOpt)) {
+        auto st = std::make_unique<StaticWindowTracker>();
+        st->set(WindowInfo{p.value(forceWindowOpt), QString(), 1, QString()});
+        tracker = std::move(st);
+        engine.setActiveWindow(tracker->current());
+    } else {
+        tracker = createWindowTracker(p.value(backendOpt));
+    }
+    QObject::connect(tracker.get(), &WindowTracker::message, log);
+    QObject::connect(tracker.get(), &WindowTracker::activeWindowChanged, &engine, [&engine, log, &settingsRef](const WindowInfo &w) {
+        engine.setActiveWindow(w);
+        if (settingsRef) {
+            settingsRef->setActiveWindow(w.cls, w.title);
+            settingsRef->setActiveProfile(engine.activeProfile() ? engine.activeProfile()->name : QString());
+        }
+        log(QStringLiteral("focus: %1 \"%2\" pid %3").arg(w.cls, w.title.left(60)).arg(w.pid));
+    });
+    log(QStringLiteral("window backend: %1, hardware map: %2").arg(tracker->backendName(), cfg->hardwareSource));
+    tracker->start();
+
+    PadDevice dev(cfg->device);
+    dev.setHardwareMap(cfg->hardware);
+    dev.setGrab(!p.isSet(noGrabOpt));
+    QObject::connect(&dev, &PadDevice::message, log);
+    // Raw input from the control-surface firmware, when it answers; the evdev
+    // grab stays as the second line of defence and its events are then ignored.
+    RawPadDevice raw(cfg->device);
+    raw.setLayout(effectiveLayout(*cfg));
+    engine.setOneAtATime(effectiveLayout(*cfg).oneAtATime);  // the TM1650 matrix: see Engine::kRollMs
+    QObject::connect(&raw, &RawPadDevice::message, log);
+    QObject::connect(&dev, &PadDevice::connected, [log](const QStringList &n) { log(QStringLiteral("pad connected: %1").arg(n.join(QStringLiteral(", ")))); });
+    QObject::connect(&dev, &PadDevice::disconnected, [log] { log(QStringLiteral("pad disconnected, waiting")); });
+    QObject::connect(&dev, &PadDevice::unmappedChord, [log](const KeyChord &c) { log(QStringLiteral("unmapped chord %1 (run 'control-surfaced verify')").arg(chordName(c))); });
+    if (dry) {
+        QObject::connect(&dev, &PadDevice::padEvent, &engine, [](const PadEvent &e) { say(e.describe()); });
+        QObject::connect(&raw, &RawPadDevice::padEvent, &engine, [](const PadEvent &e) { say(e.describe() + QStringLiteral(" (raw)")); });
+        QObject::connect(&engine, &Engine::dispatched, [](const QString &slot, const QString &binding, const QString &layer) {
+            say(QStringLiteral("  %1 -> %2%3").arg(slot, binding, layer.isEmpty() ? QString() : QStringLiteral(" [layer %1]").arg(layer)));
+        });
+    }
+    // Settings API (org.smplos.ControlSurface1): device state, press to identify,
+    // config get/validate/set, plugins and the guarded flash job.
+    SettingsService settings(p.value(configOpt));
+    settingsRef = &settings;
+    Cheatsheet cheatsheet(&engine, kd.get());
+    settings.setCheatsheet(&cheatsheet);
+    QObject::connect(&cheatsheet, &Cheatsheet::visibilityChanged, [log](bool on) { log(on ? QStringLiteral("cheatsheet shown") : QStringLiteral("cheatsheet hidden")); });
+    // The cheatsheet pushed into eww: defaults from the command line (smplOS's
+    // unit), the config's "cheatsheet": {"eww": ...} over them.
+    EwwHook ewwDefaults;
+    ewwDefaults.enabled = p.isSet(ewwOpt) || p.isSet(ewwWindowOpt) || p.isSet(ewwConfigOpt);
+    ewwDefaults.window = p.value(ewwWindowOpt);
+    ewwDefaults.configDir = expandHome(p.value(ewwConfigOpt));
+    EwwSink eww(&cheatsheet);
+    QObject::connect(&eww, &EwwSink::message, [](const QString &m) { say(m); });
+    auto applyEww = [&eww, ewwDefaults, log](const Config &c) {
+        const EwwHook h = c.cheatsheet.eww.over(ewwDefaults);
+        if (h == eww.options()) {
+            return;
+        }
+        if (h.enabled) {
+            log(QStringLiteral("cheatsheet: pushed to eww as %1%2%3")
+                    .arg(h.variable, h.window.isEmpty() ? QString() : QStringLiteral(", window ") + h.window,
+                         h.configDir.isEmpty() ? QString() : QStringLiteral(" (config %1)").arg(h.configDir)));
+        } else if (eww.options().enabled) {
+            log(QStringLiteral("cheatsheet: no longer pushed to eww"));
+        }
+        eww.setOptions(h);
+    };
+    applyEww(*cfg);
+    settings.setCheatsheetStatus([&eww] { return QJsonObject{{QStringLiteral("eww"), eww.status()}}; });
+    settings.setActiveProfile(engine.activeProfile() ? engine.activeProfile()->name : QString());
+    settings.setMode(dry ? QStringLiteral("dry-run") : QStringLiteral("run"));
+    settings.setDaemonVersion(QCoreApplication::applicationVersion());
+    {
+        FlashSettings fs;
+        fs.allowed = p.isSet(allowFlashOpt) && !dry;
+        fs.tool = p.isSet(flashToolOpt) ? p.value(flashToolOpt) : QStandardPaths::findExecutable(QStringLiteral("wchisp"));
+        fs.imageDirs = p.isSet(imageDirOpt) ? p.values(imageDirOpt) : FlashSettings::defaultImageDirs();
+        settings.setFlashSettings(fs);
+    }
+    settings.setFallbackLayout(effectiveLayout(*cfg));
+    settings.setConfigState(ConfigStore::hashOf(ConfigStore(p.value(configOpt)).read().text), QString(), cfg->warnings);
+    auto publishPlugins = [&settings, &engine, &kd, &keys, dry] {
+        static const char *states[] = {"detached", "pending", "absent", "available"};
+        QStringList kdApps;
+        for (const Profile &pr : engine.config().profiles) {
+            if (pr.kdenlive && pr.hasMatch) {
+                kdApps << pr.matchClass.pattern();
+            }
+        }
+        const qint64 pid = kd->attachedPid();
+        settings.setPlugins({
+            PluginInfo{QStringLiteral("keys"), QStringLiteral("Keys and shortcuts"), QStringLiteral("keys"),
+                       dry ? QStringLiteral("dry-run") : keys->isReady() ? QStringLiteral("ready") : QStringLiteral("unavailable"),
+                       dry ? QStringLiteral("keys are printed, not sent") : QStringLiteral("virtual keyboard via /dev/uinput"), {}, {}},
+            PluginInfo{QStringLiteral("command"), QStringLiteral("Run a program"), QStringLiteral("command"), dry ? QStringLiteral("dry-run") : QStringLiteral("ready"), QString(), {}, {}},
+            PluginInfo{QStringLiteral("kdenlive"), QStringLiteral("Kdenlive"), QStringLiteral("api"), QLatin1String(states[int(kd->state())]),
+                       pid ? QStringLiteral("attached to pid %1").arg(pid) : QStringLiteral("not attached"), kdApps,
+                       QJsonObject{{QStringLiteral("contract"), QStringLiteral("org.kde.kdenlive.ControlSurface1")}, {QStringLiteral("pid"), pid}}},
+        });
+    };
+    publishPlugins();
+    QObject::connect(kd.get(), &KdenliveClient::stateChanged, &settings, [publishPlugins] { publishPlugins(); });
+    QTimer uinputRetry;
+    if (!dry && !keys->isReady()) {
+        QObject::connect(&uinputRetry, &QTimer::timeout, &settings, [&keys, &uinputRetry, publishPlugins, log] {
+            if (static_cast<UinputKeySink *>(keys.get())->open()) {
+                uinputRetry.stop();
+                log(QStringLiteral("keys: virtual keyboard ready"));
+                publishPlugins();
+            }
+        });
+        uinputRetry.start(10000);
+    }
+    // device.input: "evdev" reads the pad's keymap (chords with real down/up);
+    // "raw" and "auto" ask the control-surface firmware for its own events with
+    // snapshots. RawPadDevice refuses firmware before 2.0.2 (and any other
+    // firmware), which leaves the pad on evdev: "auto" is raw on 2.0.2+ and
+    // evdev otherwise (raw verified on hardware with scripts/stress-test.py).
+    // Applied on reload too.
+    auto wantRaw = [](const Config &c) { return c.device.input != QLatin1String("evdev"); };
+    auto applyInputMode = [&dev, &raw, log, wantRaw](const Config &c) {
+        if (!wantRaw(c)) {
+            if (raw.isOpen()) {
+                log(QStringLiteral("input: evdev chords (config)"));
+                raw.stop();
+            }
+        } else if (dev.isConnected() && !raw.isOpen()) {
+            raw.start(dev.usbPath());  // also: a layout that fits again
+        }
+    };
+    settings.setConfigApplier([&engine, &dev, &raw, publishPlugins, &settings, applyEww, applyInputMode](const Config &c) {
+        engine.setConfig(c);
+        applyEww(c);
+        dev.setHardwareMap(c.hardware);
+        raw.setLayout(effectiveLayout(c));
+        engine.setOneAtATime(effectiveLayout(c).oneAtATime);
+        applyInputMode(c);
+        settings.setFallbackLayout(effectiveLayout(c));
+        publishPlugins();
+        return QString();
+    });
+    // GET_INFO of the control-surface firmware when raw input is not used
+    // (device.input "evdev"): asked once per connect, for the full version.
+    std::optional<padfw::Info> evdevInfo;
+    auto publishDevice = [&settings, &dev, &raw, &evdevInfo] {
+        DeviceState d;
+        if (dev.isConnected()) {
+            d.present = true;
+            if (auto u = usbDeviceAt(dev.usbPath())) {
+                d.usb = *u;
+                d.firmware = classifyFirmware(*u);
+            }
+            const std::optional<padfw::Info> fi = raw.firmwareInfo() ? raw.firmwareInfo() : evdevInfo;
+            if (fi && d.firmware.type == QLatin1String("control-surface")) {
+                d.firmware.version = QString::fromStdString(fi->version());
+                d.firmware.versionSource = QStringLiteral("GET_INFO");
+                d.firmware.slotCount = fi->slotCount;
+            }
+            d.devnodes = dev.devnodes();
+            d.inputMode = raw.isActive() ? QStringLiteral("raw") : QStringLiteral("evdev-chords");
+        }
+        settings.setDevice(d);
+    };
+    QObject::connect(&dev, &PadDevice::connected, &settings, [publishDevice, &raw, &dev, &engine, log, &evdevInfo, wantRaw] {
+        evdevInfo.reset();
+        const Config &cfg = engine.config();
+        if (!wantRaw(cfg)) {
+            const auto u = usbDeviceAt(dev.usbPath());
+            if (u && classifyFirmware(*u).type == QLatin1String("control-surface")) {
+                const QString node = findControlSurfaceHidraw(cfg.device, dev.usbPath());
+                std::string err;
+                if (!node.isEmpty()) {
+                    evdevInfo = padfw::queryInfo(node.toStdString(), &err, 300);
+                }
+            }
+        }
+        publishDevice();
+        if (wantRaw(cfg) && !raw.start(dev.usbPath())) {
+            log(QStringLiteral("raw input unavailable (not the control-surface firmware?); using evdev chords"));
+        }
+    });
+    QObject::connect(&dev, &PadDevice::disconnected, &settings, [publishDevice, &raw, &evdevInfo, &engine] {
+        raw.stop();
+        engine.releaseAll();  // nothing the pad held stays down (held layers, the cheatsheet)
+        evdevInfo.reset();
+        publishDevice();
+    });
+    QObject::connect(&raw, &RawPadDevice::firmwareInfoChanged, &settings, publishDevice);
+    QObject::connect(&raw, &RawPadDevice::activeChanged, &settings, [publishDevice, log](bool on) {
+        log(on ? QStringLiteral("input: raw events from the firmware") : QStringLiteral("input: evdev chords"));
+        publishDevice();
+    });
+    QObject::connect(&settings, &SettingsService::releaseDeviceRequested, &dev, [&dev, &raw, log, publishDevice] {
+        log(QStringLiteral("flash: releasing the pad"));
+        raw.stop();
+        dev.stop();
+        publishDevice();
+    });
+    QObject::connect(&settings, &SettingsService::reacquireDeviceRequested, &dev, [&dev, log] {
+        log(QStringLiteral("flash: grabbing the pad again"));
+        dev.start();
+    });
+    settings.setBootloaderRequest([&cfg, &dev](QString *why) {
+        const QString node = findControlSurfaceHidraw(cfg->device, dev.usbPath());
+        if (node.isEmpty()) {
+            *why = QStringLiteral("not the control-surface firmware");
+            return false;
+        }
+        std::string err;
+        const bool ok = padfw::requestBootloader(node.toStdString(), &err);
+        *why = QString::fromStdString(err);
+        return ok;
+    });
+    QObject::connect(&settings, &SettingsService::FlashProgress, [log](const QString &id, const QString &phase, const QString &msg) {
+        log(QStringLiteral("flash %1: %2: %3").arg(id, phase, msg));
+    });
+    QObject::connect(&engine, &Engine::dispatched, &settings, [&settings](const QString &, const QString &, const QString &layer) { settings.setActiveLayer(layer); });
+    if (!p.isSet(noApiOpt)) {
+        QString err;
+        if (settings.registerOn(QDBusConnection::sessionBus(), true, &err)) {
+            log(QStringLiteral("settings API on the session bus: %1").arg(QLatin1String(SettingsService::kService)));
+        } else {
+            say(QStringLiteral("settings API unavailable: %1").arg(err));
+        }
+    }
+    auto dispatchPad = [&engine, &settings](const PadEvent &e) {
+        if (!settings.filterPadEvent(e)) {
+            engine.handle(e);
+        } else if (e.type == PadEvent::KeyUp || e.type == PadEvent::PressUp) {
+            // Identify mode swallowed it, but a key that went down before must
+            // not stay held (held layers): released, nothing fires.
+            PadEvent up = e;
+            up.synthetic = true;
+            engine.handle(up);
+        }
+    };
+    // Keymap input is never dropped: in raw mode the pad types its keymap only
+    // when it has left raw mode (a lost heartbeat), so such a key is real.
+    quint64 evdevEvents = 0, evdevWhileRaw = 0;
+    QObject::connect(&dev, &PadDevice::padEvent, &engine, [dispatchPad, &raw, &evdevEvents, &evdevWhileRaw, log](const PadEvent &e) {
+        ++evdevEvents;
+        if (raw.isActive() && evdevWhileRaw++ == 0) {
+            log(QStringLiteral("input: the pad typed its keymap while raw mode was on; using it"));
+        }
+        dispatchPad(e);
+    });
+    settings.setBoardWarnings([&engine](const BoardProfile &l) { return boardWarnings(engine.config(), l); });
+    settings.setInputStatus([&engine, &raw, &evdevEvents, &evdevWhileRaw] {
+        return QJsonObject{{QStringLiteral("configured"), engine.config().device.input},
+                           {QStringLiteral("mode"), raw.isActive() ? QStringLiteral("raw") : QStringLiteral("evdev-chords")},
+                           {QStringLiteral("raw"), raw.diagnostics().toJson()},
+                           {QStringLiteral("evdev"), QJsonObject{{QStringLiteral("events"), qint64(evdevEvents)},
+                                                                 {QStringLiteral("whileRaw"), qint64(evdevWhileRaw)}}}};
+    });
+    QObject::connect(&raw, &RawPadDevice::padEvent, &engine, dispatchPad);
+    // Hot reload: a valid edit replaces the config (pending knob motion is
+    // dropped); an invalid one is reported and the running config stays.
+    ConfigWatcher watcher(p.value(configOpt));
+    watcher.setExtraFiles({defaultHardwareMapPath()});
+    const DeviceMatch startedWith = cfg->device;
+    QObject::connect(&watcher, &ConfigWatcher::reloaded, &engine, [&](const Config &c) {
+        // Also after SetConfig wrote the file: applying the same config twice is harmless.
+        const QString hash = ConfigStore::hashOf(ConfigStore(watcher.path()).read().text);
+        engine.setConfig(c);
+        applyEww(c);
+        settings.setFallbackLayout(effectiveLayout(c));
+        raw.setLayout(effectiveLayout(c));
+        engine.setOneAtATime(effectiveLayout(c).oneAtATime);
+        applyInputMode(c);
+        settings.setConfigState(hash, QString(), c.warnings);
+        publishPlugins();
+        dev.setHardwareMap(c.hardware);
+        say(QStringLiteral("config reloaded from %1 (%2 profiles, hardware map %3)").arg(watcher.path()).arg(c.profiles.size()).arg(c.hardwareSource));
+        for (const QString &w : c.warnings) {
+            say(QStringLiteral("config warning: %1").arg(w));
+        }
+        if (c.device.vendor != startedWith.vendor || c.device.product != startedWith.product || c.device.serial != startedWith.serial) {
+            say(QStringLiteral("config: device changes take effect after a restart"));
+        }
+    });
+    QObject::connect(&watcher, &ConfigWatcher::failed, &settings, [&settings](const QString &e) { settings.setConfigState(settings.configHash(), e, {}); });
+    QObject::connect(&watcher, &ConfigWatcher::failed, [dry](const QString &e) {
+        std::fprintf(stderr, "config not reloaded: %s\n", qPrintable(e));
+        if (!dry) {
+            desktopNotify(QStringLiteral("Config not reloaded: %1").arg(e));
+        }
+    });
+    watcher.start();
+    dev.start();
+    publishDevice();
+    const int rc = app.exec();
+    raw.stop();  // back to the keymap at once
+    dev.stop();
+    cheatsheet.hide();
+    eww.finish();  // eww shows it hidden before we go
+    return rc;
+}

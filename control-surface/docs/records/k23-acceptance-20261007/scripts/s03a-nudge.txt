@@ -1,0 +1,11 @@
+## S3a single-key scalar nudge (keyframe: existing) while stopped: value changes, key count does not
+window org.kde.kdenlive keypad-generated
+await available 8000
+await ctx param.name level
+print ctx param
+refusals clear
+knob1 +5
+wait 800
+await ctx param.value 105
+expect no-refusal
+expect no-keys

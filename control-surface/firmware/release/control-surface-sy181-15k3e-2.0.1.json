@@ -1,0 +1,41 @@
+{
+  "name": "control-surface-sy181-15k3e-2.0.1",
+  "version": "2.0.1",
+  "board": "sy181-15k3e",
+  "boardName": "CH552G + TM1650, 15 keys, 3 knobs (SY181 style)",
+  "usb": "1189:8890",
+  "serial": "key153",
+  "protocol": 3,
+  "slots": 24,
+  "layers": 2,
+  "license": "CC-BY-SA-3.0",
+  "licenseFile": "LICENSE",
+  "attribution": "Fork of EpicLPer's CH552-OpenMacroPad, on Stefan Wagner's (wagiminator) CH55x USB HID code",
+  "sha256": "4c6f6f70315d71f8561c68e3c0b8e72fb0f1a6fb370ff8122e2cd05e5af0a9f2",
+  "size": 11328,
+  "codeBytes": 11327,
+  "codeFlashBytes": 14336,
+  "source": "firmware/ at commit b53446a",
+  "toolchain": "SDCC 4.5.0 #15242",
+  "flash": "wchisp flash <file> (ROM bootloader 4348:55e0; config registers untouched)",
+  "verifiedOnHardware": true,
+  "knownIssues": [
+    "Raw mode (CMD_RAW_MODE) ends 0-256 ms after every heartbeat: SDCC 4.5 compiled PAD_tick((uint8_t)(now - last)) without the truncation, so every wrap of the 8-bit millisecond counter passed ~65 s. With the daemon in raw input this lost key presses and knob detents and left holds stuck. The keymap (evdev) path is unaffected. Fixed in 2.0.2; the daemon refuses raw mode with 2.0.1.",
+    "A command that arrives while the previous one is still being handled is dropped (no reply). Fixed in 2.0.2."
+  ],
+  "notes": "Built reproducibly, host-tested (fw_logic, fw_store) and verified on hardware.",
+  "hardwareVerification": {
+    "date": "2026-10-07",
+    "flashed": true,
+    "flashMethod": "CMD_BOOTLOADER from 2.0.0 (no key hold), wchisp Verify OK",
+    "protocolChecks": true,
+    "keymapSurvivedReflash": true,
+    "keys": true,
+    "knobPress": true,
+    "slowRotation": true,
+    "fastRotation": true,
+    "details": "Top knob, one revolution each: slow cw 20, fast cw 20, fast ccw 20 in the capture; GET_STATS cw 40 / ccw 20, missed states 0, overruns 0, tap-queue drops 0, deepest queue 1. Keys and knob presses were verified on 2.0.0; their code path is unchanged in 2.0.1. Raw mode was not verified on 2.0.1 and is broken (see knownIssues): measured lifetimes 82/202/204/207 ms for timeouts of 200/1500/5000/10000 ms.",
+    "rawMode": false
+  },
+  "supersededBy": "2.0.2"
+}

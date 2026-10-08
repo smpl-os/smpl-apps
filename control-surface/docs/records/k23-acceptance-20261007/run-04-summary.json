@@ -1,0 +1,27 @@
+{
+ "lease": "k23-keypad-sim-20261007",
+ "mode": "off",
+ "service": "org.kde.kdenlive-3451785",
+ "app_identity": {
+  "pid": 3451785,
+  "ppid": 3451783,
+  "starttime": 14606641,
+  "comm": "kdenlive",
+  "exe": "/home/blin/Documents/source/kdenlive/.automation-curves/build-private-20261004/bin/kdenlive"
+ },
+ "app_exit": 0,
+ "spawned_exit": {
+  "dbus-monitor": -15
+ },
+ "app_absent": true,
+ "capabilities_probe": {
+  "rc": 1,
+  "stdout": "",
+  "stderr": "Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: No such object path '/ControlSurface'"
+ },
+ "fixture": {
+  "rc": 0,
+  "stdout": "{\"ok\": true, \"fixture\": \"/home/blin/.copilot/session-state/9147f090-d696-4b70-af0f-aa5a935f364f/files/k23-real-daemon-20261007-04/fixture.json\"}\n",
+  "stderr": ""
+ }
+}

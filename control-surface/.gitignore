@@ -1,0 +1,8 @@
+build/
+/build-*/
+*.user
+.cache/
+compile_commands.json
+__pycache__/
+/firmware/*.bin
+/firmware/*.hex

@@ -1,0 +1,24 @@
+## S3d multi-key parameter while playing: edits refuse with busy, nothing changes
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 65 epoch 7 {"active":true,"activeMonitor":"project","dialog":false,"epoch":7,"focus":"other","fps":{"den":1,"num":30},"playing":true,"position":52,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":65,"speed":1,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> await ctx param.name level
+  EXPECT FAIL: context param.name = level (now null)
+> await ctx playing true 4000
+  EXPECT ok: context playing = true (now true)
+> print ctx param
+  ctx param = null
+> refusals clear
+> knob1 +1
+  [kdenlive] -> Control playhead.jog 1 seq 1 {"epoch":7,"session":"e77467b9-4f6d-4551-9f5c-261ddd203003"}
+  [kdenlive] <- ControlAck seq 1 playhead.jog {"ok":true,"result":{"changed":true,"epoch":7,"firstSeq":1,"gesture":"","lastSeq":1,"position":144,"state":"applied","target":""},"session":"e77467b9-4f6d-4551-9f5c-261ddd203003"}
+> expect refused busy 3000
+  EXPECT FAIL: a refusal with busy
+> print ctx position
+  ctx position = 144
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)
+2 expectation(s) failed

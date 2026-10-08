@@ -1,0 +1,32 @@
+## S8 after save + reopen: fresh opaque handles (new native ids), persisted state, one more gain gesture = one undo entry
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 187 epoch 28 {"active":true,"activeMonitor":"project","dialog":false,"epoch":28,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":187,"speed":0,"timeline":{"clipGain":{"clip":2,"policy":"single_keyframe_existing_effect","target":"ac1e8d79-fb53-484f-8007-0525cd935591","unit":"dB"},"selection":{"clips":[2,6],"count":2},"track":{"audio":false,"hidden":false,"id":5,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"06083a0a-f1c6-4b4c-94a9-2d48e9f14859","targeted":false},"trim":{"clip":2,"clips":[2,6],"modes":["resize"],"target":"0333912e-6c9d-43e5-b2de-ec7b4880447e","tracks":[1,5]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.trim.clip 6
+  EXPECT FAIL: context timeline.trim.clip = 6 (now 2)
+> print ctx timeline
+  ctx timeline = {"clipGain":{"clip":2,"policy":"single_keyframe_existing_effect","target":"ac1e8d79-fb53-484f-8007-0525cd935591","unit":"dB"},"selection":{"clips":[2,6],"count":2},"track":{"audio":false,"hidden":false,"id":5,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"06083a0a-f1c6-4b4c-94a9-2d48e9f14859","targeted":false},"trim":{"clip":2,"clips":[2,6],"modes":["resize"],"target":"0333912e-6c9d-43e5-b2de-ec7b4880447e","tracks":[1,5]},"zoom":8}
+> print ctx epoch
+  ctx epoch = 28
+> print ctx serial
+  ctx serial = 188
+> refusals clear
+> knob3 +2
+  [kdenlive] -> Control audio.gain 1 seq 1 {"epoch":28,"gesture":"cs-3448732-1","phase":"update","session":"899135e3-0485-401b-97da-8a57e288df68","target":"ac1e8d79-fb53-484f-8007-0525cd935591"}
+  [kdenlive] <- ControlAck seq 1 audio.gain {"ok":true,"result":{"changed":true,"epoch":28,"firstSeq":1,"gainDb":1.2000000000000002,"gesture":"cs-3448732-1","lastSeq":1,"state":"applied","target":"ac1e8d79-fb53-484f-8007-0525cd935591"},"session":"899135e3-0485-401b-97da-8a57e288df68"}
+  [kdenlive] -> Control audio.gain 1 seq 2 {"epoch":28,"gesture":"cs-3448732-1","phase":"update","session":"899135e3-0485-401b-97da-8a57e288df68","target":"ac1e8d79-fb53-484f-8007-0525cd935591"}
+> wait 800
+  [kdenlive] <- ControlAck seq 2 audio.gain {"ok":true,"result":{"changed":true,"epoch":28,"firstSeq":2,"gainDb":1.3000000000000003,"gesture":"cs-3448732-1","lastSeq":2,"state":"applied","target":"ac1e8d79-fb53-484f-8007-0525cd935591"},"session":"899135e3-0485-401b-97da-8a57e288df68"}
+  [kdenlive] -> Control audio.gain 0 seq 3 {"epoch":28,"gesture":"cs-3448732-1","phase":"end","session":"899135e3-0485-401b-97da-8a57e288df68","target":"ac1e8d79-fb53-484f-8007-0525cd935591"}
+  [kdenlive] <- ControlAck seq 3 audio.gain {"ok":true,"result":{"changed":false,"epoch":28,"firstSeq":3,"gesture":"cs-3448732-1","lastSeq":3,"state":"applied","target":"ac1e8d79-fb53-484f-8007-0525cd935591"},"session":"899135e3-0485-401b-97da-8a57e288df68"}
+> expect no-refusal
+  EXPECT ok: no refusal (none)
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)
+1 expectation(s) failed

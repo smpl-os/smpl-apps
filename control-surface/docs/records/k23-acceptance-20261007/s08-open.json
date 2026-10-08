@@ -1,0 +1,24 @@
+[0223] {
+  "command": {
+    "op": "editor",
+    "method": "project.open",
+    "params": {
+      "expected_project_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+      "path": "/home/blin/.copilot/session-state/9147f090-d696-4b70-af0f-aa5a935f364f/files/k23-real-daemon-20261007-03/work/keypad-generated.kdenlive"
+    }
+  },
+  "started": 1791386593.73171,
+  "reply": {
+    "ok": true,
+    "result": {
+      "method": "project.open",
+      "outcome": {},
+      "progress": {},
+      "project_id": "58089865-109e-4a58-8e5c-3ee5a02513b3",
+      "request_id": "59f53687-752c-4bdb-ab29-ace1f05d9f02",
+      "state": "queued"
+    }
+  },
+  "finished": 1791386593.735346
+}
+

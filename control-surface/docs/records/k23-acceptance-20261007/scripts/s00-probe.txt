@@ -1,0 +1,5 @@
+## S0 probe: attach to the leased editor's private service and read its context
+window org.kde.kdenlive keypad-generated
+pid 3417682
+await available 8000
+print ctx

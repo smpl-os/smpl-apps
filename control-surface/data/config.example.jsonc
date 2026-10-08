@@ -1,0 +1,279 @@
+// What the CH552 pad's 15 keys and 3 knobs do, per app. JSON with comments.
+// Saved changes apply at once; a broken file is reported and the last good one
+// stays in use.
+//
+//   control-surfaced set input raw         change a simple option ("get" lists them)
+//   control-surfaced check-config          check this file
+//   control-surfaced cheatsheet --window brave-browser   what each input does there
+//
+// Keys: key1..key15, row by row from the top left. Knobs: knob1..knob3 from the
+// top, each with "turn" (or "ccw"/"cw") and "press". Every binding form and
+// option: docs/config-reference.md.
+{
+    "profiles": [
+        {
+            // Kdenlive, through its control-surface interface (off by default in
+            // Kdenlive: enableControlSurfaceInterface). Layers follow what Kdenlive
+            // has focused: the first matching layer wins, then these bindings,
+            // then the "global" profile.
+            "name": "kdenlive",
+            "match": { "class": "^org\\.kde\\.kdenlive" },
+            "kdenlive": true,
+            "keyFallback": false,  // API only; true = type the "fallback" keys while the interface is off
+            "modes": {
+                "liftAxis": ["value", "r", "g", "b"],
+                "gammaAxis": ["value", "r", "g", "b"],
+                "gainAxis": ["value", "r", "g", "b"],
+                "paramStep": ["normal", "fine"],
+                "paramKey": ["existing", "create"],
+                "page": ["edit", "track", "trim"]  // key13 cycles: edit -> track/mixer -> trim
+            },
+            "layers": [
+                {
+                    // Lift/Gamma/Gain focused: one knob per wheel (Kdenlive publishes a
+                    // handle per wheel), press cycles the channel: value -> R -> G -> B.
+                    // Keys 6-8 reset a wheel.
+                    "name": "color-wheels",
+                    "when": { "colorWheels": true },
+                    "bindings": {
+                        "knob1": {
+                            "turn": { "control": "colorwheel.nudge", "options": { "wheel": "lift", "axis": "$liftAxis" } },
+                            "press": { "cycle": "liftAxis", "label": "Lift" }
+                        },
+                        "knob2": {
+                            "turn": { "control": "colorwheel.nudge", "options": { "wheel": "gamma", "axis": "$gammaAxis" } },
+                            "press": { "cycle": "gammaAxis", "label": "Gamma" }
+                        },
+                        "knob3": {
+                            "turn": { "control": "colorwheel.nudge", "options": { "wheel": "gain", "axis": "$gainAxis" } },
+                            "press": { "cycle": "gainAxis", "label": "Gain" }
+                        },
+                        "key6": { "request": "colorwheel.reset", "params": { "wheel": "lift" } },
+                        "key7": { "request": "colorwheel.reset", "params": { "wheel": "gamma" } },
+                        "key8": { "request": "colorwheel.reset", "params": { "wheel": "gain" } }
+                    }
+                },
+                {
+                    // Any other effect parameter focused in the effect stack:
+                    // knob1 changes it, knob2 moves the playhead, knob3 scrolls parameters.
+                    "name": "effect-parameter",
+                    "when": { "focus": "effectStack", "param.target": "/.+/" },
+                    "bindings": {
+                        "knob1": {
+                            "turn": { "control": "param.nudge", "options": { "step": "$paramStep", "keyframe": "$paramKey" } },
+                            "press": { "cycle": "paramStep", "label": "Step" }
+                        },
+                        "knob2": {
+                            "turn": { "control": "playhead.jog" },
+                            "press": { "action": "monitor_play" }
+                        },
+                        "knob3": {
+                            "turn": { "control": "param.focus" },
+                            "press": "none"
+                        },
+                        "key8": { "action": "keyframe_previous" },
+                        "key9": { "action": "keyframe_next" },
+                        "key10": { "action": "keyframe_add" },
+                        // key11: next turns edit the existing key, or explicitly create one
+                        // at the playhead (Kdenlive allows that only while stopped)
+                        "key11": { "cycle": "paramKey", "label": "Keyframe" },
+                        "key12": { "request": "param.reset" }
+                    }
+                },
+                {
+                    // Track/mixer page, video track: key2 hides instead of muting.
+                    "name": "track-video",
+                    "when": { "$mode.page": "track", "timeline.track.audio": false },
+                    "bindings": {
+                        "key2": { "request": "track.set", "params": { "what": "hide", "value": "$!ctx:timeline.track.hidden" } }
+                    }
+                },
+                {
+                    // Track/mixer page (key13): knob1 picks the track, knob2 its mixer
+                    // gain, knob3 the selected clip's gain; row 1 toggles the track.
+                    "name": "track-mixer",
+                    "when": { "$mode.page": "track" },
+                    "bindings": {
+                        "knob1": { "turn": { "control": "timeline.track" }, "press": "none" },
+                        "knob2": { "turn": { "control": "audio.gain", "targetFrom": "timeline.track.gain.target" }, "press": "none" },
+                        "knob3": { "turn": { "control": "audio.gain", "targetFrom": "timeline.clipGain.target" }, "press": "none" },
+                        "key2": { "request": "track.set", "params": { "what": "mute", "value": "$!ctx:timeline.track.muted" } },
+                        "key3": { "request": "track.set", "params": { "what": "solo", "value": "$!ctx:timeline.track.solo", "soloMode": "exclusive" } },
+                        "key4": { "request": "track.set", "params": { "what": "lock", "value": "$!ctx:timeline.track.locked" } },
+                        "key5": { "request": "track.set", "params": { "what": "target", "value": "$!ctx:timeline.track.targeted" } }
+                    }
+                },
+                {
+                    // Trim page (key13): resize the selected clip(s); knob2 moves the
+                    // start edge, knob3 the end edge (resize only, never ripples).
+                    // Row 1: cut the selected clip's start/end to the playhead, remove
+                    // the gap at the playhead, extract (ripple delete) the selection.
+                    "name": "trim",
+                    "when": { "$mode.page": "trim" },
+                    "bindings": {
+                        "knob1": { "turn": { "control": "playhead.jog" }, "press": { "action": "monitor_play" } },
+                        "knob2": { "turn": { "control": "edit.trim", "accel": 1, "options": { "edge": "start", "mode": "resize" } }, "press": "none" },
+                        "knob3": { "turn": { "control": "edit.trim", "accel": 1, "options": { "edge": "end", "mode": "resize" } }, "press": "none" },
+                        "key2": { "action": "resize_timeline_clip_start" },
+                        "key3": { "action": "resize_timeline_clip_end" },
+                        "key4": { "action": "delete_space" },
+                        "key5": { "action": "extract_clip" }
+                    }
+                },
+                {
+                    // Clip monitor focused: knob1 frames, knob2 shuttle, knob3 10-frame steps.
+                    // Row 2: play/loop the zone or clip and jump to the zone's ends.
+                    "name": "clip-monitor",
+                    "when": { "focus": "clipMonitor" },
+                    "bindings": {
+                        "knob1": { "turn": { "control": "playhead.jog" }, "press": { "action": "monitor_play" } },
+                        "knob2": { "turn": { "control": "playhead.shuttle" }, "press": { "action": "monitor_pause" } },
+                        "knob3": { "turn": { "control": "playhead.jog", "scale": 10, "accel": 1 }, "press": { "action": "switch_monitor" } },
+                        "key6": { "action": "monitor_play_zone" },
+                        "key7": { "action": "monitor_loop_clip" },
+                        "key8": { "action": "seek_zone_start" },
+                        "key9": { "action": "seek_zone_end" }
+                    }
+                },
+                {
+                    "name": "project-monitor",
+                    "when": { "focus": "projectMonitor" },
+                    "bindings": {
+                        "knob1": { "turn": { "control": "playhead.jog" }, "press": { "action": "monitor_play" } },
+                        "knob2": { "turn": { "control": "playhead.shuttle" }, "press": { "action": "monitor_pause" } },
+                        "knob3": { "turn": { "control": "playhead.jog", "scale": 10, "accel": 1 }, "press": { "action": "switch_monitor" } },
+                        "key6": { "action": "monitor_play_zone" },
+                        "key7": { "action": "monitor_loop_zone" },
+                        "key8": { "action": "seek_zone_start" },
+                        "key9": { "action": "seek_zone_end" }
+                    }
+                },
+                {
+                    // Timeline focused: knob1 scrubs, knob2 zooms,
+                    // knob3 moves between tracks.
+                    "name": "timeline",
+                    "when": { "focus": "timeline" },
+                    "bindings": {
+                        "knob1": {
+                            "turn": { "control": "playhead.jog" },
+                            "press": { "action": "monitor_play" }
+                        },
+                        "knob2": { "turn": { "control": "timeline.zoom" }, "press": { "action": "zoom_fit" } },
+                        "knob3": { "turn": { "control": "timeline.track" }, "press": { "action": "switch_monitor" } }
+                    }
+                }
+            ],
+            // Default fallback (any other focus): like the timeline.
+            "bindings": {
+                // Row 1: the cheatsheet (while held), marking and three-point editing
+                "key1": { "cheatsheet": "hold" },
+                "key2": { "action": "mark_in", "fallback": "i" },
+                "key3": { "action": "mark_out", "fallback": "o" },
+                "key4": { "action": "insert_to_in_point", "fallback": "v" },
+                "key5": { "action": "overwrite_to_in_point", "fallback": "b" },
+                // Row 2: cutting and navigation
+                "key6": { "action": "cut_timeline_clip", "fallback": "shift+r" },
+                "key7": { "action": "delete_timeline_clip", "fallback": "delete" },
+                "key8": { "action": "monitor_seek_snap_backward", "fallback": "alt+left" },
+                "key9": { "action": "monitor_seek_snap_forward", "fallback": "alt+right" },
+                "key10": { "action": "add_marker_guide_quickly", "fallback": "kpasterisk" },
+                // Row 3: tools, page and history
+                "key11": { "action": "select_tool", "fallback": "s" },
+                "key12": { "action": "razor_tool", "fallback": "x" },
+                "key13": { "cycle": "page", "label": "Page" },
+                "key14": { "action": "edit_undo", "fallback": "ctrl+z" },
+                "key15": { "action": "edit_redo", "fallback": "ctrl+shift+z" },
+
+                "knob1": {
+                    "turn": { "control": "playhead.jog", "fallback": ["left", "right"] },
+                    "press": { "action": "monitor_play", "fallback": "space" }
+                },
+                "knob2": {
+                    "turn": { "control": "timeline.zoom", "fallback": ["ctrl+minus", "ctrl+equal"] },
+                    "press": { "action": "zoom_fit" }
+                },
+                "knob3": {
+                    "turn": { "control": "timeline.track", "fallback": ["up", "down"] },
+                    "press": { "action": "switch_monitor", "fallback": "t" }
+                }
+            }
+        },
+        {
+            // FL Studio under Wine: placeholder until MIDI output exists.
+            "name": "fl-studio",
+            "match": { "class": "^(fl64\\.exe|fl\\.exe|FL64\\.exe)$" },
+            "bindings": {
+                "key1": { "cheatsheet": "hold" },
+                "key2": { "keys": "space", "label": "Play/Stop", "icon": "player-play" },
+                "knob1": { "ccw": "left", "cw": "right" }
+            }
+        },
+        {
+            // Brave: navigation and tabs; unbound inputs fall through to global.
+            "name": "brave",
+            "match": { "class": "^brave-browser$" },
+            "bindings": {
+                "key6": { "keys": "alt+left", "label": "Back" },
+                "key7": { "keys": "alt+right", "label": "Forward" },
+                "key8": { "keys": "ctrl+r", "label": "Reload" },
+                "key9": { "keys": "ctrl+t", "label": "New tab" },
+                "key10": { "keys": "ctrl+w", "label": "Close tab" },
+                "knob2": {
+                    "ccw": { "mouse": "wheel-up", "label": "Scroll up" },
+                    "cw": { "mouse": "wheel-down", "label": "Scroll down" },
+                    "press": { "keys": "ctrl+shift+t", "label": "Reopen tab" }
+                },
+                "knob3": {
+                    "ccw": { "keys": "ctrl+shift+tab", "label": "Previous tab" },
+                    "cw": { "keys": "ctrl+tab", "label": "Next tab" },
+                    "press": { "keys": "ctrl+l", "label": "Address bar" }
+                }
+            }
+        },
+        {
+            // Global: every other window. A launcher whose app is not installed
+            // is skipped ("ifInstalled"); gtk-launch starts a desktop entry by id.
+            "name": "global",
+            "bindings": {
+                "key1": { "cheatsheet": "hold" },
+                // Row 1: apps
+                "key2": { "command": ["gtk-launch", "grafium"], "ifInstalled": ["gtk-launch", "grafium"], "label": "Grafium" },
+                "key3": { "command": ["gtk-launch", "brave-browser"], "ifInstalled": ["gtk-launch", "brave-browser"], "label": "Brave" },
+                "key4": { "command": ["gtk-launch", "github"], "ifInstalled": ["gtk-launch", "github"], "label": "Copilot" },
+                "key5": { "command": ["gtk-launch", "org.kde.kdenlive"], "ifInstalled": ["gtk-launch", "org.kde.kdenlive"], "label": "Kdenlive" },
+                // Row 2: system (terminal and smplos-settings are smplOS's)
+                "key6": { "command": ["terminal"], "ifInstalled": "terminal", "label": "Terminal" },
+                "key7": { "command": ["xdg-open", "~"], "ifInstalled": "xdg-open", "label": "Files", "icon": "folder" },
+                "key8": { "command": ["smplos-settings"], "ifInstalled": "smplos-settings", "label": "Settings" },
+                // Row 3: media
+                "key11": { "keys": "previoussong", "label": "Previous" },
+                "key12": { "keys": "playpause", "label": "Play/Pause" },
+                "key13": { "keys": "nextsong", "label": "Next" },
+                // knob1 volume (press mutes), knob2 scrolls (press: middle click)
+                "knob1": { "ccw": "volumedown", "cw": "volumeup", "press": "mute" },
+                "knob2": { "ccw": { "mouse": "wheel-up" }, "cw": { "mouse": "wheel-down" }, "press": { "mouse": "middle" } }
+            }
+        }
+    ],
+
+    // ---- Advanced -------------------------------------------------------------
+
+    // input: "auto" (raw on firmware 2.0.2+, else evdev), "evdev" (the keys the
+    // pad types: compatible) or "raw" (the firmware's own events: fastest).
+    // serial: "" drives the first 1189:8890 pad found.
+    "device": { "serial": "", "input": "auto" },
+
+    // The on-screen cheatsheet (key1 held): opacity 0.05..1, position center,
+    // top, bottom, left, right, top-left, top-right, bottom-left, bottom-right.
+    // It hides itself after 8 s without pad input ("autoHideMs", 0 = never).
+    "cheatsheet": { "opacity": 0.35, "position": "center" },
+
+    // Knob feel: detents closer than accelWindowMs move accelFactor times as far;
+    // key taps made by knob detents are paced at keyRateHz. Continuous controls
+    // send at most one update per coalesceMs, one at a time until Kdenlive
+    // answers (ackTimeoutMs).
+    "settings": { "coalesceMs": 8, "ackTimeoutMs": 60, "accelWindowMs": 35, "accelFactor": 3, "keyRateHz": 120 },
+
+    // Written by `control-surfaced verify`; until then the firmware's default applies.
+    "hardware": "~/.config/control-surface/hardware-map.json"
+}

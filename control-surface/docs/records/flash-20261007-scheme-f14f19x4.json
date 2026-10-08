@@ -1,0 +1,672 @@
+{
+    "command": "flash",
+    "device": "/dev/hidraw5",
+    "frames": [
+        {
+            "error": "",
+            "frame": "00 00 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 100,
+            "what": "ping",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "01 01 01 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 208,
+            "what": "slot 1 -> F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "01 01 01 01 00 69 00 00",
+            "replies": [
+            ],
+            "t_ms": 300,
+            "what": "slot 1 -> F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 388,
+            "what": "slot 1 -> F14 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "02 01 01 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 566,
+            "what": "slot 2 -> F15",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "02 01 01 01 00 6a 00 00",
+            "replies": [
+            ],
+            "t_ms": 660,
+            "what": "slot 2 -> F15",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 748,
+            "what": "slot 2 -> F15 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "03 01 01 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 926,
+            "what": "slot 3 -> F16",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "03 01 01 01 00 6b 00 00",
+            "replies": [
+            ],
+            "t_ms": 1020,
+            "what": "slot 3 -> F16",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1108,
+            "what": "slot 3 -> F16 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "04 01 01 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1286,
+            "what": "slot 4 -> F17",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "04 01 01 01 00 6c 00 00",
+            "replies": [
+            ],
+            "t_ms": 1380,
+            "what": "slot 4 -> F17",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1468,
+            "what": "slot 4 -> F17 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "05 01 01 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1646,
+            "what": "slot 5 -> F18",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "05 01 01 01 00 6d 00 00",
+            "replies": [
+            ],
+            "t_ms": 1740,
+            "what": "slot 5 -> F18",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 1828,
+            "what": "slot 5 -> F18 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "06 01 01 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2006,
+            "what": "slot 6 -> F19",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "06 01 01 01 00 6e 00 00",
+            "replies": [
+            ],
+            "t_ms": 2100,
+            "what": "slot 6 -> F19",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2188,
+            "what": "slot 6 -> F19 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "07 01 01 00 02 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2366,
+            "what": "slot 7 -> shift+F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "07 01 01 01 02 69 00 00",
+            "replies": [
+            ],
+            "t_ms": 2460,
+            "what": "slot 7 -> shift+F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2548,
+            "what": "slot 7 -> shift+F14 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "08 01 01 00 02 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2725,
+            "what": "slot 8 -> shift+F15",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "08 01 01 01 02 6a 00 00",
+            "replies": [
+            ],
+            "t_ms": 2820,
+            "what": "slot 8 -> shift+F15",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 2908,
+            "what": "slot 8 -> shift+F15 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "09 01 01 00 02 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3086,
+            "what": "slot 9 -> shift+F16",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "09 01 01 01 02 6b 00 00",
+            "replies": [
+            ],
+            "t_ms": 3180,
+            "what": "slot 9 -> shift+F16",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3271,
+            "what": "slot 9 -> shift+F16 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0a 01 01 00 02 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3454,
+            "what": "slot 10 -> shift+F17",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0a 01 01 01 02 6c 00 00",
+            "replies": [
+            ],
+            "t_ms": 3548,
+            "what": "slot 10 -> shift+F17",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3636,
+            "what": "slot 10 -> shift+F17 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0b 01 01 00 02 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3816,
+            "what": "slot 11 -> shift+F18",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0b 01 01 01 02 6d 00 00",
+            "replies": [
+            ],
+            "t_ms": 3908,
+            "what": "slot 11 -> shift+F18",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 3996,
+            "what": "slot 11 -> shift+F18 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0c 01 01 00 02 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4174,
+            "what": "slot 12 -> shift+F19",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0c 01 01 01 02 6e 00 00",
+            "replies": [
+            ],
+            "t_ms": 4268,
+            "what": "slot 12 -> shift+F19",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4356,
+            "what": "slot 12 -> shift+F19 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0d 01 01 00 01 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4534,
+            "what": "slot 13 -> ctrl+F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0d 01 01 01 01 69 00 00",
+            "replies": [
+            ],
+            "t_ms": 4628,
+            "what": "slot 13 -> ctrl+F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4716,
+            "what": "slot 13 -> ctrl+F14 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0e 01 01 00 01 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 4896,
+            "what": "slot 14 -> ctrl+F15",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0e 01 01 01 01 6a 00 00",
+            "replies": [
+            ],
+            "t_ms": 4988,
+            "what": "slot 14 -> ctrl+F15",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 5076,
+            "what": "slot 14 -> ctrl+F15 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0f 01 01 00 01 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 5254,
+            "what": "slot 15 -> ctrl+F16",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "0f 01 01 01 01 6b 00 00",
+            "replies": [
+            ],
+            "t_ms": 5348,
+            "what": "slot 15 -> ctrl+F16",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 5436,
+            "what": "slot 15 -> ctrl+F16 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "10 01 01 00 01 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 5614,
+            "what": "slot 16 -> ctrl+F17",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "10 01 01 01 01 6c 00 00",
+            "replies": [
+            ],
+            "t_ms": 5707,
+            "what": "slot 16 -> ctrl+F17",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 5796,
+            "what": "slot 16 -> ctrl+F17 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "11 01 01 00 01 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 5974,
+            "what": "slot 17 -> ctrl+F18",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "11 01 01 01 01 6d 00 00",
+            "replies": [
+            ],
+            "t_ms": 6068,
+            "what": "slot 17 -> ctrl+F18",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 6156,
+            "what": "slot 17 -> ctrl+F18 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "12 01 01 00 01 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 6334,
+            "what": "slot 18 -> ctrl+F19",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "12 01 01 01 01 6e 00 00",
+            "replies": [
+            ],
+            "t_ms": 6427,
+            "what": "slot 18 -> ctrl+F19",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 6516,
+            "what": "slot 18 -> ctrl+F19 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "13 01 01 00 04 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 6693,
+            "what": "slot 19 -> alt+F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "13 01 01 01 04 69 00 00",
+            "replies": [
+            ],
+            "t_ms": 6788,
+            "what": "slot 19 -> alt+F14",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 6876,
+            "what": "slot 19 -> alt+F14 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "14 01 01 00 04 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 7053,
+            "what": "slot 20 -> alt+F15",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "14 01 01 01 04 6a 00 00",
+            "replies": [
+            ],
+            "t_ms": 7148,
+            "what": "slot 20 -> alt+F15",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 7235,
+            "what": "slot 20 -> alt+F15 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "15 01 01 00 04 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 7413,
+            "what": "slot 21 -> alt+F16",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "15 01 01 01 04 6b 00 00",
+            "replies": [
+            ],
+            "t_ms": 7507,
+            "what": "slot 21 -> alt+F16",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 7596,
+            "what": "slot 21 -> alt+F16 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "16 01 01 00 04 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 7774,
+            "what": "slot 22 -> alt+F17",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "16 01 01 01 04 6c 00 00",
+            "replies": [
+            ],
+            "t_ms": 7867,
+            "what": "slot 22 -> alt+F17",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 7955,
+            "what": "slot 22 -> alt+F17 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "17 01 01 00 04 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 8133,
+            "what": "slot 23 -> alt+F18",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "17 01 01 01 04 6d 00 00",
+            "replies": [
+            ],
+            "t_ms": 8227,
+            "what": "slot 23 -> alt+F18",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 8315,
+            "what": "slot 23 -> alt+F18 commit",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "18 01 01 00 04 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 8494,
+            "what": "slot 24 -> alt+F19",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "18 01 01 01 04 6e 00 00",
+            "replies": [
+            ],
+            "t_ms": 8587,
+            "what": "slot 24 -> alt+F19",
+            "written": 65
+        },
+        {
+            "error": "",
+            "frame": "aa aa 00 00 00 00 00 00",
+            "replies": [
+            ],
+            "t_ms": 8676,
+            "what": "slot 24 -> alt+F19 commit",
+            "written": 65
+        }
+    ],
+    "preexistingReplies": [
+    ],
+    "replies": 0,
+    "reportId": 0,
+    "serial": "key153",
+    "tool": "ch552-padprog",
+    "usb": "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-5",
+    "when": "2026-10-07T01:09:44.648",
+    "writeFailures": 0
+}

@@ -1,0 +1,37 @@
+## S6b2 foreign undo while a gesture is open: the host ends it and bumps the epoch; the daemon drops queued work and continues with a fresh gesture
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.clipGain.clip 6
+refusals clear
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+knob3 +1
+wait 250
+wait 900
+print ctx epoch
+expect no-keys

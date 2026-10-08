@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "inputmonitor.h"
+#include "settingsservice.h"
+
+#include <QDBusConnectionInterface>
+#include <QDBusServiceWatcher>
+#include <QJsonDocument>
+#include <QJsonObject>
+
+namespace cs {
+
+bool InputMonitor::attach(const QDBusConnection &bus)
+{
+    QDBusConnection b(bus);
+    const QString service = QLatin1String(SettingsService::kService);
+    if (!b.interface() || !b.interface()->isServiceRegistered(service)) {
+        return false;
+    }
+    auto *watch = new QDBusServiceWatcher(service, b, QDBusServiceWatcher::WatchForOwnerChange, this);
+    connect(watch, &QDBusServiceWatcher::serviceOwnerChanged, this, [this](const QString &, const QString &oldOwner, const QString &newOwner) {
+        if (!oldOwner.isEmpty() && newOwner.isEmpty()) {
+            Q_EMIT daemonGone();
+        } else if (!newOwner.isEmpty()) {
+            Q_EMIT daemonBack();  // a restarted daemon (or another owner)
+        }
+    });
+    return b.connect(service, QLatin1String(SettingsService::kPath), QLatin1String(SettingsService::kInterface), QStringLiteral("InputEvent"), this,
+                     SLOT(onInputEvent(QString, QString, int)));
+}
+
+void InputMonitor::onInputEvent(const QString &slot, const QString &event, int delta)
+{
+    Q_EMIT input(slot, event, delta);
+}
+
+QString InputMonitor::jsonLine(const QString &slot, const QString &event, int delta, qint64 ms)
+{
+    return QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("slot"), slot},
+                                                       {QStringLiteral("event"), event},
+                                                       {QStringLiteral("delta"), delta},
+                                                       {QStringLiteral("ms"), ms}})
+                                 .toJson(QJsonDocument::Compact));
+}
+
+QString InputMonitor::textLine(const QString &slot, const QString &event, int delta)
+{
+    return delta ? QStringLiteral("%1 %2 %3").arg(slot, event).arg(delta) : QStringLiteral("%1 %2").arg(slot, event);
+}
+
+bool CheatsheetFollower::attach(const QDBusConnection &bus)
+{
+    QDBusConnection b(bus);
+    const QString service = QLatin1String(SettingsService::kService);
+    if (!b.interface() || !b.interface()->isServiceRegistered(service)) {
+        return false;
+    }
+    auto *watch = new QDBusServiceWatcher(service, b, QDBusServiceWatcher::WatchForUnregistration, this);
+    connect(watch, &QDBusServiceWatcher::serviceUnregistered, this, &CheatsheetFollower::daemonGone);
+    const QString path = QLatin1String(SettingsService::kPath), iface = QLatin1String(SettingsService::kInterface);
+    return b.connect(service, path, iface, QStringLiteral("CheatsheetChanged"), this, SLOT(onContent(QString)))
+        && b.connect(service, path, iface, QStringLiteral("CheatsheetVisibilityChanged"), this, SLOT(onVisibility(bool)));
+}
+
+void CheatsheetFollower::onContent(const QString &)
+{
+    Q_EMIT changed();
+}
+
+void CheatsheetFollower::onVisibility(bool)
+{
+    Q_EMIT changed();
+}
+
+} // namespace cs

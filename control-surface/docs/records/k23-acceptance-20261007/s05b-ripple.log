@@ -1,0 +1,26 @@
+## S5b (variant config: knob2 sends mode=ripple) unsupported trim mode refuses without any edit or key
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 164 epoch 20 {"active":true,"activeMonitor":"project","dialog":false,"epoch":20,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":164,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.trim.clip 5
+  EXPECT ok: context timeline.trim.clip = 5 (now 5)
+> refusals clear
+> knob2 +2
+  [kdenlive] -> Control edit.trim 1 seq 1 {"edge":"end","epoch":20,"gesture":"cs-3434920-1","mode":"ripple","phase":"update","session":"5afad633-bd39-4c71-a68d-19ac544a002e","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 1 edit.trim {"error":{"code":"unsupported_mode","field":"","message":"Only the advertised exact resize mode is qualified."},"ok":false,"session":"5afad633-bd39-4c71-a68d-19ac544a002e"}
+  (Kdenlive refused edit.trim: unsupported_mode (Only the advertised exact resize mode is qualified.))
+  [kdenlive] -> Control edit.trim 1 seq 2 {"edge":"end","epoch":20,"gesture":"cs-3434920-1","mode":"ripple","phase":"update","session":"5afad633-bd39-4c71-a68d-19ac544a002e","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 2 edit.trim {"error":{"code":"unsupported_mode","field":"","message":"Only the advertised exact resize mode is qualified."},"ok":false,"session":"5afad633-bd39-4c71-a68d-19ac544a002e"}
+> expect refused unsupported_mode 3000
+  EXPECT ok: a refusal with unsupported_mode
+> wait 700
+  [kdenlive] -> Control edit.trim 0 seq 3 {"edge":"end","epoch":20,"gesture":"cs-3434920-1","mode":"ripple","phase":"end","session":"5afad633-bd39-4c71-a68d-19ac544a002e","target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e"}
+  [kdenlive] <- ControlAck seq 3 edit.trim {"error":{"code":"unsupported_mode","field":"","message":"Only the advertised exact resize mode is qualified."},"ok":false,"session":"5afad633-bd39-4c71-a68d-19ac544a002e"}
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)

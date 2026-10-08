@@ -1,0 +1,43 @@
+## S6b foreign save, then foreign undo, between turns of one knob: each bumps the epoch; the next turn is a fresh gesture
+> window org.kde.kdenlive keypad-generated
+  (profile kdenlive for org.kde.kdenlive)
+  [kdenlive] <- context serial 173 epoch 20 {"active":true,"activeMonitor":"project","dialog":false,"epoch":20,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":173,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+  [kdenlive] attached to org.kde.kdenlive-3417682: 10 controls, 7 actions, 3 commands
+> await available 8000
+  EXPECT ok: interface available
+> key13
+  (Page: timeline)
+  [kdenlive] -> Notify "Page: timeline"
+> await ctx timeline.clipGain.clip 6
+  EXPECT ok: context timeline.clipGain.clip = 6 (now 6)
+> print ctx epoch
+  ctx epoch = 20
+> refusals clear
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 1 {"epoch":20,"gesture":"cs-3436170-1","phase":"update","session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 1 audio.gain {"ok":true,"result":{"changed":true,"epoch":20,"firstSeq":1,"gainDb":0.5999999999999999,"gesture":"cs-3436170-1","lastSeq":1,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41"}
+> wait 3500
+  [kdenlive] -> Control audio.gain 0 seq 2 {"epoch":20,"gesture":"cs-3436170-1","phase":"end","session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 2 audio.gain {"ok":true,"result":{"changed":false,"epoch":20,"firstSeq":2,"gesture":"cs-3436170-1","lastSeq":2,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41"}
+  [kdenlive] <- context serial 175 epoch 21 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":912169,"epoch":21,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":175,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+> print ctx epoch
+  ctx epoch = 21
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 3 {"epoch":21,"gesture":"cs-3436170-2","phase":"update","session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 3 audio.gain {"ok":true,"result":{"changed":true,"epoch":21,"firstSeq":3,"gainDb":0.6999999999999998,"gesture":"cs-3436170-2","lastSeq":3,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41"}
+> wait 3500
+  [kdenlive] -> Control audio.gain 0 seq 4 {"epoch":21,"gesture":"cs-3436170-2","phase":"end","session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 4 audio.gain {"ok":true,"result":{"changed":false,"epoch":21,"firstSeq":4,"gesture":"cs-3436170-2","lastSeq":4,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41"}
+  [kdenlive] <- context serial 176 epoch 23 {"active":true,"activeMonitor":"project","dialog":false,"emittedAtMs":914771,"epoch":23,"focus":"timeline","fps":{"den":1,"num":30},"playing":false,"position":120,"project":"58089865-109e-4a58-8e5c-3ee5a02513b3","ready":true,"sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","serial":176,"speed":0,"timeline":{"clipGain":{"clip":6,"policy":"single_keyframe_existing_effect","target":"78310a5f-9154-4728-b2ba-c77c35532c1b","unit":"dB"},"selection":{"clips":[6,5],"count":2},"track":{"audio":false,"hidden":false,"id":3,"locked":false,"muted":false,"name":"","sequence":"58089865-109e-4a58-8e5c-3ee5a02513b3","solo":false,"target":"63abefe7-2345-4e80-a14b-f5d48a9f1759","targeted":false},"trim":{"clip":5,"clips":[5,6],"modes":["resize"],"target":"03ce3e60-1fa9-4181-bffc-3f9a9de1a94e","tracks":[3,1]},"zoom":8},"tool":"select"}
+> print ctx epoch
+  ctx epoch = 23
+> knob3 +1
+  [kdenlive] -> Control audio.gain 1 seq 5 {"epoch":23,"gesture":"cs-3436170-3","phase":"update","session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 5 audio.gain {"ok":true,"result":{"changed":true,"epoch":23,"firstSeq":5,"gainDb":0.6999999999999998,"gesture":"cs-3436170-3","lastSeq":5,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41"}
+> wait 900
+  [kdenlive] -> Control audio.gain 0 seq 6 {"epoch":23,"gesture":"cs-3436170-3","phase":"end","session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"}
+  [kdenlive] <- ControlAck seq 6 audio.gain {"ok":true,"result":{"changed":false,"epoch":23,"firstSeq":6,"gesture":"cs-3436170-3","lastSeq":6,"state":"applied","target":"78310a5f-9154-4728-b2ba-c77c35532c1b"},"session":"47f9ef73-4f95-4613-8e87-448b0fe6fd41"}
+> print ctx epoch
+  ctx epoch = 23
+> expect no-keys
+  EXPECT ok: no keyboard fallback (taps: none)

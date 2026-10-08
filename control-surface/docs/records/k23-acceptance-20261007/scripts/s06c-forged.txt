@@ -1,0 +1,57 @@
+## S6c forged acks from a foreign sender while a gesture runs: never accepted, never release or complete anything
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.clipGain.clip 6
+refusals clear
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 +1
+wait 300
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+knob3 -1
+wait 100
+wait 900
+expect no-refusal
+expect no-keys

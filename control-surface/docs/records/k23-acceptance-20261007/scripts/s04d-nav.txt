@@ -1,0 +1,15 @@
+## S4d (daemon fix 04de9b70) quick multi-detent track navigation: every step lands, none is refused as stale
+window org.kde.kdenlive keypad-generated
+await available 8000
+key13
+await ctx timeline.track.id 1
+refusals clear
+## three quick detents up: A2 -> A1 -> V1 -> V2
+knob1 +3
+await ctx timeline.track.id 4 3000
+wait 300
+## and three back down
+knob1 -3
+await ctx timeline.track.id 1 3000
+expect no-refusal
+expect no-keys
