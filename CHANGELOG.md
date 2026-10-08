@@ -8,6 +8,21 @@ All notable changes to smpl-apps are documented here.
 
 ### Added
 
+- **control-surface: the keypad daemon moved into smpl-apps.** The C++20/Qt6
+  daemon for CH552 macro keypads (per-app profiles, held-key layers, the
+  cheatsheet, the Kdenlive API plugin over D-Bus), its tests and the open
+  keypad firmware now live in `control-surface/`, imported with their history.
+  CI builds it with CMake and runs its ctest suite. Each release publishes
+  `control-surface-<version>-x86_64.tar.gz` (binaries, example config, unit and
+  udev rule, the current firmware image with its manifest, docs, the GPL-2.0
+  text and the firmware's CC BY-SA 3.0 notice); release checks verify its
+  firmware checksums and its upload like the other assets.
+
+### Changed
+
+- **Release commits carry no tool attribution.** The release workflow's
+  version-bump commit no longer adds a `Co-authored-by` trailer.
+
 - **settings: Keypad tab for CH552 macro keypads.** The top of the tab says
   which keypads it supports (CH552, USB 1189:8890, "MINI KeyBoard"-style pads
   with 3 to 16 keys and up to 3 knobs) and how to check. The device card reads

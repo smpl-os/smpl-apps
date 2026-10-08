@@ -256,3 +256,30 @@ jobs:
         # (e.g. MainWindow, which is only in scope after slint::include_modules!()).
         # Unit tests in #[cfg(test)] modules are fully covered by --lib.
         run: cargo test --workspace --lib --bins --tests --no-fail-fast 2>&1
+
+  control-surface:
+    name: control-surface (CMake + ctest)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install git
+        run: pacman -Sy --noconfirm --needed git
+
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel cmake ninja qt6-base systemd-libs dbus python
+
+      - name: Build
+        run: |
+          cmake -S control-surface -B build-control-surface -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build build-control-surface
+
+      - name: Test
+        # tst_uinput creates a real virtual keyboard on the build host; skip it.
+        run: ctest --test-dir build-control-surface --output-on-failure -E '^uinput$'

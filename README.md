@@ -35,6 +35,12 @@ All apps use [Slint](https://slint.dev) with the FemtoVG renderer + Winit/Waylan
 | `sync-center` | File sync & backup |
 | `smpl-calendar` | Compact calendar and detailed event view |
 | `smpl-hints` / `smpl-hintsd` | Keyboard-navigation hint overlay and daemon |
+| `control-surface` | Keypad daemon (`control-surfaced`) for CH552 macro keypads, its Kdenlive API plugin and the open keypad firmware; C++20/Qt6, see [control-surface/README.md](control-surface/README.md) |
+
+The Rust apps use Slint. `control-surface` is a separate CMake project in
+`control-surface/` (imported with its history; GPL-2.0-or-later, firmware
+CC BY-SA 3.0, see `control-surface/firmware/README.md`). Settings > Keypad
+talks to it over D-Bus (`org.smplos.ControlSurface1`).
 
 ## Building
 
@@ -43,6 +49,17 @@ cargo build --release --workspace
 ```
 
 Requires Arch Linux (or equivalent) with: `fontconfig freetype2 libxkbcommon wayland gtk4 gtk4-layer-shell libadwaita`
+
+control-surface (needs `cmake ninja qt6-base systemd-libs dbus`):
+
+```bash
+cmake -S control-surface -B target/control-surface -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build target/control-surface
+# tst_uinput creates a real virtual keyboard on this host; CI skips it.
+ctest --test-dir target/control-surface --output-on-failure -E '^uinput$'
+```
+
+`./check.sh` runs this too when CMake and Qt6 are installed; CI always does.
 
 ## Native themes and transparency
 
@@ -684,7 +701,14 @@ Run the **Release** workflow (`.github/workflows/release.yml`, `workflow_dispatc
 from `main` after the changes are merged. It increments the workspace patch
 version itself, commits the version/lockfile change, and publishes tag
 `v<VERSION>`, bundle `smpl-apps-<VERSION>-x86_64.tar.gz`, and individual binaries
-including `start-menu`. Do not manually bump or tag to prepare that workflow.
+including `start-menu`. It also builds and tests control-surface and publishes
+`control-surface-<VERSION>-x86_64.tar.gz`: a `usr/` tree with `control-surfaced`,
+`ch552-padprog`, the example config, example unit and udev rule, the current
+firmware images with their manifests, docs and licences (GPL-2.0 text and the
+firmware's CC BY-SA 3.0 notice and attribution). Superseded firmware images
+stay in the source tree only. It is not in the app bundle: smplOS installs it
+with pacman (its `control-surface` package pins this asset's SHA-256) and ships
+its own user unit and udev rules. Do not manually bump or tag to prepare that workflow.
 The workflow only runs from `main` and serializes releases. It refuses to publish
 if main advances during the build, validates all 11 mandatory binaries plus
 the canonical `smpl-calendar-alertd.service`, and checks bundle contents against

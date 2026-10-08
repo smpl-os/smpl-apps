@@ -72,7 +72,8 @@ jobs:
             pixman libglvnd mesa \
             gtk4 gtk4-layer-shell libadwaita \
             glib2 gobject-introspection \
-            dbus python github-cli
+            dbus python github-cli \
+            cmake ninja qt6-base systemd-libs
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -91,6 +92,20 @@ jobs:
         run: |
           export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
           cargo build --release --workspace
+
+      - name: Build, test and package control-surface (keypad daemon)
+        # Its own asset (a usr/ tree): smplOS installs it as a package, not
+        # into /usr/local/bin with the apps, so it is not in the app bundle.
+        run: |
+          cmake -S control-surface -B build-control-surface -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=ON
+          cmake --build build-control-surface
+          # tst_uinput creates a real virtual keyboard on the build host; skip it.
+          ctest --test-dir build-control-surface --output-on-failure -E '^uinput$'
+          DESTDIR="$PWD/control-surface-install" cmake --install build-control-surface
+          CS_ASSET="control-surface-${{ steps.version.outputs.new }}-x86_64.tar.gz"
+          python scripts/release_assets.py control-surface control-surface-install "$CS_ASSET"
+          echo "CS_ASSET=$CS_ASSET" >> "$GITHUB_ENV"
 
       - name: Strip and collect binaries
         run: |
@@ -161,8 +176,7 @@ jobs:
             exit 1
           }
           git add Cargo.toml Cargo.lock README.md
-          git commit -m "chore: release v${{ steps.version.outputs.new }}" \
-            -m "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>"
+          git commit -m "chore: release v${{ steps.version.outputs.new }}"
           git tag "${{ steps.version.outputs.tag }}"
           git push --atomic origin HEAD:refs/heads/main "refs/tags/${{ steps.version.outputs.tag }}"
 
@@ -177,6 +191,7 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             ${{ env.BUNDLE }}
+            ${{ env.CS_ASSET }}
             dist/start-menu
             dist/notif-center
             dist/settings
@@ -196,6 +211,7 @@ jobs:
           RELEASE_ID: ${{ steps.release.outputs.id }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > uploaded-release.json
-          python scripts/release_assets.py uploaded dist "$BUNDLE" uploaded-release.json
+          python scripts/release_assets.py uploaded dist "$BUNDLE" uploaded-release.json \
+            --asset "$CS_ASSET"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             -F draft=false -f make_latest=true --jq .html_url

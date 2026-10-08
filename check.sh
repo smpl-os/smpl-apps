@@ -169,6 +169,26 @@ else
     fail "clippy found warnings (CI uses -D warnings, these WILL fail CI)"
 fi
 
+# ── 4b. control-surface (keypad daemon, CMake/Qt6) ─────────────────────────
+
+step "control-surface: CMake build + ctest"
+
+if command -v cmake &>/dev/null && command -v ninja &>/dev/null \
+    && { [[ -d /usr/lib/cmake/Qt6 ]] || [[ -d /usr/lib64/cmake/Qt6 ]]; }; then
+    cs_build="${CONTROL_SURFACE_BUILD_DIR:-target/control-surface}"
+    # tst_uinput creates a real virtual keyboard on this host; CI skips it too.
+    if cmake -S control-surface -B "$cs_build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON >/dev/null \
+        && cmake --build "$cs_build" \
+        && ctest --test-dir "$cs_build" --output-on-failure -E '^uinput$'; then
+        pass "control-surface builds and its tests pass"
+    else
+        fail "control-surface build or tests failed"
+    fi
+else
+    warn "cmake, ninja or Qt6 missing: control-surface not checked (CI checks it)"
+fi
+
 # ── 5. Full release build (optional) ────────────────────────────────────────
 
 if [[ "$MODE" == "--full" || "$MODE" == "--release" ]]; then

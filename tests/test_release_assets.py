@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
@@ -172,6 +173,21 @@ class ReleaseAssetsTests(unittest.TestCase):
             with self.subTest(missing=index), self.assertRaises(ValueError):
                 self.verify_metadata(metadata)
 
+    def test_extra_uploaded_asset_must_match(self):
+        assets.collect(self.source, self.dist)
+        self.pack()
+        extra = self.root / "control-surface-0.8.23-x86_64.tar.gz"
+        extra.write_bytes(b"asset")
+        metadata = self.upload_metadata()
+        path = self.root / "metadata.json"
+        path.write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError):
+            assets.verify_uploaded(self.dist, self.bundle, path, [extra])
+        metadata["assets"].append({"name": extra.name, "state": "uploaded", "size": 5,
+                                   "digest": f"sha256:{assets.digest(extra)}"})
+        path.write_text(json.dumps(metadata))
+        assets.verify_uploaded(self.dist, self.bundle, path, [extra])
+
     def test_wrong_tag_or_already_published_release_is_rejected(self):
         assets.collect(self.source, self.dist)
         self.pack()
@@ -200,3 +216,105 @@ class ReleaseAssetsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ControlSurfaceAssetTests(unittest.TestCase):
+    """The keypad daemon's own release asset (a usr/ tree for packages)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.compiler_fixture = tempfile.TemporaryDirectory(prefix="smpl-cs-elf-")
+        cls.binary = Path(cls.compiler_fixture.name) / "fixture"
+        subprocess.run(["cc", "-x", "c", "-", "-o", str(cls.binary)],
+                       input="int main(void) { return 0; }\n", text=True, check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.compiler_fixture.cleanup()
+
+    def setUp(self):
+        fixture = tempfile.TemporaryDirectory(prefix="smpl-cs-test-")
+        self.addCleanup(fixture.cleanup)
+        self.root = Path(fixture.name)
+        self.install = self.root / "install"
+        (self.install / "usr/bin").mkdir(parents=True)
+        for name in assets.CONTROL_SURFACE_BINARIES:
+            shutil.copy2(self.binary, self.install / "usr/bin" / name)
+        self.source = self.root / "control-surface"
+        shutil.copytree(assets.CONTROL_SURFACE_SOURCE / "firmware/release",
+                        self.source / "firmware/release")
+        for relative, _ in assets.CONTROL_SURFACE_DATA:
+            path = self.source / relative
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(assets.CONTROL_SURFACE_SOURCE / relative, path)
+        self.tarball = self.root / assets.control_surface_asset("0.8.27")
+
+    def members(self):
+        with tarfile.open(self.tarball, "r:gz") as archive:
+            return {member.name: member for member in archive.getmembers()}
+
+    def test_asset_has_binaries_data_licences_and_only_current_firmware(self):
+        assets.stage_control_surface(self.install, self.tarball, self.source)
+        members = self.members()
+        for name in assets.CONTROL_SURFACE_BINARIES:
+            self.assertEqual(members[f"usr/bin/{name}"].mode, 0o755)
+        for _, archived in assets.CONTROL_SURFACE_DATA:
+            self.assertEqual(members[archived].mode, 0o644)
+            self.assertEqual(members[archived].uid, 0)
+        firmware = sorted(name for name in members if name.endswith(".bin"))
+        current = [path.with_suffix(".bin").name
+                   for path in sorted((self.source / "firmware/release").glob("*.json"))
+                   if "supersededBy" not in json.loads(path.read_text())]
+        self.assertTrue(current)
+        self.assertEqual(firmware, [f"{assets.FIRMWARE_DIR}/{name}" for name in current])
+        self.assertIn("usr/share/licenses/control-surface/firmware-LICENSE", members)
+        self.assertIn("usr/share/licenses/control-surface/COPYING", members)
+
+    def test_repository_firmware_manifests_match_their_images(self):
+        self.assertTrue(assets.current_firmware(assets.CONTROL_SURFACE_SOURCE))
+
+    def test_changed_firmware_image_or_missing_data_fails(self):
+        image = next(path.with_suffix(".bin") for path in (self.source / "firmware/release").glob("*.json")
+                     if "supersededBy" not in json.loads(path.read_text()))
+        image.write_bytes(image.read_bytes() + b"\0")
+        with self.assertRaises(ValueError):
+            assets.stage_control_surface(self.install, self.tarball, self.source)
+        image.write_bytes(image.read_bytes()[:-1])
+        (self.source / "COPYING").unlink()
+        with self.assertRaises(ValueError):
+            assets.stage_control_surface(self.install, self.tarball, self.source)
+
+    def test_missing_or_nonexecutable_binary_fails(self):
+        daemon = self.install / "usr/bin/control-surfaced"
+        daemon.chmod(0o644)
+        with self.assertRaises(ValueError):
+            assets.stage_control_surface(self.install, self.tarball, self.source)
+        daemon.unlink()
+        with self.assertRaises(ValueError):
+            assets.stage_control_surface(self.install, self.tarball, self.source)
+
+    def test_tampered_asset_fails_verification(self):
+        assets.stage_control_surface(self.install, self.tarball, self.source)
+        bad = self.root / "bad.tar.gz"
+        with tarfile.open(self.tarball, "r:gz") as source, tarfile.open(bad, "w:gz") as target:
+            for member in source.getmembers():
+                if member.name.endswith(".bin"):
+                    data = source.extractfile(member).read() + b"x"
+                    member.size = len(data)
+                    target.addfile(member, io.BytesIO(data))
+                else:
+                    target.addfile(member, source.extractfile(member))
+        with self.assertRaises(ValueError):
+            assets.verify_control_surface(bad)
+
+    def test_release_workflow_builds_tests_and_uploads_the_asset(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertIn("ctest --test-dir", workflow)
+        self.assertIn("release_assets.py control-surface", workflow)
+        self.assertIn("${{ env.CS_ASSET }}", workflow)
+        self.assertIn('--asset "$CS_ASSET"', workflow)
+        self.assertLess(workflow.index("release_assets.py control-surface"), workflow.index("git tag"))
+        self.assertNotIn("Co-authored-by", workflow)
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("ctest --test-dir", ci)

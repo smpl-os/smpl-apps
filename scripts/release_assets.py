@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Collect required apps and verify local and uploaded release payloads."""
+"""Collect required apps and verify local and uploaded release payloads.
+
+Also stages control-surface (the keypad daemon, built by CMake) as its own
+release asset, laid out under usr/ for packages: smplOS installs it with
+pacman rather than copying its binary into /usr/local/bin with the apps.
+"""
 
 import argparse
 import hashlib
@@ -19,6 +24,22 @@ BINARIES = (
 )
 SERVICE = "smpl-calendar-alertd.service"
 SERVICE_SOURCE = Path(__file__).resolve().parents[1] / "calendar/systemd" / SERVICE
+
+CONTROL_SURFACE_SOURCE = Path(__file__).resolve().parents[1] / "control-surface"
+CONTROL_SURFACE_BINARIES = ("control-surfaced", "ch552-padprog")
+FIRMWARE_DIR = "usr/share/control-surface/firmware"
+# (source path, archive path); all mandatory.
+CONTROL_SURFACE_DATA = (
+    ("data/config.example.jsonc", "usr/share/control-surface/config.example.jsonc"),
+    ("data/systemd/control-surface.service", "usr/share/control-surface/examples/control-surface.service"),
+    ("data/udev/71-wch-isp-bootloader.rules", "usr/share/control-surface/examples/71-wch-isp-bootloader.rules"),
+    ("firmware/release/README.md", f"{FIRMWARE_DIR}/README.md"),
+    ("firmware/release/LICENSE", f"{FIRMWARE_DIR}/LICENSE"),
+    ("firmware/release/LICENSE", "usr/share/licenses/control-surface/firmware-LICENSE"),
+    ("COPYING", "usr/share/licenses/control-surface/COPYING"),
+    ("README.md", "usr/share/doc/control-surface/README.md"),
+    ("USER-QUICKSTART.md", "usr/share/doc/control-surface/USER-QUICKSTART.md"),
+)
 
 
 def digest(path):
@@ -86,10 +107,95 @@ def verify_bundle(directory, bundle):
                 raise ValueError(f"Bundle differs from standalone asset: {name}")
 
 
-def verify_uploaded(directory, bundle, metadata_path):
+def control_surface_asset(version):
+    return f"control-surface-{version}-x86_64.tar.gz"
+
+
+def current_firmware(source):
+    """Firmware images a wizard may offer: each .bin with a matching manifest,
+    leaving out superseded ones (kept in the source tree for reference)."""
+    images = {}
+    for manifest in sorted((source / "firmware/release").glob("*.json")):
+        info = json.loads(manifest.read_text())
+        if info.get("supersededBy"):
+            continue
+        image = manifest.with_suffix(".bin")
+        if (not image.is_file() or info.get("sha256") != digest(image)
+                or info.get("size") != image.stat().st_size
+                or info.get("license") != "CC-BY-SA-3.0"):
+            raise ValueError(f"Firmware image does not match its manifest: {image.name}")
+        images[f"{FIRMWARE_DIR}/{image.name}"] = image
+        images[f"{FIRMWARE_DIR}/{manifest.name}"] = manifest
+    if not images:
+        raise ValueError("No current firmware image to release")
+    return images
+
+
+def stage_control_surface(install_root, tarball, source=CONTROL_SURFACE_SOURCE):
+    """Package `cmake --install` output (DESTDIR, prefix /usr) with the data,
+    current firmware, docs and licences into a usr/ tree tarball."""
+    members = {}
+    for name in CONTROL_SURFACE_BINARIES:
+        path = install_root / "usr/bin" / name
+        if path.is_symlink() or not path.is_file() or not path.stat().st_mode & 0o111:
+            raise ValueError(f"Missing or invalid control-surface binary: {name}")
+        subprocess.run(["strip", str(path)], check=True)
+        members[f"usr/bin/{name}"] = path
+    for relative, archived in CONTROL_SURFACE_DATA:
+        path = source / relative
+        if path.is_symlink() or not path.is_file() or not path.stat().st_size:
+            raise ValueError(f"Missing control-surface file: {relative}")
+        members[archived] = path
+    members.update(current_firmware(source))
+
+    def normalize(info):
+        info.uid = info.gid = 0
+        info.uname = info.gname = "root"
+        info.mode = 0o755 if info.name.startswith("usr/bin/") else 0o644
+        return info
+
+    with tarfile.open(tarball, "w:gz") as archive:
+        for archived, path in sorted(members.items()):
+            archive.add(path, arcname=archived, filter=normalize)
+    verify_control_surface(tarball)
+
+
+def verify_control_surface(tarball):
+    with tarfile.open(tarball, "r:gz") as archive:
+        members = {member.name: member for member in archive.getmembers()}
+        for name in CONTROL_SURFACE_BINARIES:
+            member = members.get(f"usr/bin/{name}")
+            if member is None or not member.isfile() or not member.mode & 0o111:
+                raise ValueError(f"Missing or invalid control-surface binary: {name}")
+            with archive.extractfile(member) as stream:
+                if stream.read(4) != b"\x7fELF":
+                    raise ValueError(f"control-surface binary is not ELF: {name}")
+        for _, archived in CONTROL_SURFACE_DATA:
+            member = members.get(archived)
+            if member is None or not member.isfile() or not member.size:
+                raise ValueError(f"Missing control-surface file: {archived}")
+        images = [name for name in members
+                  if name.startswith(f"{FIRMWARE_DIR}/") and name.endswith(".bin")]
+        if not images:
+            raise ValueError("No firmware image in the control-surface asset")
+        for name in images:
+            manifest = members.get(name.removesuffix(".bin") + ".json")
+            if manifest is None:
+                raise ValueError(f"Firmware image without manifest: {name}")
+            with archive.extractfile(manifest) as stream:
+                info = json.load(stream)
+            with archive.extractfile(members[name]) as stream:
+                actual = hashlib.file_digest(stream, "sha256").hexdigest()
+            if info.get("supersededBy") or info.get("sha256") != actual:
+                raise ValueError(f"Firmware image does not match its manifest: {name}")
+
+
+def verify_uploaded(directory, bundle, metadata_path, extra=()):
     verify_bundle(directory, bundle)
     files = required_files(directory)
     files[bundle.name] = bundle
+    for path in extra:
+        files[path.name] = path
     metadata = json.loads(metadata_path.read_text())
     version = re.fullmatch(r"smpl-apps-(\d+\.\d+\.\d+)-x86_64\.tar\.gz", bundle.name)
     if not version or metadata.get("tag_name") != f"v{version[1]}":
@@ -122,14 +228,21 @@ def main():
         args.add_argument("bundle", type=Path)
         if command == "uploaded":
             args.add_argument("metadata", type=Path)
+            args.add_argument("--asset", type=Path, action="append", default=[],
+                              help="another uploaded asset that must match (repeatable)")
+    stage_args = commands.add_parser("control-surface")
+    stage_args.add_argument("install_root", type=Path)
+    stage_args.add_argument("tarball", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "collect":
             collect(args.source, args.destination)
         elif args.command == "verify":
             verify_bundle(args.directory, args.bundle)
+        elif args.command == "control-surface":
+            stage_control_surface(args.install_root, args.tarball)
         else:
-            verify_uploaded(args.directory, args.bundle, args.metadata)
+            verify_uploaded(args.directory, args.bundle, args.metadata, args.asset)
     except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
         print(f"Release asset validation failed: {error}", file=sys.stderr)
         return 1
