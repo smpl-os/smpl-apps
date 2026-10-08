@@ -85,6 +85,10 @@ mod tests {
             "help-circle", "player-play", "player-track-next", "volume", "volume-2", "volume-3", "mouse", "arrow-up",
             "arrow-down", "world", "brand-github", "movie", "chart-dots-3", "terminal-2", "folder", "settings",
             "rotate", "rotate-clockwise", "circle-dot", "brackets-contain-start", "blade", "scissors",
+            // Added for the keypad app's automatic Kdenlive icons (a920ddd).
+            "arrow-bar-to-left", "arrow-bar-to-right", "arrow-left-bar", "arrow-right-bar", "arrows-left-right",
+            "bookmark-off", "brackets-contain", "column-remove", "list-check", "ripple", "select-all", "space",
+            "space-off", "square", "square-check",
         ] {
             assert!(!glyph(name).is_empty(), "{name}");
         }
