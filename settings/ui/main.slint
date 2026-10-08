@@ -107,6 +107,10 @@ struct KeypadControl {
     seen: bool,
     // Icon glyph(s) in KeypadIcons.family: a key's, or a knob's ccw/press/cw.
     glyph: string,
+    // Held for the layer being edited ("while holding key 1").
+    held: bool,
+    // Holding it applies a layer of this profile (shown on the normal layout).
+    holds: bool,
 }
 
 /// A keypad variant (board profile) with what its schematic needs.
@@ -769,6 +773,8 @@ component KeypadCanvas inherits Rectangle {
     in property <int> rows: 3;
     in property <int> knobs: 0;
     in property <bool> show-summary: true;
+    // The "hold this control" mark (an outline hand from the icon font).
+    in property <string> hold-glyph;
     callback clicked(string);
 
     property <length> cell: 72px;
@@ -783,9 +789,10 @@ component KeypadCanvas inherits Rectangle {
         height: root.cell - root.gap;
         border-radius: control.knob ? (root.cell - root.gap) / 2 : 6px;
         background: control.active ? Theme.accent
+            : control.held ? Theme.accent.transparentize(45%)
             : control.selected ? Theme.accent.transparentize(75%)
             : cell-touch.has-hover ? Theme.hover : Theme.bg;
-        border-width: control.selected || control.seen ? 2px : 1px;
+        border-width: control.selected || control.seen || control.held ? 2px : 1px;
         border-color: control.seen ? Theme.success : control.selected ? Theme.accent : Theme.bg_lighter;
 
         Text {
@@ -805,7 +812,28 @@ component KeypadCanvas inherits Rectangle {
             color: control.active ? Theme.bg : Theme.accent;
         }
 
-        if root.show-summary: Text {
+        // The held control says so in words, not only by its fill.
+        if control.held: Text {
+            x: 4px;
+            y: parent.height - self.height - (control.knob ? 9px : 4px);
+            width: parent.width - 8px;
+            text: "held";
+            color: Theme.fg;
+            font-size: Typography.caption;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        // Holding this one applies a layer: a small hand in the corner.
+        if control.holds && !control.seen: Text {
+            x: control.knob ? parent.width - self.width - 8px : parent.width - self.width - 5px;
+            y: control.knob ? 8px : 4px;
+            text: root.hold-glyph;
+            font-family: KeypadIcons.family;
+            font-size: 12px;
+            color: Theme.accent;
+        }
+
+        if root.show-summary && !control.held: Text {
             x: 4px;
             y: parent.height - self.height - (control.knob ? 9px : 4px);
             width: parent.width - 8px;
@@ -1692,6 +1720,21 @@ export component MainWindow inherits Window {
     in property <bool> kp-profile-fallthrough: true;
     // Turn-while-pressed bindings the firmware can't deliver ("" when none).
     in property <string> kp-shift-note;
+    // Keys to hold instead (for converting shift bindings) and the choice.
+    in property <[string]> kp-shift-keys;
+    in-out property <int> kp-shift-key: 0;
+    // Layers of the profile being edited: "Normal" and "While holding …".
+    in property <bool> kp-held-supported: false;
+    in property <string> kp-hold-glyph;
+    in property <[string]> kp-layer-names;
+    in property <int> kp-layer-index: 0;
+    in property <bool> kp-layer-held: false;
+    in property <bool> kp-picking-held: false;
+    in property <string> kp-layer-note;
+    // The control selected is the one held for the layer: nothing to map.
+    in property <bool> kp-editor-locked: false;
+    in property <string> kp-bindings-title: "Mapped in this profile";
+    in property <string> kp-sheet-preview-caption: "Preview for the selected profile, with your unsaved changes:";
     // Advanced: input mode (index into Automatic, Keymap, Raw) and its state.
     in property <int> kp-input-index: 0;
     in property <string> kp-input-help;
@@ -1745,6 +1788,11 @@ export component MainWindow inherits Window {
     callback kp-apply-profile-details();
     callback kp-set-fallthrough(bool);
     callback kp-remove-shift();
+    callback kp-convert-shift();
+    callback kp-select-layer(int);
+    callback kp-start-held-layer();
+    callback kp-cancel-held-layer();
+    callback kp-remove-layer();
     callback kp-set-input-mode(int);
     callback kp-set-tuning(string, float);
     callback kp-reset-tunings();
@@ -8305,6 +8353,7 @@ export component MainWindow inherits Window {
                                 cols: root.kp-cols;
                                 rows: root.kp-rows;
                                 knobs: root.kp-knobs;
+                                hold-glyph: root.kp-hold-glyph;
                                 clicked(id) => { root.kp-select-control(id); }
                             }
                         }
@@ -8528,6 +8577,81 @@ export component MainWindow inherits Window {
                                     clicked => { root.kp-remove-shift(); }
                                 }
                             }
+                            if root.kp-shift-note != "" && root.kp-held-supported: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Instead, turn them while holding";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    width: 120px;
+                                    model: root.kp-shift-keys;
+                                    current-index: root.kp-shift-key;
+                                    selected(i) => { root.kp-shift-key = i; }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                KeypadButton {
+                                    text: "Convert";
+                                    primary: true;
+                                    clicked => { root.kp-convert-shift(); }
+                                }
+                            }
+
+                            // Layers: normal, and "while holding a key".
+                            if root.kp-held-supported || root.kp-layer-names.length > 1: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Layer";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    horizontal-stretch: 1;
+                                    model: root.kp-layer-names;
+                                    current-index: root.kp-layer-index;
+                                    selected(i) => { root.kp-select-layer(i); }
+                                }
+                                if root.kp-held-supported && !root.kp-picking-held: KeypadButton {
+                                    text: "Hold a key…";
+                                    clicked => { root.kp-start-held-layer(); }
+                                }
+                                if root.kp-layer-held && !root.kp-picking-held: KeypadButton {
+                                    text: "Remove layer";
+                                    clicked => { root.kp-remove-layer(); }
+                                }
+                            }
+                            if root.kp-picking-held: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: root.kp-hold-glyph;
+                                    font-family: KeypadIcons.family;
+                                    font-size: 18px;
+                                    color: Theme.accent;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Click the key (or knob) to hold on the layout above. While you hold it, the other keys and knobs do what you map in its layer.";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                KeypadButton {
+                                    text: "Cancel";
+                                    clicked => { root.kp-cancel-held-layer(); }
+                                }
+                            }
+                            if root.kp-layer-note != "": Text {
+                                text: root.kp-layer-note;
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
 
                             Rectangle { height: 1px; background: Theme.bg_lighter; }
 
@@ -8574,7 +8698,7 @@ export component MainWindow inherits Window {
                                 }
                                 ResDropdown {
                                     horizontal-stretch: 1;
-                                    enabled: root.kp-editor-mode != 3 || root.kp-action-names.length > 1;
+                                    enabled: !root.kp-editor-locked && (root.kp-editor-mode != 3 || root.kp-action-names.length > 1);
                                     model: root.kp-action-names;
                                     current-index: root.kp-action-index;
                                     selected(i) => { root.kp-select-action(i); }
@@ -8682,7 +8806,7 @@ export component MainWindow inherits Window {
                             }
                             HorizontalLayout {
                                 alignment: end;
-                                if root.kp-editor-mode != 3: KeypadButton {
+                                if root.kp-editor-mode != 3 && !root.kp-editor-locked: KeypadButton {
                                     text: "Apply to control";
                                     primary: true;
                                     clicked => { root.kp-apply-binding(); }
@@ -8829,7 +8953,7 @@ export component MainWindow inherits Window {
                                 }
                             }
                             if root.kp-sheet-supported: Text {
-                                text: "Preview for the selected profile, with your unsaved changes:";
+                                text: root.kp-sheet-preview-caption;
                                 color: Theme.fg_dim;
                                 font-size: Typography.caption;
                             }
@@ -8854,7 +8978,7 @@ export component MainWindow inherits Window {
                             spacing: 2px;
 
                             Text {
-                                text: "Mapped in this profile";
+                                text: root.kp-bindings-title;
                                 color: Theme.fg_dim;
                                 font-size: Typography.secondary;
                                 font-weight: 600;

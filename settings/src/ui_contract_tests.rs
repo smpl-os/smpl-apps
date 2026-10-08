@@ -464,6 +464,24 @@ fn keypad_advanced_reaches_what_was_hand_edited() {
     }
     assert!(!UI.contains("kp-apply-profile-class"), "one Apply for name, class and title");
     assert!(keypad.contains("clicked => { root.kp-remove-shift(); }"), "unsupported shift bindings can be removed");
+    for needle in [
+        "clicked => { root.kp-convert-shift(); }",
+        "selected(i) => { root.kp-select-layer(i); }",
+        "clicked => { root.kp-start-held-layer(); }",
+        "clicked => { root.kp-cancel-held-layer(); }",
+        "clicked => { root.kp-remove-layer(); }",
+        "enabled: !root.kp-editor-locked && (",
+        "if root.kp-editor-mode != 3 && !root.kp-editor-locked: KeypadButton {",
+        "text: root.kp-bindings-title;",
+        "text: root.kp-sheet-preview-caption;",
+        "hold-glyph: root.kp-hold-glyph;",
+    ] {
+        assert!(keypad.contains(needle), "held layers: {needle}");
+    }
+    let canvas = UI.split("component KeypadCanvas").nth(1).unwrap().split("\ncomponent ").next().unwrap();
+    for needle in ["if control.held: Text {", r#"text: "held";"#, "if control.holds && !control.seen: Text {"] {
+        assert!(canvas.contains(needle), "canvas: {needle}");
+    }
     let advanced_rs = include_str!("keypad/ui.rs");
     for needle in ["fn direct_route(", "super::set_option(k, v)", "wizard_input_begin(st)", "wizard_input_end(st, w.restore_input.take())"] {
         assert!(advanced_rs.contains(needle), "{needle}");

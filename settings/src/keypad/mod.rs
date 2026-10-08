@@ -1189,6 +1189,14 @@ pub fn hide_sheet() -> Result<(), String> {
         .map_err(|_| "the keypad app isn't running".into())
 }
 
+/// A preview context with `held` (`"key1"`, `"key1+knob3"`) counted as held
+/// down: control-surface's `"$held"` in GetCheatsheetFor / `--context`.
+pub fn with_held(context: &str, held: &str) -> String {
+    let mut v: serde_json::Map<String, Value> = serde_json::from_str(context).unwrap_or_default();
+    v.insert("$held".into(), Value::String(held.into()));
+    Value::Object(v).to_string()
+}
+
 /// Kdenlive contexts for the preview (the example config's layers).
 pub const KDENLIVE_CONTEXTS: &[(&str, &str)] = &[
     ("No particular focus", ""),
@@ -1219,6 +1227,8 @@ pub struct Features {
     /// The firmware reports turns while a knob is pressed ("shift" bindings);
     /// `None` when the keypad app doesn't say.
     pub shift_supported: Option<bool>,
+    /// Layers that apply while a key is held (`"when": {"held": ...}`).
+    pub held_layers: bool,
 }
 
 /// `cheatsheet.defaults` when the daemon has it, else read from its option
@@ -1270,6 +1280,7 @@ pub fn parse_features(json: &str) -> Option<Features> {
             .filter_map(|o| o.get("key").and_then(Value::as_str).map(String::from))
             .collect(),
         shift_supported: slots.get("shiftSupported").and_then(Value::as_bool),
+        held_layers: v.get("heldLayers").is_some_and(Value::is_object),
     })
 }
 
@@ -1475,6 +1486,7 @@ mod tests {
                 input_modes: Vec::new(),
                 options: Vec::new(),
                 shift_supported: None,
+                held_layers: false,
             }
         );
         let with_sheet = parse_features(r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"modes":["toggle","hold"]}}"#).unwrap();
@@ -1549,6 +1561,13 @@ mod tests {
     }
 
     #[test]
+    fn held_previews_add_held_to_the_context() {
+        assert_eq!(with_held("", "key1"), r#"{"$held":"key1"}"#);
+        let v: Value = serde_json::from_str(&with_held(r#"{"focus":"timeline"}"#, "key1+knob3")).unwrap();
+        assert_eq!(v, serde_json::json!({"focus": "timeline", "$held": "key1+knob3"}));
+    }
+
+    #[test]
     fn set_option_answers() {
         assert_eq!(
             parse_set_option(r#"{"ok":true,"key":"input","old":"raw","new":"evdev","changed":true,"backup":"/c/config.jsonc.bak"}"#),
@@ -1574,6 +1593,9 @@ mod tests {
         let f = parse_features(json).unwrap();
         assert_eq!(f.options, ["input", "settings.keyRateHz"]);
         assert_eq!(f.shift_supported, Some(false));
+        assert!(!f.held_layers);
+        let held = parse_features(r#"{"slots":{"maxKeys":16,"maxKnobs":3},"heldLayers":{"when":"\"held\": \"key1\""}}"#).unwrap();
+        assert!(held.held_layers);
     }
 
     #[test]

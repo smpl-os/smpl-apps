@@ -630,6 +630,87 @@ fn merge_extras(old: Option<&Json>, new: Json) -> Json {
 
 // ── Profiles ─────────────────────────────────────────────────────────────────
 
+/// A layer that applies while pad controls are held down
+/// (`"when": {"held": "key1" | ["key1", "key13"] | "key1+knob3"}`, control-
+/// surface's held layers). While held it wins over every other binding.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldLayer {
+    /// Index in the profile's `"layers"`.
+    pub index: usize,
+    pub name: String,
+    /// Alternatives, each a set of controls held together (`knobN` = its press).
+    pub held: Vec<Vec<String>>,
+    /// Other `"when"` conditions it also needs (e.g. Kdenlive's focus), by name.
+    pub conditions: Vec<String>,
+}
+
+impl HeldLayer {
+    /// The one control it needs held, when that is all it needs.
+    pub fn single(&self) -> Option<&str> {
+        match self.held.as_slice() {
+            [set] if set.len() == 1 && self.conditions.is_empty() => Some(&set[0]),
+            _ => None,
+        }
+    }
+
+    /// Every control it names.
+    pub fn controls(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for c in self.held.iter().flatten() {
+            if !out.contains(c) {
+                out.push(c.clone());
+            }
+        }
+        out
+    }
+
+    /// "While holding key 1", "… key 1 or key 13", "… key 1 + knob 3 (pressed)".
+    pub fn title(&self) -> String {
+        let name = |c: &str| {
+            if c.starts_with("knob") {
+                format!("{} (pressed)", slot_label(c).to_lowercase())
+            } else {
+                slot_label(c).to_lowercase()
+            }
+        };
+        let sets: Vec<String> = self.held.iter().map(|set| set.iter().map(|c| name(c)).collect::<Vec<_>>().join(" + ")).collect();
+        let when = if self.conditions.is_empty() { String::new() } else { format!(", when {}", self.conditions.join(", ")) };
+        format!("While holding {}{when}", sets.join(" or "))
+    }
+}
+
+/// `key1`..`key16` or `knob1`..`knob3` (a knob held means its press).
+pub fn held_control(name: &str) -> bool {
+    let number = |rest: &str, max: usize| {
+        !rest.starts_with('0') && rest.chars().all(|c| c.is_ascii_digit()) && rest.parse::<usize>().is_ok_and(|n| (1..=max).contains(&n))
+    };
+    name.strip_prefix("key").is_some_and(|r| number(r, 16)) || name.strip_prefix("knob").is_some_and(|r| number(r, 3))
+}
+
+/// The alternatives of a `"held"` value, or `None` if it isn't one.
+fn parse_held(v: &Json) -> Option<Vec<Vec<String>>> {
+    let alternatives: Vec<&str> = match v {
+        Json::Str(s) => vec![s.as_str()],
+        Json::Arr(items) if !items.is_empty() => items.iter().map(Json::as_str).collect::<Option<_>>()?,
+        _ => return None,
+    };
+    alternatives
+        .into_iter()
+        .map(|a| {
+            let mut set: Vec<String> = Vec::new();
+            for c in a.split('+').map(str::trim) {
+                if !held_control(c) {
+                    return None;
+                }
+                if !set.iter().any(|s| s == c) {
+                    set.push(c.to_string());
+                }
+            }
+            Some(set)
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProfileInfo {
     pub name: String,
@@ -837,8 +918,33 @@ impl KeypadConfig {
         self.profile_list_mut().get_mut(index).ok_or_else(|| "no such profile".to_string())
     }
 
+    /// The `"bindings"` of a profile (`layer: None`) or of one of its layers.
+    fn bindings_of(&self, profile: usize, layer: Option<usize>) -> Option<&Json> {
+        let p = self.profile_list().get(profile)?;
+        match layer {
+            None => p.get("bindings"),
+            Some(i) => p.get("layers")?.as_array()?.get(i)?.get("bindings"),
+        }
+    }
+
+    fn bindings_mut(&mut self, profile: usize, layer: Option<usize>) -> Result<&mut Json, String> {
+        let p = self.profile_mut(profile)?;
+        match layer {
+            None => Ok(p.object_mut("bindings")),
+            Some(i) => match p.get_mut("layers") {
+                Some(Json::Arr(layers)) => layers.get_mut(i).map(|l| l.object_mut("bindings")).ok_or_else(|| "no such layer".to_string()),
+                _ => Err("no such layer".into()),
+            },
+        }
+    }
+
+    #[cfg(test)]
     fn raw_binding(&self, profile: usize, slot: &str) -> Option<&Json> {
-        let bindings = self.profile_list().get(profile)?.get("bindings")?;
+        self.raw_binding_at(profile, None, slot)
+    }
+
+    fn raw_binding_at(&self, profile: usize, layer: Option<usize>, slot: &str) -> Option<&Json> {
+        let bindings = self.bindings_of(profile, layer)?;
         if let Some(flat) = bindings.get(slot) {
             return Some(flat);
         }
@@ -846,8 +952,14 @@ impl KeypadConfig {
         bindings.get(knob)?.get(event)
     }
 
+    #[cfg(test)]
     pub fn binding(&self, profile: usize, slot: &str) -> Binding {
-        let Some(bindings) = self.profile_list().get(profile).and_then(|p| p.get("bindings")) else {
+        self.binding_at(profile, None, slot)
+    }
+
+    /// A binding of a profile's base bindings (`layer: None`) or of a layer.
+    pub fn binding_at(&self, profile: usize, layer: Option<usize>, slot: &str) -> Binding {
+        let Some(bindings) = self.bindings_of(profile, layer) else {
             return classify(None);
         };
         if let Some(flat) = bindings.get(slot) {
@@ -860,9 +972,15 @@ impl KeypadConfig {
     }
 
     /// Base bindings of a profile, flattened to slots, in file order.
+    #[cfg(test)]
     pub fn bound_slots(&self, profile: usize) -> Vec<(String, Binding)> {
+        self.bound_slots_at(profile, None)
+    }
+
+    /// Bindings of a profile (`layer: None`) or a layer, flattened, in file order.
+    pub fn bound_slots_at(&self, profile: usize, layer: Option<usize>) -> Vec<(String, Binding)> {
         let mut out = Vec::new();
-        let Some(bindings) = self.profile_list().get(profile).and_then(|p| p.get("bindings")) else {
+        let Some(bindings) = self.bindings_of(profile, layer) else {
             return out;
         };
         for (slot, value) in bindings.entries() {
@@ -886,16 +1004,29 @@ impl KeypadConfig {
         out
     }
 
-    /// Sets a key ("key3") or knob event ("knob1.cw") binding. Returns a note
-    /// when another binding had to change for this one to take effect.
+    #[cfg(test)]
     pub fn set_binding(&mut self, profile: usize, slot: &str, binding: &Binding) -> Result<Option<String>, String> {
+        self.set_binding_at(profile, None, slot, binding)
+    }
+
+    /// Sets a key ("key3") or knob event ("knob1.cw") binding of a profile
+    /// (`layer: None`) or of one of its layers. Returns a note when another
+    /// binding had to change for this one to take effect. A held layer can't
+    /// map the control held for it.
+    pub fn set_binding_at(&mut self, profile: usize, layer: Option<usize>, slot: &str, binding: &Binding) -> Result<Option<String>, String> {
         if binding.kind == ActionKind::Cheatsheet && !sheet_slot(slot) {
             return Err("the cheatsheet can be shown by a key or a knob press, not a turn".into());
         }
+        if let Some(held) = layer.and_then(|i| self.held_layers(profile).into_iter().find(|h| h.index == i)) {
+            let control = slot.split('.').next().unwrap_or(slot);
+            if binding.kind != ActionKind::Inherit && held.controls().iter().any(|c| c == control) && !slot.contains(".cw") && !slot.contains(".ccw") {
+                return Err(format!("{} is the control you hold for this layer", slot_label(control)));
+            }
+        }
         let value = to_json(binding)?;
-        let old = self.raw_binding(profile, slot).cloned();
+        let old = self.raw_binding_at(profile, layer, slot).cloned();
         let value = value.map(|v| merge_extras(old.as_ref(), v));
-        let bindings = self.profile_mut(profile)?.object_mut("bindings");
+        let bindings = self.bindings_mut(profile, layer)?;
         let mut note = None;
         match slot.split_once('.') {
             None => match value {
@@ -1133,6 +1264,200 @@ impl KeypadConfig {
             }
         }
         Ok(())
+    }
+
+    /// The profile's held layers ("while holding key N"), in file order.
+    pub fn held_layers(&self, profile: usize) -> Vec<HeldLayer> {
+        let Some(layers) = self.profile_list().get(profile).and_then(|p| p.get("layers")).and_then(Json::as_array) else {
+            return Vec::new();
+        };
+        layers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, l)| {
+                let when = l.get("when")?;
+                let held = parse_held(when.get("held")?)?;
+                Some(HeldLayer {
+                    index,
+                    name: l.get("name").and_then(Json::as_str).unwrap_or("").to_string(),
+                    held,
+                    conditions: when.entries().iter().map(|(k, _)| k.clone()).filter(|k| k != "held").collect(),
+                })
+            })
+            .collect()
+    }
+
+    /// A profile's other layers (Kdenlive contexts and the like).
+    pub fn context_layer_count(&self, profile: usize) -> usize {
+        self.profiles().get(profile).map_or(0, |p| p.layers) - self.held_layers(profile).len()
+    }
+
+    fn layers_mut(&mut self, profile: usize) -> Result<&mut Vec<Json>, String> {
+        let p = self.profile_mut(profile)?;
+        if !matches!(p.get("layers"), Some(Json::Arr(_))) {
+            p.set("layers", Json::Arr(Vec::new()));
+        }
+        match p.get_mut("layers") {
+            Some(Json::Arr(layers)) => Ok(layers),
+            _ => unreachable!("just set"),
+        }
+    }
+
+    /// A layer name not yet used in the profile.
+    fn free_layer_name(&self, profile: usize, base: &str) -> String {
+        let used: Vec<String> = self
+            .profile_list()
+            .get(profile)
+            .and_then(|p| p.get("layers"))
+            .and_then(Json::as_array)
+            .map(|ls| ls.iter().filter_map(|l| l.get("name").and_then(Json::as_str).map(String::from)).collect())
+            .unwrap_or_default();
+        (1..).map(|n| if n == 1 { base.to_string() } else { format!("{base}-{n}") }).find(|n| !used.contains(n)).expect("unbounded")
+    }
+
+    /// The held layer for exactly `control` and exactly the `extra` conditions.
+    fn find_held_layer(&self, profile: usize, control: &str, extra: &[(String, Json)]) -> Option<usize> {
+        let layers = self.profile_list().get(profile)?.get("layers")?.as_array()?;
+        self.held_layers(profile)
+            .into_iter()
+            .find(|h| {
+                let when = layers[h.index].get("when");
+                h.held == [vec![control.to_string()]]
+                    && h.conditions.len() == extra.len()
+                    && extra.iter().all(|(k, v)| when.and_then(|w| w.get(k)) == Some(v))
+            })
+            .map(|h| h.index)
+    }
+
+    /// Finds or adds the layer that applies while `control` is held
+    /// (`extra`: further `"when"` conditions, e.g. a Kdenlive layer's).
+    /// Layers with conditions go first, so they win over the plain one;
+    /// plain ones go after the other held layers. Returns its index.
+    fn held_layer_for(&mut self, profile: usize, control: &str, extra: &[(String, Json)], name: &str) -> Result<usize, String> {
+        if !held_control(control) {
+            return Err(format!("'{control}' is not a key or knob"));
+        }
+        if let Some(index) = self.find_held_layer(profile, control, extra) {
+            return Ok(index);
+        }
+        let mut when = vec![("held".to_string(), Json::str(control))];
+        when.extend(extra.iter().cloned());
+        let layer = Json::Obj(vec![
+            ("name".into(), Json::str(&self.free_layer_name(profile, name))),
+            ("when".into(), Json::Obj(when)),
+            ("bindings".into(), Json::obj()),
+        ]);
+        let at = if extra.is_empty() {
+            let held = self.held_layers(profile);
+            let layers = self.profile_list()[profile].get("layers").and_then(Json::as_array).map_or(0, Vec::len);
+            // After the leading held layers.
+            (0..layers).find(|i| !held.iter().any(|h| h.index == *i)).unwrap_or(layers)
+        } else {
+            0
+        };
+        self.layers_mut(profile)?.insert(at, layer);
+        Ok(at)
+    }
+
+    /// Adds a "while holding `control`" layer (or finds the one there is);
+    /// returns its index in `"layers"`.
+    pub fn add_held_layer(&mut self, profile: usize, control: &str) -> Result<usize, String> {
+        self.held_layer_for(profile, control, &[], &format!("hold-{control}"))
+    }
+
+    pub fn remove_layer(&mut self, profile: usize, index: usize) -> Result<(), String> {
+        let layers = self.layers_mut(profile)?;
+        if index >= layers.len() {
+            return Err("no such layer".into());
+        }
+        layers.remove(index);
+        if layers.is_empty() {
+            self.profile_mut(profile)?.remove("layers");
+        }
+        Ok(())
+    }
+
+    /// Moves a profile's "shift" (turn while pressed) bindings into "while
+    /// holding `control`" layers: the profile's own into the plain held layer,
+    /// a context layer's into a held layer with that layer's conditions too.
+    /// A knob the target layer maps already keeps its shift binding. Returns
+    /// (moved, kept) knob counts.
+    pub fn convert_shift_to_held(&mut self, profile: usize, control: &str) -> Result<(usize, usize), String> {
+        if !held_control(control) {
+            return Err(format!("'{control}' is not a key or knob"));
+        }
+        struct Move {
+            source: Option<usize>,
+            knob: String,
+            events: Vec<(String, Json)>,
+            extra: Vec<(String, Json)>,
+            name: String,
+        }
+        let held: Vec<usize> = self.held_layers(profile).iter().map(|h| h.index).collect();
+        let layer_count = self.profile_list().get(profile).and_then(|p| p.get("layers")).and_then(Json::as_array).map_or(0, Vec::len);
+        let mut moves: Vec<Move> = Vec::new();
+        for source in std::iter::once(None).chain((0..layer_count).filter(|i| !held.contains(i)).map(Some)) {
+            let (extra, name) = match source {
+                None => (Vec::new(), format!("hold-{control}")),
+                Some(i) => {
+                    let layer = &self.profile_list()[profile].get("layers").and_then(Json::as_array).expect("counted")[i];
+                    let when: Vec<(String, Json)> = layer.get("when").map(|w| w.entries().to_vec()).unwrap_or_default();
+                    let name = layer.get("name").and_then(Json::as_str).unwrap_or("layer");
+                    (when, format!("{name}-hold-{control}"))
+                }
+            };
+            for (slot, value) in self.bindings_of(profile, source).map(Json::entries).unwrap_or_default() {
+                let mut parts = slot.splitn(3, '.');
+                let knob = parts.next().unwrap_or_default();
+                let events: Vec<(String, Json)> = match (parts.next(), parts.next()) {
+                    (Some("shift"), Some(event)) => vec![(event.to_string(), value.clone())],
+                    (None, None) => value.get("shift").map(|s| s.entries().to_vec()).unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                if !knob.starts_with("knob") || events.is_empty() {
+                    continue;
+                }
+                match moves.iter_mut().find(|m| m.source == source && m.knob == knob) {
+                    Some(m) => m.events.extend(events),
+                    None => moves.push(Move { source, knob: knob.to_string(), events, extra: extra.clone(), name: name.clone() }),
+                }
+            }
+        }
+        // A knob the target already maps (or another move fills) stays as is.
+        let mut kept = 0;
+        let mut taken: Vec<(Vec<(String, Json)>, String)> = Vec::new();
+        moves.retain(|m| {
+            let target = self.find_held_layer(profile, control, &m.extra);
+            let mapped = target.and_then(|t| self.bindings_of(profile, Some(t))).is_some_and(|b| {
+                b.entries().iter().any(|(k, _)| k == &m.knob || k.starts_with(&format!("{}.", m.knob)))
+            });
+            let duplicate = taken.iter().any(|(e, k)| *e == m.extra && *k == m.knob);
+            if mapped || duplicate {
+                kept += 1;
+                return false;
+            }
+            taken.push((m.extra.clone(), m.knob.clone()));
+            true
+        });
+        // Take them out of their source first: layer indices are still valid.
+        for m in &moves {
+            if let Json::Obj(entries) = self.bindings_mut(profile, m.source)? {
+                let dotted = format!("{}.shift.", m.knob);
+                entries.retain(|(slot, _)| !slot.starts_with(&dotted));
+                for (slot, value) in entries.iter_mut() {
+                    if *slot == m.knob {
+                        value.remove("shift");
+                    }
+                }
+                entries.retain(|(slot, value)| !(*slot == m.knob && value.is_empty_container()));
+            }
+        }
+        let moved = moves.len();
+        for m in moves {
+            let target = self.held_layer_for(profile, control, &m.extra, &m.name)?;
+            self.bindings_mut(profile, Some(target))?.set(&m.knob, Json::Obj(m.events));
+        }
+        Ok((moved, kept))
     }
 
     /// Where a profile has "shift" (turn while pressed) bindings: "knob1" for
@@ -1752,6 +2077,94 @@ mod tests {
             assert_eq!((t.min, t.max), (min, max), "{key}");
             assert!(((t.max - t.min) / t.step).fract() == 0.0, "{key}: the range is whole steps");
         }
+    }
+
+    #[test]
+    fn held_layers_are_read_in_every_form() {
+        let c = KeypadConfig::parse(r#"{"profiles": [{"name": "global", "layers": [
+            {"name": "hold-key1", "when": {"held": "key1"}, "bindings": {"knob1": {"ccw": "left"}}},
+            {"name": "either", "when": {"held": ["key1", "key13"]}, "bindings": {}},
+            {"name": "chord", "when": {"held": "key1+knob3", "focus": "timeline"}, "bindings": {}},
+            {"name": "timeline", "when": {"focus": "timeline"}, "bindings": {}},
+            {"name": "bad", "when": {"held": "key99"}, "bindings": {}}],
+            "bindings": {}}]}"#).unwrap();
+        let held = c.held_layers(0);
+        assert_eq!(held.iter().map(|h| h.index).collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!(held[0].single(), Some("key1"));
+        assert_eq!(held[0].title(), "While holding key 1");
+        assert_eq!(held[1].title(), "While holding key 1 or key 13");
+        assert_eq!(held[1].single(), None);
+        assert_eq!(held[2].title(), "While holding key 1 + knob 3 (pressed), when focus");
+        assert_eq!(held[2].controls(), ["key1", "knob3"]);
+        assert_eq!(c.context_layer_count(0), 2, "timeline and the unreadable one");
+        assert_eq!(c.binding_at(0, Some(0), "knob1.ccw"), Binding::new(ActionKind::Shortcut, "left"));
+        assert_eq!(c.binding_at(0, None, "knob1.ccw").kind, ActionKind::Inherit);
+        for (name, ok) in [("key1", true), ("key16", true), ("key17", false), ("key0", false), ("key01", false), ("knob3", true), ("knob4", false), ("knob", false), ("", false)] {
+            assert_eq!(held_control(name), ok, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_held_layer_is_added_once_and_edited_like_the_base() {
+        let mut c = KeypadConfig::parse(r#"{"profiles": [{"name": "global",
+            "layers": [{"name": "timeline", "when": {"focus": "timeline"}, "bindings": {}}],
+            "bindings": {"key1": {"cheatsheet": "hold"}, "knob1": {"ccw": "volumedown"}}}]}"#).unwrap();
+        let i = c.add_held_layer(0, "key1").unwrap();
+        assert_eq!(i, 0, "before the context layers");
+        assert_eq!(c.add_held_layer(0, "key1").unwrap(), i, "found, not added twice");
+        c.set_binding_at(0, Some(i), "knob1.ccw", &Binding::new(ActionKind::Media, "previoussong").labelled("Previous")).unwrap();
+        c.set_binding_at(0, Some(i), "key2", &Binding::new(ActionKind::Shortcut, "ctrl+c")).unwrap();
+        assert!(c.set_binding_at(0, Some(i), "key1", &Binding::new(ActionKind::Shortcut, "x")).is_err(), "the held key itself");
+        assert_eq!(c.binding(0, "knob1.ccw").value, "volumedown", "the base is untouched");
+        assert_eq!(c.bound_slots_at(0, Some(i)).len(), 2);
+        let layer = json::to_compact(&c.doc.get("profiles").unwrap().as_array().unwrap()[0].get("layers").unwrap().as_array().unwrap()[0]);
+        assert_eq!(layer, r#"{ "name": "hold-key1", "when": { "held": "key1" }, "bindings": { "knob1": { "ccw": { "keys": "previoussong", "label": "Previous" } }, "key2": "ctrl+c" } }"#);
+        let j = c.add_held_layer(0, "key13").unwrap();
+        assert_eq!(j, 1, "after the other held layers");
+        assert!(c.add_held_layer(0, "key99").is_err());
+        c.remove_layer(0, j).unwrap();
+        c.remove_layer(0, i).unwrap();
+        assert_eq!(c.held_layers(0).len(), 0);
+        assert_eq!(c.context_layer_count(0), 1);
+    }
+
+    #[test]
+    fn shift_bindings_convert_to_held_layers() {
+        let text = r#"{"profiles": [{"name": "kdenlive", "match": {"class": "^org\\.kde\\.kdenlive"},
+            "layers": [
+                {"name": "timeline", "when": {"focus": "timeline"}, "bindings": {
+                    "knob1": {"turn": {"control": "playhead.jog"}, "shift": {"turn": {"control": "timeline.scroll"}}, "press": "space"}}},
+                {"name": "wheels", "when": {"colorWheels": true}, "bindings": {"knob2.shift.turn": {"control": "colorwheel.nudge", "options": {"step": "fine"}}}}],
+            "bindings": {"knob3": {"ccw": "left", "cw": "right", "shift": {"ccw": "up", "cw": "down"}}, "key1": {"cheatsheet": "hold"}}},
+            {"name": "global", "bindings": {}}]}"#;
+        let mut c = KeypadConfig::parse(text).unwrap();
+        assert_eq!(c.convert_shift_to_held(0, "key1").unwrap(), (3, 0));
+        assert!(c.shift_bindings(0).is_empty());
+        let held = c.held_layers(0);
+        assert_eq!(held.len(), 3);
+        let by_name = |n: &str| held.iter().find(|h| h.name == n).cloned().unwrap();
+        let plain = by_name("hold-key1");
+        assert_eq!(plain.single(), Some("key1"));
+        assert_eq!(c.binding_at(0, Some(plain.index), "knob3.cw"), Binding::new(ActionKind::Shortcut, "down"));
+        let timeline = by_name("timeline-hold-key1");
+        assert_eq!(timeline.conditions, ["focus"]);
+        assert!(timeline.index < plain.index, "the one with conditions wins, so it goes first");
+        let out = c.render();
+        assert!(out.contains(r#""when": { "held": "key1", "focus": "timeline" }"#), "{out}");
+        assert!(out.contains(r#""knob1": { "turn": { "control": "timeline.scroll" } }"#), "{out}");
+        assert!(out.contains(r#""knob2": { "turn": { "control": "colorwheel.nudge", "options": { "step": "fine" } } }"#), "{out}");
+        assert!(out.contains(r#""press": "space""#) && out.contains(r#""ccw": "left""#), "the rest stays");
+        assert!(!out.contains("shift"), "{out}");
+        assert_eq!(c.convert_shift_to_held(0, "key1").unwrap(), (0, 0), "nothing left");
+
+        // A knob the held layer maps already keeps its shift binding.
+        let mut c = KeypadConfig::parse(r#"{"profiles": [{"name": "global",
+            "layers": [{"name": "mine", "when": {"held": "key2"}, "bindings": {"knob1": {"ccw": "a"}}}],
+            "bindings": {"knob1": {"shift": {"cw": "b"}}, "knob2": {"shift": {"cw": "c"}}}}]}"#).unwrap();
+        assert_eq!(c.convert_shift_to_held(0, "key2").unwrap(), (1, 1));
+        assert_eq!(c.shift_bindings(0), ["knob1"]);
+        assert_eq!(c.binding_at(0, Some(0), "knob2.cw"), Binding::new(ActionKind::Shortcut, "c"));
+        assert!(c.convert_shift_to_held(0, "key0").is_err());
     }
 
     #[test]

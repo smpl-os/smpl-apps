@@ -92,6 +92,15 @@ struct State {
     pending_options: Vec<(String, String)>,
     /// The firmware reports turns while a knob is pressed (`None`: unknown).
     shift_supported: Option<bool>,
+    /// The keypad app has held layers ("while holding key N").
+    held_supported: bool,
+    /// The held layer being edited (index in the profile's "layers"); `None`:
+    /// the profile's normal bindings.
+    layer: Option<usize>,
+    /// "Hold a key…": the next control clicked becomes a held layer's key.
+    picking_held: bool,
+    /// The key chosen for converting shift bindings (index: key1 = 0).
+    shift_key: usize,
     icon_picker: bool,
     kdenlive_actions: Vec<(String, String)>,
     /// Kdenlive context picked for the preview (index into KDENLIVE_CONTEXTS).
@@ -269,11 +278,15 @@ impl State {
             Some(p) if !p.global => config::example_class(&p.class),
             _ => "smplos-cheatsheet-preview".to_string(),
         };
-        let context = if profile.is_some_and(|p| p.kdenlive) {
+        let mut context = if profile.is_some_and(|p| p.kdenlive) {
             super::KDENLIVE_CONTEXTS[self.sheet_context.min(super::KDENLIVE_CONTEXTS.len() - 1)].1.to_string()
         } else {
             String::new()
         };
+        // A held layer previews as if its key(s) were down ("$held").
+        if let Some(h) = self.held_scope() {
+            context = super::with_held(&context, &h.held[0].join("+"));
+        }
         (class, context)
     }
 
@@ -294,7 +307,28 @@ impl State {
     }
 
     fn load_editor(&mut self) {
-        self.editor = self.config.binding(self.profile, &self.slot());
+        self.editor = self.config.binding_at(self.profile, self.held_index(), &self.slot());
+    }
+
+    /// The held layer being edited, if it still is one.
+    fn held_scope(&self) -> Option<config::HeldLayer> {
+        let i = self.layer?;
+        self.config.held_layers(self.profile).into_iter().find(|h| h.index == i)
+    }
+
+    fn held_index(&self) -> Option<usize> {
+        self.held_scope().map(|h| h.index)
+    }
+
+    /// The selected control is the one held for the layer being edited.
+    fn editing_held_control(&self) -> bool {
+        self.held_scope().is_some_and(|h| h.controls().contains(&self.control))
+    }
+
+    /// Back to the profile's normal bindings (another profile, a reload).
+    fn leave_layer(&mut self) {
+        self.layer = None;
+        self.picking_held = false;
     }
 
     /// The icon the keypad app resolved for `slot` in the preview (the
@@ -314,11 +348,11 @@ impl State {
     /// The icon the cheatsheet shows for this profile's own binding of `slot`:
     /// its "icon", or the keypad app's automatic one; none when unbound here.
     fn slot_icon(&self, slot: &str) -> String {
-        let b = self.config.binding(self.profile, slot);
+        let b = self.config.binding_at(self.profile, self.held_index(), slot);
         let turned = slot.ends_with(".ccw") || slot.ends_with(".cw");
         let by_turn = || {
             let knob = slot.split('.').next().unwrap_or(slot);
-            self.config.binding(self.profile, &format!("{knob}.turn")).kind != ActionKind::Inherit
+            self.config.binding_at(self.profile, self.held_index(), &format!("{knob}.turn")).kind != ActionKind::Inherit
         };
         match b.kind {
             ActionKind::Inherit if turned && by_turn() => self.preview_icon(slot),
@@ -345,24 +379,25 @@ impl State {
                 glyph => (glyph, icon.to_string()),
             }
         };
-        let applied = self.config.binding(self.profile, &self.slot()).icon == icon;
+        let applied = self.config.binding_at(self.profile, self.held_index(), &self.slot()).icon == icon;
         (glyph, if applied { text } else { format!("{text}. Not applied yet") })
     }
 
     fn summary(&self, control: &str) -> String {
         if control.starts_with("knob") {
-            let turn = self.config.binding(self.profile, &format!("{control}.turn"));
+            let layer = self.held_index();
+            let turn = self.config.binding_at(self.profile, layer, &format!("{control}.turn"));
             if turn.kind != ActionKind::Inherit {
                 return "turn".into();
             }
-            let left = self.config.binding(self.profile, &format!("{control}.ccw")).short();
-            let right = self.config.binding(self.profile, &format!("{control}.cw")).short();
+            let left = self.config.binding_at(self.profile, layer, &format!("{control}.ccw")).short();
+            let right = self.config.binding_at(self.profile, layer, &format!("{control}.cw")).short();
             return match (left.is_empty(), right.is_empty()) {
                 (true, true) => String::new(),
                 _ => format!("{left} | {right}"),
             };
         }
-        self.config.binding(self.profile, control).short()
+        self.config.binding_at(self.profile, self.held_index(), control).short()
     }
 
     fn set_message(&mut self, text: impl Into<String>, error: bool) {
@@ -794,6 +829,9 @@ fn render_state(ui: &MainWindow, st: &State) {
 
     // Layout canvas
     let rows = keys.div_ceil(cols).max(knobs).max(1);
+    // Held layers: what the layout marks as held now, and what can be held.
+    let held_now: Vec<String> = st.held_scope().map(|h| h.controls()).unwrap_or_default();
+    let holding: Vec<String> = st.config.held_layers(st.profile).iter().flat_map(|h| h.controls()).collect();
     let controls: Vec<KeypadControl> = super::control_ids(keys, knobs)
         .into_iter()
         .map(|id| {
@@ -822,7 +860,9 @@ fn render_state(ui: &MainWindow, st: &State) {
                 icons::glyph(&st.slot_icon(&id)).to_string()
             };
             KeypadControl {
-                glyph: s(glyph),
+                held: held_now.contains(&id),
+                holds: st.layer.is_none() && holding.contains(&id),
+                glyph: s(if held_now.contains(&id) { String::new() } else { glyph }),
                 label: s(if knob { format!("Knob {n}") } else { n.to_string() }),
                 knob,
                 col: col as i32,
@@ -868,8 +908,9 @@ fn render_state(ui: &MainWindow, st: &State) {
     ui.set_kp_profile_kdenlive(current.as_ref().is_some_and(|p| p.kdenlive));
     ui.set_kp_profile_key_fallback(current.as_ref().is_some_and(|p| p.key_fallback));
     ui.set_kp_profile_note(s(current.as_ref().map_or(String::new(), |p| {
-        if p.layers > 0 {
-            format!("This profile also has {} context layers (edit them in the file). A layer's binding wins over the one set here while its context is active.", p.layers)
+        let context = st.config.context_layer_count(st.profile);
+        if context > 0 {
+            format!("This profile also has {context} context layers (edit them in the file). A layer's binding wins over the one set here while its context is active.")
         } else if p.global {
             "Global applies to every app without its own profile, and to controls an app profile leaves unset.".into()
         } else {
@@ -885,6 +926,39 @@ fn render_state(ui: &MainWindow, st: &State) {
             shift.join(", ")
         )
     }));
+    let keys = st.layout().0.max(1);
+    ui.set_kp_shift_keys(strings((1..=keys).map(|k| format!("Key {k}"))));
+    ui.set_kp_shift_key(st.shift_key.min(keys - 1) as i32);
+    let held = st.config.held_layers(st.profile);
+    let scope = st.held_scope();
+    ui.set_kp_held_supported(st.held_supported);
+    ui.set_kp_hold_glyph(s(icons::glyph("hand-finger")));
+    ui.set_kp_layer_names(strings(
+        std::iter::once("Normal (no key held)".to_string()).chain(held.iter().map(|h| h.title())),
+    ));
+    ui.set_kp_layer_index(scope.as_ref().and_then(|c| held.iter().position(|h| h.index == c.index)).map_or(0, |i| i as i32 + 1));
+    ui.set_kp_layer_held(scope.is_some());
+    ui.set_kp_picking_held(st.picking_held);
+    ui.set_kp_layer_note(s(match &scope {
+        Some(h) if !st.held_supported => format!(
+            "{}: the keypad app installed here doesn't know held layers yet, so this layer does nothing until it's updated.",
+            h.title()
+        ),
+        Some(h) => format!(
+            "{}, the controls below do what you map here; controls you leave unset keep their normal binding. {}'s own binding fires when you tap it without using anything else.",
+            h.title(),
+            h.controls().iter().map(|c| config::slot_label(c)).collect::<Vec<_>>().join(" and ")
+        ),
+        None => String::new(),
+    }));
+    ui.set_kp_bindings_title(s(match &scope {
+        Some(h) => format!("Mapped {}", h.title().replacen("While", "while", 1)),
+        None => "Mapped in this profile".to_string(),
+    }));
+    ui.set_kp_sheet_preview_caption(s(match &scope {
+        Some(h) => format!("Preview for the selected profile {}, with your unsaved changes:", h.title().replacen("While", "while", 1)),
+        None => "Preview for the selected profile, with your unsaved changes:".to_string(),
+    }));
     ui.set_kp_adding_profile(st.adding);
     ui.set_kp_app_classes(strings(st.app_classes.clone()));
 
@@ -892,16 +966,22 @@ fn render_state(ui: &MainWindow, st: &State) {
     let n: usize = st.control.trim_start_matches(char::is_alphabetic).parse().unwrap_or(1);
     let knob = st.control.starts_with("knob");
     let mappable = if knob { n <= st.max_knobs } else { n <= st.max_keys };
-    ui.set_kp_selected_title(s(if mappable {
+    let locked = st.editing_held_control();
+    ui.set_kp_selected_title(s(if locked {
+        format!("{} (held for this layer)", config::slot_label(&st.control))
+    } else if mappable {
         config::slot_label(&st.control)
     } else {
         format!("{} (not supported by the keypad app yet)", config::slot_label(&st.control))
     }));
+    ui.set_kp_editor_locked(locked);
     ui.set_kp_selected_knob(knob);
     ui.set_kp_knob_event(st.knob_event as i32);
     let kinds = st.kinds();
     let global = st.global();
+    let in_layer = st.held_scope().is_some();
     ui.set_kp_action_names(strings(kinds.iter().map(|k| match (k, global) {
+        (ActionKind::Inherit, _) if in_layer => "Not set (its normal binding)".to_string(),
         (ActionKind::Inherit, true) => "Not set".to_string(),
         (k, _) => k.label().to_string(),
     })));
@@ -910,6 +990,8 @@ fn render_state(ui: &MainWindow, st: &State) {
     ui.set_kp_choice_names(strings(choices.iter().map(|(_, l)| l.clone())));
     ui.set_kp_choice_index(choices.iter().position(|(k, _)| *k == st.editor.value).map_or(-1, |i| i as i32));
     let (mode, hint) = match st.editor.kind {
+        _ if locked => (0, "You hold this control to use the layer, so it has nothing to do in it. Pick another key or knob."),
+        ActionKind::Inherit if in_layer => (0, "While held, this control keeps its normal binding."),
         ActionKind::Inherit if global => (0, "Unmapped: the control does nothing."),
         ActionKind::Inherit => (0, "Uses the Global profile's binding for this control."),
         ActionKind::Disabled => (0, "Does nothing in this profile (also stops the Global binding)."),
@@ -928,7 +1010,7 @@ fn render_state(ui: &MainWindow, st: &State) {
         hint
     }));
     ui.set_kp_advanced_text(s(if st.editor.kind == ActionKind::Advanced { st.editor.value.as_str() } else { "" }));
-    ui.set_kp_label_enabled(mappable && st.config_error.is_none() && st.editor.takes_label());
+    ui.set_kp_label_enabled(mappable && !locked && st.config_error.is_none() && st.editor.takes_label());
     ui.set_kp_needs_placeholder(s(match st.editor.kind {
         ActionKind::Command => format!(
             "Optional, e.g. {}: skip this binding while it isn't installed",
@@ -970,7 +1052,7 @@ fn render_state(ui: &MainWindow, st: &State) {
 
     let rows: Vec<KeypadBindingRow> = st
         .config
-        .bound_slots(st.profile)
+        .bound_slots_at(st.profile, st.held_index())
         .into_iter()
         .map(|(slot, b)| {
             let unsupported = slot.split('.').nth(1) == Some("shift") && st.shift_supported != Some(true);
@@ -1092,6 +1174,7 @@ fn load_config(st: &mut State) {
     st.dirty = false;
     st.override_open = false;
     st.profile = st.profile.min(st.config.profiles().len().saturating_sub(1));
+    st.leave_layer();
     st.load_editor();
 }
 
@@ -1172,7 +1255,12 @@ fn on_input(ui: &MainWindow, event: InputEvent) {
     let mut selected = false;
     let handled = with(|st| {
         let mut handled = false;
-        if st.identify {
+        if st.identify && st.picking_held && event.event == "press" {
+            selected = true;
+            let control = event.control.clone();
+            pick_held(st, &control);
+            handled = true;
+        } else if st.identify {
             selected = true;
             st.control = event.control.clone();
             if let Some(i) = knob_event_index(&event.event) {
@@ -1237,6 +1325,10 @@ fn set_layout(st: &mut State, choice: Layout) {
 
 fn select_slot(st: &mut State, slot: &str) {
     let (control, event) = slot.split_once('.').unwrap_or((slot, ""));
+    if st.picking_held {
+        pick_held(st, control);
+        return;
+    }
     st.control = control.to_string();
     if let Some(i) = knob_event_index(event) {
         st.knob_event = i;
@@ -1264,7 +1356,7 @@ fn apply_binding(ui: &MainWindow) {
             binding.needs.clear();
         }
         let slot = st.slot();
-        match st.config.set_binding(st.profile, &slot, &binding) {
+        match st.config.set_binding_at(st.profile, st.held_index(), &slot, &binding) {
             Ok(note) => {
                 st.dirty = true;
                 st.load_editor();
@@ -1290,6 +1382,31 @@ fn launched_program(command: &str) -> Option<&str> {
     match words.first() {
         Some(first) if WRAPPERS.contains(first) => words.last().copied().filter(|w| w != first),
         first => first.copied(),
+    }
+}
+
+/// "Hold a key…" then a click (or a press while identifying): adds the layer
+/// for `control` (or opens the one there is) and edits it.
+fn pick_held(st: &mut State, control: &str) {
+    st.picking_held = false;
+    let before = st.config.held_layers(st.profile).len();
+    match st.config.add_held_layer(st.profile, control) {
+        Ok(index) => {
+            st.layer = Some(index);
+            let label = config::slot_label(control);
+            if st.config.held_layers(st.profile).len() > before {
+                st.dirty = true;
+                st.set_message(format!("Added a layer for holding {label}: map what the other keys and knobs do meanwhile, then Save."), false);
+            } else {
+                st.set_message(format!("This profile already has a layer for holding {label}."), false);
+            }
+            // Start on a control other than the held one.
+            if st.control == control {
+                st.control = if control == "key1" { "key2".into() } else { "key1".into() };
+            }
+            st.load_editor();
+        }
+        Err(e) => st.set_message(e, true),
     }
 }
 
@@ -1624,6 +1741,7 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
                     st.input_modes = f.input_modes;
                     st.direct_options = f.options.into_iter().collect();
                     st.shift_supported = f.shift_supported;
+                    st.held_supported = f.held_layers;
                 }
             });
             if let Some(ui) = weak.upgrade() {
@@ -1664,6 +1782,10 @@ impl State {
             direct_options: HashSet::new(),
             pending_options: Vec::new(),
             shift_supported: None,
+            held_supported: false,
+            layer: None,
+            picking_held: false,
+            shift_key: 0,
             icon_picker: false,
             kdenlive_actions: Vec::new(),
             sheet_context: 0,
@@ -1906,6 +2028,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         let Some(ui) = weak.upgrade() else { return };
         with(|st| {
             st.profile = i.max(0) as usize;
+            st.leave_layer();
             st.adding = false;
             st.load_editor();
         });
@@ -1949,6 +2072,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
             match st.config.add_app_profile(&name, &class) {
                 Ok(i) => {
                     st.profile = i;
+                    st.leave_layer();
                     st.adding = false;
                     st.dirty = true;
                     st.load_editor();
@@ -1977,6 +2101,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
             match st.config.remove_profile(st.profile) {
                 Ok(()) => {
                     st.profile = st.profile.saturating_sub(1);
+                    st.leave_layer();
                     st.dirty = true;
                     st.load_editor();
                     st.set_message(format!("Removed the {name} profile. Not saved yet."), false);
@@ -2030,6 +2155,98 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                     format!("Removed turn-while-pressed bindings from {n} knob(s); their presses fire at once again. Not saved yet."),
                     false,
                 );
+            }
+        });
+        sync_editor_text(&ui);
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_select_layer(move |i| {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            st.picking_held = false;
+            st.layer = match i {
+                i if i <= 0 => None,
+                i => st.config.held_layers(st.profile).get(i as usize - 1).map(|h| h.index),
+            };
+            st.load_editor();
+        });
+        sync_editor_text(&ui);
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_start_held_layer(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| st.picking_held = true);
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_cancel_held_layer(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| st.picking_held = false);
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_remove_layer(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            let Some(h) = st.held_scope() else { return };
+            match st.config.remove_layer(st.profile, h.index) {
+                Ok(()) => {
+                    st.dirty = true;
+                    st.leave_layer();
+                    st.load_editor();
+                    st.set_message(format!("Removed the layer \"{}\". Not saved yet.", h.title()), false);
+                }
+                Err(e) => st.set_message(e, true),
+            }
+        });
+        sync_editor_text(&ui);
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_convert_shift(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let key = ui.get_kp_shift_key().max(0) as usize;
+        with(|st| {
+            st.shift_key = key;
+            let control = format!("key{}", key + 1);
+            match st.config.convert_shift_to_held(st.profile, &control) {
+                Ok((0, 0)) => {}
+                Ok((0, kept)) => st.set_message(
+                    format!(
+                        "Nothing moved: the layer for holding {} already maps {kept} of these knob(s). Remove the turn-while-pressed bindings, or pick another key.",
+                        config::slot_label(&control)
+                    ),
+                    false,
+                ),
+                Ok((moved, kept)) => {
+                    st.dirty = true;
+                    let label = config::slot_label(&control);
+                    let kept = if kept > 0 {
+                        format!(" {kept} knob(s) stayed as they were, because the layer for holding {label} maps them already: compare, then Remove them or pick another key.")
+                    } else {
+                        String::new()
+                    };
+                    // Show the plain layer it went to, on a knob it maps.
+                    st.layer = st.config.held_layers(st.profile).iter().find(|h| h.single() == Some(control.as_str())).map(|h| h.index);
+                    if st.editing_held_control() || !st.control.starts_with("knob") {
+                        let knob = st.config.bound_slots_at(st.profile, st.held_index()).into_iter()
+                            .find_map(|(slot, _)| slot.starts_with("knob").then(|| slot.split('.').next().unwrap_or("knob1").to_string()));
+                        st.control = knob.unwrap_or_else(|| "knob1".into());
+                    }
+                    st.load_editor();
+                    st.set_message(
+                        format!("Moved {moved} knob(s) to \"hold {label} and turn\". Not saved yet.{kept}"),
+                        false,
+                    );
+                }
+                Err(e) => st.set_message(e, true),
             }
         });
         sync_editor_text(&ui);
@@ -2173,6 +2390,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
             match preset {
                 Some(p) => {
                     st.profile = st.config.apply_kdenlive_preset(p);
+                    st.leave_layer();
                     st.dirty = true;
                     st.load_editor();
                     st.set_message("Loaded the recommended Kdenlive layout (with context layers). Not saved yet.", false);
@@ -2193,7 +2411,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
             if kind == st.editor.kind {
                 return;
             }
-            let current = st.config.binding(st.profile, &st.slot());
+            let current = st.config.binding_at(st.profile, st.held_index(), &st.slot());
             let (label, icon, needs) = (st.editor.label.clone(), st.editor.icon.clone(), st.editor.needs.join(" "));
             st.editor = if current.kind == kind {
                 current
@@ -2581,6 +2799,54 @@ mod tests {
         offline.status.app.bus = false;
         assert_eq!(wizard_input_begin(&mut offline), None, "no keypad app reading the pad");
         assert_eq!(offline.config.input_mode(), "raw");
+    }
+
+    const HOLDS: &str = r#"{"profiles": [
+        {"name": "brave", "match": {"class": "^brave-browser$"}, "bindings": {"key6": "alt+left"}},
+        {"name": "global", "bindings": {"key1": {"cheatsheet": "hold"}, "knob1": {"ccw": "volumedown", "cw": "volumeup",
+            "shift": {"ccw": "previoussong", "cw": "nextsong"}}}}]}"#;
+
+    #[test]
+    fn hold_a_key_picks_on_the_layout_and_edits_that_layer() {
+        let mut st = live_state(HOLDS, &[]);
+        st.held_supported = true;
+        st.profile = 1;
+        st.control = "key1".into();
+        st.picking_held = true;
+        select_slot(&mut st, "key1");
+        assert!(!st.picking_held && st.dirty);
+        let layer = st.held_scope().expect("editing the new layer");
+        assert_eq!(layer.single(), Some("key1"));
+        assert_eq!(st.control, "key2", "moved off the held key");
+        // Mapping goes into the layer, not the profile.
+        st.control = "knob1".into();
+        st.knob_event = 0;
+        st.load_editor();
+        assert_eq!(st.editor.kind, ActionKind::Inherit, "the layer starts empty");
+        st.config.set_binding_at(st.profile, st.held_index(), &st.slot(), &Binding::new(ActionKind::Mouse, "wheel-up")).unwrap();
+        st.load_editor();
+        assert_eq!(st.editor.value, "wheel-up");
+        assert_eq!(st.config.binding_at(1, None, "knob1.ccw").value, "volumedown", "normal binding untouched");
+        assert_eq!(st.summary("knob1"), "Scroll up | ", "the layout shows the layer's bindings");
+        // The held key itself is locked in its layer.
+        st.control = "key1".into();
+        assert!(st.editing_held_control());
+        st.leave_layer();
+        assert!(!st.editing_held_control() && st.held_scope().is_none());
+        // Picking a control that already has a layer opens it.
+        st.picking_held = true;
+        select_slot(&mut st, "key1");
+        assert_eq!(st.held_scope().map(|h| h.index), Some(layer.index));
+        assert!(st.message.contains("already has a layer"));
+    }
+
+    #[test]
+    fn the_preview_of_a_held_layer_holds_its_key() {
+        let mut st = live_state(HOLDS, &[]);
+        st.profile = 1;
+        assert_eq!(st.sheet_target().1, "");
+        st.layer = Some(st.config.add_held_layer(1, "key13").unwrap());
+        assert_eq!(st.sheet_target().1, r#"{"$held":"key13"}"#);
     }
 
     #[test]

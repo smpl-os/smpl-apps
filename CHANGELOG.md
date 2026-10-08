@@ -56,6 +56,26 @@ All notable changes to smpl-apps are documented here.
   `pad-cheatsheet-passthrough`, keeping the other `eww` fields. It is never
   combined with "until hidden", because nothing could close the sheet.
 
+- **settings: keypad "while holding a key" layers.** With a keypad app that
+  has held layers (`features.heldLayers`):
+  - **Adding one:** the Mapping card's Layer list offers "Normal (no key
+    held)" and each "While holding key N" layer. "Hold a key…" then a click
+    on the layout (or a press, while identifying) adds a
+    `"when": {"held": "keyN"}` layer, or opens the existing one.
+  - **Editing it:** the editor, binding list, layout and cheatsheet preview
+    show that layer. The preview passes `"$held"` to the keypad app; unset
+    controls keep their normal binding. The held control is marked "held"
+    and can't be mapped in its own layer. On the normal layout, controls
+    that have layers carry a small hand. Remove layer deletes it.
+  - **Shift conversion:** turn-while-pressed (`shift`) bindings can be
+    converted to "turn while holding key N" (Key 1 by default). A context
+    layer's go to a held layer with the same conditions, placed first so it
+    wins; knobs the target already maps keep theirs.
+
+  Held layers written by hand (alternatives, key+knob chords, extra
+  conditions) are shown and kept as written. Kdenlive context layers are
+  still edited in the file.
+
 - **settings: keypad options go straight to the keypad app.** With a keypad
   app that has `SetOption` (control-surface c266f02) running on the same
   config file, the Advanced card's simple options take effect right away,
