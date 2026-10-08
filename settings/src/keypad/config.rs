@@ -238,8 +238,9 @@ pub const RAW_MIN_FIRMWARE: [u32; 3] = [2, 0, 2];
 
 /// One engine setting under `"settings"`, edited in Settings > Keypad >
 /// Advanced. Defaults are the keypad app's built-in values (control-surface
-/// `config.h`, `struct Settings`); ranges keep them sensible (the daemon
-/// itself only bounds gestureIdleMs, to 50..590).
+/// `config.h`, `struct Settings`). Ranges are its `SetOption` ranges for the
+/// three it sets in place (accelFactor, accelWindowMs, keyRateHz); the
+/// Kdenlive ones keep to sensible values (it bounds gestureIdleMs to 50..590).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tuning {
     pub key: &'static str,
@@ -259,19 +260,19 @@ pub const TUNINGS: [Tuning; 6] = [
         key: "accelFactor",
         label: "Knob acceleration",
         help: "How much farther a fast turn moves continuous controls (Kdenlive jog, zoom, trim). 1 = off. Key and volume bindings stay one step per detent.",
-        min: 1.0, max: 8.0, step: 0.5, default: 1.0, unit: "×", kdenlive: false,
+        min: 1.0, max: 10.0, step: 0.5, default: 1.0, unit: "×", kdenlive: false,
     },
     Tuning {
         key: "accelWindowMs",
         label: "Fast turn",
         help: "Detents closer together than this count as a fast turn.",
-        min: 10.0, max: 200.0, step: 5.0, default: 40.0, unit: " ms", kdenlive: false,
+        min: 5.0, max: 200.0, step: 5.0, default: 40.0, unit: " ms", kdenlive: false,
     },
     Tuning {
         key: "keyRateHz",
         label: "Knob key rate",
         help: "Most key presses per second a knob sends (queued taps beyond 48 are dropped; reversing drops the rest).",
-        min: 10.0, max: 500.0, step: 10.0, default: 120.0, unit: "/s", kdenlive: false,
+        min: 10.0, max: 1000.0, step: 10.0, default: 120.0, unit: "/s", kdenlive: false,
     },
     Tuning {
         key: "coalesceMs",
@@ -1134,6 +1135,55 @@ impl KeypadConfig {
         Ok(())
     }
 
+    /// Where a profile has "shift" (turn while pressed) bindings: "knob1" for
+    /// its own bindings, "knob1 in the timeline layer" for a layer's.
+    pub fn shift_bindings(&self, profile: usize) -> Vec<String> {
+        let Some(p) = self.profile_list().get(profile) else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut scan = |bindings: Option<&Json>, layer: Option<&str>| {
+            for (slot, value) in bindings.map(Json::entries).unwrap_or_default() {
+                let knob = slot.split('.').next().unwrap_or(slot);
+                let shift = slot.split('.').nth(1) == Some("shift") || (!slot.contains('.') && value.get("shift").is_some());
+                if knob.starts_with("knob") && shift {
+                    let place = layer.map_or(knob.to_string(), |l| format!("{knob} in the {l} layer"));
+                    if !out.contains(&place) {
+                        out.push(place);
+                    }
+                }
+            }
+        };
+        scan(p.get("bindings"), None);
+        for layer in p.get("layers").and_then(Json::as_array).into_iter().flatten() {
+            scan(layer.get("bindings"), Some(layer.get("name").and_then(Json::as_str).unwrap_or("unnamed")));
+        }
+        out
+    }
+
+    /// Removes a profile's "shift" bindings (its own and its layers'); returns
+    /// how many knobs had them.
+    pub fn remove_shift_bindings(&mut self, profile: usize) -> usize {
+        let Ok(p) = self.profile_mut(profile) else { return 0 };
+        let mut removed = 0;
+        let mut strip = |bindings: Option<&mut Json>| {
+            let Some(Json::Obj(entries)) = bindings else { return };
+            let before = entries.len();
+            entries.retain(|(slot, _)| !(slot.starts_with("knob") && slot.split('.').nth(1) == Some("shift")));
+            removed += before - entries.len();
+            for (slot, value) in entries.iter_mut() {
+                if slot.starts_with("knob") && !slot.contains('.') && value.remove("shift").is_some() {
+                    removed += 1;
+                }
+            }
+        };
+        strip(p.get_mut("bindings"));
+        if let Some(Json::Arr(layers)) = p.get_mut("layers") {
+            for layer in layers.iter_mut() {
+                strip(layer.get_mut("bindings"));
+            }
+        }
+        removed
+    }
+
     /// Renames a profile (names show in the profile list and the cheatsheet).
     pub fn set_profile_name(&mut self, index: usize, name: &str) -> Result<(), String> {
         let name = name.trim();
@@ -1611,12 +1661,12 @@ mod tests {
         c.set_tuning("accelFactor", Some(2.6)).unwrap();
         assert_eq!(c.tuning("accelFactor"), Some(2.5));
         c.set_tuning("keyRateHz", Some(9999.0)).unwrap();
-        assert_eq!(c.tuning("keyRateHz"), Some(500.0));
+        assert_eq!(c.tuning("keyRateHz"), Some(1000.0));
         c.set_tuning("gestureIdleMs", Some(10.0)).unwrap();
         assert_eq!(c.tuning("gestureIdleMs"), Some(50.0), "the daemon's own bound");
         assert!(c.set_tuning("speed", Some(1.0)).is_err());
         let out = c.render();
-        assert!(out.contains(r#""accelFactor": 2.5"#) && out.contains(r#""keyRateHz": 500"#), "{out}");
+        assert!(out.contains(r#""accelFactor": 2.5"#) && out.contains(r#""keyRateHz": 1000"#), "{out}");
         for t in TUNINGS {
             c.set_tuning(t.key, None).unwrap();
             assert!(t.min <= t.default && t.default <= t.max, "{}", t.key);
@@ -1673,6 +1723,35 @@ mod tests {
             o.click_through = true;
         });
         assert!(!both.sheet_options(&d).overlay && both.sheet_options(&d).click_through);
+    }
+
+    #[test]
+    fn shift_bindings_are_found_and_removed_in_profiles_and_layers() {
+        let text = r#"{"profiles": [{"name": "kdenlive", "match": {"class": "^org\\.kde\\.kdenlive"},
+            "layers": [{"name": "timeline", "when": {"focus": "timeline"}, "bindings": {
+                "knob1": {"turn": {"control": "playhead.jog"}, "shift": {"turn": {"control": "timeline.scroll"}}, "press": "space"}}},
+                       {"name": "wheels", "bindings": {"knob2.shift.turn": {"control": "colorwheel.nudge"}, "key6": "x"}}],
+            "bindings": {"knob3": {"ccw": "left", "cw": "right", "shift": {"ccw": "up", "cw": "down"}}, "key1": "a"}},
+            {"name": "global", "bindings": {"knob1": {"ccw": "volumedown"}}}]}"#;
+        let mut c = KeypadConfig::parse(text).unwrap();
+        assert_eq!(c.shift_bindings(0), ["knob3", "knob1 in the timeline layer", "knob2 in the wheels layer"]);
+        assert!(c.shift_bindings(1).is_empty());
+        assert_eq!(c.remove_shift_bindings(0), 3);
+        assert!(c.shift_bindings(0).is_empty());
+        let out = c.render();
+        assert!(out.contains(r#""turn": { "control": "playhead.jog" }"#) && out.contains(r#""press": "space""#), "the rest stays: {out}");
+        assert!(out.contains(r#""key6": "x""#) && out.contains(r#""ccw": "left""#));
+        assert_eq!(c.remove_shift_bindings(0), 0);
+    }
+
+    #[test]
+    fn tuning_ranges_match_the_keypad_apps_set_option() {
+        // control-surface c266f02 features.options (settings.*).
+        for (key, min, max) in [("accelFactor", 1.0, 10.0), ("accelWindowMs", 5.0, 200.0), ("keyRateHz", 10.0, 1000.0)] {
+            let t = TUNINGS.iter().find(|t| t.key == key).unwrap();
+            assert_eq!((t.min, t.max), (min, max), "{key}");
+            assert!(((t.max - t.min) / t.step).fract() == 0.0, "{key}: the range is whole steps");
+        }
     }
 
     #[test]

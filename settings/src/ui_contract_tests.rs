@@ -463,6 +463,11 @@ fn keypad_advanced_reaches_what_was_hand_edited() {
         assert!(keypad.contains(needle), "missing: {needle}");
     }
     assert!(!UI.contains("kp-apply-profile-class"), "one Apply for name, class and title");
+    assert!(keypad.contains("clicked => { root.kp-remove-shift(); }"), "unsupported shift bindings can be removed");
+    let advanced_rs = include_str!("keypad/ui.rs");
+    for needle in ["fn direct_route(", "super::set_option(k, v)", "wizard_input_begin(st)", "wizard_input_end(st, w.restore_input.take())"] {
+        assert!(advanced_rs.contains(needle), "{needle}");
+    }
     let ui_rs = include_str!("keypad/ui.rs");
     assert!(ui_rs.contains("super::input_summary(st.status.input.as_ref(), st.status.app.running(), firmware, &mode)"));
     assert!(ui_rs.contains("(set in the file)"), "a file's custom auto-hide value is shown, not blank");
@@ -514,7 +519,7 @@ fn keypad_cheatsheet_card_label_and_preview_are_wired() {
     assert!(canvas.contains("text: control.glyph;"));
     let preview = UI.split("component KeypadSheetPreview").nth(1).unwrap().split("\ncomponent ").next().unwrap();
     assert!(preview.contains("text: c.glyph;") && preview.contains("for line[i] in c.lines: Rectangle {"));
-    assert!(keypad.contains("text: row.glyph;"));
+    assert!(keypad.contains(r#"text: row.warning ? "!" : row.glyph;"#));
     let show = ui_rs.split("ui.on_kp_show_sheet(").nth(1).unwrap().split("\n    let weak").next().unwrap();
     assert!(show.contains("super::hide_sheet()"), "Show on screen never leaves a sheet up for good");
     assert!(ui_rs.contains("o.click_through &= *ms > 0;"), "until hidden needs a clickable sheet");

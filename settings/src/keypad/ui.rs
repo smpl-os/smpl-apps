@@ -53,6 +53,9 @@ struct Wizard {
     log: Vec<String>,
     seen: HashSet<String>,
     hint: String,
+    /// The input mode to put back when the wizard ends (it switches the
+    /// keypad app to the keymap for the update).
+    restore_input: Option<String>,
 }
 
 struct State {
@@ -83,6 +86,12 @@ struct State {
     icons_shown: bool,
     /// The keypad app's own words for each input mode (`features`).
     input_modes: Vec<(String, String)>,
+    /// Options the installed keypad app sets in place (`SetOption`).
+    direct_options: HashSet<String>,
+    /// Option changes waiting for the debounce timer, then `SetOption`.
+    pending_options: Vec<(String, String)>,
+    /// The firmware reports turns while a knob is pressed (`None`: unknown).
+    shift_supported: Option<bool>,
     icon_picker: bool,
     kdenlive_actions: Vec<(String, String)>,
     /// Kdenlive context picked for the preview (index into KDENLIVE_CONTEXTS).
@@ -512,29 +521,203 @@ fn refresh_sheet_preview(ui: &MainWindow) {
 }
 
 fn set_sheet_option(ui: &MainWindow, change: impl FnOnce(&mut SheetOptions)) {
-    with(|st| {
+    let armed = with(|st| {
         if st.config_error.is_some() {
-            return;
+            return false;
         }
         let before = st.config.sheet_options(&st.sheet_defaults);
         let mut o = before.clone();
         change(&mut o);
-        match st.config.set_sheet_options(&o) {
-            Ok(()) => {
-                st.dirty = true;
-                let note = if o.click_through && !before.click_through && before.auto_hide_ms == 0 {
-                    format!(" It now hides after {} s, because it can't be clicked away.", o.auto_hide_ms / 1000)
-                } else if before.click_through && !o.click_through {
-                    if o.auto_hide_ms == 0 { " Click-through is off, so a click can close it.".to_string() } else { String::new() }
-                } else {
-                    String::new()
-                };
-                st.set_message(format!("Cheatsheet options changed. Not saved yet.{note}"), false);
-            }
-            Err(e) => st.set_message(e, true),
+        if let Err(e) = st.config.set_sheet_options(&o) {
+            st.set_message(e, true);
+            return false;
         }
-    });
+        let note = if o.click_through && !before.click_through && before.auto_hide_ms == 0 {
+            format!(" It now hides after {} s, because it can't be clicked away.", o.auto_hide_ms / 1000)
+        } else if before.click_through && !o.click_through && o.auto_hide_ms == 0 {
+            " Click-through is off, so a click can close it.".to_string()
+        } else {
+            String::new()
+        };
+        // Click-through is a window name, not a simple option: the file path.
+        let options = if o.click_through != before.click_through { None } else { Some(sheet_option_changes(&before, &o)) };
+        commit(st, options, &format!("Cheatsheet options changed.{note}"))
+    })
+    .unwrap_or(false);
+    if armed {
+        arm_options(ui);
+    }
     render(ui);
+}
+
+/// The keypad app's option keys and values (as text) for what changed.
+fn sheet_option_changes(before: &SheetOptions, after: &SheetOptions) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if after.opacity != before.opacity {
+        out.push(("cheatsheet.opacity".to_string(), config::number(after.opacity)));
+    }
+    if after.auto_hide_ms != before.auto_hide_ms {
+        out.push(("cheatsheet.autoHideMs".to_string(), after.auto_hide_ms.to_string()));
+    }
+    if after.position != before.position {
+        out.push(("cheatsheet.position".to_string(), after.position.clone()));
+    }
+    if after.overlay != before.overlay {
+        out.push(("cheatsheet.eww".to_string(), after.overlay.to_string()));
+    }
+    out
+}
+
+/// Whether the running keypad app can write `options` in place: it is on
+/// the bus, knows them (`features.options`) and runs on this file.
+fn direct_route(st: &State, options: &[(String, String)]) -> bool {
+    let same_file = st.status.config_path.as_deref().is_some_and(|daemon| {
+        let ours = super::config_path();
+        let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        canon(std::path::Path::new(daemon)) == canon(&ours)
+    });
+    !options.is_empty()
+        && st.status.app.bus
+        && same_file
+        && st.exists
+        && st.config_error.is_none()
+        && options.iter().all(|(k, _)| st.direct_options.contains(k))
+}
+
+/// After a change to the in-memory config: simple options go to the keypad
+/// app (`SetOption`, written in place with comments kept and applied at
+/// once); anything else waits for Save. Returns whether to arm the timer.
+fn commit(st: &mut State, options: Option<Vec<(String, String)>>, what: &str) -> bool {
+    match options {
+        Some(options) if direct_route(st, &options) => {
+            for (key, value) in options {
+                st.pending_options.retain(|(k, _)| *k != key);
+                st.pending_options.push((key, value));
+            }
+            st.set_message(format!("{what} Saving…"), false);
+            true
+        }
+        Some(options) if options.is_empty() => false,
+        _ => {
+            st.dirty = true;
+            st.set_message(format!("{what} Not saved yet."), false);
+            false
+        }
+    }
+}
+
+thread_local! {
+    static OPTION_TIMER: Timer = Timer::default();
+}
+
+/// Sends queued options once the user pauses (a slider drag sends one).
+fn arm_options(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    OPTION_TIMER.with(|t| {
+        t.start(TimerMode::SingleShot, Duration::from_millis(350), move || {
+            if let Some(ui) = weak.upgrade() {
+                flush_options(&ui);
+            }
+        })
+    });
+}
+
+fn flush_options(ui: &MainWindow) {
+    let Some((changes, snapshot)) = with(|st| {
+        if st.pending_options.is_empty() {
+            return None;
+        }
+        Some((std::mem::take(&mut st.pending_options), st.loaded_text.clone()))
+    })
+    .flatten() else {
+        return;
+    };
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let path = super::config_path();
+        let before = std::fs::read_to_string(&path).ok();
+        let results: Vec<(String, super::OptionResult)> =
+            changes.iter().map(|(k, v)| (k.clone(), super::set_option(k, v))).collect();
+        let after = std::fs::read_to_string(&path).ok();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            with(|st| option_results(st, &results, snapshot, before, after));
+            sync_editor_text(&ui);
+            render(&ui);
+        });
+    });
+}
+
+fn option_label(key: &str) -> String {
+    match key {
+        "input" => "Input mode".into(),
+        "cheatsheet.opacity" => "Cheatsheet opacity".into(),
+        "cheatsheet.autoHideMs" => "Cheatsheet hiding".into(),
+        "cheatsheet.position" => "Cheatsheet position".into(),
+        "cheatsheet.eww" => "Cheatsheet overlay".into(),
+        other => {
+            let name = other.trim_start_matches("settings.");
+            config::TUNINGS.iter().find(|t| t.key == name).map_or(name.to_string(), |t| t.label.to_string())
+        }
+    }
+}
+
+/// Takes in what `SetOption` did. The file it wrote becomes the baseline
+/// for Save's "changed on disk" check, unless something else changed the
+/// file meanwhile; a clean editor re-reads it, so it shows the file. What the
+/// keypad app couldn't set stays an unsaved change for Save.
+fn option_results(
+    st: &mut State,
+    results: &[(String, super::OptionResult)],
+    snapshot: Option<String>,
+    before: Option<String>,
+    after: Option<String>,
+) {
+    use super::OptionResult::*;
+    let wrote = results.iter().any(|(_, r)| matches!(r, Set { changed: true, .. } | Unapplied(_)));
+    // Kept in the editor for Save, so it must not be re-read from the file.
+    if results.iter().any(|(_, r)| matches!(r, Unsupported | Refused(_))) {
+        st.dirty = true;
+    }
+    if before == snapshot && st.loaded_text == snapshot {
+        st.loaded_text = after.clone();
+        st.exists = after.is_some();
+        if !st.dirty && st.pending_options.is_empty() {
+            if let Some(cfg) = after.as_deref().and_then(|t| KeypadConfig::parse(t).ok()) {
+                st.config = cfg;
+                st.profile = st.profile.min(st.config.profiles().len().saturating_sub(1));
+                st.load_editor();
+            }
+        }
+    } else if wrote && !st.dirty && st.pending_options.is_empty() {
+        load_config(st);
+    }
+    let names = |pick: &dyn Fn(&super::OptionResult) -> bool| {
+        results.iter().filter(|(_, r)| pick(r)).map(|(k, _)| option_label(k)).collect::<Vec<_>>().join(", ")
+    };
+    if let Some((key, Refused(m))) = results.iter().find(|(_, r)| matches!(r, Refused(_))) {
+        st.dirty = true;
+        st.set_message(format!("The keypad app refused {}: {m}. Not saved yet.", option_label(key)), true);
+    } else if results.iter().any(|(_, r)| *r == Unsupported) {
+        st.dirty = true;
+        st.set_message(
+            format!("{}: the keypad app can't set this directly, so it's an unsaved change. Save writes it.", names(&|r| *r == Unsupported)),
+            false,
+        );
+    } else if let Some((_, Unapplied(m))) = results.iter().find(|(_, r)| matches!(r, Unapplied(_))) {
+        st.set_message(format!("Saved, but the keypad app couldn't apply it: {m}"), true);
+    } else {
+        let backup = results
+            .iter()
+            .find_map(|(_, r)| match r {
+                Set { backup: Some(b), .. } => Some(b.clone()),
+                _ => None,
+            })
+            .map(|b| format!(" Previous file: {}.", std::path::Path::new(&b).file_name().map_or(b.clone(), |n| n.to_string_lossy().into_owned())))
+            .unwrap_or_default();
+        let others = if st.dirty { " Your other changes are still unsaved." } else { "" };
+        st.set_message(format!("{}: saved and applied.{backup}{others}", names(&|r| matches!(r, Set { .. }))), false);
+    }
 }
 
 fn render_state(ui: &MainWindow, st: &State) {
@@ -693,6 +876,15 @@ fn render_state(ui: &MainWindow, st: &State) {
             String::new()
         }
     })));
+    let shift = if st.shift_supported == Some(true) { Vec::new() } else { st.config.shift_bindings(st.profile) };
+    ui.set_kp_shift_note(s(if shift.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Turn-while-pressed bindings on {}: the keypad's firmware ignores turns while a knob is pressed, so they never fire, and they hold back that knob's press until you let go.",
+            shift.join(", ")
+        )
+    }));
     ui.set_kp_adding_profile(st.adding);
     ui.set_kp_app_classes(strings(st.app_classes.clone()));
 
@@ -780,15 +972,24 @@ fn render_state(ui: &MainWindow, st: &State) {
         .config
         .bound_slots(st.profile)
         .into_iter()
-        .map(|(slot, b)| KeypadBindingRow {
-            label: s(config::slot_label(&slot)),
-            summary: s(match b.kind {
-                ActionKind::Advanced => format!("advanced: {}", b.value),
-                _ => b.summary(),
-            }),
-            advanced: b.kind == ActionKind::Advanced,
-            glyph: s(icons::glyph(&st.slot_icon(&slot))),
-            slot: s(slot),
+        .map(|(slot, b)| {
+            let unsupported = slot.split('.').nth(1) == Some("shift") && st.shift_supported != Some(true);
+            KeypadBindingRow {
+                label: s(if unsupported {
+                    format!("{} · Turn while pressed", config::slot_label(slot.split('.').next().unwrap_or(&slot)))
+                } else {
+                    config::slot_label(&slot)
+                }),
+                summary: s(match b.kind {
+                    _ if unsupported => "never fires: the firmware ignores turns while a knob is pressed".to_string(),
+                    ActionKind::Advanced => format!("advanced: {}", b.value),
+                    _ => b.summary(),
+                }),
+                advanced: b.kind == ActionKind::Advanced,
+                glyph: s(icons::glyph(&st.slot_icon(&slot))),
+                warning: unsupported,
+                slot: s(slot),
+            }
         })
         .collect();
     ui.set_kp_binding_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
@@ -1101,6 +1302,34 @@ fn sync_profile_fields(ui: &MainWindow) {
     }
 }
 
+/// Switches the keypad app to keymap input for a firmware update: its raw
+/// input would compete with the update tool's own raw session (its
+/// flash-and-verify refuses to start otherwise). Returns the mode to put
+/// back, or `None` when nothing was switched.
+fn wizard_input_begin(st: &mut State) -> Option<String> {
+    let in_file = st
+        .loaded_text
+        .as_deref()
+        .and_then(|t| KeypadConfig::parse(t).ok())
+        .map_or_else(|| st.config.input_mode(), |c| c.input_mode());
+    let change = vec![("input".to_string(), "evdev".to_string())];
+    if in_file == "evdev" || !direct_route(st, &change) || st.config.set_input_mode("evdev").is_err() {
+        return None;
+    }
+    commit(st, Some(change), "For the firmware update the keypad app reads the keymap (Keymap input); closing the wizard puts it back.")
+        .then_some(in_file)
+}
+
+/// Puts back the input mode `wizard_input_begin` switched; true to arm the timer.
+fn wizard_input_end(st: &mut State, restore: Option<String>) -> bool {
+    let Some(mode) = restore else { return false };
+    if st.config.set_input_mode(&mode).is_err() {
+        return false;
+    }
+    let label = config::INPUT_MODES.iter().find(|(m, _)| *m == mode).map_or(mode.as_str(), |(_, l)| l);
+    commit(st, Some(vec![("input".into(), mode.clone())]), &format!("Input mode back to {label} after the firmware wizard."))
+}
+
 /// What an input mode does, for the line under the mode buttons.
 fn input_help(st: &State, mode: &str, firmware: Option<(&str, &str)>) -> String {
     let text = match mode {
@@ -1110,7 +1339,7 @@ fn input_help(st: &State, mode: &str, firmware: Option<(&str, &str)>) -> String 
             let now = st.input_modes.iter().find(|(m, _)| m == "auto").map(|(_, d)| d.as_str());
             match now {
                 Some(d) => format!("The keypad app chooses; right now it says: {d}."),
-                None => "The keypad app chooses: the keymap for now, raw once raw input has passed its hardware test.".to_string(),
+                None => "The keypad app chooses: raw on the open firmware 2.0.2 or newer, the keymap otherwise.".to_string(),
             }
         }
     };
@@ -1393,6 +1622,8 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
                     st.sheet_defaults = f.sheet_defaults;
                     st.icons_shown = f.icons;
                     st.input_modes = f.input_modes;
+                    st.direct_options = f.options.into_iter().collect();
+                    st.shift_supported = f.shift_supported;
                 }
             });
             if let Some(ui) = weak.upgrade() {
@@ -1407,48 +1638,57 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
     true
 }
 
+impl State {
+    fn new() -> Self {
+        Self {
+            loaded: false,
+            status: Status::default(),
+            status_loaded: false,
+            variants: super::builtin_variants(),
+            override_open: false,
+            daemon: None,
+            config: KeypadConfig::parse(config::DEFAULT_CONFIG).expect("default config"),
+            config_error: None,
+            exists: false,
+            loaded_text: None,
+            dirty: false,
+            profile: 0,
+            control: "key1".into(),
+            knob_event: 0,
+            editor: Binding::new(ActionKind::Inherit, ""),
+            mouse: false,
+            sheet: false,
+            sheet_defaults: config::SheetDefaults::default(),
+            icons_shown: false,
+            input_modes: Vec::new(),
+            direct_options: HashSet::new(),
+            pending_options: Vec::new(),
+            shift_supported: None,
+            icon_picker: false,
+            kdenlive_actions: Vec::new(),
+            sheet_context: 0,
+            sheet_key: String::new(),
+            sheet_generation: 0,
+            sheet_preview: Err(String::new()),
+            identify: false,
+            identify_sent: false,
+            identify_holder: None,
+            max_keys: LEGACY_KEYS,
+            max_knobs: LEGACY_KNOBS,
+            live_started: false,
+            active: None,
+            adding: false,
+            app_classes: Vec::new(),
+            wizard: None,
+            message: String::new(),
+            message_is_error: false,
+            saving: false,
+        }
+    }
+}
+
 pub fn install(ui: &MainWindow) -> KeypadTab {
-    let state = State {
-        loaded: false,
-        status: Status::default(),
-        status_loaded: false,
-        variants: super::builtin_variants(),
-        override_open: false,
-        daemon: None,
-        config: KeypadConfig::parse(config::DEFAULT_CONFIG).expect("default config"),
-        config_error: None,
-        exists: false,
-        loaded_text: None,
-        dirty: false,
-        profile: 0,
-        control: "key1".into(),
-        knob_event: 0,
-        editor: Binding::new(ActionKind::Inherit, ""),
-        mouse: false,
-        sheet: false,
-        sheet_defaults: config::SheetDefaults::default(),
-        icons_shown: false,
-        input_modes: Vec::new(),
-        icon_picker: false,
-        kdenlive_actions: Vec::new(),
-        sheet_context: 0,
-        sheet_key: String::new(),
-        sheet_generation: 0,
-        sheet_preview: Err(String::new()),
-        identify: false,
-        identify_sent: false,
-        identify_holder: None,
-        max_keys: LEGACY_KEYS,
-        max_knobs: LEGACY_KNOBS,
-        live_started: false,
-        active: None,
-        adding: false,
-        app_classes: Vec::new(),
-        wizard: None,
-        message: String::new(),
-        message_is_error: false,
-        saving: false,
-    };
+    let state = State::new();
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
     if ui.get_active_tab() == KEYPAD_TAB {
         ensure_loaded(ui);
@@ -1779,6 +2019,24 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     });
 
     let weak = ui.as_weak();
+    ui.on_kp_remove_shift(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            let n = st.config.remove_shift_bindings(st.profile);
+            if n > 0 {
+                st.dirty = true;
+                st.load_editor();
+                st.set_message(
+                    format!("Removed turn-while-pressed bindings from {n} knob(s); their presses fire at once again. Not saved yet."),
+                    false,
+                );
+            }
+        });
+        sync_editor_text(&ui);
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
     ui.on_kp_set_fallthrough(move |on| {
         let Some(ui) = weak.upgrade() else { return };
         with(|st| {
@@ -1800,43 +2058,58 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     let weak = ui.as_weak();
     ui.on_kp_set_input_mode(move |i| {
         let Some(ui) = weak.upgrade() else { return };
-        with(|st| {
-            let Some((mode, label)) = config::INPUT_MODES.get(i.max(0) as usize) else { return };
+        let armed = with(|st| {
+            let Some((mode, label)) = config::INPUT_MODES.get(i.max(0) as usize) else { return false };
             if *mode == st.config.input_mode() {
-                return;
+                return false;
             }
             match st.config.set_input_mode(mode) {
-                Ok(()) => {
-                    st.dirty = true;
-                    st.set_message(
-                        format!("Input mode: {label}. Save to use it; the keypad app switches without a restart."),
-                        false,
-                    );
+                Ok(()) => commit(
+                    st,
+                    Some(vec![("input".into(), mode.to_string())]),
+                    &format!("Input mode: {label}. The keypad app switches without a restart."),
+                ),
+                Err(e) => {
+                    st.set_message(e, true);
+                    false
                 }
-                Err(e) => st.set_message(e, true),
             }
-        });
+        })
+        .unwrap_or(false);
+        if armed {
+            arm_options(&ui);
+        }
         render(&ui);
     });
 
     let weak = ui.as_weak();
     ui.on_kp_set_tuning(move |key, value| {
         let Some(ui) = weak.upgrade() else { return };
-        with(|st| {
+        let armed = with(|st| {
             let before = st.config.tuning(&key);
             match st.config.set_tuning(&key, Some(f64::from(value))) {
                 Ok(()) if st.config.tuning(&key) != before => {
-                    st.dirty = true;
                     let t = config::TUNINGS.iter().find(|t| t.key == key.as_str());
                     let label = t.map_or("Setting", |t| t.label);
                     let unit = t.map_or("", |t| t.unit);
                     let v = st.config.tuning(&key).unwrap_or_default();
-                    st.set_message(format!("{label}: {}{unit}. Not saved yet.", config::number(v)), false);
+                    commit(
+                        st,
+                        Some(vec![(format!("settings.{key}"), config::number(v))]),
+                        &format!("{label}: {}{unit}.", config::number(v)),
+                    )
                 }
-                Ok(()) => {}
-                Err(e) => st.set_message(e, true),
+                Ok(()) => false,
+                Err(e) => {
+                    st.set_message(e, true);
+                    false
+                }
             }
-        });
+        })
+        .unwrap_or(false);
+        if armed {
+            arm_options(&ui);
+        }
         render(&ui);
     });
 
@@ -2079,28 +2352,39 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     let weak = ui.as_weak();
     ui.on_kp_wizard_next(move || {
         let Some(ui) = weak.upgrade() else { return };
-        with(|st| {
-            let Some(mut w) = st.wizard.take() else { return };
+        let armed = with(|st| {
+            let Some(mut w) = st.wizard.take() else { return false };
             if !wizard_can_next(st, &w) {
                 st.wizard = Some(w);
-                return;
+                return false;
             }
             if w.step + 1 >= WIZARD_TITLES.len() {
+                let armed = wizard_input_end(st, w.restore_input.take());
                 st.set_message(
                     format!("Firmware wizard finished: {} of {} inputs confirmed.", w.seen.len(), st.verify_total()),
                     false,
                 );
-                return;
+                return armed;
             }
             w.step += 1;
             w.backed = false;
+            // From "Unplug the keypad" on, the keypad app reads the keymap.
+            let armed = w.step == 2 && w.restore_input.is_none() && {
+                w.restore_input = wizard_input_begin(st);
+                w.restore_input.is_some()
+            };
             if w.step == 4 {
                 w.log.clear();
                 w.flash_ok = false;
             }
             w.hint = wizard_hint(st, &w);
             st.wizard = Some(w);
-        });
+            armed
+        })
+        .unwrap_or(false);
+        if armed {
+            arm_options(&ui);
+        }
         with(|st| sync_identify(st, true));
         refresh_status(&ui);
         render(&ui);
@@ -2126,12 +2410,19 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     let weak = ui.as_weak();
     ui.on_kp_close_wizard(move || {
         let Some(ui) = weak.upgrade() else { return };
-        with(|st| {
+        let armed = with(|st| {
+            let mut armed = false;
             if st.wizard.as_ref().is_some_and(|w| !w.flashing) {
-                st.wizard = None;
+                let restore = st.wizard.take().and_then(|w| w.restore_input);
+                armed = wizard_input_end(st, restore);
             }
             sync_identify(st, true);
-        });
+            armed
+        })
+        .unwrap_or(false);
+        if armed {
+            arm_options(&ui);
+        }
         refresh_status(&ui);
         render(&ui);
     });
@@ -2171,6 +2462,126 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose keypad app runs on Settings' own config file.
+    fn live_state(text: &str, options: &[&str]) -> State {
+        let mut st = State::new();
+        st.config = KeypadConfig::parse(text).unwrap();
+        st.loaded_text = Some(text.to_string());
+        st.exists = true;
+        st.status.app.bus = true;
+        st.status.config_path = Some(super::super::config_path().to_string_lossy().into_owned());
+        st.direct_options = options.iter().map(|o| o.to_string()).collect();
+        st
+    }
+
+    const LIVE: &str = r#"{"device": {"input": "raw"}, "settings": {"keyRateHz": 120}, "profiles": [{"name": "global", "bindings": {}}]}"#;
+
+    #[test]
+    fn simple_options_go_to_the_keypad_app_and_the_rest_waits_for_save() {
+        let opt = |k: &str, v: &str| vec![(k.to_string(), v.to_string())];
+        let mut st = live_state(LIVE, &["input", "settings.keyRateHz"]);
+        assert!(commit(&mut st, Some(opt("input", "evdev")), "Input mode."));
+        assert!(commit(&mut st, Some(opt("input", "auto")), "Input mode."));
+        assert_eq!(st.pending_options, opt("input", "auto"), "one pending value per option, the latest");
+        assert!(!st.dirty && st.message.ends_with("Saving…"));
+        assert!(!commit(&mut st, Some(opt("settings.gestureIdleMs", "400")), "Edit gesture."), "not settable in place");
+        assert!(st.dirty && st.message.ends_with("Not saved yet."));
+        assert!(!commit(&mut st, Some(Vec::new()), "nothing"), "nothing changed");
+
+        for (what, mut other) in [
+            ("no bus", live_state(LIVE, &["input"])),
+            ("another file", live_state(LIVE, &["input"])),
+            ("no file yet", live_state(LIVE, &["input"])),
+            ("old keypad app", live_state(LIVE, &[])),
+        ] {
+            match what {
+                "no bus" => other.status.app.bus = false,
+                "another file" => other.status.config_path = Some("/elsewhere/config.jsonc".into()),
+                "no file yet" => other.exists = false,
+                _ => {}
+            }
+            assert!(!commit(&mut other, Some(opt("input", "evdev")), "x"), "{what}");
+            assert!(other.dirty && other.pending_options.is_empty(), "{what}: falls back to Save");
+        }
+        let mut st = live_state(LIVE, &["input"]);
+        assert!(!commit(&mut st, None, "Click-through on."), "a window name isn't an option");
+        assert!(st.dirty);
+    }
+
+    #[test]
+    fn sheet_changes_map_to_option_keys() {
+        let before = SheetOptions { opacity: 0.35, auto_hide_ms: 8000, position: "center".into(), click_through: false, overlay: true };
+        let after = SheetOptions { opacity: 0.5, auto_hide_ms: 0, position: "top-right".into(), overlay: false, ..before.clone() };
+        let keys: Vec<String> = sheet_option_changes(&before, &after).into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+        assert_eq!(keys, ["cheatsheet.opacity=0.5", "cheatsheet.autoHideMs=0", "cheatsheet.position=top-right", "cheatsheet.eww=false"]);
+        assert!(sheet_option_changes(&before, &before).is_empty());
+    }
+
+    #[test]
+    fn set_option_results_keep_save_and_the_editor_in_step() {
+        use super::super::OptionResult::*;
+        let written = LIVE.replace(r#""raw""#, r#""evdev""#);
+        let ok = vec![("input".to_string(), Set { changed: true, backup: Some("/c/config.jsonc.bak".into()) })];
+
+        // Clean editor: the written file becomes what Save compares and what the editor shows.
+        let mut st = live_state(LIVE, &["input"]);
+        st.config.set_input_mode("evdev").unwrap();
+        st.config.set_tuning("keyRateHz", Some(300.0)).unwrap();
+        option_results(&mut st, &ok, Some(LIVE.into()), Some(LIVE.into()), Some(written.clone()));
+        assert_eq!(st.loaded_text.as_deref(), Some(written.as_str()));
+        assert_eq!((st.config.input_mode().as_str(), st.config.tuning("keyRateHz")), ("evdev", Some(120.0)), "re-read from the file");
+        assert!(!st.dirty && st.message.contains("Input mode: saved and applied") && st.message.contains("config.jsonc.bak"), "{}", st.message);
+
+        // Unsaved edits elsewhere stay; Save's baseline follows the file.
+        let mut st = live_state(LIVE, &["input"]);
+        st.dirty = true;
+        st.config.set_input_mode("evdev").unwrap();
+        st.config.set_tuning("keyRateHz", Some(300.0)).unwrap();
+        option_results(&mut st, &ok, Some(LIVE.into()), Some(LIVE.into()), Some(written.clone()));
+        assert_eq!(st.loaded_text.as_deref(), Some(written.as_str()));
+        assert_eq!(st.config.tuning("keyRateHz"), Some(300.0));
+        assert!(st.dirty && st.message.contains("other changes are still unsaved"));
+
+        // Someone else changed the file meanwhile: Save must still notice.
+        let mut st = live_state(LIVE, &["input"]);
+        st.dirty = true;
+        option_results(&mut st, &ok, Some(LIVE.into()), Some("{\"edited\": 1}".into()), Some(written.clone()));
+        assert_eq!(st.loaded_text.as_deref(), Some(LIVE));
+
+        // What the keypad app couldn't set becomes an ordinary unsaved change.
+        for (result, error) in [(Unsupported, false), (Refused("input: auto, evdev or raw".into()), true)] {
+            let mut st = live_state(LIVE, &["input"]);
+            st.config.set_input_mode("evdev").unwrap();
+            option_results(&mut st, &[("input".into(), result)], Some(LIVE.into()), Some(LIVE.into()), Some(LIVE.into()));
+            assert!(st.dirty && st.message_is_error == error && st.message.contains("Not saved yet") == error, "{}", st.message);
+            assert_eq!(st.config.input_mode(), "evdev", "the change is kept for Save");
+        }
+        let mut st = live_state(LIVE, &["input"]);
+        option_results(&mut st, &[("input".into(), Unapplied("no uinput".into()))], Some(LIVE.into()), Some(LIVE.into()), Some(written.clone()));
+        assert!(!st.dirty && st.message_is_error && st.loaded_text.as_deref() == Some(written.as_str()), "written, not applied");
+    }
+
+    #[test]
+    fn the_firmware_wizard_reads_the_keymap_and_puts_the_mode_back() {
+        let mut st = live_state(LIVE, &["input"]);
+        assert_eq!(wizard_input_begin(&mut st).as_deref(), Some("raw"));
+        assert_eq!(st.pending_options, [("input".to_string(), "evdev".to_string())]);
+        assert_eq!(st.config.input_mode(), "evdev");
+        assert!(wizard_input_end(&mut st, Some("raw".into())));
+        assert_eq!(st.pending_options, [("input".to_string(), "raw".to_string())]);
+        assert!(!wizard_input_end(&mut st, None));
+
+        let auto = r#"{"profiles": []}"#;
+        let mut st = live_state(auto, &["input"]);
+        assert_eq!(wizard_input_begin(&mut st).as_deref(), Some("auto"), "unset means auto, and auto comes back");
+        let keymap = r#"{"device": {"input": "evdev"}, "profiles": []}"#;
+        assert_eq!(wizard_input_begin(&mut live_state(keymap, &["input"])), None, "already the keymap");
+        let mut offline = live_state(LIVE, &["input"]);
+        offline.status.app.bus = false;
+        assert_eq!(wizard_input_begin(&mut offline), None, "no keypad app reading the pad");
+        assert_eq!(offline.config.input_mode(), "raw");
+    }
 
     #[test]
     fn if_installed_suggests_the_launched_program() {

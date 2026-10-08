@@ -166,6 +166,8 @@ struct KeypadBindingRow {
     summary: string,
     advanced: bool,
     glyph: string,
+    // The keypad can't do it (e.g. turn while pressed): marked with "!".
+    warning: bool,
 }
 
 // Outline keypad icons (Tabler Icons subset, MIT), embedded; see
@@ -1688,6 +1690,8 @@ export component MainWindow inherits Window {
     in-out property <string> kp-profile-name;
     in-out property <string> kp-profile-title;
     in property <bool> kp-profile-fallthrough: true;
+    // Turn-while-pressed bindings the firmware can't deliver ("" when none).
+    in property <string> kp-shift-note;
     // Advanced: input mode (index into Automatic, Keymap, Raw) and its state.
     in property <int> kp-input-index: 0;
     in property <string> kp-input-help;
@@ -1740,6 +1744,7 @@ export component MainWindow inherits Window {
     callback kp-remove-profile();
     callback kp-apply-profile-details();
     callback kp-set-fallthrough(bool);
+    callback kp-remove-shift();
     callback kp-set-input-mode(int);
     callback kp-set-tuning(string, float);
     callback kp-reset-tunings();
@@ -8501,6 +8506,28 @@ export component MainWindow inherits Window {
                                 font-size: Typography.secondary;
                                 wrap: word-wrap;
                             }
+                            if root.kp-shift-note != "": HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "!";
+                                    width: 14px;
+                                    color: Theme.warning;
+                                    font-size: Typography.secondary;
+                                    font-weight: 700;
+                                }
+                                Text {
+                                    text: root.kp-shift-note;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                KeypadButton {
+                                    text: "Remove them";
+                                    clicked => { root.kp-remove-shift(); }
+                                }
+                            }
 
                             Rectangle { height: 1px; background: Theme.bg_lighter; }
 
@@ -8846,11 +8873,12 @@ export component MainWindow inherits Window {
                                     padding-right: 8px;
                                     spacing: 12px;
                                     Text {
-                                        text: row.glyph;
+                                        text: row.warning ? "!" : row.glyph;
                                         width: 20px;
-                                        font-family: KeypadIcons.family;
+                                        font-family: row.warning ? "Noto Sans" : KeypadIcons.family;
                                         font-size: 16px;
-                                        color: Theme.accent;
+                                        font-weight: row.warning ? 700 : 400;
+                                        color: row.warning ? Theme.warning : Theme.accent;
                                         vertical-alignment: center;
                                         horizontal-alignment: center;
                                     }

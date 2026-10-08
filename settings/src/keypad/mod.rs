@@ -105,6 +105,8 @@ pub struct Status {
     pub sheet_push: Option<bool>,
     /// Input mode and its health; `None` for keypad apps that predate it.
     pub input: Option<InputStatus>,
+    /// The config file the running keypad app uses (`GetStatus().config.path`).
+    pub config_path: Option<String>,
 }
 
 fn sysfs_root() -> PathBuf {
@@ -243,7 +245,7 @@ pub fn load_status() -> Status {
         process: !bus
             && daemon_process_running(&std::env::var_os("SMPLOS_KEYPAD_PROC").map_or_else(|| PathBuf::from("/proc"), PathBuf::from)),
     };
-    let mut status = Status { pads, bootloaders, app, layout: None, sheet_push: None, input: None };
+    let mut status = Status { pads, bootloaders, app, layout: None, sheet_push: None, input: None, config_path: None };
     if status.app.bus {
         status.layout = daemon_layout();
         if let Some(daemon) = daemon_status() {
@@ -274,6 +276,7 @@ fn apply_daemon_status(status: &mut Status, v: &Value) {
         .and_then(|c| c.get("eww"))
         .and_then(|e| e.get("enabled"))
         .and_then(Value::as_bool);
+    status.config_path = v.get("config").map(|c| text(c, "path")).filter(|p| !p.is_empty());
     status.input = v.get("input").filter(|i| i.is_object()).map(|i| {
         let n = |o: Option<&Value>, k: &str| o.and_then(|o| o.get(k)).and_then(Value::as_u64).unwrap_or(0);
         let raw = i.get("raw");
@@ -336,7 +339,11 @@ pub fn input_summary(input: Option<&InputStatus>, running: bool, firmware: Optio
         return (now, format!("Since the keypad app started: {}.", parts.join(", ")), healthy);
     }
     let mut health = format!("Since the keypad app started: {} events.", i.keymap_events);
-    let wants_raw = configured == "raw" || i.configured == "raw";
+    // "auto" means raw on the open firmware 2.0.2+ (control-surface 7f06731).
+    let raw_capable = firmware.is_some_and(|(kind, version)| {
+        kind == "control-surface" && config::version_at_least(version, config::RAW_MIN_FIRMWARE) == Some(true)
+    });
+    let wants_raw = configured == "raw" || i.configured == "raw" || (raw_capable && i.configured == "auto" && configured == "auto");
     if wants_raw {
         let reason = match firmware {
             _ if !i.layout_warnings.is_empty() => format!(
@@ -1127,6 +1134,52 @@ pub fn show_sheet() -> Result<(), String> {
         .map_err(|_| "the keypad app isn't running, or is too old to show the cheatsheet".into())
 }
 
+/// What `SetOption` did with one option.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OptionResult {
+    /// In the file (written, or already so) and applied. `backup` is the
+    /// previous file's copy when it was written.
+    Set { changed: bool, backup: Option<String> },
+    /// Written, but the running keypad app refused to apply it.
+    Unapplied(String),
+    /// The keypad app can't set it (not on the bus, too old, unknown option):
+    /// Settings writes the file itself.
+    Unsupported,
+    /// Refused (invalid-value, invalid-config, io); nothing written.
+    Refused(String),
+}
+
+pub fn parse_set_option(json: &str) -> OptionResult {
+    let Ok(v) = serde_json::from_str::<Value>(json.trim()) else {
+        return OptionResult::Refused("the keypad app sent no answer".into());
+    };
+    if v.get("ok").and_then(Value::as_bool) == Some(true) {
+        let backup = Some(text(&v, "backup")).filter(|b| !b.is_empty());
+        return OptionResult::Set { changed: v.get("changed").and_then(Value::as_bool).unwrap_or(true), backup };
+    }
+    let error = v.get("error");
+    let message = error.map(|e| text(e, "message")).filter(|m| !m.is_empty()).unwrap_or_else(|| "refused".into());
+    match error.map(|e| text(e, "code")).as_deref() {
+        Some("apply") => OptionResult::Unapplied(message),
+        Some("unknown-option") => OptionResult::Unsupported,
+        _ => OptionResult::Refused(message),
+    }
+}
+
+/// `SetOption(key, value)`: the keypad app changes one value in place in its
+/// config (comments kept, backup, validated) and applies it.
+pub fn set_option(key: &str, value: &str) -> OptionResult {
+    let Some(conn) = bus() else { return OptionResult::Unsupported };
+    match conn.call_method(Some(DBUS_SERVICE), DBUS_PATH, Some(DBUS_INTERFACE), "SetOption", &(key, value)) {
+        Ok(reply) => match reply.body().deserialize::<String>() {
+            Ok(json) => parse_set_option(&json),
+            Err(e) => OptionResult::Refused(e.to_string()),
+        },
+        // Not on the bus, or a keypad app without SetOption.
+        Err(_) => OptionResult::Unsupported,
+    }
+}
+
 /// Takes the overlay down (what a click on it does, too).
 pub fn hide_sheet() -> Result<(), String> {
     bus()
@@ -1161,6 +1214,11 @@ pub struct Features {
     pub icons: bool,
     /// What each `device.input` mode does, in the keypad app's words.
     pub input_modes: Vec<(String, String)>,
+    /// Options the keypad app sets in place (`SetOption`; `features.options`).
+    pub options: Vec<String>,
+    /// The firmware reports turns while a knob is pressed ("shift" bindings);
+    /// `None` when the keypad app doesn't say.
+    pub shift_supported: Option<bool>,
 }
 
 /// `cheatsheet.defaults` when the daemon has it, else read from its option
@@ -1204,6 +1262,14 @@ pub fn parse_features(json: &str) -> Option<Features> {
             .and_then(Value::as_object)
             .map(|m| m.iter().filter_map(|(k, d)| Some((k.clone(), d.as_str()?.to_string()))).collect())
             .unwrap_or_default(),
+        options: v
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|o| o.get("key").and_then(Value::as_str).map(String::from))
+            .collect(),
+        shift_supported: slots.get("shiftSupported").and_then(Value::as_bool),
     })
 }
 
@@ -1397,7 +1463,20 @@ mod tests {
         )
         .unwrap();
         let defaults = config::SheetDefaults::default();
-        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true, cheatsheet: false, sheet_defaults: defaults, icons: false, input_modes: Vec::new() });
+        assert_eq!(
+            f,
+            Features {
+                max_keys: 16,
+                max_knobs: 3,
+                mouse: true,
+                cheatsheet: false,
+                sheet_defaults: defaults,
+                icons: false,
+                input_modes: Vec::new(),
+                options: Vec::new(),
+                shift_supported: None,
+            }
+        );
         let with_sheet = parse_features(r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"modes":["toggle","hold"]}}"#).unwrap();
         assert!(with_sheet.cheatsheet && !with_sheet.icons);
         let icons = r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"icons":{"set":"tabler-outline","auto":["volume"]}}}"#;
@@ -1467,6 +1546,34 @@ mod tests {
 
         assert!(input_summary(None, false, open, "auto").0.contains("isn't running"));
         assert!(input_summary(None, true, open, "auto").0.contains("too old"));
+    }
+
+    #[test]
+    fn set_option_answers() {
+        assert_eq!(
+            parse_set_option(r#"{"ok":true,"key":"input","old":"raw","new":"evdev","changed":true,"backup":"/c/config.jsonc.bak"}"#),
+            OptionResult::Set { changed: true, backup: Some("/c/config.jsonc.bak".into()) }
+        );
+        assert_eq!(parse_set_option(r#"{"ok":true,"changed":false}"#), OptionResult::Set { changed: false, backup: None });
+        assert_eq!(parse_set_option(r#"{"ok":false,"error":{"code":"unknown-option","message":"x"}}"#), OptionResult::Unsupported);
+        assert_eq!(
+            parse_set_option(r#"{"ok":false,"error":{"code":"invalid-value","message":"input: auto, evdev or raw"}}"#),
+            OptionResult::Refused("input: auto, evdev or raw".into())
+        );
+        assert_eq!(
+            parse_set_option(r#"{"ok":false,"changed":true,"error":{"code":"apply","message":"no uinput"}}"#),
+            OptionResult::Unapplied("no uinput".into())
+        );
+        assert!(matches!(parse_set_option("garbage"), OptionResult::Refused(_)));
+    }
+
+    #[test]
+    fn features_list_settable_options_and_shift_support() {
+        let json = r#"{"slots":{"maxKeys":16,"maxKnobs":3,"shiftSupported":false},
+                       "options":[{"key":"input","type":"enum"},{"key":"settings.keyRateHz","type":"integer"}]}"#;
+        let f = parse_features(json).unwrap();
+        assert_eq!(f.options, ["input", "settings.keyRateHz"]);
+        assert_eq!(f.shift_supported, Some(false));
     }
 
     #[test]

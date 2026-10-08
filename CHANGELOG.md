@@ -56,6 +56,32 @@ All notable changes to smpl-apps are documented here.
   `pad-cheatsheet-passthrough`, keeping the other `eww` fields. It is never
   combined with "until hidden", because nothing could close the sheet.
 
+- **settings: keypad options go straight to the keypad app.** With a keypad
+  app that has `SetOption` (control-surface c266f02) running on the same
+  config file, the Advanced card's simple options take effect right away,
+  without Save:
+  - input mode;
+  - cheatsheet opacity, hiding, position and the overlay switch;
+  - knob acceleration, fast-turn window and key rate.
+
+  The keypad app changes just that value in place (comments kept, `.bak`,
+  validated, applied). Slider drags are sent once the drag pauses. Anything
+  it can't set this way (an older keypad app, click-through, Kdenlive
+  timing), or refuses, stays an unsaved change for Save, as before.
+  Settings tracks the file it wrote, so Save still notices edits made
+  elsewhere. Knob tuning ranges now match the keypad app's (acceleration up
+  to 10×, key rate up to 1000/s).
+
+  The firmware wizard switches the keypad app to Keymap input from "Unplug
+  the keypad" on, and back when it closes or finishes: the update tool
+  refuses to run while the keypad app reads the pad raw.
+
+  "Turn while pressed" (`shift`) bindings are marked "never fires" in the
+  binding list, with a note and Remove them, while the keypad app reports
+  `slots.shiftSupported: false`: the firmware ignores turns while a knob is
+  pressed, and such bindings delay that knob's press until release.
+  Automatic input now reads "raw on the open firmware 2.0.2 or newer".
+
 - **settings: keypad Advanced section, so the config needn't be hand-edited.**
   A collapsed Advanced card holds:
   - **Input mode:** Automatic, Keymap (compatible) or Raw (fastest, firmware
