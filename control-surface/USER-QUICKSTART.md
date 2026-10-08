@@ -6,7 +6,7 @@ This is for the CH552 pad (15 keys, 3 knobs that turn and press) and the
 ## 1. Install (once)
 
 ```sh
-cd ~/Documents/source/control-surface
+cd smpl-apps/control-surface   # your smpl-apps checkout
 scripts/install-user.sh
 ```
 

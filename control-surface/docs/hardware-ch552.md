@@ -126,7 +126,7 @@ pressing the controls.
 ## Verification when the user is back (one command)
 
 ```sh
-~/Documents/source/control-surface/scripts/verify-pad.sh
+control-surface/scripts/verify-pad.sh   # from your smpl-apps checkout
 ```
 
 It stops the service if it is running, grabs the pad, and asks for each of the

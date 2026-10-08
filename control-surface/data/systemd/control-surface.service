@@ -3,7 +3,7 @@
 #   systemctl --user enable --now control-surface.service
 [Unit]
 Description=Control surface daemon for the CH552 macro pad (1189:8890)
-Documentation=file://%h/Documents/source/control-surface/README.md
+Documentation=https://github.com/smpl-os/smpl-apps/blob/main/control-surface/README.md
 PartOf=graphical-session.target
 After=graphical-session.target
 Requisite=graphical-session.target
