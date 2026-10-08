@@ -89,5 +89,8 @@ grep -Eq "firmware ${VERSION:-[0-9]+\.[0-9]+\.[0-9]+} layers 2 active [01] raw 0
 grep -q "L0 slot  0 key1         key      key usage=0x69 mods=0x00" "$LOG/keymap.txt" || { echo "layer 0 slot 0 is not F14"; FAIL=1; }
 grep -q "L0 slot 23 knob3.cw     key      key usage=0x6e mods=0x04" "$LOG/keymap.txt" || { echo "layer 0 slot 23 is not alt+F19"; FAIL=1; }
 python3 "$HERE/padctl.py" stats --clear | tee "$LOG/stats.txt" || true   # 2.0.1+: start the counters at zero
+# 2.0.2+: raw mode must hold under the daemon's heartbeats (no key presses
+# needed; 2.0.1 left it at every 256 ms wrap of its millisecond clock).
+python3 "$HERE/padctl.py" rawcheck | tee "$LOG/rawcheck.txt" || { echo "raw mode does not hold"; FAIL=1; }
 [ $FAIL -eq 0 ] || exit 7
 echo "$(stamp) PROTOCOL CHECKS PASSED. Next: the press capture (all 24 inputs, several rounds)."

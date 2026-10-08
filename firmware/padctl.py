@@ -13,6 +13,9 @@ reset, bootloader; each needs --yes.
     padctl.py stats [--clear]              encoder diagnostics (2.0.1+): detents per
                                            knob and direction, missed states, drops
     padctl.py watch [--seconds S]          raw mode with heartbeats; prints events
+    padctl.py rawcheck [--seconds S]       raw mode under the daemon's heartbeats (2.0.2+):
+                                           it must hold, every command must be answered,
+                                           and silence must end it once after ~1.5 s
     padctl.py set SLOT TYPE MOD CODE [--layer N] --yes
     padctl.py layer N [--persist] --yes
     padctl.py reset --yes
@@ -32,6 +35,7 @@ VID, PID, SERIAL = 0x1189, 0x8890, "key153"
 CFG_ID, RAW_ID = 3, 5
 CMD_GET_INFO, CMD_GET_ACTION, CMD_SET_ACTION, CMD_RESET = 1, 2, 3, 4
 CMD_BOOTLOADER, CMD_DUMP, CMD_RAW_MODE, CMD_SET_LAYER, CMD_GET_STATS = 5, 6, 8, 9, 0x0A
+CMD_GET_KEYS = 0x0B
 STATUS = {1: "ok", 2: "bad index", 3: "bad action", 4: "write failed", 5: "bad argument"}
 TYPES = {0: "none", 1: "key", 2: "consumer", 3: "mouse", 4: "layer"}
 EVENTS = {1: "down", 2: "up", 3: "tap"}
@@ -98,9 +102,88 @@ def describe(t: int, mod: int, code: int) -> str:
     return "none"
 
 
+def rawcheck(pad: "Pad", seconds: float, force: bool) -> int:
+    """No key presses needed. 2.0.1 fails this (raw mode ended at every
+    wrap of its 8-bit millisecond clock); 2.0.2 must pass."""
+    r = pad.request(CMD_GET_INFO)
+    version = (r[8], r[9], r[10])
+    if version < (2, 0, 2) and not force:
+        print(f"rawcheck: skipped, firmware {version[0]}.{version[1]}.{version[2]} predates 2.0.2 (--force runs it anyway)")
+        return 0
+
+    def raw_counters():
+        rep = pad.request(CMD_GET_STATS, bytes([2, 0]), timeout=0.5)
+        if rep[7] != 1:
+            return None
+        return rep[3] | rep[4] << 8, rep[5] | rep[6] << 8      # entries, expiries
+
+    def ask(cmd, args=b""):
+        pad.send(cmd, args)
+        end = time.monotonic() + 0.2
+        while time.monotonic() < end:
+            rep = pad.read(end - time.monotonic())
+            if rep and rep[0] == CFG_ID and rep[1] == cmd:
+                return rep
+        return None
+
+    before = raw_counters() if version >= (2, 0, 2) else None
+    failures = []
+    samples = off = unanswered = 0
+    epochs = set()
+    beat = 0.0
+    last_beat = 0.0
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        now = time.monotonic()
+        if now >= beat:
+            # The heartbeat and the snapshot request back to back: 2.0.1
+            # dropped a command that arrived while one was pending.
+            pad.send(CMD_RAW_MODE, (1500).to_bytes(2, "little"))
+            last_beat = now
+            beat = now + 0.5
+        rep = ask(CMD_GET_KEYS if version >= (2, 0, 2) else CMD_GET_INFO)
+        samples += 1
+        if rep is None:
+            unanswered += 1
+            continue
+        active = rep[8] if rep[1] == CMD_GET_KEYS else rep[13]
+        if rep[1] == CMD_GET_KEYS:
+            epochs.add(rep[2])
+        if samples > 3 and not active:
+            off += 1
+        time.sleep(0.01)
+    if off:
+        failures.append(f"raw mode was off in {off} of {samples} samples")
+    if unanswered:
+        failures.append(f"{unanswered} of {samples} commands got no answer")
+    if len(epochs) > 1:
+        failures.append(f"raw mode restarted {len(epochs) - 1} time(s)")
+    # Silence: raw mode must end once, about 1.5 s after the last heartbeat.
+    ended = None
+    while time.monotonic() - last_beat < 3.0:
+        rep = ask(CMD_GET_INFO)
+        if rep and not rep[13]:
+            ended = time.monotonic() - last_beat
+            break
+        time.sleep(0.01)
+    if ended is None or not 1.4 <= ended <= 1.7:
+        failures.append(f"raw mode ended {ended if ended is None else round(ended, 3)} s after the last heartbeat (want ~1.5)")
+    after = raw_counters() if version >= (2, 0, 2) else None
+    if before and after and (after[0] - before[0], after[1] - before[1]) != (1, 1):
+        failures.append(f"the pad counted {after[0] - before[0]} raw start(s) and {after[1] - before[1]} expiry(ies), want 1 and 1")
+    pad.send(CMD_RAW_MODE, b"\0\0")
+    print(f"rawcheck: {samples} samples over {seconds:g} s, raw off {off}, unanswered {unanswered}, "
+          f"ended {ended if ended is None else round(ended, 3)} s after the last heartbeat")
+    for f in failures:
+        print(f"rawcheck: FAIL {f}")
+    if not failures:
+        print("rawcheck: PASS")
+    return 1 if failures else 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["info", "get", "dump", "stats", "watch", "set", "layer", "reset", "bootloader"])
+    ap.add_argument("command", choices=["info", "get", "dump", "stats", "watch", "rawcheck", "set", "layer", "reset", "bootloader"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--layer", type=int, default=None)
     ap.add_argument("--persist", action="store_true")
@@ -108,6 +191,7 @@ def main() -> None:
     ap.add_argument("--seconds", type=float, default=30.0)
     ap.add_argument("--device", help="hidraw node (default: find by VID:PID and serial)")
     ap.add_argument("--yes", action="store_true", help="allow commands that change the pad")
+    ap.add_argument("--force", action="store_true", help="rawcheck: also on firmware before 2.0.2")
     a = ap.parse_args()
 
     if a.command in ("set", "layer", "reset", "bootloader") and not a.yes:
@@ -175,6 +259,8 @@ def main() -> None:
         finally:
             pad.send(CMD_RAW_MODE, b"\0\0")
             print("raw mode off")
+    elif a.command == "rawcheck":
+        sys.exit(rawcheck(pad, a.seconds if "--seconds" in sys.argv else 6.0, a.force))
     elif a.command == "set":
         if len(a.args) != 4:
             sys.exit("set SLOT TYPE MOD CODE")

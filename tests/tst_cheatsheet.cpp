@@ -4,6 +4,8 @@
 #include "bindinglabel.h"
 #include "cheatsheet.h"
 #include "config.h"
+#include "decoder.h"
+#include "hardwaremap.h"
 #include "engine.h"
 #include "installed.h"
 #include "kdenlivecatalog.h"
@@ -575,6 +577,51 @@ private Q_SLOTS:
         cfg.cheatsheet.autoHideMs.reset();
         r.engine.setConfig(cfg);
         QCOMPARE(r.sheet.content().value(QStringLiteral("options")).toObject().value(QStringLiteral("autoHideMs")).toInt(), 8000);
+    }
+
+    void holdWithEvdevChords()
+    {
+        // evdev mode (the pad's keymap): a held key is its layer-0 chord pressed
+        // on DOWN and released on UP (firmware: actionDown/actionUp), so "hold"
+        // shows the sheet exactly while the key is down.
+        const HardwareMap map = HardwareMap::fromScheme(ch552::Numbering::KeysThenKnobs);
+        KeyChord chord;
+        for (const KeyChord &c : map.chords()) {
+            const auto t = map.lookup(c);
+            if (t && t->control == QLatin1String("key14") && t->role == Role::Key) {
+                chord = c;
+            }
+        }
+        QVERIFY(chord.isValid());
+        Rig r;
+        r.engine.setConfig(m_cfg);
+        r.engine.setActiveWindow(kBrave);
+        Decoder dec;
+        auto feed = [&](int code, int value) {
+            for (const ChordEvent &c : dec.feed(EV_KEY, code, value, 0)) {
+                if (const auto e = toPadEvent(map, c)) {
+                    r.engine.handle(*e);
+                }
+            }
+        };
+        const int mod = (chord.mods & Mod::Ctrl) ? KEY_LEFTCTRL : (chord.mods & Mod::Shift) ? KEY_LEFTSHIFT : (chord.mods & Mod::Alt) ? KEY_LEFTALT : 0;
+        for (int round = 0; round < 3; ++round) {
+            // hid-input reports the modifier field before the key array, both ways.
+            if (mod) {
+                feed(mod, 1);
+            }
+            feed(chord.key, 1);
+            QVERIFY(r.sheet.isVisible());
+            QTest::qWait(150);
+            QVERIFY(r.sheet.isVisible());          // held: stays
+            QVERIFY(!r.sheet.autoHideActive());    // no timer while held
+            if (mod) {
+                feed(mod, 0);
+            }
+            QVERIFY(r.sheet.isVisible());          // the modifier alone does not release it
+            feed(chord.key, 0);
+            QVERIFY(!r.sheet.isVisible());         // released: gone
+        }
     }
 
     void forceHideIsIdempotent()

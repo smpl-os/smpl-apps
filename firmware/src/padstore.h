@@ -17,7 +17,7 @@
 
 #define FW_VERSION_MAJOR 2
 #define FW_VERSION_MINOR 0
-#define FW_VERSION_PATCH 1
+#define FW_VERSION_PATCH 2
 
 // Host protocol, report ID 3 (15 bytes each way after the ID):
 //   request  [3][cmd][a][b][c][d][e][f] ...
@@ -38,6 +38,9 @@
 #define CMD_RAW_MODE    0x08            // [timeout lo][timeout hi] ms, 0 = off; repeat as heartbeat
 #define CMD_SET_LAYER   0x09            // [layer][persist as start layer: 0/1]
 #define CMD_GET_STATS   0x0A            // [page][clear: 0/1] -> 6 x u16 at 3..6, 8..15 (status @7)
+#define CMD_GET_KEYS    0x0B            // -> raw-session snapshot, as in the CMD_RAW_MODE reply (2.0.2):
+                                        //    @2 epoch, @3 last raw seq, @4..6 raw-held slots (bit s),
+                                        //    @7 status, @8 raw active, @9..14 raw detents k1cw k1ccw k2cw ...
 
 #define ST_OK           1
 #define ST_BAD_INDEX    2

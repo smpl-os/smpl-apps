@@ -355,9 +355,10 @@ Layer 0 as the host sees it (Linux evdev codes in brackets):
 | `05` BOOTLOADER | `'B' 'L'` | status, then jump to the ROM bootloader |
 | `06` DUMP | offset | 12 data-flash bytes @3, status @15 |
 | `07` CORRUPT | – | flips the stored CRC (recovery test) |
-| `08` RAW_MODE | timeout lo, hi (ms) | status, raw active |
+| `08` RAW_MODE | timeout lo, hi (ms) | status, raw active; from 2.0.2 the raw-session snapshot as `0B` |
 | `09` SET_LAYER | layer, persist 0/1 | status, layer |
-| `0A` GET_STATS (2.0.1+) | page 0/1, clear 0/1 | six u16 in bytes 3–6 and 8–15; page 0: missed states per knob, overruns, queue drops, deepest queue; page 1: cw, ccw per knob |
+| `0A` GET_STATS (2.0.1+) | page 0/1/2, clear 0/1 | six u16 in bytes 3–6 and 8–15; page 0: missed states per knob, overruns, queue drops, deepest queue; page 1: cw, ccw per knob; page 2 (2.0.2+): raw entries, expiries, host stops |
+| `0B` GET_KEYS (2.0.2+) | – | raw-session snapshot: @2 epoch, @3 last raw seq, @4–6 slots held (DOWN sent, no UP; bit s), @7 status, @8 raw active, @9–14 raw detents k1 cw, k1 ccw, k2 cw … (mod 256) |
 | other | – | status 6 (unknown) |
 
 Action types: 0 none, 1 key (HID usage ≤ 0xE7 + modifier mask, one hand only),
@@ -505,6 +506,56 @@ ENTER_BOOTLOADER=1 firmware/flash-and-verify.sh firmware/release/control-surface
    capture must show the same number of chords.
 4. A non-zero `missed-state` means transitions shorter than 250 µs. That calls
    for a faster timer, not a different decoder.
+
+### 7.8b 2.0.2: raw mode fixed (root cause of the "unstable" raw input)
+
+Symptoms on 2.0.1 with the daemon in raw mode: the volume knob worked only
+sometimes, a "hold" key showed the cheatsheet only on a second press and did
+not hide it on release, and `monitor` saw nothing for some presses.
+
+Measured on the pad (GET_INFO polling, no key presses): raw mode ended
+0–256 ms after every heartbeat whatever the timeout (lifetimes 82, 202, 204,
+207 ms for 200/1500/5000/10000 ms); with the daemon's 500 ms heartbeats it was
+off 72% of the time. Cause: SDCC 4.5 compiled the main loop's
+`PAD_tick((uint8_t)(now - last))` (8-bit `msTicks`, 16-bit parameter) as a
+16-bit subtraction of the zero-extended operands without the truncation. At
+every wrap of the 8-bit millisecond counter PAD_tick got 0xFF00 + δ ≈ 65 s and
+raw mode expired. In the gaps the pad typed its keymap, which the daemon
+ignored while it believed raw mode was on; a DOWN sent raw before a drop never
+got its UP. The keymap path only saw slightly shorter tap gaps, so evdev mode
+worked. A second defect: a command arriving while the previous one was still
+pending was dropped (6 of 443 GET_INFO in a test).
+
+2.0.2:
+* `PAD_tick(uint8_t)`; the main loop keeps the difference in an 8-bit
+  variable. `firmware/asmcheck.py` scans every build's assembly for an 8-bit
+  difference (borrow) or an explicitly cast 8-bit sum (carry) that reaches a
+  wider stored value, and fails the build (2.0.1: exactly this call; the two
+  ring-buffer index computations it also flagged were rewritten in 8-bit
+  arithmetic). `ctest -R fw_asmcheck` runs it against known-good and
+  known-bad SDCC output.
+* EP2 OUT answers NAK while a command is pending: the host retries, nothing
+  is dropped. The two functions the interrupts call, `PADCFG_onReport` and
+  `readEncoders`, are `nooverlay`.
+* Raw-session snapshot in every RAW_MODE reply and in `GET_KEYS` (`0B`):
+  epoch (raw starts), last sequence number, slots held, detent totals; stats
+  page 2 counts raw entries, expiries and host stops.
+* Host tests: `tst_fw_logic` runs the main loop with the 8-bit clock for 10 s
+  of simulated time (~39 wraps) under the daemon's heartbeat pattern with
+  USB-busy passes, holds of 0.1–5 s, key 1 with a matrix key and fast spins:
+  raw mode never drops, exact DOWN/UP pairs and detents; heartbeat loss
+  expires once at 1500–1502 ms. `tst_fw_store` covers GET_KEYS, the RAW_MODE
+  snapshot and stats page 2.
+* Daemon: refuses raw mode below 2.0.2, restores lost UPs, DOWNs and detents
+  from the snapshots, releases a session's holds on a new epoch or 1.5 s of
+  silence, uses keymap input that arrives while raw is on, counts all of it
+  (`GetStatus().input`), and keeps `"input": "auto"` on evdev until raw has
+  passed the stress test.
+
+Flash (user present): `ENTER_BOOTLOADER=1 firmware/flash-and-verify.sh
+firmware/release/control-surface-sy181-15k3e-2.0.2.bin 2.0.2`, then
+`scripts/stress-test.py --mode both` with the daemon running (`"input":
+"evdev"` first; the script asks for `"raw"` in between).
 
 ### 7.9 Soak plan (with the user)
 

@@ -210,7 +210,7 @@ static void test_get_info(void)
     CHECK_EQ(rep[7], ST_OK);
     CHECK_EQ(rep[8], 2);
     CHECK_EQ(rep[9], 0);
-    CHECK_EQ(rep[10], 1);
+    CHECK_EQ(rep[10], 2);          // 2.0.2
     CHECK_EQ(rep[11], 2);
     CHECK_EQ(rep[12], 0);
     CHECK_EQ(rep[13], 0);
@@ -392,10 +392,70 @@ static void test_stats(void)
     cmd(CMD_GET_STATS, 1, 0, 0, 0, 0, 0);
     CHECK_EQ(u16at(2), 0);         // cleared
     CHECK_EQ(u16at(5), 0);
+    // Page 2 (2.0.2): raw mode entries, expiries, host stops.
+    PAD_setRaw(1000);
+    PAD_tick(200); PAD_tick(200); PAD_tick(200); PAD_tick(200); PAD_tick(200);  // 1000 ms: expired
+    PAD_setRaw(1000);
+    PAD_setRaw(0);
     cmd(CMD_GET_STATS, 2, 0, 0, 0, 0, 0);
+    CHECK_EQ(rep[7], ST_OK);
+    CHECK_EQ(rep[2], 2);
+    CHECK_EQ(u16at(0), 2);         // entries
+    CHECK_EQ(u16at(1), 1);         // expiries
+    CHECK_EQ(u16at(2), 1);         // stops
+    CHECK_EQ(u16at(3), 0);
+    cmd(CMD_GET_STATS, 3, 0, 0, 0, 0, 0);
     CHECK_EQ(rep[7], ST_BAD_ARG);
     cmd(CMD_GET_STATS, 0, 2, 0, 0, 0, 0);
     CHECK_EQ(rep[7], ST_BAD_ARG);
+}
+
+// CMD_GET_KEYS and the CMD_RAW_MODE reply carry the raw session's state.
+static void test_snapshot(void)
+{
+    int i;
+    freshFlash(0xFF);
+    boot();
+    cmd(CMD_GET_KEYS, 0, 0, 0, 0, 0, 0);
+    CHECK_EQ(rep[1], CMD_GET_KEYS);
+    CHECK_EQ(rep[7], ST_OK);
+    CHECK_EQ(rep[2], 0);           // epoch: raw never started
+    CHECK_EQ(rep[8], 0);
+    cmd(CMD_RAW_MODE, 0xDC, 0x05, 0, 0, 0, 0);          // 1500 ms
+    CHECK_EQ(rep[7], ST_OK);
+    CHECK_EQ(rep[8], 1);
+    CHECK_EQ(rep[2], 1);           // first raw session
+    CHECK_EQ(rep[3], 0);           // no event yet
+    PAD_event(0, RAW_EVT_DOWN);    // key 1 and key 9 down
+    PAD_event(8, RAW_EVT_DOWN);
+    PAD_event(23, RAW_EVT_DOWN);   // knob 3 press
+    PAD_turn(0, 1, 3);
+    PAD_turn(2, 0, 250);
+    PAD_turn(2, 0, 10);            // the totals wrap at 256
+    cmd(CMD_RAW_MODE, 0xDC, 0x05, 0, 0, 0, 0);          // a heartbeat
+    CHECK_EQ(rep[2], 1);           // same session
+    CHECK_EQ(rep[3], 6);           // six raw events so far
+    CHECK_EQ(rep[4], 0x01);        // slot 0
+    CHECK_EQ(rep[5], 0x01);        // slot 8
+    CHECK_EQ(rep[6], 0x80);        // slot 23
+    CHECK_EQ(rep[7], ST_OK);
+    CHECK_EQ(rep[9], 3);           // knob 1 cw
+    CHECK_EQ(rep[10], 0);
+    CHECK_EQ(rep[13], 0);          // knob 3 cw
+    CHECK_EQ(rep[14], 4);          // knob 3 ccw: 260 mod 256
+    PAD_event(8, RAW_EVT_UP);
+    cmd(CMD_GET_KEYS, 0, 0, 0, 0, 0, 0);
+    CHECK_EQ(rep[5], 0x00);
+    CHECK_EQ(rep[3], 7);
+    // Raw mode ends (heartbeat lost) and starts again: a new epoch, nothing held.
+    for (i = 0; i < 10; ++i) PAD_tick(200);
+    cmd(CMD_GET_KEYS, 0, 0, 0, 0, 0, 0);
+    CHECK_EQ(rep[8], 0);
+    CHECK_EQ(rep[4] | rep[5] | rep[6], 0);
+    cmd(CMD_RAW_MODE, 0xDC, 0x05, 0, 0, 0, 0);
+    CHECK_EQ(rep[2], 2);
+    CHECK_EQ(rep[4] | rep[5] | rep[6], 0);
+    CHECK_EQ(rep[3], 7);           // the sequence goes on across sessions
 }
 
 static void test_dump(void)
@@ -533,6 +593,7 @@ int main(void)
     test_reset_layer_raw_boot();
     test_dump();
     test_stats();
+    test_snapshot();
     test_corruption();
     test_power_cuts();
     printf("tst_fw_store: %d checks, %d failures\n", checks, failures);

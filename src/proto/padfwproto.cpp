@@ -65,9 +65,41 @@ Request getStats(std::uint8_t page, bool clear)
     return r;
 }
 
+Request getKeys()
+{
+    return make(GetKeys);
+}
+
 std::string Info::version() const
 {
     return std::to_string(fwMajor) + '.' + std::to_string(fwMinor) + '.' + std::to_string(fwPatch);
+}
+
+bool Info::reliableRaw() const
+{
+    if (fwMajor != kReliableRawMajor) {
+        return fwMajor > kReliableRawMajor;
+    }
+    if (fwMinor != kReliableRawMinor) {
+        return fwMinor > kReliableRawMinor;
+    }
+    return fwPatch >= kReliableRawPatch;
+}
+
+std::optional<Snapshot> parseSnapshot(const std::uint8_t *data, std::size_t len)
+{
+    if (len < 15 || !(isReplyTo(data, len, RawMode) || isReplyTo(data, len, GetKeys)) || data[7] != Ok) {
+        return std::nullopt;
+    }
+    Snapshot s;
+    s.epoch = data[2];
+    s.seq = data[3];
+    s.held = std::uint32_t(data[4]) | (std::uint32_t(data[5]) << 8) | (std::uint32_t(data[6]) << 16);
+    s.rawActive = data[8] != 0;
+    for (std::size_t i = 0; i < s.detents.size(); ++i) {
+        s.detents[i] = data[9 + i];
+    }
+    return s;
 }
 
 bool isReplyTo(const std::uint8_t *data, std::size_t len, Cmd cmd)
@@ -202,6 +234,16 @@ std::optional<Stats> queryStats(const std::string &devnode, bool clear, std::str
         return std::nullopt;
     }
     Stats st;
+    // Page 2 first: clearing (with page 1) zeroes every counter. 2.0.1 has no
+    // page 2 and answers BadArg.
+    if (const auto reply = exchange(fd, getStats(2, false), timeoutMs, nullptr)) {
+        if (const auto w = parseStatsPage(reply->data(), reply->size())) {
+            st.hasRaw = true;
+            st.rawEntries = (*w)[0];
+            st.rawExpiries = (*w)[1];
+            st.rawStops = (*w)[2];
+        }
+    }
     for (std::uint8_t page = 0; page < 2; ++page) {
         // Clear only with the last page, so both pages describe the same span.
         const auto reply = exchange(fd, getStats(page, clear && page == 1), timeoutMs, error);

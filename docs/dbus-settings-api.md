@@ -51,7 +51,7 @@ emit `org.freedesktop.DBus.Properties.PropertiesChanged`.
 
 | Method | Returns |
 |---|---|
-| `GetStatus() → s` | everything at once: `{ok, apiVersion, daemonVersion, mode, device, layout, activeProfile, activeLayer, window: {class, title}, config: {path, hash, error, warnings[]}, identify: {active, remainingMs}, cheatsheet: {visible, eww}, flash: job \| null}` |
+| `GetStatus() → s` | everything at once: `{ok, apiVersion, daemonVersion, mode, device, layout, activeProfile, activeLayer, window: {class, title}, config: {path, hash, error, warnings[]}, identify: {active, remainingMs}, cheatsheet: {visible, eww}, input, flash: job \| null}`. `input` is `{configured: "auto\|evdev\|raw", mode: "raw\|evdev-chords", raw: {events, seqGaps, lostEvents, heartbeats, replies, heartbeatMisses, rawDrops, modeFlips, snapshotRequests, reconciledDowns, reconciledUps, reconciledDetents}, evdev: {events, whileRaw}}`, counters since the daemon started (see Input modes). |
 | `GetDevice() → s` | `{ok, present, vendor, product, serial, manufacturer, productName, bcdDevice, firmware: {type, version, versionSource, board, slots}, inputMode, devnodes[], layout}`; only `{ok, present: false, layout}` when absent. `inputMode`: `raw` (firmware events, report 5) or `evdev-chords`. `firmware.version` is the full version from the firmware's `GET_INFO` (`"2.0.1"`, `versionSource: "GET_INFO"`, `slots` its slot count) when the control-surface firmware answers (asked in raw mode, and once per plug-in with `device.input: "evdev"`), else `"2.0"` from bcdDevice (`versionSource: "bcdDevice"`, `slots: null`). The same object is in `GetFirmwareStatus().device`. |
 | `GetLayout() → s` | `{ok, layout}` or `{ok: false, error: {code: "unknown"}}` |
 | `ListBoardProfiles() → s` | `{ok, profiles: [layout...]}` |
@@ -324,14 +324,14 @@ change, shown or hidden) stays for debugging.
 
 | Command | Output |
 |---|---|
-| `control-surfaced monitor [--json]` | One line per input: `{"slot","event","delta","ms"}`. It follows a running daemon (or the mock) over D-Bus; without one, it reads the pad directly (grabbed, nothing dispatched). |
+| `control-surfaced monitor [--json] [--identify]` | One line per input: `{"slot","event","delta","ms"}`. It follows a running daemon (or the mock) over D-Bus, also across daemon restarts; without one, it reads the pad directly (grabbed, nothing dispatched). `--identify` keeps `SetIdentify(true)` while it runs: inputs are reported, nothing is dispatched (`scripts/stress-test.py` uses it). |
 | `control-surfaced status [--json]` | The daemon's `GetStatus`, or offline: `{ok, daemon: false, mode: "offline", device, bootloaderPresent, layout, config}` (sysfs only: the version is bcdDevice's) |
 | `control-surfaced check-config [-c FILE] --json` | `{ok, error: {message, profile, layer, slot} \| null, warnings[], warningDetails[], profiles[], path, source, layout}`; `layout` and a `layout:` mismatch warning against the pad plugged in now (sysfs only); exit 0 or 2 |
 | `control-surfaced list-actions [--json]` | `GetCatalog("kdenlive")` offline |
 | `control-surfaced features [--json]` | `GetFeatures` |
 | `control-surfaced cheatsheet [--json] [--follow]` | the running daemon's `GetCheatsheet`; `--follow` prints a JSON line on every change (debugging; eww gets it pushed, see Cheatsheet) |
 | `control-surfaced cheatsheet --window CLASS [--title T] [--context JSON]` | offline preview from the config (no daemon) |
-| `control-surfaced firmware-info [--json]` | `GET_INFO` from a pad running the control-surface firmware: `{ok, node, version, format, slots, layers, activeLayer, startLayer, rawActive, eepromBytes, stats?}`. From 2.0.1, `stats` is `{knobs: [{cw, ccw, illegal}], overruns, queueDrops, maxQueue}`, the encoder counters since power-on or the last clear. |
+| `control-surfaced firmware-info [--json]` | `GET_INFO` from a pad running the control-surface firmware: `{ok, node, version, format, slots, layers, activeLayer, startLayer, rawActive, eepromBytes, stats?}`. From 2.0.1, `stats` is `{knobs: [{cw, ccw, illegal}], overruns, queueDrops, maxQueue}`, the encoder counters since power-on or the last clear; from 2.0.2 also `raw: {entries, expiries, stops}` (raw mode started, ended by a missing heartbeat, stopped by the host). |
 | `control-surfaced enter-bootloader --yes [--json]` | `CMD_BOOTLOADER`; the pad shows as 4348:55e0 until flashed or replugged |
 
 `firmware-info` and `enter-bootloader` only talk to a hidraw node whose report
@@ -354,6 +354,33 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
 * `"layout"`, described under State.
 * `"device": {"serial": "", "input": "auto|evdev|raw"}`. An empty serial
   drives the first 1189:8890 pad found and keeps it if another is plugged in.
+  Input modes are below; a change applies on reload, no restart.
+
+## Input modes
+
+* `evdev` (and `auto`, for now): the daemon reads what the pad types from its
+  keymap (layer 0 chords). A key's chord goes down with the key and up with
+  it, so holds are real; a detent is one tap. Verified on hardware. Limit:
+  keys that share an F-key in layer 0 (keyN, keyN+6 and keyN+12: F14..F19
+  plain, with Shift, with Ctrl) cannot be told apart while held together;
+  raw mode has no such limit. (The TM1650 itself reports one matrix key at a
+  time; key 1 is on its own pin.)
+* `raw`: the control-surface firmware sends its own events (report 5:
+  sequence number, slot, down/up/tap, count) while the daemon sends a
+  heartbeat every 500 ms. Needs firmware 2.0.2: 2.0.1 left raw mode at every
+  wrap of its 8-bit millisecond clock (an SDCC miscompile), which lost inputs
+  and left holds stuck; the daemon refuses raw mode with older firmware and
+  stays on evdev. Every heartbeat reply is a snapshot of the raw session
+  (epoch, last sequence number, slots held down, detent totals): a lost UP,
+  a lost DOWN or lost detents are restored at the next reply (a sequence gap
+  asks for one at once), and a new epoch (the pad was on its keymap
+  meanwhile) releases everything the session held. Keymap input that arrives
+  while raw mode is on is used, never dropped. `auto` switches to raw once
+  `scripts/stress-test.py --mode raw` has passed on the pad.
+
+`GetStatus().input` has the counters; `scripts/stress-test.py` checks exact
+press/release pairs, holds of 0.1 to 5 s, two keys at once and every detent
+against the firmware's own counts, in both modes.
 
 ## The mock
 

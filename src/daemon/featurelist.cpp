@@ -67,7 +67,11 @@ QJsonObject featuresJson()
                                                                                           QStringLiteral("hardware-map"), QStringLiteral("default")}}}},
         {QStringLiteral("device"), QJsonObject{{QStringLiteral("usb"), QStringLiteral("1189:8890")},
                                                {QStringLiteral("serial"), QStringLiteral("empty: the first pad found")},
-                                               {QStringLiteral("input"), QJsonArray{QStringLiteral("auto"), QStringLiteral("evdev"), QStringLiteral("raw")}}}},
+                                               {QStringLiteral("input"), QJsonArray{QStringLiteral("auto"), QStringLiteral("evdev"), QStringLiteral("raw")}},
+                                               {QStringLiteral("inputModes"), QJsonObject{
+                                                    {QStringLiteral("evdev"), QStringLiteral("the pad's keymap: chords with real press and release")},
+                                                    {QStringLiteral("raw"), QStringLiteral("the firmware's events with snapshots (2.0.2+); older firmware falls back to evdev")},
+                                                    {QStringLiteral("auto"), QStringLiteral("evdev for now (raw once it has passed the hardware stress test)")}}}}},
         {QStringLiteral("plugins"), QJsonArray{QStringLiteral("keys"), QStringLiteral("command"), QStringLiteral("kdenlive")}},
         {QStringLiteral("cheatsheet"), QJsonObject{{QStringLiteral("modes"), QJsonArray{QStringLiteral("toggle"), QStringLiteral("hold")}},
                                                    {QStringLiteral("slots"), QStringLiteral("keyN or knobN.press")},

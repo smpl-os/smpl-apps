@@ -383,6 +383,7 @@ int main(int argc, char **argv)
     QCommandLineOption sysRootOpt(QStringLiteral("sys-root"), QStringLiteral("tests: a fake /sys for status, check-config, firmware-info and enter-bootloader"), QStringLiteral("dir"));
     sysRootOpt.setFlags(QCommandLineOption::HiddenFromHelp);
     QCommandLineOption yesOpt(QStringLiteral("yes"), QStringLiteral("enter-bootloader: really do it"));
+    QCommandLineOption identifyOpt(QStringLiteral("identify"), QStringLiteral("monitor: report inputs without dispatching them while it runs (SetIdentify)"));
     QCommandLineOption followOpt(QStringLiteral("follow"), QStringLiteral("cheatsheet: one JSON line per change (debugging; run --eww pushes to eww itself)"));
     QCommandLineOption ewwOpt(QStringLiteral("eww"), QStringLiteral("run: push the cheatsheet to eww (eww update pad_sheet=<json>); the config's cheatsheet.eww overrides"));
     QCommandLineOption ewwWindowOpt(QStringLiteral("eww-window"), QStringLiteral("run: open/close this eww window with the cheatsheet (implies --eww)"), QStringLiteral("name"));
@@ -391,7 +392,7 @@ int main(int argc, char **argv)
     QCommandLineOption sheetTitleOpt(QStringLiteral("title"), QStringLiteral("cheatsheet: window title for --window"), QStringLiteral("text"));
     QCommandLineOption sheetContextOpt(QStringLiteral("context"), QStringLiteral("cheatsheet: Kdenlive context JSON for --window"), QStringLiteral("json"));
     QCommandLineOption imageDirOpt(QStringLiteral("firmware-dir"), QStringLiteral("settings API: directory of flashable images (repeatable)"), QStringLiteral("dir"));
-    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt, followOpt, sheetWindowOpt, sheetTitleOpt, sheetContextOpt, ewwOpt, ewwWindowOpt, ewwConfigOpt});
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt, followOpt, sheetWindowOpt, sheetTitleOpt, sheetContextOpt, ewwOpt, ewwWindowOpt, ewwConfigOpt, identifyOpt});
     p.process(app);
     const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
     const bool explicitConfig = p.isSet(configOpt);
@@ -736,10 +737,17 @@ int main(int argc, char **argv)
                     for (int k = 0; k < 3; ++k) {
                         knobs.append(QJsonObject{{QStringLiteral("cw"), st->cw[k]}, {QStringLiteral("ccw"), st->ccw[k]}, {QStringLiteral("illegal"), st->illegal[k]}});
                     }
-                    out.insert(QStringLiteral("stats"), QJsonObject{{QStringLiteral("knobs"), knobs},
-                                                                    {QStringLiteral("overruns"), st->overruns},
-                                                                    {QStringLiteral("queueDrops"), st->queueDrops},
-                                                                    {QStringLiteral("maxQueue"), st->maxQueue}});
+                    QJsonObject stats{{QStringLiteral("knobs"), knobs},
+                                      {QStringLiteral("overruns"), st->overruns},
+                                      {QStringLiteral("queueDrops"), st->queueDrops},
+                                      {QStringLiteral("maxQueue"), st->maxQueue}};
+                    if (st->hasRaw) {
+                        // 2.0.2+: raw mode started, ended by a missing heartbeat, stopped by the host.
+                        stats.insert(QStringLiteral("raw"), QJsonObject{{QStringLiteral("entries"), st->rawEntries},
+                                                                        {QStringLiteral("expiries"), st->rawExpiries},
+                                                                        {QStringLiteral("stops"), st->rawStops}});
+                    }
+                    out.insert(QStringLiteral("stats"), stats);
                 }
             } else {
                 out.insert(QStringLiteral("ok"), false);
@@ -788,9 +796,31 @@ int main(int argc, char **argv)
         if (mon.attach(QDBusConnection::sessionBus())) {
             std::fprintf(stderr, "following %s on the session bus\n", SettingsService::kService);
             QObject::connect(&mon, &InputMonitor::input, print);
-            QObject::connect(&mon, &InputMonitor::daemonGone, &app, [&app] {
-                std::fprintf(stderr, "the daemon left the bus\n");
-                app.exit(4);
+            // A restart (new build, config change) must not end a capture.
+            QObject::connect(&mon, &InputMonitor::daemonGone, &app, [] {
+                std::fprintf(stderr, "the daemon left the bus; waiting for it to come back (Ctrl-C stops)\n");
+            });
+            // --identify: inputs are reported, nothing is dispatched (no keys, no
+            // launchers) for as long as this process is on the bus; renewed
+            // before the daemon's 10-minute limit and after a daemon restart.
+            QTimer renew;
+            auto identify = [] {
+                auto m = QDBusMessage::createMethodCall(QLatin1String(SettingsService::kService), QLatin1String(SettingsService::kPath),
+                                                        QLatin1String(SettingsService::kInterface), QStringLiteral("SetIdentify"));
+                m << true;
+                QDBusConnection::sessionBus().call(m, QDBus::Block, 3000);
+            };
+            if (p.isSet(identifyOpt)) {
+                identify();
+                std::fprintf(stderr, "identify mode: inputs are reported, not dispatched\n");
+                QObject::connect(&renew, &QTimer::timeout, &app, identify);
+                renew.start(4 * 60 * 1000);
+            }
+            QObject::connect(&mon, &InputMonitor::daemonBack, &app, [identify, &p, &identifyOpt] {
+                std::fprintf(stderr, "following %s again\n", SettingsService::kService);
+                if (p.isSet(identifyOpt)) {
+                    identify();
+                }
             });
             return app.exec();
         }
@@ -1113,14 +1143,27 @@ int main(int argc, char **argv)
         });
         uinputRetry.start(10000);
     }
-    settings.setConfigApplier([&engine, &dev, &raw, publishPlugins, &settings, applyEww](const Config &c) {
+    // device.input: "raw" uses the control-surface firmware's events with
+    // snapshots (2.0.2+; older firmware is refused); "evdev" the pad's keymap
+    // (chords with real down/up). "auto" is evdev until raw input has passed
+    // the hardware stress test (scripts/stress-test.py). Applied on reload too.
+    auto wantRaw = [](const Config &c) { return c.device.input == QLatin1String("raw"); };
+    auto applyInputMode = [&dev, &raw, log, wantRaw](const Config &c) {
+        if (!wantRaw(c)) {
+            if (raw.isOpen()) {
+                log(QStringLiteral("input: evdev chords (config)"));
+                raw.stop();
+            }
+        } else if (dev.isConnected() && !raw.isOpen()) {
+            raw.start(dev.usbPath());  // also: a layout that fits again
+        }
+    };
+    settings.setConfigApplier([&engine, &dev, &raw, publishPlugins, &settings, applyEww, applyInputMode](const Config &c) {
         engine.setConfig(c);
         applyEww(c);
         dev.setHardwareMap(c.hardware);
         raw.setLayout(effectiveLayout(c));
-        if (dev.isConnected() && !raw.isActive() && c.device.input != QLatin1String("evdev")) {
-            raw.start(dev.usbPath());
-        }
+        applyInputMode(c);
         settings.setFallbackLayout(effectiveLayout(c));
         publishPlugins();
         return QString();
@@ -1147,12 +1190,13 @@ int main(int argc, char **argv)
         }
         settings.setDevice(d);
     };
-    QObject::connect(&dev, &PadDevice::connected, &settings, [publishDevice, &raw, &dev, &cfg, log, &evdevInfo] {
+    QObject::connect(&dev, &PadDevice::connected, &settings, [publishDevice, &raw, &dev, &engine, log, &evdevInfo, wantRaw] {
         evdevInfo.reset();
-        if (cfg->device.input == QLatin1String("evdev")) {
+        const Config &cfg = engine.config();
+        if (!wantRaw(cfg)) {
             const auto u = usbDeviceAt(dev.usbPath());
             if (u && classifyFirmware(*u).type == QLatin1String("control-surface")) {
-                const QString node = findControlSurfaceHidraw(cfg->device, dev.usbPath());
+                const QString node = findControlSurfaceHidraw(cfg.device, dev.usbPath());
                 std::string err;
                 if (!node.isEmpty()) {
                     evdevInfo = padfw::queryInfo(node.toStdString(), &err, 300);
@@ -1160,7 +1204,7 @@ int main(int argc, char **argv)
             }
         }
         publishDevice();
-        if (cfg->device.input != QLatin1String("evdev") && !raw.start(dev.usbPath()) && cfg->device.input == QLatin1String("raw")) {
+        if (wantRaw(cfg) && !raw.start(dev.usbPath())) {
             log(QStringLiteral("raw input unavailable (not the control-surface firmware?); using evdev chords"));
         }
     });
@@ -1212,10 +1256,22 @@ int main(int argc, char **argv)
             engine.handle(e);
         }
     };
-    QObject::connect(&dev, &PadDevice::padEvent, &engine, [dispatchPad, &raw](const PadEvent &e) {
-        if (!raw.isActive()) {
-            dispatchPad(e);
+    // Keymap input is never dropped: in raw mode the pad types its keymap only
+    // when it has left raw mode (a lost heartbeat), so such a key is real.
+    quint64 evdevEvents = 0, evdevWhileRaw = 0;
+    QObject::connect(&dev, &PadDevice::padEvent, &engine, [dispatchPad, &raw, &evdevEvents, &evdevWhileRaw, log](const PadEvent &e) {
+        ++evdevEvents;
+        if (raw.isActive() && evdevWhileRaw++ == 0) {
+            log(QStringLiteral("input: the pad typed its keymap while raw mode was on; using it"));
         }
+        dispatchPad(e);
+    });
+    settings.setInputStatus([&engine, &raw, &evdevEvents, &evdevWhileRaw] {
+        return QJsonObject{{QStringLiteral("configured"), engine.config().device.input},
+                           {QStringLiteral("mode"), raw.isActive() ? QStringLiteral("raw") : QStringLiteral("evdev-chords")},
+                           {QStringLiteral("raw"), raw.diagnostics().toJson()},
+                           {QStringLiteral("evdev"), QJsonObject{{QStringLiteral("events"), qint64(evdevEvents)},
+                                                                 {QStringLiteral("whileRaw"), qint64(evdevWhileRaw)}}}};
     });
     QObject::connect(&raw, &RawPadDevice::padEvent, &engine, dispatchPad);
     // Hot reload: a valid edit replaces the config (pending knob motion is
@@ -1230,9 +1286,7 @@ int main(int argc, char **argv)
         applyEww(c);
         settings.setFallbackLayout(effectiveLayout(c));
         raw.setLayout(effectiveLayout(c));
-        if (dev.isConnected() && !raw.isActive() && c.device.input != QLatin1String("evdev")) {
-            raw.start(dev.usbPath());  // a layout that fits again: raw mode resumes
-        }
+        applyInputMode(c);
         settings.setConfigState(hash, QString(), c.warnings);
         publishPlugins();
         dev.setHardwareMap(c.hardware);

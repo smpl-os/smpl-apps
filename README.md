@@ -63,8 +63,9 @@ with what Kdenlive offers with `control-surfaced list-capabilities`.
 | `control-surfaced simulate FILE\|-` | run scripted events (`window org.kde.kdenlive`, `key3`, `knob1 +5`, `knob2 press`/`hold`/`release`, `context {…}`, `kdenlive off`, `expect notice`, `expect no-keys`, …) and print the resulting actions; `--kdenlive-service NAME` drives a real Kdenlive with a non-emitting key sink |
 | `control-surfaced list-capabilities [--json] [--kdenlive-service NAME]` | what the running Kdenlive offers (controls, commands, actions, limits, context paths for `when`) and which configured bindings it does not offer; read-only, no lease |
 | `control-surfaced status [--json]` | daemon, pad, firmware, effective layout and config (offline when the daemon is not running) |
-| `control-surfaced monitor [--json]` | live input, one line per press/release/detent |
+| `control-surfaced monitor [--json] [--identify]` | live input, one line per press/release/detent; follows daemon restarts; `--identify` reports without dispatching |
 | `control-surfaced list-actions [--json]` / `features [--json]` | offline: the curated Kdenlive actions, controls and commands; binding kinds and key/mouse names |
+| `scripts/stress-test.py [--mode evdev\|raw\|both]` | with a person at the pad: exact press/release pairs, holds of 0.1–5 s, two keys at once, every knob detent against the firmware's counts, no raw-mode flips |
 | `control-surfaced cheatsheet [--json] [--follow] [--window CLASS]` | what every input does now (the overlay's content); `--follow` for debugging, `--window` for an offline preview |
 | `control-surfaced run --eww-window NAME --eww-config DIR` | also push the cheatsheet into eww (`eww update pad_sheet=…`, `open`/`close` the window); `--eww` for the variable only; the config's `cheatsheet.eww` overrides (docs/dbus-settings-api.md) |
 | `control-surfaced firmware-info [--json]` / `enter-bootloader --yes` | protocol v3 on a pad running the control-surface firmware |

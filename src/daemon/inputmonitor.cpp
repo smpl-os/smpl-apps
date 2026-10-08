@@ -16,8 +16,14 @@ bool InputMonitor::attach(const QDBusConnection &bus)
     if (!b.interface() || !b.interface()->isServiceRegistered(service)) {
         return false;
     }
-    auto *watch = new QDBusServiceWatcher(service, b, QDBusServiceWatcher::WatchForUnregistration, this);
-    connect(watch, &QDBusServiceWatcher::serviceUnregistered, this, &InputMonitor::daemonGone);
+    auto *watch = new QDBusServiceWatcher(service, b, QDBusServiceWatcher::WatchForOwnerChange, this);
+    connect(watch, &QDBusServiceWatcher::serviceOwnerChanged, this, [this](const QString &, const QString &oldOwner, const QString &newOwner) {
+        if (!oldOwner.isEmpty() && newOwner.isEmpty()) {
+            Q_EMIT daemonGone();
+        } else if (!newOwner.isEmpty()) {
+            Q_EMIT daemonBack();  // a restarted daemon (or another owner)
+        }
+    });
     return b.connect(service, QLatin1String(SettingsService::kPath), QLatin1String(SettingsService::kInterface), QStringLiteral("InputEvent"), this,
                      SLOT(onInputEvent(QString, QString, int)));
 }

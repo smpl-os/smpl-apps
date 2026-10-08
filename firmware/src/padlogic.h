@@ -119,6 +119,9 @@ typedef struct {
   uint16_t overruns;                    // detents lost to a full accumulator (interrupt side)
   uint16_t queueDrops;                  // detents lost to a full keymap tap queue (main loop)
   uint16_t maxQueue;                    // most detents waiting to be typed at once
+  uint16_t rawEntries;                  // raw mode turned on (from off)
+  uint16_t rawExpiries;                 // raw mode ended by a missing heartbeat
+  uint16_t rawStops;                    // raw mode turned off by the host
 } padstats_t;
 
 // -----------------------------------------------------------------------------------
@@ -173,13 +176,16 @@ void PAD_layerAction(layerstate_t *l, uint16_t code, uint8_t slot, uint8_t press
 // -----------------------------------------------------------------------------------
 #define PAD_TAP_GAP_MS  5               // knob detent: press, this long, release (non-blocking)
 #define PAD_QUEUE_RUNS  16              // keymap tap queue: runs of detents on one slot, in order
+                                        // (a power of two: indices wrap with a mask)
 #define PAD_RUN_MAX     200             // detents one run holds
 
 typedef struct {
   rawmode_t    raw;
   layerstate_t layers;
-  uint8_t      rawSeq;
-  uint8_t      rawHeld[3];              // slots whose DOWN went out as a raw event
+  uint8_t      rawSeq;                  // sequence number of the last raw event sent
+  uint8_t      rawEpoch;                // counts raw-mode starts: a change tells the host it was off
+  uint8_t      rawHeld[3];              // slots whose DOWN went out as a raw event (no UP yet)
+  uint8_t      knobRaw[KNOB_COUNT * 2]; // detents sent as raw taps: knob k cw at 2k, ccw at 2k+1 (mod 256)
   uint16_t     held[SLOT_COUNT];        // packed action pressed for each held slot
   debounce_t   gpioKey;                 // key 1, 1 = pressed
   debounce_t   tm;                      // TM1650 key register
@@ -214,8 +220,11 @@ void    PAD_init(uint8_t startLayer, uint8_t gpioKeyDown, uint8_t tmCode, uint8_
 // One main-loop pass: key 1 (1 = pressed), the TM1650 register; then the
 // detents the interrupt decoded, and the keymap tap queue.
 void    PAD_poll(uint8_t gpioKeyDown, uint8_t tmCode);
-// Elapsed time: raw-mode heartbeat and the tap clock.
-void    PAD_tick(uint16_t elapsedMs);
+// Elapsed time: raw-mode heartbeat and the tap clock. 8 bits on purpose: the
+// main loop's millisecond counter is 8 bits, and SDCC 4.5 widened
+// `(uint8_t)(now - last)` passed as a 16-bit argument without truncating it
+// (2.0.1: raw mode expired at every counter wrap). asmcheck.py guards this.
+void    PAD_tick(uint8_t elapsedMs);
 // Detents of one knob in one direction, as taken from the decoder (exposed for tests).
 void    PAD_turn(uint8_t knob, uint8_t cw, uint8_t detents);
 // Detents waiting in the keymap tap queue.

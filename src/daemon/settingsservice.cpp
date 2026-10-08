@@ -412,6 +412,7 @@ QString SettingsService::GetStatus()
                             {QStringLiteral("identify"), identify},
                             {QStringLiteral("layout"), layoutJson()},
                             {QStringLiteral("cheatsheet"), cheatsheetStatus()},
+                            {QStringLiteral("input"), m_inputStatus ? QJsonValue(m_inputStatus()) : QJsonValue()},
                             {QStringLiteral("flash"), m_job ? QJsonValue(m_job->toJson()) : QJsonValue()}});
 }
 

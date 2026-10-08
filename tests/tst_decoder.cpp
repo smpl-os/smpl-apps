@@ -69,6 +69,44 @@ private Q_SLOTS:
         QCOMPARE(toPadEvent(map, ChordEvent{KeyChord{Mod::Alt, KEY_F19}, true, 0})->control, QStringLiteral("knob3"));
         QVERIFY(!toPadEvent(map, ChordEvent{KeyChord{0, KEY_A}, true, 0}));
     }
+
+    void twoKeysHeldTogether()
+    {
+        // evdev as hid-input reports the pad's keyboard reports (modifier field
+        // first, then the key array). key1 = F14 held while key8 = Shift+F15
+        // is tapped twice: exact pairs, key1 released last.
+        const auto map = HardwareMap::fromScheme(ch552::Numbering::KeysThenKnobs);
+        Decoder d;
+        QStringList got;
+        auto feed = [&](int code, int value) {
+            for (const ChordEvent &c : d.feed(EV_KEY, code, value, 0)) {
+                if (const auto e = toPadEvent(map, c)) {
+                    got << e->describe();
+                }
+            }
+        };
+        feed(KEY_F14, 1);                                  // [F14]
+        for (int i = 0; i < 2; ++i) {
+            feed(KEY_LEFTSHIFT, 1);                        // [Shift F14 F15]
+            feed(KEY_F15, 1);
+            feed(KEY_LEFTSHIFT, 0);                        // [F14] (key1 needs no Shift)
+            feed(KEY_F15, 0);
+        }
+        feed(KEY_F14, 0);                                  // []
+        QCOMPARE(got, (QStringList{QStringLiteral("key1 down"), QStringLiteral("key8 down"), QStringLiteral("key8 up"), QStringLiteral("key8 down"),
+                                   QStringLiteral("key8 up"), QStringLiteral("key1 up")}));
+
+        // The documented evdev limit: key7 = Shift+F14 shares F14 with key1.
+        // The firmware cannot press F14 twice, so held together they cannot
+        // be told apart (raw mode can).
+        got.clear();
+        d.reset();
+        feed(KEY_F14, 1);                                  // key1: [F14]
+        feed(KEY_LEFTSHIFT, 1);                            // key7: [Shift F14], F14 already down
+        feed(KEY_LEFTSHIFT, 0);                            // key7 up: the firmware drops F14 and Shift
+        feed(KEY_F14, 0);
+        QCOMPARE(got, (QStringList{QStringLiteral("key1 down"), QStringLiteral("key1 up")}));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestDecoder)

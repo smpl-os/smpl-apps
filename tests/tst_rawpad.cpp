@@ -25,6 +25,8 @@ static_assert(padfw::kRawReport == RAW_REPORT_ID);
 static_assert(padfw::GetInfo == CMD_GET_INFO && padfw::GetAction == CMD_GET_ACTION && padfw::SetAction == CMD_SET_ACTION);
 static_assert(padfw::Reset == CMD_RESET && padfw::Bootloader == CMD_BOOTLOADER && padfw::Dump == CMD_DUMP);
 static_assert(padfw::RawMode == CMD_RAW_MODE && padfw::SetLayer == CMD_SET_LAYER && padfw::GetStats == CMD_GET_STATS);
+static_assert(padfw::GetKeys == CMD_GET_KEYS);
+static_assert(padfw::kReliableRawMajor == FW_VERSION_MAJOR && padfw::kReliableRawMinor == FW_VERSION_MINOR && padfw::kReliableRawPatch <= FW_VERSION_PATCH);
 static_assert(padfw::Ok == ST_OK && padfw::BadArg == ST_BAD_ARG && padfw::Unknown == ST_UNKNOWN);
 static_assert(padfw::Down == RAW_EVT_DOWN && padfw::Up == RAW_EVT_UP && padfw::Tap == RAW_EVT_TAP);
 static_assert(padfw::kRawTimeoutMaxMs == RAW_TIMEOUT_MAX_MS);
@@ -59,14 +61,37 @@ public:
         // A reply can race the daemon closing its end: no SIGPIPE, just false.
         return m_fd >= 0 && ::send(m_fd, b.constData(), size_t(b.size()), MSG_NOSIGNAL) == b.size();
     }
-    void raw(int seq, int slot, int event, int layer = 0, int count = 1) { QVERIFY(send({5, seq, slot, event, layer, count})); }
+    // A raw event the pad sends (and keeps in its session state, as 2.0.2).
+    void raw(int seq, int slot, int event, int layer = 0, int count = 1)
+    {
+        if (rawOn) {
+            track(seq, slot, event, count);
+        }
+        QVERIFY(send({5, seq, slot, event, layer, count}));
+    }
+    // One the pad sent that never reached the host (USB, hidraw overflow).
+    void lose(int seq, int slot, int event, int count = 1) { track(seq, slot, event, count); }
+    // The pad's side of a lost heartbeat: back to the keymap.
+    void dropRaw()
+    {
+        rawOn = false;
+        held = 0;
+    }
 
     bool answerInfo = true;
+    bool answerHeartbeats = true;
     QByteArray magic = "CS";
     int slotCount = 24;
     int rawStatus = 1;
+    int fwPatch = 2;
     QList<QByteArray> requests;
     QList<int> rawTimeouts;
+    int keysRequests = 0;
+    // The pad's raw session, as firmware 2.0.2 keeps it.
+    quint8 epoch = 0, seq = 0;
+    quint32 held = 0;
+    quint8 detents[6] = {0, 0, 0, 0, 0, 0};
+    bool rawOn = false;
 
 private Q_SLOTS:
     void onRequest()
@@ -82,12 +107,46 @@ private Q_SLOTS:
         QCOMPARE(int(quint8(req[0])), 3);
         const int cmd = quint8(req[1]);
         if (cmd == 1 && answerInfo) {
-            send({3, 1, magic[0], magic[1], 3, slotCount, 128, 1, 2, 0, 0, 2, 0, 0, 0, 0});
+            send({3, 1, magic[0], magic[1], 3, slotCount, 128, 1, 2, 0, fwPatch, 2, 0, rawOn ? 1 : 0, 0, 0});
         } else if (cmd == 8) {
             const int t = quint8(req[2]) | (quint8(req[3]) << 8);
             rawTimeouts << t;
-            send({3, 8, 0, 0, 0, 0, 0, rawStatus, (rawStatus == 1 && t) ? 1 : 0, 0, 0, 0, 0, 0, 0, 0});
+            if (!answerHeartbeats) {
+                return;
+            }
+            if (rawStatus == 1) {
+                if (t && !rawOn) {
+                    ++epoch;  // a new raw session
+                    held = 0;
+                }
+                rawOn = t != 0;
+                if (!rawOn) {
+                    held = 0;
+                }
+            }
+            snapshot(8, rawStatus);
+        } else if (cmd == 0x0B) {
+            ++keysRequests;
+            snapshot(0x0B, 1);
         }
+    }
+
+private:
+    void track(int s, int slot, int event, int count)
+    {
+        seq = quint8(s);
+        if (event == 1) {
+            held |= 1u << slot;
+        } else if (event == 2) {
+            held &= ~(1u << slot);
+        } else if (event == 3 && slot >= 15 && (slot - 15) % 3 != 1) {
+            detents[2 * ((slot - 15) / 3) + ((slot - 15) % 3 == 2 ? 0 : 1)] += quint8(count);
+        }
+    }
+    void snapshot(int cmd, int status)
+    {
+        send({3, cmd, epoch, seq, int(held & 0xFF), int((held >> 8) & 0xFF), int((held >> 16) & 0xFF), status, rawOn ? 1 : 0,
+              detents[0], detents[1], detents[2], detents[3], detents[4], detents[5], 0});
     }
 
 private:
@@ -166,7 +225,7 @@ private Q_SLOTS:
         QVERIFY(dev.startOnFd(m_pair[0]));
         QTRY_COMPARE(active.count(), 1);
         QVERIFY(dev.isActive());
-        QCOMPARE(dev.info()->version(), std::string("2.0.0"));
+        QCOMPARE(dev.info()->version(), std::string("2.0.2"));
         QCOMPARE(fw->rawTimeouts.first(), 1500);
         QCOMPARE(events.count(), 0);
 
@@ -185,7 +244,8 @@ private Q_SLOTS:
             QCOMPARE(events.at(i).at(0).value<PadEvent>().control, QStringLiteral("knob2"));
             QCOMPARE(events.at(i).at(0).value<PadEvent>().delta, 1);
         }
-        QVERIFY(fw->send({5, 10, 18, 3, 0}));   // 2.0.0 report without the count byte
+        fw->lose(10, 18, 3);                    // the pad's state ...
+        QVERIFY(fw->send({5, 10, 18, 3, 0}));   // ... for a 2.0.0 report without the count byte
         QTRY_COMPARE(events.count(), 11);
         QCOMPARE(events.last().at(0).value<PadEvent>().delta, -1);
         auto at = [&](int i) { return events.at(i).at(0).value<PadEvent>(); };
@@ -207,9 +267,13 @@ private Q_SLOTS:
 
         // A lost report is noticed.
         QSignalSpy msgs(&dev, &RawPadDevice::message);
+        fw->lose(11, 0, 1);
+        fw->lose(12, 0, 2);
         fw->raw(13, 0, 1);
         QTRY_COMPARE(dev.sequenceGaps(), 1u);
-        QVERIFY(msgs.last().at(0).toString().contains(QStringLiteral("2 event(s) lost")));
+        QTRY_VERIFY(!msgs.isEmpty());
+        QVERIFY(msgs.first().at(0).toString().contains(QStringLiteral("2 event(s) lost")));
+        QTRY_COMPARE(fw->keysRequests, 1);      // asked at once, not at the next heartbeat
 
         // stop() switches raw mode off right away.
         dev.stop();
@@ -256,7 +320,7 @@ private Q_SLOTS:
             QVERIFY(!dev.info());
             QCOMPARE(fwInfo.count(), 1);
             QVERIFY(dev.firmwareInfo());
-            QCOMPARE(dev.firmwareInfo()->version(), std::string("2.0.0"));
+            QCOMPARE(dev.firmwareInfo()->version(), std::string("2.0.2"));
             QCOMPARE(int(dev.firmwareInfo()->slotCount), 6);
         }
         {  // ... unless the layout says so
@@ -284,6 +348,134 @@ private Q_SLOTS:
             QVERIFY(msgs.last().at(0).toString().contains(QStringLiteral("refused raw mode")));
             QVERIFY(!dev.isActive());
         }
+    }
+
+    void refusesFirmwareThatDropsRawMode()
+    {
+        // 2.0.1 left raw mode at every wrap of its 8-bit millisecond clock
+        // (an SDCC miscompile): the daemon stays on the keymap with it.
+        RawPadDevice dev{DeviceMatch{}};
+        auto fw = link(dev);
+        fw->fwPatch = 1;
+        QSignalSpy msgs(&dev, &RawPadDevice::message);
+        dev.startOnFd(m_pair[0]);
+        QTRY_VERIFY(!msgs.isEmpty());
+        QVERIFY(msgs.last().at(0).toString().contains(QStringLiteral("fixed in 2.0.2")));
+        QVERIFY(!dev.isActive());
+        QVERIFY(!dev.isOpen());
+        QVERIFY(fw->rawTimeouts.isEmpty());
+        QCOMPARE(dev.firmwareInfo()->version(), std::string("2.0.1"));  // still reported
+    }
+
+    void holdIsReleasedWhenThePadLeftRawMode()
+    {
+        // The reported bug: key 1 ("hold" the cheatsheet) went DOWN in raw
+        // mode, the pad then left raw mode and its UP never came. The next
+        // answer starts a new session: the host releases the key itself.
+        RawPadDevice dev{DeviceMatch{}};
+        auto fw = link(dev);
+        QSignalSpy events(&dev, &RawPadDevice::padEvent);
+        dev.startOnFd(m_pair[0]);
+        QTRY_VERIFY(dev.isActive());
+        fw->raw(1, 0, 1);  // key1 down
+        QTRY_COMPARE(events.count(), 1);
+        QCOMPARE(events.at(0).at(0).value<PadEvent>().type, PadEvent::KeyDown);
+        fw->dropRaw();     // heartbeat lost on the pad; key1 comes up on the keymap: no raw UP
+        QTRY_COMPARE(events.count(), 2);
+        const PadEvent up = events.at(1).at(0).value<PadEvent>();
+        QCOMPARE(up.control, QStringLiteral("key1"));
+        QCOMPARE(up.type, PadEvent::KeyUp);
+        QCOMPARE(dev.diagnostics().rawDrops, 1u);
+        QCOMPARE(dev.diagnostics().reconciledUps, 1u);
+        QVERIFY(dev.isActive());
+        // The new session goes on normally.
+        fw->raw(2, 0, 1);
+        fw->raw(3, 0, 2);
+        QTRY_COMPARE(events.count(), 4);
+        QTest::qWait(100);  // a few more heartbeats: nothing else
+        QCOMPARE(events.count(), 4);
+        QCOMPARE(dev.diagnostics().seqGaps, 0u);
+        dev.stop();
+    }
+
+    void lostEventsAreRestored()
+    {
+        RawPadDevice dev{DeviceMatch{}};
+        auto fw = link(dev);
+        QSignalSpy events(&dev, &RawPadDevice::padEvent);
+        dev.startOnFd(m_pair[0]);
+        QTRY_VERIFY(dev.isActive());
+        auto at = [&](int i) { return events.at(i).at(0).value<PadEvent>(); };
+        // The last event before a pause is lost: nothing follows to show a
+        // gap, the next heartbeat's snapshot does.
+        fw->raw(1, 6, 1);           // key7 down
+        QTRY_COMPARE(events.count(), 1);
+        fw->lose(2, 6, 2);          // its UP never arrives
+        QTRY_COMPARE(events.count(), 2);
+        QCOMPARE(at(1).control, QStringLiteral("key7"));
+        QCOMPARE(at(1).type, PadEvent::KeyUp);
+        // A lost DOWN: the key is down, so it goes down late, then up normally.
+        fw->lose(3, 19, 1);         // knob2 press
+        QTRY_COMPARE(events.count(), 3);
+        QCOMPARE(at(2).control, QStringLiteral("knob2"));
+        QCOMPARE(at(2).type, PadEvent::PressDown);
+        fw->raw(4, 19, 2);
+        QTRY_COMPARE(events.count(), 4);
+        QCOMPARE(at(3).type, PadEvent::PressUp);
+        // Lost detents: the pad's running totals tell how many.
+        fw->raw(5, 20, 3, 0, 3);    // knob2 cw x3 arrive
+        fw->lose(6, 20, 3, 5);      // x5 do not
+        fw->raw(7, 15, 3, 0, 2);    // knob1 ccw x2 arrive (and show the gap)
+        QTRY_COMPARE(events.count(), 4 + 3 + 5 + 2);
+        int cw2 = 0, ccw1 = 0;
+        for (int i = 4; i < events.count(); ++i) {
+            const PadEvent e = at(i);
+            QCOMPARE(e.type, PadEvent::Turn);
+            cw2 += e.control == QLatin1String("knob2") && e.delta == 1;
+            ccw1 += e.control == QLatin1String("knob1") && e.delta == -1;
+        }
+        QCOMPARE(cw2, 8);
+        QCOMPARE(ccw1, 2);
+        QTest::qWait(100);
+        QCOMPARE(events.count(), 14);  // nothing twice
+        const RawDiagnostics &d = dev.diagnostics();
+        QCOMPARE(d.reconciledUps, 1u);
+        QCOMPARE(d.reconciledDowns, 1u);
+        QCOMPARE(d.reconciledDetents, 5u);
+        QCOMPARE(d.lostEvents, 3u);
+        QCOMPARE(d.rawDrops, 0u);
+        QVERIFY(d.snapshotRequests >= 1);
+        const QJsonObject j = d.toJson();
+        for (const char *k : {"events", "seqGaps", "lostEvents", "heartbeats", "replies", "heartbeatMisses", "rawDrops", "modeFlips",
+                              "snapshotRequests", "reconciledDowns", "reconciledUps", "reconciledDetents"}) {
+            QVERIFY2(j.contains(QLatin1String(k)), k);
+        }
+        QCOMPARE(j.value(QStringLiteral("reconciledDetents")).toInt(), 5);
+        dev.stop();
+    }
+
+    void silenceEndsRawMode()
+    {
+        // No answer past the raw timeout: the pad is on its keymap by now.
+        RawPadDevice dev{DeviceMatch{}};
+        auto fw = link(dev);
+        dev.setTiming(20, 200, 200);
+        QSignalSpy events(&dev, &RawPadDevice::padEvent);
+        dev.startOnFd(m_pair[0]);
+        QTRY_VERIFY(dev.isActive());
+        fw->raw(1, 0, 1);
+        QTRY_COMPARE(events.count(), 1);
+        fw->answerHeartbeats = false;
+        QTRY_VERIFY_WITH_TIMEOUT(!dev.isActive(), 2000);
+        QCOMPARE(events.count(), 2);
+        QCOMPARE(events.last().at(0).value<PadEvent>().type, PadEvent::KeyUp);
+        QCOMPARE(dev.diagnostics().rawDrops, 1u);
+        QVERIFY(dev.diagnostics().heartbeatMisses >= 1);
+        QVERIFY(dev.isOpen());          // still asking
+        fw->answerHeartbeats = true;
+        QTRY_VERIFY(dev.isActive());    // and back
+        QCOMPARE(dev.diagnostics().modeFlips, 3u);  // on, off, on
+        dev.stop();
     }
 
     void layoutChangeThatDoesNotFitEndsRawMode()

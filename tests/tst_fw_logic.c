@@ -127,7 +127,12 @@ typedef struct {
 
 static phys_t phys;
 static long quarters = 0;               // simulated time in 250 us steps
-static int missedMs = 0;
+static int missedMs = 0;                // main-loop passes a busy report took
+// The firmware's millisecond clock: 8 bits, counted by the timer interrupt.
+// The main loop passes the wrap-around difference to PAD_tick, as padfw.c.
+static uint8_t msTicks = 0, lastTicks = 0;
+static int watchRaw = 0;                // count main-loop passes that find raw mode off
+static int rawOffPasses = 0;
 
 static uint8_t pins(void)
 {
@@ -160,12 +165,22 @@ static void quarter(void)
     if (++quarters % 4) {
         return;
     }
+    ++msTicks;
     if (blockedMs > 0) {
         --blockedMs;
         ++missedMs;
         return;
     }
-    PAD_tick((uint16_t)(1 + missedMs));
+    {
+        uint8_t elapsed = msTicks;
+        elapsed -= lastTicks;
+        lastTicks = msTicks;
+        CHECK_EQ(elapsed, 1 + missedMs);
+        PAD_tick(elapsed);
+        if (watchRaw && !PAD_rawActive(&Pad.raw)) {
+            ++rawOffPasses;
+        }
+    }
     missedMs = 0;
     PAD_poll(phys.gpioKey, phys.tm);
 }
@@ -221,8 +236,19 @@ static void reset(void)
     reportMs = 0;
     blockedMs = 0;
     missedMs = 0;
+    lastTicks = msTicks;                // the clock keeps running across tests, as on the pad
     PAD_init(0, phys.gpioKey, phys.tm, pins());
     outCount = 0;
+}
+
+// Elapsed time in pieces PAD_tick's 8-bit parameter can carry.
+static void tickMs(int ms)
+{
+    while (ms > 0) {
+        const uint8_t step = ms > 200 ? 200 : (uint8_t)ms;
+        PAD_tick(step);
+        ms -= step;
+    }
 }
 
 static uint16_t key(uint8_t mods, uint8_t usage)
@@ -1190,15 +1216,15 @@ static void test_raw_mode(void)
     reset();
     CHECK(PAD_setRaw(1000));
     for (i = 0; i < 20; ++i) {
-        PAD_tick(900);
+        tickMs(900);
         CHECK(PAD_rawActive(&Pad.raw));
         CHECK(PAD_setRaw(1000));
     }
-    PAD_tick(999);
+    tickMs(999);
     CHECK(PAD_rawActive(&Pad.raw));
     PAD_tick(1);
     CHECK(!PAD_rawActive(&Pad.raw));
-    PAD_tick(5000);
+    tickMs(5000);
     CHECK(!PAD_rawActive(&Pad.raw));
 
     // Out-of-range requests are refused and change nothing; 0 turns it off.
@@ -1228,7 +1254,7 @@ static void test_raw_mode(void)
     phys.tm = 0x45;
     poll(3);
     CHECK_EQ(countRaw(6, RAW_EVT_DOWN), 1);
-    PAD_tick(600);
+    tickMs(600);
     CHECK(!PAD_rawActive(&Pad.raw));
     phys.tm = TM_IDLE;
     poll(3);
@@ -1244,7 +1270,7 @@ static void test_raw_mode(void)
     PAD_setRaw(500);
     phys.tm = 0x4D;
     poll(3);
-    PAD_tick(600);
+    tickMs(600);
     PAD_setRaw(500);
     phys.tm = TM_IDLE;
     poll(3);
@@ -1369,6 +1395,172 @@ static void tally(int raw, int *gotDown, int *gotUp, int *gotTap)
     outCount = 0;
 }
 
+// The daemon's pattern for 10 s of simulated time: heartbeats every 500 ms
+// (timeout 1500), the 8-bit millisecond clock wrapping ~39 times, USB-busy
+// passes that make PAD_tick see 2..n ms at once. Raw mode must never drop
+// (2.0.1 dropped it at every wrap), and every DOWN gets its UP.
+static long beatQ = 0;
+static void beatIfDue(void)
+{
+    if (quarters - beatQ >= 4 * 500) {
+        CHECK(PAD_setRaw(1500));
+        beatQ = quarters;
+    }
+}
+
+static void runFor(int ms)
+{
+    while (ms-- > 0) {
+        poll(1);
+        beatIfDue();
+    }
+}
+
+static void holdTm(uint8_t code, int ms)
+{
+    phys.tm = code;
+    runFor(ms);
+    phys.tm = TM_IDLE;
+    runFor(5);
+}
+
+static void test_raw_long_run(void)
+{
+    int i, k, slot;
+    int taps[KNOB_COUNT * 2] = {0};
+    uint8_t seq;
+
+    reset();
+    reportMs = 1;                               // each raw report keeps the loop busy 1 ms
+    CHECK(PAD_setRaw(1500));
+    beatQ = quarters;
+    watchRaw = 1;
+    rawOffPasses = 0;
+    const long start = quarters;
+
+    // Holds from 0.1 s to 5 s, key 1 (GPIO) and matrix keys.
+    phys.gpioKey = 1; runFor(100); phys.gpioKey = 0; runFor(10);
+    phys.gpioKey = 1; runFor(1000); phys.gpioKey = 0; runFor(10);
+    holdTm(0x44, 100);                          // key2 (slot 1)
+    holdTm(0x4C, 2500);                         // key3 (slot 2)
+    phys.gpioKey = 1; runFor(5000); phys.gpioKey = 0; runFor(10);
+    // Key 1 and a matrix key at once (the TM1650 itself reports one key at a time).
+    phys.gpioKey = 1; runFor(50);
+    phys.tm = 0x45; runFor(300);                // key7 (slot 6) while key 1 is down
+    phys.tm = TM_IDLE; runFor(50);
+    phys.gpioKey = 0; runFor(10);
+    // Fast spins both ways on every knob, with heartbeats in between.
+    for (k = 0; k < KNOB_COUNT; ++k) {
+        spin(k, 1, 20, 3, 4, 1);                // 20 detents in ~70 ms
+        beatIfDue();
+        spin(k, 0, 20, 15, 15, 0);              // 20 detents in 300 ms
+        beatIfDue();
+        runFor(20);
+    }
+    runFor(10000 - (int)((quarters - start) / 4) > 0 ? 10000 - (int)((quarters - start) / 4) : 0);
+    watchRaw = 0;
+
+    CHECK((quarters - start) / 4 >= 10000);     // >= 39 wraps of the 8-bit clock
+    CHECK_EQ(rawOffPasses, 0);
+    CHECK(PAD_rawActive(&Pad.raw));
+    CHECK_EQ(Pad.stats.rawEntries, 1);
+    CHECK_EQ(Pad.stats.rawExpiries, 0);
+    CHECK_EQ(Pad.rawEpoch, 1);
+    CHECK_EQ(countKind(OUT_PRESS), 0);          // nothing went through the keymap
+    // Exact DOWN/UP pairs.
+    CHECK_EQ(countRaw(0, RAW_EVT_DOWN), 4);
+    CHECK_EQ(countRaw(0, RAW_EVT_UP), 4);
+    CHECK_EQ(countRaw(1, RAW_EVT_DOWN), 1);
+    CHECK_EQ(countRaw(1, RAW_EVT_UP), 1);
+    CHECK_EQ(countRaw(2, RAW_EVT_DOWN), 1);
+    CHECK_EQ(countRaw(2, RAW_EVT_UP), 1);
+    CHECK_EQ(countRaw(6, RAW_EVT_DOWN), 1);
+    CHECK_EQ(countRaw(6, RAW_EVT_UP), 1);
+    CHECK_EQ(Pad.rawHeld[0] | Pad.rawHeld[1] | Pad.rawHeld[2], 0);
+    // Exact detents, and the running totals the host reconciles against.
+    for (i = 0; i < outCount && i < OUT_MAX; ++i) {
+        if (outs[i].kind == OUT_RAW && outs[i].event == RAW_EVT_TAP) {
+            slot = outs[i].slot - 15;
+            taps[(slot / 3) * 2 + (slot % 3 == KNOB_CW ? 0 : 1)] += outs[i].count;
+        }
+    }
+    for (k = 0; k < KNOB_COUNT; ++k) {
+        CHECK_EQ(taps[2 * k], 20);
+        CHECK_EQ(taps[2 * k + 1], 20);
+        CHECK_EQ(Pad.knobRaw[2 * k], 20);
+        CHECK_EQ(Pad.knobRaw[2 * k + 1], 20);
+    }
+    // Sequence numbers without a gap.
+    seq = 0;
+    for (i = 0; i < outCount && i < OUT_MAX; ++i) {
+        if (outs[i].kind == OUT_RAW) {
+            CHECK_EQ(outs[i].seq, (uint8_t)(seq + 1));
+            seq = outs[i].seq;
+        }
+    }
+    CHECK_EQ(Pad.rawSeq, seq);
+
+    // Heartbeats stop: raw mode ends once, 1500..1502 ms after the last one,
+    // even with the clock wrapping meanwhile.
+    reportMs = 0;
+    {
+        const long last = beatQ;
+        long endedAt = -1;
+        for (i = 0; i < 3000 && endedAt < 0; ++i) {
+            poll(1);
+            if (!PAD_rawActive(&Pad.raw)) {
+                endedAt = (quarters - last) / 4;
+            }
+        }
+        CHECK(endedAt >= 1500 && endedAt <= 1502);
+    }
+    CHECK_EQ(Pad.stats.rawExpiries, 1);
+    CHECK_EQ(Pad.rawEpoch, 1);                  // the epoch moves on the next start
+    CHECK(PAD_setRaw(1500));
+    CHECK_EQ(Pad.rawEpoch, 2);
+    CHECK_EQ(Pad.stats.rawEntries, 2);
+    CHECK(PAD_setRaw(0));
+    CHECK_EQ(Pad.stats.rawStops, 1);
+
+    // What 2.0.1 did: SDCC passed 0xFF00 + the 8-bit difference at every wrap
+    // of the clock, and any such value ends raw mode at once.
+    {
+        rawmode_t r;
+        CHECK(PAD_rawRequest(&r, 1500));
+        CHECK_EQ(PAD_rawTick(&r, 0xFF03), 1);
+        CHECK(!PAD_rawActive(&r));
+    }
+}
+
+// Raw-session snapshot fields the host compares its events with.
+static void test_raw_snapshot_state(void)
+{
+    reset();
+    CHECK_EQ(Pad.rawEpoch, 0);
+    CHECK(PAD_setRaw(1000));
+    phys.gpioKey = 1;
+    poll(3);
+    phys.tm = 0x44;                             // key2 (slot 1)
+    poll(3);
+    CHECK_EQ(Pad.rawHeld[0], 0x03);             // slots 0 and 1 reported down
+    phys.tm = TM_IDLE;
+    poll(3);
+    CHECK_EQ(Pad.rawHeld[0], 0x01);
+    turn(1, 1);
+    turn(1, 1);
+    turn(2, 0);
+    poll(2);
+    CHECK_EQ(Pad.knobRaw[2], 2);                // knob2 cw
+    CHECK_EQ(Pad.knobRaw[5], 1);                // knob3 ccw
+    CHECK_EQ(Pad.rawSeq, (uint8_t)countKind(OUT_RAW));
+    // Detents in keymap mode are not raw detents.
+    CHECK(PAD_setRaw(0));
+    CHECK_EQ(Pad.rawHeld[0], 0);
+    turn(1, 1);
+    settle(100);
+    CHECK_EQ(Pad.knobRaw[2], 2);
+}
+
 static void test_soak(void)
 {
     static const uint8_t tmKeys[14] = {0x44, 0x4C, 0x54, 0x5C, 0x64, 0x45, 0x4D,
@@ -1478,6 +1670,8 @@ int main(void)
     test_fast_spin();
     test_layers();
     test_raw_mode();
+    test_raw_long_run();
+    test_raw_snapshot_state();
     test_soak();
     printf("tst_fw_logic: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

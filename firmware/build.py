@@ -194,6 +194,14 @@ def main() -> None:
         run([sdcc, "-c", *cflags, str(source), "-o", str(rel)])
         rels.append(rel)
 
+    # The generated code must not widen an 8-bit difference (asmcheck.py: the
+    # SDCC miscompile behind 2.0.1's raw-mode drops).
+    check = subprocess.run([sys.executable, str(Path(__file__).with_name("asmcheck.py")), str(BUILD)],
+                           capture_output=True, text=True)
+    print(check.stdout.strip())
+    if check.returncode:
+        sys.exit(check.stderr.strip() or "error: asmcheck failed")
+
     ihx = BUILD / f"{target}.ihx"
     print(f"Linking {ihx.name} ...")
     run([sdcc, *[str(r) for r in rels], *cflags, "-o", str(ihx)])

@@ -21,7 +21,10 @@ public:
 
 Q_SIGNALS:
     void input(const QString &slot, const QString &event, int delta);
+    // The daemon left the bus, or a daemon (a restarted one) took the name
+    // again; the subscription stays, so its events come through as before.
     void daemonGone();
+    void daemonBack();
 
 private Q_SLOTS:
     void onInputEvent(const QString &slot, const QString &event, int delta);

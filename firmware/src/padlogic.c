@@ -452,27 +452,43 @@ void PAD_event(uint8_t slot, uint8_t event) {
   }
 }
 
+#if (PAD_QUEUE_RUNS & (PAD_QUEUE_RUNS - 1)) != 0
+#error "PAD_QUEUE_RUNS must be a power of two"
+#endif
+
+// Index of the run `offset` places after the head, in 8-bit arithmetic: no
+// promoted int, no division (both cost code and invite SDCC's widening).
+static uint8_t runIndex(uint8_t offset) {
+  uint8_t i = Pad.runHead;
+  i += offset;
+  return i & (uint8_t)(PAD_QUEUE_RUNS - 1);
+}
+
 uint16_t PAD_queued(void) {
   uint16_t n = 0;
   uint8_t i;
-  for(i = 0; i < Pad.runLen; i++) n += Pad.runCount[(Pad.runHead + i) % PAD_QUEUE_RUNS];
+  for(i = 0; i < Pad.runLen; i++) n += Pad.runCount[runIndex(i)];
   return n;
 }
 
 void PAD_turn(uint8_t knob, uint8_t cw, uint8_t detents) {
-  uint8_t slot, last, room;
+  uint8_t slot, last, room, total;
   uint16_t q;
   if(knob >= KNOB_COUNT || detents == 0) return;
   slot = (uint8_t)SLOT_KNOB(knob, cw ? KNOB_CW : KNOB_CCW);
   if(PAD_rawActive(&Pad.raw)) {
     // One report for all detents taken at once: USB pace never loses any.
+    // The running total lets the host restore detents it did not receive.
+    total = knob << 1;
+    if(!cw) total |= 1;
+    Pad.knobRaw[total] += detents;
     emitRaw(slot, RAW_EVT_TAP, detents);
     return;
   }
   // Append to the run of the same slot at the tail, or start a new run.
   while(detents) {
     if(Pad.runLen) {
-      last = (uint8_t)((Pad.runHead + Pad.runLen - 1) % PAD_QUEUE_RUNS);
+      last = runIndex(Pad.runLen - 1);
       if(Pad.runSlot[last] == slot && Pad.runCount[last] < PAD_RUN_MAX) {
         room = (uint8_t)(PAD_RUN_MAX - Pad.runCount[last]);
         if(room > detents) room = detents;
@@ -485,7 +501,7 @@ void PAD_turn(uint8_t knob, uint8_t cw, uint8_t detents) {
       Pad.stats.queueDrops += detents;          // more direction changes than fit
       break;
     }
-    last = (uint8_t)((Pad.runHead + Pad.runLen) % PAD_QUEUE_RUNS);
+    last = runIndex(Pad.runLen);
     Pad.runSlot[last] = slot;
     Pad.runCount[last] = 0;
     Pad.runLen++;
@@ -510,7 +526,7 @@ static void runTaps(void) {
   if(!Pad.runLen) return;
   slot = Pad.runSlot[Pad.runHead];
   if(--Pad.runCount[Pad.runHead] == 0) {
-    Pad.runHead = (uint8_t)((Pad.runHead + 1) % PAD_QUEUE_RUNS);
+    Pad.runHead = runIndex(1);
     Pad.runLen--;
   }
   packed = PAD_keymap(PAD_activeLayer(&Pad.layers), slot);
@@ -557,18 +573,25 @@ uint8_t PAD_setRaw(uint16_t timeoutMs) {
   if(!PAD_rawRequest(&Pad.raw, timeoutMs)) return 0;
   if(!was && PAD_rawActive(&Pad.raw)) {
     PAD_releaseAll();                           // nothing stays stuck on the host
+    Pad.rawEpoch++;                             // a new raw session: the host resyncs
+    Pad.rawHeld[0] = Pad.rawHeld[1] = Pad.rawHeld[2] = 0;
+    Pad.stats.rawEntries++;
   } else if(was && !PAD_rawActive(&Pad.raw)) {
     Pad.rawHeld[0] = Pad.rawHeld[1] = Pad.rawHeld[2] = 0;
+    Pad.stats.rawStops++;
   }
   return 1;
 }
 
-void PAD_tick(uint16_t elapsedMs) {
+void PAD_tick(uint8_t elapsedMs) {
   Pad.nowMs += elapsedMs;
   if(PAD_rawTick(&Pad.raw, elapsedMs)) {
     // Heartbeat lost: back to the keymap. Keys still down stay silent until
     // they come up, so nothing is pressed that the user did not press anew.
+    // The host sees the new epoch at its next heartbeat and releases what it
+    // still holds from this raw session.
     Pad.rawHeld[0] = Pad.rawHeld[1] = Pad.rawHeld[2] = 0;
+    Pad.stats.rawExpiries++;
   }
 }
 
@@ -600,7 +623,9 @@ void PAD_init(uint8_t startLayer, uint8_t gpioKeyDown, uint8_t tmCode, uint8_t e
   Pad.layers.momentary = 0xFF;
   Pad.layers.momentarySlot = SLOT_NONE;
   Pad.rawSeq = 0;
+  Pad.rawEpoch = 0;
   Pad.rawHeld[0] = Pad.rawHeld[1] = Pad.rawHeld[2] = 0;
+  for(i = 0; i < KNOB_COUNT * 2; i++) Pad.knobRaw[i] = 0;
   for(i = 0; i < SLOT_COUNT; i++) Pad.held[i] = 0;
   Pad.runHead = 0;
   Pad.runLen = 0;

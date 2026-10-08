@@ -45,6 +45,11 @@ void USB_ISR(void) __interrupt(INT_NO_USB) {
 static volatile uint8_t msTicks = 0;
 static uint8_t quarter = 0;
 
+// Called from the timer interrupt (and once at start-up): no overlaid locals.
+#ifdef SDCC
+#pragma save
+#pragma nooverlay
+#endif
 static uint8_t readEncoders(void) {
   uint8_t pins = 0;
   if(PIN_read(PIN_ENC1_B)) pins |= 0x01;
@@ -55,6 +60,9 @@ static uint8_t readEncoders(void) {
   if(PIN_read(PIN_ENC3_A)) pins |= 0x20;
   return pins;
 }
+#ifdef SDCC
+#pragma restore
+#endif
 
 void TMR2_ISR(void) __interrupt(INT_NO_TMR2) {
   TF2 = 0;
@@ -161,7 +169,7 @@ void PAD_hwRaw(uint8_t seq, uint8_t slot, uint8_t event, uint8_t layer, uint8_t 
 // ===================================================================================
 
 void main(void) {
-  uint8_t busOK, key, now, last, startLayer;
+  uint8_t busOK, key, now, last, elapsed, startLayer;
 
   CLK_config();
   DLY_ms(10);
@@ -196,7 +204,12 @@ void main(void) {
     do {
       now = msTicks;
     } while(now == last);
-    PAD_tick((uint8_t)(now - last));
+    // 8-bit wrap-around difference in an 8-bit variable, passed as 8 bits:
+    // 2.0.1's `PAD_tick((uint8_t)(now - last))` with a 16-bit parameter was
+    // compiled without the truncation (0xFF.. at every counter wrap).
+    elapsed = now;
+    elapsed -= last;
+    PAD_tick(elapsed);
     last = now;
 
     key = TM1650_readKey();

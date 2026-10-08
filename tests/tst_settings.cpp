@@ -1028,7 +1028,28 @@ private Q_SLOTS:
             srv.unregisterService(QLatin1String(SettingsService::kService));
             QTRY_COMPARE(gone.count(), 1);
         }
+        {
+            // The daemon restarts: the same monitor keeps following it.
+            InputMonitor mon;
+            SettingsService s(t.path() + QStringLiteral("/c.jsonc"));
+            QVERIFY(s.registerOn(srv, true, nullptr));
+            QVERIFY(mon.attach(cli));
+            QSignalSpy in(&mon, &InputMonitor::input);
+            QSignalSpy gone(&mon, &InputMonitor::daemonGone);
+            QSignalSpy back2(&mon, &InputMonitor::daemonBack);
+            srv.unregisterService(QLatin1String(SettingsService::kService));
+            QTRY_COMPARE(gone.count(), 1);
+            SettingsService again(t.path() + QStringLiteral("/c.jsonc"));
+            QDBusConnection srv2 = bus(QStringLiteral("monsrv2"));
+            QVERIFY(again.registerOn(srv2, true, nullptr));
+            QTRY_COMPARE(back2.count(), 1);
+            again.filterPadEvent(PadEvent{QStringLiteral("key9"), PadEvent::KeyUp, 0, 0});
+            QTRY_COMPARE(in.count(), 1);
+            QCOMPARE(in.first(), (QVariantList{QStringLiteral("key9"), QStringLiteral("release"), 0}));
+            srv2.unregisterService(QLatin1String(SettingsService::kService));
+        }
         QDBusConnection::disconnectFromBus(QStringLiteral("monsrv"));
+        QDBusConnection::disconnectFromBus(QStringLiteral("monsrv2"));
         QDBusConnection::disconnectFromBus(QStringLiteral("moncli"));
     }
 

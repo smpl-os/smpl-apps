@@ -86,6 +86,20 @@ uint16_t PAD_keymap(uint8_t layer, uint8_t slot) {
   return Keymap[layer][slot];
 }
 
+// The raw session as the host should see it (CMD_RAW_MODE, CMD_GET_KEYS): events
+// sent before this reply all reached the host first (same endpoint, in order),
+// so the host can compare them with this and restore anything it lost.
+static void snapshot(void) {
+  uint8_t i;
+  reply[2] = Pad.rawEpoch;
+  reply[3] = Pad.rawSeq;
+  reply[4] = Pad.rawHeld[0];
+  reply[5] = Pad.rawHeld[1];
+  reply[6] = Pad.rawHeld[2];
+  reply[8] = PAD_rawActive(&Pad.raw);
+  for(i = 0; i < KNOB_COUNT * 2; i++) reply[9 + i] = Pad.knobRaw[i];
+}
+
 uint8_t PADSTORE_handle(void) {
   uint8_t i, idx, layer, type, mod, boot = 0;
   uint16_t code, packed;
@@ -158,7 +172,12 @@ uint8_t PADSTORE_handle(void) {
 
     case CMD_RAW_MODE:
       reply[7] = PAD_setRaw(req[2] | ((uint16_t)req[3] << 8)) ? ST_OK : ST_BAD_ARG;
-      reply[8] = PAD_rawActive(&Pad.raw);
+      snapshot();
+      break;
+
+    case CMD_GET_KEYS:
+      reply[7] = ST_OK;
+      snapshot();
       break;
 
     case CMD_SET_LAYER:
@@ -175,14 +194,18 @@ uint8_t PADSTORE_handle(void) {
       static PS_XDATA padstats_t st;
       static PS_XDATA uint16_t v[6];
       reply[2] = idx;
-      if(idx > 1 || req[3] > 1) { reply[7] = ST_BAD_ARG; break; }
+      if(idx > 2 || req[3] > 1) { reply[7] = ST_BAD_ARG; break; }
       PAD_getStats(&st, req[3]);
       if(idx == 0) {
         v[0] = st.illegal[0]; v[1] = st.illegal[1]; v[2] = st.illegal[2];
         v[3] = st.overruns;   v[4] = st.queueDrops; v[5] = st.maxQueue;
-      } else {
+      } else if(idx == 1) {
         v[0] = st.cw[0]; v[1] = st.ccw[0]; v[2] = st.cw[1];
         v[3] = st.ccw[1]; v[4] = st.cw[2]; v[5] = st.ccw[2];
+      } else {
+        // Page 2 (2.0.2): raw mode started, expired (heartbeat lost), stopped by the host.
+        v[0] = st.rawEntries; v[1] = st.rawExpiries; v[2] = st.rawStops;
+        v[3] = 0; v[4] = 0; v[5] = 0;
       }
       for(i = 0; i < 12; i++) {                 // data bytes 3..6, then 8..15
         reply[i < 4 ? 3 + i : 4 + i] = (uint8_t)((i & 1) ? (v[i >> 1] >> 8) : (v[i >> 1] & 0xFF));

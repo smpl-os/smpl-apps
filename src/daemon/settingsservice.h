@@ -98,6 +98,8 @@ public:
     void setCheatsheet(Cheatsheet *c);
     // Extra fields for GetStatus().cheatsheet (e.g. {"eww": {...}}).
     void setCheatsheetStatus(std::function<QJsonObject()> f) { m_cheatsheetStatus = std::move(f); }
+    // GetStatus().input: configured and actual input mode, raw/evdev diagnostics.
+    void setInputStatus(std::function<QJsonObject()> f) { m_inputStatus = std::move(f); }
     using ConfigApplier = std::function<QString(const Config &)>;  // error, or empty when applied
     void setConfigApplier(ConfigApplier a) { m_apply = std::move(a); }
     void setFlashSettings(const FlashSettings &s) { m_flash = s; }
@@ -188,6 +190,7 @@ private:
     QPointer<FlashJob> m_job;
     QPointer<Cheatsheet> m_cheatsheet;
     std::function<QJsonObject()> m_cheatsheetStatus;
+    std::function<QJsonObject()> m_inputStatus;
     int m_jobCounter = 0;
     QTimer *m_identifyTimer;
     QString m_identifyOwner;

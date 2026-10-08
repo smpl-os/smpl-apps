@@ -111,6 +111,12 @@ if(BUILD_TESTING)
     add_executable(tst_fw_store tests/tst_fw_store.c firmware/src/padstore.c firmware/src/padlogic.c)
     target_include_directories(tst_fw_store PRIVATE firmware/src)
     add_test(NAME fw_store COMMAND tst_fw_store)
+    # The firmware build's guard against SDCC widening 8-bit differences
+    # (2.0.1's raw-mode drops), checked against known-good and known-bad code.
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME fw_asmcheck COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/firmware/asmcheck.py --self-test)
+    endif()
     target_sources(tst_kdenlive_dbus PRIVATE tests/rawclient.h)
     target_sources(tst_kdenlive_bus PRIVATE tests/rawclient.h)
     # The pacing test runs the mock as a separate process (its own event loop).
