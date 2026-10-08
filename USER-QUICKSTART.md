@@ -144,8 +144,15 @@ Other apps:
   next track; knob 1 is the volume (press mutes), knob 2 scrolls (press:
   middle click).
 
-Turning a knob while it is pressed does nothing: the pad's firmware ignores
-it, because pressing a knob moves its contacts.
+Turning a knob while it is pressed does nothing: pressing the top or middle
+knob holds one of its contacts, so no firmware can tell which way it turns.
+To give the knobs a second set of actions, hold a key instead: a layer with
+`"when": {"held": "key1"}` applies while key 1 is down. With key 1's
+cheatsheet, the overlay then shows that layer. Key 1 works with every
+other key and knob. Keys 2–15 and the knob presses are read one at a time,
+so while one of them is held, only key 1 and the knob turns can do
+something else. See "Held-key layers" in
+[docs/config-reference.md](docs/config-reference.md#held-key-layers).
 
 ## 6. Change the configuration
 
@@ -190,6 +197,9 @@ and binding form. In short:
   * keys, for other apps: `"ctrl+z"`;
   * a program: `{"command": ["gtk-launch", "brave-browser"]}`;
   * the overlay: `{"cheatsheet": "hold"}`.
+* **Held keys.** `"when": {"held": "key1"}` on a layer: its bindings apply
+  while key 1 is held, in any app. A held key's own tap fires when it is
+  released, unless you used another key or knob meanwhile.
 * **Knobs.** `"turn"`, `"ccw"`/`"cw"` and `"press"`. `"scale"` multiplies
   detents. `"accel"` sets acceleration for one binding; 1 turns it off.
 

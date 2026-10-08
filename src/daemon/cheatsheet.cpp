@@ -231,6 +231,8 @@ QJsonObject Cheatsheet::content() const
                     {QStringLiteral("title"), layers.isEmpty() ? profile : QStringLiteral("%1 · %2").arg(profile, layers.join(QStringLiteral(", ")))},
                     {QStringLiteral("profile"), profile},
                     {QStringLiteral("layers"), QJsonArray::fromStringList(layers)},
+                    // Held-layer keys down now ("when": {"held": ...}), e.g. ["key1"].
+                    {QStringLiteral("held"), QJsonArray::fromStringList(m_engine->heldModifiers())},
                     {QStringLiteral("window"), QJsonObject{{QStringLiteral("class"), w.cls}, {QStringLiteral("title"), w.title}}},
                     {QStringLiteral("notice"), notice},
                     {QStringLiteral("options"), QJsonObject{{QStringLiteral("opacity"), o.opacity},
@@ -257,11 +259,20 @@ QJsonObject Cheatsheet::preview(const Config &cfg, const BoardProfile &layout, c
     RecordingKeySink keys;
     FakeKdenliveClient kd;
     // A preview shows what the bindings do with Kdenlive's interface on.
-    kd.setContext(kdenliveContext);
     kd.setState(KdenliveClient::State::Available);
+    QVariantMap ctx = kdenliveContext;
+    QStringList held;
+    const QVariant heldValue = ctx.take(QStringLiteral("$held"));
+    for (const QString &h : heldValue.typeId() == QMetaType::QString ? QStringList{heldValue.toString()} : heldValue.toStringList()) {
+        for (const QString &c : h.split(QLatin1Char('+'), Qt::SkipEmptyParts)) {
+            held << c.trimmed();
+        }
+    }
+    kd.setContext(ctx);
     Engine engine(&keys, &kd);
     engine.setConfig(cfg);
     engine.setActiveWindow(WindowInfo{windowClass, title, 4242, QString()});
+    engine.setHeldForPreview(held);
     Cheatsheet sheet(&engine, &kd);
     sheet.setLayoutProvider([layout] { return layout; });
     QJsonObject c = sheet.content();

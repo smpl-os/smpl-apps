@@ -342,3 +342,35 @@ Our first flash was byte-identical to this and had no effect. The vendor apps in
 * the CH552 data flash is only 128 bytes, at even addresses only.
 
 The factory protocol tooling was not published.
+
+## Knob press and encoder lines: no turn-while-pressed (2026-10-08)
+
+On this board the knob switches sit in the TM1650 matrix (DIG4), but the top
+and middle knobs' presses also **hold their encoder's B line low for the whole
+press**. Discovery capture 3 (`discovery.c`, all pins sampled every ~2 ms)
+shows it each time: `K67 GFD … K27 GFF` for the top knob (P1.4 low from the
+press until after the release) and `K5F GF7 K1F GFF` for the middle knob
+(P1.6). The bottom knob's press moved neither of its lines (capture 2; fewer
+samples).
+
+With B held low, turning the knob only toggles A, and every detent gives the
+same A pulse in both directions, so **no decoder on any firmware can tell
+which way a pressed top or middle knob turns**. The control-surface firmware
+(2.0.x) also ignores turns while any knob is pressed, which rejects the press
+transient. So on this pad:
+
+* `"shift"` bindings (turn while pressed) never fire. `check-config`, `ValidateConfig` and
+  `GetStatus` warn about them, naming the cause per knob. A knob with shift
+  bindings also delays its own press until release.
+* The board profile `sy181-15k3e` records this: knob `pressPinsEncoder`
+  (knob1, knob2) and the board's `turnsWhilePressed: false`, in `features
+  --json` and the layout JSON.
+* Use a **held key** instead. A layer with `"when": {"held": "key1"}` applies
+  while key 1 is down, and the knobs then do something else
+  ([config-reference.md](config-reference.md#held-key-layers)). Keys do not
+  touch the encoder lines, so this works on all three knobs in both
+  directions.
+
+A firmware change for the bottom knob alone (count only complete quadrature
+cycles while pressed) was considered and dropped: one knob was not worth a
+firmware cycle.

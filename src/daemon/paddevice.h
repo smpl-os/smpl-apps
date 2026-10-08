@@ -65,6 +65,7 @@ private:
     void scheduleRescan(int ms);
     void openNode(const InputNodeInfo &info);
     void closeNode(int index);
+    void emitChords(const QList<ChordEvent> &events);
     void closeAll();
     void readNode(int fd);
     void onUdev();

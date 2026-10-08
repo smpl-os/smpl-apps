@@ -840,6 +840,31 @@ private Q_SLOTS:
         QCOMPARE(r.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toString(), QStringLiteral("apply"));
     }
 
+    // What the board cannot do shows in GetStatus and ValidateConfig.
+    void boardWarningsInStatus()
+    {
+        QTemporaryDir t;
+        const QString path = t.path() + QStringLiteral("/config.jsonc");
+        writeFile(path, kConfig);
+        SettingsService s(path);
+        s.setConfigState(ConfigStore::hashOf(kConfig), QString(), {});
+        QString seen;
+        s.setBoardWarnings([&seen](const BoardProfile &l) {
+            seen = l.id;
+            return QStringList{QStringLiteral("profile g knob1.shift.turn: never fires")};
+        });
+        const QJsonArray w = obj(s.GetStatus()).value(QStringLiteral("config")).toObject().value(QStringLiteral("warnings")).toArray();
+        QVERIFY(w.contains(QStringLiteral("profile g knob1.shift.turn: never fires")));
+        QCOMPARE(seen, QStringLiteral("sy181-15k3e"));  // the default layout without a pad
+        const QJsonObject v = obj(s.ValidateConfig(QStringLiteral(R"({"profiles": [{"name": "g", "bindings": {"knob2": {"shift": {"cw": "a"}}}}]})")));
+        QVERIFY(v.value(QStringLiteral("ok")).toBool());
+        bool found = false;
+        for (const auto &x : v.value(QStringLiteral("warnings")).toArray()) {
+            found = found || x.toString().startsWith(QStringLiteral("profile g knob2.shift.cw: never fires: pressing knob2 holds"));
+        }
+        QVERIFY2(found, QJsonDocument(v).toJson().constData());
+    }
+
     void monitorFormat()
     {
         QCOMPARE(InputMonitor::jsonLine(QStringLiteral("key7"), QStringLiteral("press"), 0, 5), QStringLiteral(R"({"delta":0,"event":"press","ms":5,"slot":"key7"})"));
@@ -1123,7 +1148,8 @@ private Q_SLOTS:
             {"name":"Kdenlive","match":{"class":"^org\\.kde\\.kdenlive"},"kdenlive":true,
              "layers":[{"name":"Wheels","when":{"colorWheels":true},"bindings":{"key2":{"request":"colorwheel.reset","params":{"wheel":"lift"}}}}],
              "bindings":{"key2":{"action":"mark_in"}}},
-            {"name":"global","bindings":{"key1":{"cheatsheet":"toggle"},"key3":{"cheatsheet":"hold"},"key2":"ctrl+z"}}]})");
+            {"name":"global","layers":[{"name":"Held","when":{"held":"key3"},"bindings":{"key2":{"keys":"super+1","label":"Workspace 1"}}}],
+             "bindings":{"key1":{"cheatsheet":"toggle"},"key3":{"cheatsheet":"hold"},"key2":"ctrl+z"}}]})");
         QDBusConnection srv = bus(QStringLiteral("csrv"));
         QDBusConnection cli = bus(QStringLiteral("ccli"));
         {
@@ -1186,12 +1212,50 @@ private Q_SLOTS:
             QTRY_COMPARE(r.sheetVisible.size(), 4);
             QCOMPARE(r.sheetVisible.last(), false);
             r.mock(QStringLiteral("Plug"), {QStringLiteral("control-surface"), QString()});
-            // Hold.
+            // Hold, with a held layer: the overlay shows that layer while key3 is down.
+            r.mock(QStringLiteral("Focus"), {QStringLiteral("brave-browser"), QStringLiteral("x")});
             r.mock(QStringLiteral("Hold"), {QStringLiteral("key3")});
             QTRY_COMPARE(r.sheetVisible.size(), 5);
+            auto key2Label = [](const QJsonObject &sheet) {
+                for (const auto &k : sheet.value(QStringLiteral("keys")).toArray()) {
+                    if (k.toObject().value(QStringLiteral("control")).toString() == QLatin1String("key2")) {
+                        return k.toObject().value(QStringLiteral("label")).toString();
+                    }
+                }
+                return QString();
+            };
+            c = r.json(QStringLiteral("GetCheatsheet"));
+            QCOMPARE(c.value(QStringLiteral("held")).toArray(), QJsonArray{QStringLiteral("key3")});
+            QCOMPARE(key2Label(c), QStringLiteral("Workspace 1"));
+            QTRY_COMPARE(key2Label(obj(r.sheets.last())), QStringLiteral("Workspace 1"));  // pushed to the overlay too
+            r.mock(QStringLiteral("TakeKeys"));
+            r.mock(QStringLiteral("Press"), {QStringLiteral("key2")});
+            QStringList typed;  // TakeKeys empties the record: collect (QTRY evaluates again after success)
+            QTRY_VERIFY((typed += r.mock(QStringLiteral("TakeKeys")).arguments().value(0).toStringList(), typed == QStringList{QStringLiteral("super+1")}));
             r.mock(QStringLiteral("Release"), {QStringLiteral("key3")});
             QTRY_COMPARE(r.sheetVisible.size(), 6);
             QCOMPARE(r.sheetVisible.last(), false);
+            QCOMPARE(key2Label(r.json(QStringLiteral("GetCheatsheet"))), QStringLiteral("Ctrl+Z"));
+            // Unplugged while held: the held layer ends too.
+            r.mock(QStringLiteral("Hold"), {QStringLiteral("key3")});
+            QTRY_COMPARE(r.sheetVisible.size(), 7);
+            r.mock(QStringLiteral("Unplug"));
+            QTRY_COMPARE(r.sheetVisible.size(), 8);
+            QCOMPARE(r.json(QStringLiteral("GetCheatsheet")).value(QStringLiteral("held")).toArray(), QJsonArray{});
+            r.mock(QStringLiteral("Plug"), {QStringLiteral("control-surface"), QString()});
+            // Released while identify mode swallows input: the hold still ends.
+            r.mock(QStringLiteral("Hold"), {QStringLiteral("key3")});
+            QTRY_COMPARE(r.sheetVisible.size(), 9);
+            QCOMPARE(r.call(QStringLiteral("SetIdentify"), {true}).type(), QDBusMessage::ReplyMessage);
+            r.mock(QStringLiteral("Release"), {QStringLiteral("key3")});
+            QTRY_COMPARE(r.sheetVisible.size(), 10);
+            QCOMPARE(r.sheetVisible.last(), false);
+            QCOMPARE(r.json(QStringLiteral("GetCheatsheet")).value(QStringLiteral("held")).toArray(), QJsonArray{});
+            r.call(QStringLiteral("SetIdentify"), {false});
+            // Previews of a held layer: "$held" in the context.
+            c = r.json(QStringLiteral("GetCheatsheetFor"), {QStringLiteral("brave-browser"), QString(), QStringLiteral(R"({"$held": "key3"})")});
+            QCOMPARE(key2Label(c), QStringLiteral("Workspace 1"));
+            QCOMPARE(c.value(QStringLiteral("held")).toArray(), QJsonArray{QStringLiteral("key3")});
 
             // Previews for editors.
             c = r.json(QStringLiteral("GetCheatsheetFor"), {QStringLiteral("org.kde.kdenlive"), QString(), QStringLiteral(R"({"colorWheels":true})")});

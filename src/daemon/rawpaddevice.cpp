@@ -211,12 +211,12 @@ void RawPadDevice::releaseHeld()
     for (int slot = 0; slot < 32; ++slot) {
         if (held & (1u << slot)) {
             ++m_diag.reconciledUps;
-            emitSlot(slot, padfw::Up, 1);
+            emitSlot(slot, padfw::Up, 1, true);
         }
     }
 }
 
-void RawPadDevice::emitSlot(int slot, int event, int count)
+void RawPadDevice::emitSlot(int slot, int event, int count, bool synthetic)
 {
     const auto it = m_slots.constFind(slot);
     if (it == m_slots.cend()) {
@@ -229,12 +229,12 @@ void RawPadDevice::emitSlot(int slot, int event, int count)
             Q_EMIT padEvent(PadEvent{t.control, PadEvent::KeyDown, 0, 0});
             Q_EMIT padEvent(PadEvent{t.control, PadEvent::KeyUp, 0, 0});
         } else {
-            Q_EMIT padEvent(PadEvent{t.control, event == padfw::Down ? PadEvent::KeyDown : PadEvent::KeyUp, 0, 0});
+            Q_EMIT padEvent(PadEvent{t.control, event == padfw::Down ? PadEvent::KeyDown : PadEvent::KeyUp, 0, 0, synthetic});
         }
         break;
     case SlotTarget::KnobPress:
         if (event != padfw::Tap) {
-            Q_EMIT padEvent(PadEvent{t.control, event == padfw::Down ? PadEvent::PressDown : PadEvent::PressUp, 0, 0});
+            Q_EMIT padEvent(PadEvent{t.control, event == padfw::Down ? PadEvent::PressDown : PadEvent::PressUp, 0, 0, synthetic});
         }
         break;
     case SlotTarget::Ccw:

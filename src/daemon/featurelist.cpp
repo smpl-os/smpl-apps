@@ -35,8 +35,15 @@ QJsonObject featuresJson()
     };
     QJsonArray boards;
     for (const BoardProfile &p : builtinBoardProfiles()) {
+        QJsonArray pinned;  // knobs whose press holds an encoder line low (no turn while pressed)
+        for (const BoardKnob &k : p.knobs) {
+            if (k.pressPinsEncoder) {
+                pinned.append(k.control);
+            }
+        }
         boards.append(QJsonObject{{QStringLiteral("id"), p.id}, {QStringLiteral("name"), p.name}, {QStringLiteral("keys"), int(p.keys.size())},
-                                  {QStringLiteral("knobs"), int(p.knobs.size())}, {QStringLiteral("source"), p.source}});
+                                  {QStringLiteral("knobs"), int(p.knobs.size())}, {QStringLiteral("source"), p.source},
+                                  {QStringLiteral("turnsWhilePressed"), p.turnsWhilePressed}, {QStringLiteral("pressPinsEncoder"), pinned}});
     }
     return QJsonObject{
         {QStringLiteral("daemonVersion"), QCoreApplication::applicationVersion()},
@@ -63,6 +70,15 @@ QJsonObject featuresJson()
                                               // The control-surface firmware ignores turns while a knob is pressed
                                               // (pressing moves the encoder's lines), so shift never fires on it.
                                               {QStringLiteral("shiftSupported"), false}}},
+        // Hold a key (or knob press) and use the others: a layer that applies while it is down.
+        {QStringLiteral("heldLayers"), QJsonObject{
+            {QStringLiteral("when"), QStringLiteral(R"("held": "key1" | ["key1", "key13"] (any of them) | "key1+knob3" (all of them together))")},
+            {QStringLiteral("controls"), QStringLiteral("key1..key16, knob1..knob3 (a knob means its press)")},
+            {QStringLiteral("precedence"), QStringLiteral("while held, held layers win over every other layer and binding: the app profile's, then the global profile's")},
+            {QStringLiteral("ownBinding"), QStringLiteral("a held-layer key's own tap fires on release, only if no other input was used meanwhile; \"cheatsheet\": \"hold\" shows at once and follows the held layer")},
+            {QStringLiteral("cheatsheet"), QStringLiteral("GetCheatsheet lists the held controls in \"held\"; GetCheatsheetFor previews them with \"$held\" in its context JSON")},
+            {QStringLiteral("oneAtATime"), QStringLiteral("a board's layout lists controls it reads one at a time (sy181-15k3e: key2..key15 and the knob presses): hold key1 with one of them, or any control with the knob turns; check-config warns about combinations that cannot work")},
+            {QStringLiteral("evdevLimit"), QStringLiteral("with \"input\": \"evdev\", an input whose keymap chord shares an F-key with the held key's is lost, and one pressed while a modified chord is held can read as another control (check-config warns); raw input has neither limit")}}},
         {QStringLiteral("inputEvents"), QJsonArray{QStringLiteral("press"), QStringLiteral("release"), QStringLiteral("ccw"), QStringLiteral("cw")}},
         {QStringLiteral("layouts"), QJsonObject{{QStringLiteral("builtin"), boards},
                                                 {QStringLiteral("custom"), QStringLiteral(R"({"keys": 0..16, "knobs": 0..3, "columns": 1..8})")},

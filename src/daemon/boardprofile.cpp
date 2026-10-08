@@ -19,7 +19,8 @@ QJsonObject BoardProfile::toJson() const
         n.append(QJsonObject{{QStringLiteral("control"), knob.control},
                              {QStringLiteral("slots"), QJsonObject{{QStringLiteral("ccw"), knob.ccw}, {QStringLiteral("press"), knob.press}, {QStringLiteral("cw"), knob.cw}}},
                              {QStringLiteral("row"), knob.row},
-                             {QStringLiteral("column"), knob.column}});
+                             {QStringLiteral("column"), knob.column},
+                             {QStringLiteral("pressPinsEncoder"), knob.pressPinsEncoder}});
     }
     return QJsonObject{{QStringLiteral("id"), id},
                        {QStringLiteral("name"), name},
@@ -27,6 +28,8 @@ QJsonObject BoardProfile::toJson() const
                        {QStringLiteral("rows"), rows},
                        {QStringLiteral("columns"), columns},
                        {QStringLiteral("slotCount"), slotCount()},
+                       {QStringLiteral("turnsWhilePressed"), turnsWhilePressed},
+                       {QStringLiteral("oneAtATime"), QJsonArray::fromStringList(oneAtATime)},
                        {QStringLiteral("keys"), k},
                        {QStringLiteral("knobs"), n}};
 }
@@ -57,6 +60,18 @@ QList<BoardProfile> builtinBoardProfiles()
     // held with the knobs on the right.
     BoardProfile measured = gridProfile(QStringLiteral("sy181-15k3e"), QStringLiteral("CH552G + TM1650, 15 keys, 3 knobs (SY181 style)"), 15, 3, 5);
     measured.source = QStringLiteral("measured");
+    // Discovery capture 3: the top and middle knob presses hold B (P1.4, P1.6)
+    // low for the whole press; the bottom one moved neither line. The firmware
+    // ignores turns while any knob is pressed (docs/hardware-ch552.md).
+    measured.knobs[0].pressPinsEncoder = true;
+    measured.knobs[1].pressPinsEncoder = true;
+    measured.turnsWhilePressed = false;
+    // Key 1 is on its own pin; the other keys and the knob switches are the
+    // TM1650's, which holds one key at a time (firmware PAD_poll).
+    for (int k = 2; k <= 15; ++k) {
+        measured.oneAtATime << QStringLiteral("key%1").arg(k);
+    }
+    measured.oneAtATime << QStringLiteral("knob1") << QStringLiteral("knob2") << QStringLiteral("knob3");
     return {
         measured,
         gridProfile(QStringLiteral("generic-3k1e"), QStringLiteral("3 keys, 1 knob"), 3, 1, 3),

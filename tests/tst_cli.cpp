@@ -298,6 +298,10 @@ private Q_SLOTS:
         }
         QVERIFY(optionKeys.contains(QStringLiteral("input")) && optionKeys.contains(QStringLiteral("cheatsheet.opacity")));
         QCOMPARE(j.value(QStringLiteral("slots")).toObject().value(QStringLiteral("shiftSupported")), QJsonValue(false));
+        QVERIFY(j.value(QStringLiteral("heldLayers")).toObject().value(QStringLiteral("when")).toString().contains(QStringLiteral("key1+knob3")));
+        const QJsonObject pad = j.value(QStringLiteral("layouts")).toObject().value(QStringLiteral("builtin")).toArray().first().toObject();
+        QCOMPARE(pad.value(QStringLiteral("pressPinsEncoder")).toArray(), (QJsonArray{QStringLiteral("knob1"), QStringLiteral("knob2")}));
+        QCOMPARE(pad.value(QStringLiteral("turnsWhilePressed")), QJsonValue(false));
         // (tst_config checks that every advertised name and example parses.)
     }
 
@@ -407,7 +411,8 @@ private Q_SLOTS:
     {
         const QString cfg = m_home.path() + QStringLiteral("/sheet.jsonc");
         writeFile(cfg, R"({"profiles":[{"name":"Brave","match":{"class":"^brave"},"bindings":{"key1":"ctrl+t"}},
-                                       {"name":"global","bindings":{"key15":{"cheatsheet":"toggle"}}}]})");
+                                       {"name":"global","layers":[{"name":"held","when":{"held":"key15"},"bindings":{"key1":{"keys":"super+1","label":"WS1"}}}],
+                                        "bindings":{"key15":{"cheatsheet":"toggle"}}}]})");
         Run r = run({QStringLiteral("cheatsheet"), QStringLiteral("--json"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser")}, m_home.path());
         QCOMPARE(r.code, 0);
         QJsonObject j = r.json();
@@ -417,6 +422,16 @@ private Q_SLOTS:
         r = run({QStringLiteral("cheatsheet"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser")}, m_home.path());
         QCOMPARE(r.code, 0);
         QVERIFY(r.out.contains("Ctrl+T"));
+        // Held layers: --held previews them (they win over the app's own bindings).
+        r = run({QStringLiteral("cheatsheet"), QStringLiteral("--json"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser"),
+                 QStringLiteral("--held"), QStringLiteral("key15")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        j = r.json();
+        QCOMPARE(j.value(QStringLiteral("held")).toArray(), QJsonArray{QStringLiteral("key15")});
+        QCOMPARE(j.value(QStringLiteral("keys")).toArray().at(0).toObject().value(QStringLiteral("label")).toString(), QStringLiteral("WS1"));
+        r = run({QStringLiteral("cheatsheet"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser"), QStringLiteral("--held"), QStringLiteral("key15")},
+                m_home.path());
+        QVERIFY2(r.out.startsWith("Brave · held  (held: key15)"), r.out.constData());
         r = run({QStringLiteral("cheatsheet"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("x"), QStringLiteral("--context"), QStringLiteral("[")}, m_home.path());
         QCOMPARE(r.code, 2);
         // No daemon on this private bus.

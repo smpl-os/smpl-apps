@@ -12,6 +12,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+#include <algorithm>
+#include <linux/input-event-codes.h>
 
 namespace cs {
 
@@ -636,6 +638,22 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
             Layer l;
             l.name = lo.value(QStringLiteral("name")).toString();
             l.when = lo.value(QStringLiteral("when")).toObject().toVariantMap();
+            if (l.when.contains(QStringLiteral("held"))) {
+                const auto held = parseHeldCondition(lo.value(QStringLiteral("when")).toObject().value(QStringLiteral("held")), &err);
+                if (!held) {
+                    if (error) {
+                        *error = QStringLiteral("profile %1 layer %2: %3").arg(p.name, l.name, err);
+                    }
+                    return std::nullopt;
+                }
+                l.held = *held;
+                l.when.remove(QStringLiteral("held"));
+                for (const QStringList &set : *held) {
+                    for (const QString &c : set) {
+                        p.heldControls.insert(c);
+                    }
+                }
+            }
             if (!parseBindings(lo.value(QStringLiteral("bindings")).toObject(), l.bindings, &err)) {
                 if (error) {
                     *error = QStringLiteral("profile %1 layer %2: %3").arg(p.name, l.name, err);
@@ -763,7 +781,7 @@ bool checkConfig(Config &cfg, QString *error)
                     return fail(error, QStringLiteral("profile %1 layer %2: condition uses undefined mode '%3'").arg(p.name, l.name, w.key().mid(6)));
                 }
             }
-            if (l.when.isEmpty()) {
+            if (l.when.isEmpty() && l.held.isEmpty()) {
                 cfg.warnings << QStringLiteral("profile %1 layer %2: no \"when\" condition, so it always applies").arg(p.name, l.name);
             }
             for (auto it = l.bindings.cbegin(); it != l.bindings.cend(); ++it) {
@@ -849,6 +867,60 @@ bool valueMatches(const QVariant &want, const QVariant &have)
     return want.toDouble() == have.toDouble();
 }
 } // namespace
+
+std::optional<QList<QStringList>> parseHeldCondition(const QJsonValue &v, QString *error)
+{
+    static const QRegularExpression control(QStringLiteral("^(key([1-9]|1[0-6])|knob[1-3])$"));
+    QStringList alternatives;
+    if (v.isString()) {
+        alternatives << v.toString();
+    } else if (v.isArray() && !v.toArray().isEmpty()) {
+        for (const auto &e : v.toArray()) {
+            if (!e.isString()) {
+                alternatives.clear();
+                break;
+            }
+            alternatives << e.toString();
+        }
+    }
+    if (alternatives.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("\"held\" takes a control (\"key1\"), a list of alternatives ([\"key1\", \"key13\"]) or controls held together (\"key1+knob3\")");
+        }
+        return std::nullopt;
+    }
+    QList<QStringList> out;
+    for (const QString &a : std::as_const(alternatives)) {
+        QStringList set;
+        for (const QString &part : a.split(QLatin1Char('+'))) {
+            const QString c = part.trimmed();
+            if (!control.match(c).hasMatch()) {
+                if (error) {
+                    *error = QStringLiteral("\"held\": '%1' is not a key or knob (key1..key16, knob1..knob3; a knob means its press)").arg(c);
+                }
+                return std::nullopt;
+            }
+            if (!set.contains(c)) {
+                set << c;
+            }
+        }
+        out << set;
+    }
+    return out;
+}
+
+bool Layer::heldMatches(const QSet<QString> &down) const
+{
+    if (held.isEmpty()) {
+        return true;
+    }
+    for (const QStringList &set : held) {
+        if (std::all_of(set.cbegin(), set.cend(), [&down](const QString &c) { return down.contains(c); })) {
+            return true;
+        }
+    }
+    return false;
+}
 
 bool conditionMatches(const QVariantMap &when, const QVariantMap &context)
 {
@@ -968,6 +1040,179 @@ QString layoutMismatchWarning(const BoardProfile &effective, const std::optional
                           "raw input stays off (the pad's keymap is used) and inputs outside the layout show nowhere")
         .arg(shape(effective), firmwareBoard ? firmwareBoard->id : QStringLiteral("board"))
         .arg(fw);
+}
+
+QStringList boardWarnings(const Config &cfg, const BoardProfile &layout)
+{
+    QStringList out;
+    QHash<QString, BoardKnob> knobs;
+    QSet<QString> present;
+    for (const BoardKnob &k : layout.knobs) {
+        knobs.insert(k.control, k);
+        present.insert(k.control);
+    }
+    for (const BoardKey &k : layout.keys) {
+        present.insert(k.control);
+    }
+    // The keymap chord of every input (evdev input mode), by event slot.
+    QHash<QString, KeyChord> chordOf;
+    for (const KeyChord &c : cfg.hardware.chords()) {
+        if (const auto t = cfg.hardware.lookup(c)) {
+            chordOf.insert(t->name(), c);
+        }
+    }
+    const bool evdev = cfg.device.input == QLatin1String("evdev");
+    auto events = [](const QString &slot) -> QStringList {
+        const QString control = slot.section(QLatin1Char('.'), 0, 0);
+        const QString rest = slot.section(QLatin1Char('.'), 1);
+        if (rest.isEmpty()) {
+            return {control};
+        }
+        if (rest == QLatin1String("turn")) {
+            return {control + QStringLiteral(".ccw"), control + QStringLiteral(".cw")};
+        }
+        if (rest == QLatin1String("ccw") || rest == QLatin1String("cw") || rest == QLatin1String("press")) {
+            return {slot};
+        }
+        return {};  // shift slots
+    };
+    auto check = [&](const QString &where, const BindingMap &m, const Layer *layer) {
+        QSet<QString> said;
+        for (auto it = m.cbegin(); it != m.cend(); ++it) {
+            const QString knob = it.key().section(QLatin1Char('.'), 0, 0);
+            if (it.key().contains(QLatin1String(".shift.")) && knobs.contains(knob) && !said.contains(knob)) {
+                const BoardKnob &k = knobs[knob];
+                QString why;
+                if (k.pressPinsEncoder) {
+                    why = QStringLiteral("pressing %1 holds one of its encoder lines low on this pad, so a turn while it is pressed has no direction").arg(knob);
+                } else if (!layout.turnsWhilePressed) {
+                    why = QStringLiteral("the pad's firmware ignores turns while a knob is pressed");
+                }
+                if (!why.isEmpty()) {
+                    said.insert(knob);
+                    out << QStringLiteral("%1 %2: never fires: %3 (and %4's press waits for its release). Hold a key and turn instead (\"when\": {\"held\": \"key1\"})")
+                               .arg(where, it.key(), why, knob);
+                }
+            }
+            if (!layer || !evdev) {
+                continue;
+            }
+            for (const QStringList &set : layer->held) {
+                for (const QString &h : set) {
+                    const KeyChord hc = chordOf.value(h.startsWith(QLatin1String("knob")) ? h + QStringLiteral(".press") : h);
+                    for (const QString &ev : events(it.key())) {
+                        const KeyChord ec = chordOf.value(ev);
+                        if (hc.isValid() && ec.isValid() && ev.section(QLatin1Char('.'), 0, 0) != h && hc.key == ec.key) {
+                            out << QStringLiteral("%1 %2: with \"input\": \"evdev\", %3 held and %4 share the pad's %5 key: that input is lost and %3 reads as released. Use raw input: control-surfaced set input auto (raw on firmware 2.0.2+)")
+                                       .arg(where, it.key(), h, ev, keyName(ec.key));
+                        }
+                    }
+                }
+            }
+        }
+    };
+    for (const Profile &p : cfg.profiles) {
+        check(QStringLiteral("profile %1").arg(p.name), p.bindings, nullptr);
+        for (const Layer &l : p.layers) {
+            const QString where = QStringLiteral("profile %1 layer %2:").arg(p.name, l.name);
+            check(where, l.bindings, &l);
+            QStringList missing;
+            for (const QStringList &set : l.held) {
+                for (const QString &h : set) {
+                    if (!present.contains(h) && !missing.contains(h)) {
+                        missing << h;
+                    }
+                }
+            }
+            if (!missing.isEmpty()) {
+                out << QStringLiteral("%1 \"held\": the %2 layout has no %3").arg(where, layout.id, missing.join(QStringLiteral(", ")));
+            }
+            // The pad reads some controls one at a time (sy181: keys 2-15 and
+            // the knob presses): pressing one reports the held one released.
+            const QSet<QString> single(layout.oneAtATime.cbegin(), layout.oneAtATime.cend());
+            const QString singleText = QStringLiteral("this pad reads keys 2-15 and the knob presses one at a time");
+            QStringList heldSingle;
+            for (const QStringList &set : l.held) {
+                QStringList inSet;
+                for (const QString &h : set) {
+                    if (single.contains(h)) {
+                        inSet << h;
+                        if (!heldSingle.contains(h)) {
+                            heldSingle << h;
+                        }
+                    }
+                }
+                if (inSet.size() > 1) {
+                    out << QStringLiteral("%1 \"held\": %2 can never be held together: %3").arg(where, inSet.join(QLatin1Char('+')), singleText);
+                }
+            }
+            for (auto it = l.bindings.cbegin(); it != l.bindings.cend() && !heldSingle.isEmpty(); ++it) {
+                const QString control = it.key().section(QLatin1Char('.'), 0, 0);
+                const bool pressed = !it.key().contains(QLatin1Char('.')) || it.key().endsWith(QLatin1String(".press"));
+                QStringList others = heldSingle;
+                others.removeAll(control);
+                if (pressed && single.contains(control) && !others.isEmpty()) {
+                    out << QStringLiteral("%1 %2: never fires: pressing %3 reports %4 released (%5). Bind knob turns or key1 in a layer held on %4")
+                               .arg(where, it.key(), control, others.join(QStringLiteral(" or ")), singleText);
+                }
+            }
+            // evdev: a held chord's modifiers stay in the pad's report, so an
+            // input pressed meanwhile can read as another control.
+            if (evdev) {
+                QSet<QString> told;
+                auto pressChord = [&chordOf](const QString &c) { return chordOf.value(c.startsWith(QLatin1String("knob")) ? c + QStringLiteral(".press") : c); };
+                for (const QStringList &set : l.held) {
+                    // Members of one held set on the same F-key: the second
+                    // adds only its modifier to the report (key1 = F14 and
+                    // key13 = Ctrl+F14), so they never read as held together.
+                    for (int i = 0; i < set.size(); ++i) {
+                        for (int j = i + 1; j < set.size(); ++j) {
+                            const KeyChord a = pressChord(set[i]), b = pressChord(set[j]);
+                            if (a.isValid() && b.isValid() && a.key == b.key) {
+                                out << QStringLiteral("%1 \"held\": with \"input\": \"evdev\", %2 and %3 share the pad's %4 key, so they never read as held together. Use raw input: control-surfaced set input auto (raw on firmware 2.0.2+)")
+                                           .arg(where, set[i], set[j], keyName(a.key));
+                            }
+                        }
+                    }
+                }
+                for (const QStringList &set : l.held) {
+                    for (const QString &h : set) {
+                        const KeyChord hc = chordOf.value(h.startsWith(QLatin1String("knob")) ? h + QStringLiteral(".press") : h);
+                        if (!hc.isValid() || !hc.mods) {
+                            continue;
+                        }
+                        QStringList inputs;
+                        for (auto it = l.bindings.cbegin(); it != l.bindings.cend(); ++it) {
+                            inputs << events(it.key());
+                        }
+                        for (const QString &o : set) {
+                            if (o != h) {
+                                inputs << (o.startsWith(QLatin1String("knob")) ? o + QStringLiteral(".press") : o);
+                            }
+                        }
+                        for (const QString &x : std::as_const(inputs)) {
+                            const KeyChord xc = chordOf.value(x);
+                            const KeyChord seen{quint8(xc.mods | hc.mods), xc.key};
+                            const QString xControl = x.section(QLatin1Char('.'), 0, 0);
+                            if (!xc.isValid() || seen == xc || xControl == h || xc.key == hc.key  // a shared key is reported above
+                                || (single.contains(h) && single.contains(xControl))) {             // never down together
+                                continue;
+                            }
+                            const auto as = cfg.hardware.lookup(seen);
+                            if (as && as->name() != x && !told.contains(h + x)) {
+                                told.insert(h + x);
+                                QStringList mods = chordName(KeyChord{hc.mods, KEY_A}).split(QLatin1Char('+'));
+                                mods.removeLast();
+                                out << QStringLiteral("%1 %2: with \"input\": \"evdev\", %2 while %3 is held reads as %4 (the held key's %5 stays in the pad's report). Use raw input: control-surfaced set input auto (raw on firmware 2.0.2+)")
+                                           .arg(where, x, h, as->name(), mods.join(QLatin1Char('+')));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return out;
 }
 
 QStringList CheatsheetOptions::positions()

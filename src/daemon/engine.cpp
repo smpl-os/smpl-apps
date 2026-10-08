@@ -80,6 +80,17 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
     m_navTimer->setSingleShot(true);
     m_navTimer->setInterval(250);
     connect(m_navTimer, &QTimer::timeout, this, &Engine::releaseNavigation);
+    m_rollTimer = new QTimer(this);
+    m_rollTimer->setSingleShot(true);
+    m_rollTimer->setInterval(kRollMs);
+    connect(m_rollTimer, &QTimer::timeout, this, [this] {
+        const auto r = m_rollTap;
+        m_rollControl.clear();
+        m_rollTap.reset();
+        if (r) {
+            fireResolved(*r);
+        }
+    });
     m_gestureTimer = new QTimer(this);
     m_gestureTimer->setInterval(50);
     connect(m_gestureTimer, &QTimer::timeout, this, &Engine::checkIdleGestures);
@@ -300,9 +311,80 @@ QStringList Engine::shiftSlots(const QString &control, int delta)
 
 void Engine::clearHeld()
 {
-    m_held.clear();
-    m_deferredPress.clear();
+    // Deferred taps belong to the profile they were deferred in; what is
+    // physically down (m_down) stays down.
+    m_deferred.clear();
     m_shiftTurned.clear();
+    m_usedWhileHeld.clear();
+    m_rollTimer->stop();
+    m_rollControl.clear();
+    m_rollTap.reset();
+}
+
+void Engine::fireDeferred(const QString &slot)
+{
+    if (auto r = resolve(slot)) {
+        fireResolved(*r);
+    }
+}
+
+void Engine::fireResolved(const Resolution &r)
+{
+    m_inRelease = true;
+    execute(r, r.slot, 1, false);
+    m_inRelease = false;
+}
+
+void Engine::releaseAll()
+{
+    clearHeld();
+    const bool had = !m_down.isEmpty();
+    m_down.clear();
+    if (!m_cheatsheetHold.isEmpty()) {
+        m_cheatsheetHold.clear();
+        Q_EMIT cheatsheetRequested(QStringLiteral("hide"));
+    }
+    if (had) {
+        Q_EMIT resolutionChanged();
+    }
+}
+
+bool Engine::isHeldModifier(const QString &control) const
+{
+    const Profile *global = m_cfg.globalProfile();
+    return (m_profile && m_profile->heldControls.contains(control))
+        || (global && (!m_profile || m_profile->fallthrough) && global->heldControls.contains(control));
+}
+
+QStringList Engine::heldModifiers() const
+{
+    QStringList out;
+    for (const QString &c : m_down) {
+        if (isHeldModifier(c)) {
+            out << c;
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const QString &a, const QString &b) {
+        return a.length() != b.length() ? a.length() < b.length() : a < b;  // key2 before key10
+    });
+    return out;
+}
+
+void Engine::setHeldForPreview(const QStringList &controls)
+{
+    m_down = QSet<QString>(controls.cbegin(), controls.cend());
+    Q_EMIT resolutionChanged();
+}
+
+void Engine::noteUse(const QString &control)
+{
+    // Another input while a held-layer key is down: that key was used as a
+    // modifier, so its own tap does not fire on release.
+    for (const QString &c : std::as_const(m_down)) {
+        if (c != control) {
+            m_usedWhileHeld.insert(c);
+        }
+    }
 }
 
 QStringList Engine::turnSlots(const QString &control, int delta)
@@ -322,16 +404,37 @@ std::optional<Engine::Resolution> Engine::resolve(const QStringList &candidates)
     if (global && (!m_profile || (m_profile->fallthrough && global != m_profile))) {
         chain << global;
     }
+    auto fromLayer = [&](const Profile *p, const Layer &l) -> std::optional<Resolution> {
+        if (!l.heldMatches(m_down) || !conditionMatches(l.when, ctx)) {
+            return std::nullopt;
+        }
+        for (const QString &slot : candidates) {
+            // A binding whose "ifInstalled" app is missing is skipped: the slot falls through.
+            const auto it = l.bindings.constFind(slot);
+            if (it != l.bindings.cend() && bindingAvailable(*it)) {
+                return Resolution{*it, p->name, l.name, slot};
+            }
+        }
+        return std::nullopt;
+    };
+    // Held layers first: while their keys are down they win over every other
+    // layer and binding, the app profile's and then the global profile's.
+    if (!m_down.isEmpty()) {
+        for (const Profile *p : chain) {
+            for (const Layer &l : p->layers) {
+                if (!l.held.isEmpty()) {
+                    if (auto r = fromLayer(p, l)) {
+                        return r;
+                    }
+                }
+            }
+        }
+    }
     for (const Profile *p : chain) {
         for (const Layer &l : p->layers) {
-            if (!conditionMatches(l.when, ctx)) {
-                continue;
-            }
-            for (const QString &slot : candidates) {
-                // A binding whose "ifInstalled" app is missing is skipped: the slot falls through.
-                const auto it = l.bindings.constFind(slot);
-                if (it != l.bindings.cend() && bindingAvailable(*it)) {
-                    return Resolution{*it, p->name, l.name, slot};
+            if (l.held.isEmpty()) {
+                if (auto r = fromLayer(p, l)) {
+                    return r;
                 }
             }
         }
@@ -439,57 +542,100 @@ void Engine::handle(const PadEvent &e)
     }
     switch (e.type) {
     case PadEvent::KeyUp:
-        if (m_cheatsheetHold.remove(e.control)) {
-            Q_EMIT cheatsheetRequested(QStringLiteral("hide"));
-        }
-        return;  // key bindings fire on press
     case PadEvent::PressUp: {
         if (m_cheatsheetHold.remove(e.control)) {
             Q_EMIT cheatsheetRequested(QStringLiteral("hide"));
         }
-        // A press deferred because the knob has shift bindings fires on release,
-        // unless the knob turned while held (then the hold was a shift).
-        const bool deferred = m_deferredPress.remove(e.control);
+        const bool wasDown = m_down.remove(e.control);
+        // A tap deferred to release fires unless the hold was used: the knob
+        // turned (a shift), or another input came while this held-layer key
+        // was down. An inferred release (pad gone) never fires one.
+        const int deferred = m_deferred.take(e.control);
         const bool turned = m_shiftTurned.remove(e.control);
-        m_held.remove(e.control);
-        if (deferred && !turned) {
-            const QString slot = e.control + QStringLiteral(".press");
-            if (auto r = resolve(slot)) {
-                m_inRelease = true;
-                execute(*r, slot, 1, false);
-                m_inRelease = false;
+        const bool used = m_usedWhileHeld.remove(e.control);
+        const bool oneAtATime = m_oneAtATime.contains(e.control);
+        if (oneAtATime && !e.synthetic) {
+            m_lastOneUp = e.control;
+            m_lastOneUpAt.start();
+        }
+        if (wasDown && isHeldModifier(e.control)) {
+            Q_EMIT resolutionChanged();  // its held layers end (the cheatsheet follows)
+        }
+        const bool fire = deferred && !e.synthetic && (!(deferred & DeferShift) || !turned) && (!(deferred & DeferModifier) || !used);
+        if (fire) {
+            const QString slot = e.type == PadEvent::KeyUp ? e.control : e.control + QStringLiteral(".press");
+            if (oneAtATime && (deferred & DeferModifier)) {
+                // Maybe not a release: another matrix key going down reports this one up.
+                // Resolved now: a key going down meanwhile (key1's held layer)
+                // must not change what this tap does.
+                m_rollTimer->stop();
+                m_rollControl = e.control;
+                m_rollTap = resolve(slot);
+                m_rollTimer->start();
+            } else {
+                fireDeferred(slot);
             }
         }
         return;
     }
     case PadEvent::KeyDown:
-        if (auto r = resolve(e.control)) {
-            execute(*r, e.control, 1, false);
-        }
-        return;
     case PadEvent::PressDown: {
-        m_held.insert(e.control);
-        m_shiftTurned.remove(e.control);
-        const auto shift = resolve(QStringList{e.control + QStringLiteral(".shift.turn"), e.control + QStringLiteral(".shift.cw"),
-                                               e.control + QStringLiteral(".shift.ccw")});
-        if (shift && shift->binding.isValid()) {
-            m_deferredPress.insert(e.control);
+        bool reReported = false;
+        if (m_oneAtATime.contains(e.control)) {
+            if (m_rollTimer->isActive() && m_rollControl != e.control) {
+                // The key "released" just now was still held: no tap for it.
+                m_rollTimer->stop();
+                m_rollControl.clear();
+                m_rollTap.reset();
+            }
+            reReported = !m_lastOneUp.isEmpty() && m_lastOneUp != e.control && m_lastOneUpAt.isValid() && m_lastOneUpAt.elapsed() < kRollMs;
+        }
+        noteUse(e.control);
+        const bool key = e.type == PadEvent::KeyDown;
+        const QString slot = key ? e.control : e.control + QStringLiteral(".press");
+        // Its own binding as it was before it went down: its held layers are
+        // not active for itself.
+        const auto r = resolve(slot);
+        int defer = 0;
+        if (!key) {
+            m_shiftTurned.remove(e.control);
+            const auto shift = resolve(QStringList{e.control + QStringLiteral(".shift.turn"), e.control + QStringLiteral(".shift.cw"),
+                                                   e.control + QStringLiteral(".shift.ccw")});
+            if (shift && shift->binding.isValid()) {
+                defer |= DeferShift;
+            }
+        }
+        const bool modifier = isHeldModifier(e.control);
+        const bool holdBinding = r && r->binding.kind == Binding::Cheatsheet && r->binding.name == QLatin1String("hold");
+        if (modifier && r && r->binding.isValid() && !holdBinding) {
+            defer |= DeferModifier;  // a tap on a held-layer key: on release, if nothing else was used
+        }
+        m_down.insert(e.control);
+        m_usedWhileHeld.remove(e.control);
+        if (reReported) {
+            m_usedWhileHeld.insert(e.control);  // still held across another key's press: not a new tap
+        }
+        if (modifier) {
+            Q_EMIT resolutionChanged();  // its held layers start
+        }
+        if (defer) {
+            m_deferred.insert(e.control, defer);
             return;
         }
-        m_deferredPress.remove(e.control);
-        const QString slot = e.control + QStringLiteral(".press");
-        if (auto r = resolve(slot)) {
+        m_deferred.remove(e.control);
+        if (r) {
             execute(*r, slot, 1, false);
         }
         return;
     }
     case PadEvent::Turn: {
+        noteUse(e.control);
         auto &t = m_lastTurn[e.control];
         const bool fast = t.isValid() && t.elapsed() < m_cfg.settings.accelWindowMs;
         t.start();
         QStringList candidates = turnSlots(e.control, e.delta);
         std::optional<Resolution> r;
-        if (m_held.contains(e.control)) {
+        if (m_down.contains(e.control)) {
             const QStringList shifted = shiftSlots(e.control, e.delta);
             r = resolve(shifted);
             if (r && r->binding.isValid()) {

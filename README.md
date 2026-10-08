@@ -32,7 +32,9 @@ press) into a per-application control surface on Hyprland.
     Stock shortcuts are typed only with `"keyFallback": true` on the
     profile. Refusals and timeouts never type keys.
 * Validated configuration with errors that name the place, hot reload on
-  save, press + turn ("shift") bindings, and per-binding acceleration.
+  save, held-key layers (hold a key and the other keys and knobs do
+  something else), press + turn ("shift") bindings for pads that can do it
+  (this one cannot: docs/hardware-ch552.md), and per-binding acceleration.
 * Dry-run and simulate modes, a mock Kdenlive (`--stage 1|2|3`, `--off`,
   `--tick-ms`), and
   11 test suites, including one on a private D-Bus session bus.
@@ -64,7 +66,7 @@ one (validated, with a backup, comments kept). Check the file with
 |---|---|
 | `control-surfaced run [--dry-run] [--quiet]` | the daemon |
 | `control-surfaced verify [--no-write]` | interactive pad check / hardware map learning |
-| `control-surfaced simulate FILE\|-` | run scripted events (`window org.kde.kdenlive`, `key3`, `knob1 +5`, `knob2 press`/`hold`/`release`, `context {…}`, `kdenlive off`, `expect notice`, `expect no-keys`, …) and print the resulting actions; `--kdenlive-service NAME` drives a real Kdenlive with a non-emitting key sink |
+| `control-surfaced simulate FILE\|-` | run scripted events (`window org.kde.kdenlive`, `key3`, `key1 hold`/`release`, `knob1 +5`, `knob2 press`/`hold`/`release`, `context {…}`, `kdenlive off`, `expect notice`, `expect no-keys`, …) and print the resulting actions; `--kdenlive-service NAME` drives a real Kdenlive with a non-emitting key sink |
 | `control-surfaced list-capabilities [--json] [--kdenlive-service NAME]` | what the running Kdenlive offers (controls, commands, actions, limits, context paths for `when`) and which configured bindings it does not offer; read-only, no lease |
 | `control-surfaced set KEY VALUE` / `get [KEY]` `[-c FILE] [--json]` | change or show a simple option (`input`, `serial`, `cheatsheet.*`, `settings.*`) in place: validated, backed up, written atomically; waits for a running daemon to apply it |
 | `control-surfaced status [--json]` | daemon, pad, firmware, effective layout and config (offline when the daemon is not running) |

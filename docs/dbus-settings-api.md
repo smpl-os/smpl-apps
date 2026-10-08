@@ -57,13 +57,26 @@ emit `org.freedesktop.DBus.Properties.PropertiesChanged`.
 | `ListBoardProfiles() → s` | `{ok, profiles: [layout...]}` |
 
 A **layout** is
-`{id, name, source, rows, columns, slotCount, keys: [{control, slot, row, column}], knobs: [{control, slots: {ccw, press, cw}, row, column}]}`,
+`{id, name, source, rows, columns, slotCount, turnsWhilePressed, oneAtATime, keys: [{control, slot, row, column}], knobs: [{control, slots: {ccw, press, cw}, row, column, pressPinsEncoder}]}`,
 and where it is the pad's layout in effect (`GetLayout`, `GetDevice`,
 `GetStatus`, `ValidateConfig`, `status`, `check-config`) also
 `firmwareLayout` (the layout the firmware names, or null), `firmwareSlots`
 (its slot count, from `GET_INFO` when known, or null) and `matchesFirmware`
 (slot counts agree; null without firmware information).
 Rows and columns count from 0, and knobs sit in the right-most column.
+`turnsWhilePressed: false` (the measured `sy181-15k3e`) means a knob turned
+while pressed reaches nobody, so `"shift"` bindings never fire. A knob's
+`pressPinsEncoder: true` (knob1 and knob2 there) means its press holds an
+encoder line low, so no firmware can decode that turn
+(docs/hardware-ch552.md). An editor should offer held-key layers instead of
+shift. `oneAtATime` lists the controls the pad reads one at a time
+(`sy181-15k3e`: key2..key15 and the knob presses). Pressing one while
+another is held reports the held one released, so a held layer on one of
+them can bind key1 and knob turns only. Config warnings (`GetStatus`, `ValidateConfig`, `check-config`) name
+such shift bindings, held layers naming a control the layout lacks or
+combining one-at-a-time controls. With `"input": "evdev"` they also name
+held-layer inputs whose keymap chord shares an F-key with the held key's,
+or reads as another control while the held key's modifier is down.
 
 The layout in effect, first match wins:
 
@@ -204,7 +217,7 @@ extra process is involved.
 | Method | Returns |
 |---|---|
 | `GetCheatsheet() → s` | the content below, for the focused window (also while hidden) |
-| `GetCheatsheetFor(s windowClass, s title, s kdenliveContextJson) → s` | the same for any app and Kdenlive context (`""` or e.g. `{"colorWheels": true}`), for editors. Kdenlive is assumed to answer. Changes nothing. |
+| `GetCheatsheetFor(s windowClass, s title, s kdenliveContextJson) → s` | the same for any app and Kdenlive context (`""` or e.g. `{"colorWheels": true}`), for editors. Kdenlive is assumed to answer. `"$held"` in the context (`"key1"`, `["key1", "knob3"]` or `"key1+knob3"`) is not Kdenlive's: those controls count as held down, so held-key layers show. Changes nothing. |
 | `ShowCheatsheet()`, `HideCheatsheet()`, `ToggleCheatsheet()` | for the bar, hotkeys or Settings. `HideCheatsheet` is what a click on the overlay calls: always safe, and with the eww push it always closes the window and sends the hidden state, even when the daemon already thinks it is hidden. |
 
 Shown and hidden by a binding (`{"cheatsheet": "toggle"}`, or `"hold"`: shown
@@ -218,7 +231,7 @@ Content:
 
 ```json
 {"ok": true, "visible": true, "title": "Kdenlive · Wheels", "profile": "Kdenlive",
- "layers": ["Wheels"], "window": {"class": "org.kde.kdenlive", "title": "…"},
+ "layers": ["Wheels"], "held": [], "window": {"class": "org.kde.kdenlive", "title": "…"},
  "context": {"focus": "effectStack"}, "notice": "",
  "options": {"opacity": 0.35, "autoHideMs": 8000, "position": "center"},
  "layout": {"id": "sy181-15k3e", "name": "…", "rows": 3, "columns": 6, "source": "firmware"},
@@ -226,6 +239,12 @@ Content:
  "knobs": [{"control": "knob1", "row": 0, "column": 5,
             "ccw": <entry>, "press": <entry>, "cw": <entry>, "shiftCcw": <entry>, "shiftCw": <entry>}, …]}
 ```
+
+`held` lists the held-layer keys that are down now (`["key1"]` while key 1
+is held and a layer has `"when": {"held": "key1"}`). The entries then show
+that layer, and `CheatsheetChanged` is sent when the key goes down and
+again when it comes up, so an overlay shown by a `"hold"` key follows the
+held layer live. `layers` and `title` name the layer.
 
 `<entry>` is
 `{"bound", "label", "kind", "custom", "state", "binding", "profile", "layer", "active", "icon"}`:
@@ -340,7 +359,7 @@ change, shown or hidden) stays for debugging.
 | `control-surfaced list-actions [--json]` | `GetCatalog("kdenlive")` offline |
 | `control-surfaced features [--json]` | `GetFeatures` |
 | `control-surfaced cheatsheet [--json] [--follow]` | the running daemon's `GetCheatsheet`; `--follow` prints a JSON line on every change (debugging; eww gets it pushed, see Cheatsheet) |
-| `control-surfaced cheatsheet --window CLASS [--title T] [--context JSON]` | offline preview from the config (no daemon) |
+| `control-surfaced cheatsheet --window CLASS [--title T] [--context JSON] [--held key1]` | offline preview from the config (no daemon); `--held` previews held-key layers |
 | `control-surfaced firmware-info [--json]` | `GET_INFO` from a pad running the control-surface firmware: `{ok, node, version, format, slots, layers, activeLayer, startLayer, rawActive, eepromBytes, stats?}`. From 2.0.1, `stats` is `{knobs: [{cw, ccw, illegal}], overruns, queueDrops, maxQueue}`, the encoder counters since power-on or the last clear; from 2.0.2 also `raw: {entries, expiries, stops}` (raw mode started, ended by a missing heartbeat, stopped by the host). |
 | `control-surfaced enter-bootloader --yes [--json]` | `CMD_BOOTLOADER`; the pad shows as 4348:55e0 until flashed or replugged |
 
@@ -361,6 +380,12 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
   `"~"` and `"~/..."` in a command line are the home directory.
   `features.bindingFields` lists these.
 * Slots `key1`..`key16`.
+* Held-key layers: a layer with `"when": {"held": "key1"}` (or
+  `["key13", "key14"]` for either one, `"key1+knob3"` for both) applies
+  while those controls are down and then wins over every other binding. The
+  held key's own tap binding fires on its release, only if nothing else was
+  used; `{"cheatsheet": "hold"}` shows at once. `features.heldLayers`
+  describes it (docs/config-reference.md, "Held-key layers").
 * `"layout"`, described under State.
 * `"device": {"serial": "", "input": "auto|evdev|raw"}`. An empty serial
   drives the first 1189:8890 pad found and keeps it if another is plugged in.

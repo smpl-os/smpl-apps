@@ -385,6 +385,7 @@ private Q_SLOTS:
         const PadEvent up = events.at(1).at(0).value<PadEvent>();
         QCOMPARE(up.control, QStringLiteral("key1"));
         QCOMPARE(up.type, PadEvent::KeyUp);
+        QVERIFY(up.synthetic);  // inferred: a tap deferred to release must not fire
         QCOMPARE(dev.diagnostics().rawDrops, 1u);
         QCOMPARE(dev.diagnostics().reconciledUps, 1u);
         QVERIFY(dev.isActive());
@@ -414,6 +415,7 @@ private Q_SLOTS:
         QTRY_COMPARE(events.count(), 2);
         QCOMPARE(at(1).control, QStringLiteral("key7"));
         QCOMPARE(at(1).type, PadEvent::KeyUp);
+        QVERIFY(!at(1).synthetic);  // the pad says it is up: a real release
         // A lost DOWN: the key is down, so it goes down late, then up normally.
         fw->lose(3, 19, 1);         // knob2 press
         QTRY_COMPARE(events.count(), 3);
@@ -469,6 +471,7 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(!dev.isActive(), 2000);
         QCOMPARE(events.count(), 2);
         QCOMPARE(events.last().at(0).value<PadEvent>().type, PadEvent::KeyUp);
+        QVERIFY(events.last().at(0).value<PadEvent>().synthetic);
         QCOMPARE(dev.diagnostics().rawDrops, 1u);
         QVERIFY(dev.diagnostics().heartbeatMisses >= 1);
         QVERIFY(dev.isOpen());          // still asking

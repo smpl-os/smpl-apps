@@ -667,6 +667,50 @@ private Q_SLOTS:
         QCOMPARE(r.sheet.content().value(QStringLiteral("profile")).toString(), QStringLiteral("Brave"));
         QCOMPARE(vis.count(), 0);
     }
+
+    // Held-key layers: holding key1 (cheatsheet "hold") shows the held layer's
+    // labels live, lists the held key, and goes back on release. Previews take
+    // "$held" in the context.
+    void heldLayerLive()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles": [{"name": "global",
+            "layers": [{"name": "Workspaces", "when": {"held": "key1"},
+                        "bindings": {"knob1": {"ccw": {"keys": "super+left", "label": "Previous workspace"}, "cw": {"keys": "super+right", "label": "Next workspace"}},
+                                     "key2": {"keys": "super+1", "label": "Workspace 1"}}}],
+            "bindings": {"key1": {"cheatsheet": "hold"}, "key2": "ctrl+t", "knob1": {"ccw": "volumedown", "cw": "volumeup"}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        Rig r;
+        r.engine.setConfig(*c);
+        r.engine.setActiveWindow(kBrave);
+        QSignalSpy changed(&r.sheet, &Cheatsheet::changed);
+        QCOMPARE(label(keyEntry(r.sheet.content(), QStringLiteral("key2"))), QStringLiteral("Ctrl+T"));
+        r.engine.handle(PadEvent{QStringLiteral("key1"), PadEvent::KeyDown, 0, 0});
+        QVERIFY(r.sheet.isVisible());
+        QJsonObject now = r.sheet.content();
+        QCOMPARE(now.value(QStringLiteral("held")).toArray(), QJsonArray{QStringLiteral("key1")});
+        QCOMPARE(now.value(QStringLiteral("title")).toString(), QStringLiteral("global · Workspaces"));
+        QCOMPARE(label(keyEntry(now, QStringLiteral("key2"))), QStringLiteral("Workspace 1"));
+        QCOMPARE(label(knobEntry(now, QStringLiteral("knob1"), "cw")), QStringLiteral("Next workspace"));
+        QCOMPARE(label(keyEntry(now, QStringLiteral("key1"))), QStringLiteral("Cheatsheet"));  // its own binding
+        QTRY_VERIFY(!changed.isEmpty());
+        QCOMPARE(changed.last().at(0).toJsonObject().value(QStringLiteral("held")).toArray(), QJsonArray{QStringLiteral("key1")});
+        r.engine.handle(PadEvent{QStringLiteral("key1"), PadEvent::KeyUp, 0, 0});
+        QVERIFY(!r.sheet.isVisible());
+        now = r.sheet.content();
+        QCOMPARE(now.value(QStringLiteral("held")).toArray(), QJsonArray{});
+        QCOMPARE(label(keyEntry(now, QStringLiteral("key2"))), QStringLiteral("Ctrl+T"));
+
+        const BoardProfile pad = *builtinBoardProfile(QStringLiteral("sy181-15k3e"));
+        QJsonObject p = Cheatsheet::preview(*c, pad, kBrave.cls, QString(), {{QStringLiteral("$held"), QStringLiteral("key1")}});
+        QCOMPARE(p.value(QStringLiteral("held")).toArray(), QJsonArray{QStringLiteral("key1")});
+        QCOMPARE(label(keyEntry(p, QStringLiteral("key2"))), QStringLiteral("Workspace 1"));
+        p = Cheatsheet::preview(*c, pad, kBrave.cls, QString(), {{QStringLiteral("$held"), QStringList{QStringLiteral("key2+key1")}}});
+        QCOMPARE(p.value(QStringLiteral("held")).toArray(), QJsonArray{QStringLiteral("key1")});  // key2 is not a held-layer key
+        p = r.sheet.previewFor(kBrave.cls, QString(), {{QStringLiteral("$held"), QStringLiteral("key3")}});
+        QCOMPARE(label(keyEntry(p, QStringLiteral("key2"))), QStringLiteral("Ctrl+T"));
+        QVERIFY(!r.engine.resolve(QStringLiteral("key2"))->layer.size());  // the live engine is untouched
+    }
 };
 
 QTEST_GUILESS_MAIN(TestCheatsheet)

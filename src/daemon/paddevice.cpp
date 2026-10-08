@@ -233,9 +233,22 @@ void PadDevice::openNode(const InputNodeInfo &info)
     Q_EMIT message(QStringLiteral("%1 %2 (interface %3, serial %4)").arg(m_grab ? QStringLiteral("grabbed") : QStringLiteral("reading"), info.devnode).arg(info.interfaceNumber).arg(info.serial));
 }
 
+void PadDevice::emitChords(const QList<ChordEvent> &events)
+{
+    for (const auto &ce : events) {
+        Q_EMIT chordEvent(ce);
+        if (auto pe = toPadEvent(m_map, ce)) {
+            Q_EMIT padEvent(*pe);
+        } else if (ce.down && !m_map.lookup(ce.chord)) {
+            Q_EMIT unmappedChord(ce.chord);
+        }
+    }
+}
+
 void PadDevice::closeNode(int index)
 {
     Node *n = m_nodes.takeAt(index);
+    emitChords(n->decoder.releaseAll());  // unplugged or released: nothing stays held
     n->notifier->setEnabled(false);
     n->notifier->deleteLater();  // may be called from its own activated() signal
     if (m_grab) {
@@ -292,18 +305,11 @@ void PadDevice::readNode(int fd)
         for (int i = 0; i < count; ++i) {
             const auto &ev = evs[i];
             if (ev.type == EV_SYN && ev.code == SYN_DROPPED) {
-                n->decoder.reset();
+                emitChords(n->decoder.releaseAll());  // events were lost: nothing stays held
                 continue;
             }
             const qint64 usec = qint64(ev.input_event_sec) * 1000000 + ev.input_event_usec;
-            for (const auto &ce : n->decoder.feed(ev.type, ev.code, ev.value, usec)) {
-                Q_EMIT chordEvent(ce);
-                if (auto pe = toPadEvent(m_map, ce)) {
-                    Q_EMIT padEvent(*pe);
-                } else if (ce.down && !m_map.lookup(ce.chord)) {
-                    Q_EMIT unmappedChord(ce.chord);
-                }
-            }
+            emitChords(n->decoder.feed(ev.type, ev.code, ev.value, usec));
         }
     }
 }

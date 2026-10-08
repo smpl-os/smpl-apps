@@ -107,6 +107,69 @@ private Q_SLOTS:
         feed(KEY_F14, 0);
         QCOMPARE(got, (QStringList{QStringLiteral("key1 down"), QStringLiteral("key1 up")}));
     }
+
+    // Held-key layers in evdev mode: the held chord's modifier stays in the
+    // pad's report, so a knob turned meanwhile carries it too. key8 = Shift+F15
+    // held, knob2 ccw = Alt+F14 arrives as Shift+Alt+F14: still knob2 ccw.
+    void heldModifierDoesNotHideTheTurn()
+    {
+        const auto map = HardwareMap::fromScheme(ch552::Numbering::KeysThenKnobs);
+        Decoder d;
+        QStringList got;
+        auto feed = [&](int code, int value) {
+            for (const ChordEvent &c : d.feed(EV_KEY, code, value, 0)) {
+                if (const auto e = toPadEvent(map, c)) {
+                    got << e->describe();
+                }
+            }
+        };
+        feed(KEY_LEFTSHIFT, 1);                            // key8: [Shift F15]
+        feed(KEY_F15, 1);
+        feed(KEY_LEFTALT, 1);                              // knob2 ccw: [Shift Alt F15 F14]
+        feed(KEY_F14, 1);
+        feed(KEY_F14, 0);                                  // the firmware keeps Shift for key8
+        feed(KEY_LEFTALT, 0);
+        feed(KEY_LEFTCTRL, 1);                             // knob1 cw: Ctrl+F19 -> Shift+Ctrl+F19
+        feed(KEY_F19, 1);
+        feed(KEY_F19, 0);
+        feed(KEY_LEFTCTRL, 0);
+        feed(KEY_F15, 0);
+        feed(KEY_LEFTSHIFT, 0);
+        QCOMPARE(got, (QStringList{QStringLiteral("key8 down"), QStringLiteral("knob2 turn -1"), QStringLiteral("knob1 turn +1"), QStringLiteral("key8 up")}));
+        // A chord that maps as it is keeps its meaning: key1 (F14) held, then
+        // knob1 ccw (Ctrl+F17) is Ctrl+F17.
+        got.clear();
+        feed(KEY_F14, 1);
+        feed(KEY_LEFTCTRL, 1);
+        feed(KEY_F17, 1);
+        QCOMPARE(got, (QStringList{QStringLiteral("key1 down"), QStringLiteral("knob1 turn -1")}));
+    }
+
+    // A node that closes (unplug) or drops events releases what was down, as
+    // inferred releases: holds end, deferred taps do not fire.
+    void releaseAllIsSynthetic()
+    {
+        const auto map = HardwareMap::fromScheme(ch552::Numbering::KeysThenKnobs);
+        Decoder d;
+        d.feed(EV_KEY, KEY_F14, 1, 0);                     // key1
+        d.feed(EV_KEY, KEY_LEFTCTRL, 1, 0);
+        d.feed(EV_KEY, KEY_F18, 1, 0);                     // knob1 press
+        const auto ups = d.releaseAll();
+        QCOMPARE(ups.size(), 2);
+        QStringList got;
+        for (const ChordEvent &c : ups) {
+            QVERIFY(!c.down);
+            QVERIFY(c.synthetic);
+            const auto e = toPadEvent(map, c);
+            QVERIFY(e);
+            QVERIFY(e->synthetic);
+            got << e->describe();
+        }
+        got.sort();
+        QCOMPARE(got, (QStringList{QStringLiteral("key1 up"), QStringLiteral("knob1 release")}));
+        QVERIFY(d.releaseAll().isEmpty());
+        QCOMPARE(d.heldModifiers(), quint8(0));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestDecoder)

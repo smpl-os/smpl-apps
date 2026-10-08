@@ -89,7 +89,7 @@ private:
     void close(const QString &why);
     void rebuildSlots();
     // DOWN/UP/TAP for a firmware slot as the engine's events; count for TAP.
-    void emitSlot(int slot, int event, int count);
+    void emitSlot(int slot, int event, int count, bool synthetic = false);
     void releaseHeld();  // UP for everything this session holds down
 
     struct SlotTarget {

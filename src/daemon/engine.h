@@ -45,6 +45,16 @@ public:
 
     const Profile *activeProfile() const { return m_profile; }
     const WindowInfo &activeWindow() const { return m_window; }
+    // Controls down now that a layer's "held" condition names (sorted).
+    QStringList heldModifiers() const;
+    // Previews: pretend these controls are down (no events, nothing fires).
+    void setHeldForPreview(const QStringList &controls);
+    // The pad is gone: forget what was down without firing anything.
+    void releaseAll();
+    // Controls the pad reports one at a time (BoardProfile::oneAtATime), and how
+    // close a release and the next press must be to be the pad's re-report.
+    static constexpr int kRollMs = 40;
+    void setOneAtATime(const QStringList &controls) { m_oneAtATime = QSet<QString>(controls.cbegin(), controls.cend()); }
     bool kdenliveActive() const;  // interface available
     bool kdenliveStock() const;   // interface proven absent and the profile opted into keyFallback
     bool kdenliveAbsent() const;  // Kdenlive focused, interface proven absent (or no client)
@@ -137,11 +147,31 @@ private:
     };
     QHash<QString, Fallback> m_actionFallback;
     QSet<QString> m_said;
-    // Press+turn shift: knobs held down, presses deferred to release because a
-    // shift binding exists, and holds that turned (their press is swallowed).
-    QSet<QString> m_held;
-    QSet<QString> m_deferredPress;
+    // Controls physically down (keys and knob presses), as the pad reported
+    // them: kept across focus and config changes, cleared by releaseAll().
+    QSet<QString> m_down;
+    // Taps deferred to release, and why: a knob press because the knob has
+    // shift bindings (swallowed if it turned), a held-layer key's own tap
+    // (swallowed if any other input was used while it was down).
+    enum Defer { DeferShift = 1, DeferModifier = 2 };
+    QHash<QString, int> m_deferred;
     QSet<QString> m_shiftTurned;
+    QSet<QString> m_usedWhileHeld;
+    bool isHeldModifier(const QString &control) const;
+    void noteUse(const QString &control);
+    void fireDeferred(const QString &slot);
+    void fireResolved(const Resolution &r);
+    // One-at-a-time controls (the TM1650 matrix): pressing one while another
+    // is held reports the held one up first, and releasing it reports the
+    // held one down again. A deferred tap of such a key waits kRollMs; another
+    // one going down meanwhile means it was still held (no tap), and one going
+    // down right after another came up is that re-report (its tap is used).
+    QSet<QString> m_oneAtATime;
+    QString m_lastOneUp;
+    QElapsedTimer m_lastOneUpAt;
+    QTimer *m_rollTimer = nullptr;
+    QString m_rollControl;
+    std::optional<Resolution> m_rollTap;  // resolved at the release, fired after kRollMs
     QSet<QString> m_cheatsheetHold;  // controls holding the cheatsheet open
     bool m_inRelease = false;        // executing a press deferred to its release
     void noticeAbsent(const QString &what);

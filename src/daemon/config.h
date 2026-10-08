@@ -6,6 +6,8 @@
 #include "hardwaremap.h"
 
 #include <QHash>
+#include <QJsonValue>
+#include <QSet>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QStringList>
@@ -38,6 +40,12 @@ using BindingMap = QHash<QString, Binding>;
 struct Layer {
     QString name;
     QVariantMap when;  // dotted context path -> value | "/regex/" | "!value" | [alternatives] | bool
+    // "when": {"held": ...}: active while these pad controls are held down.
+    // Alternatives, each a set that must all be down: "key1" -> [[key1]],
+    // ["key1", "key13"] -> [[key1], [key13]], "key1+knob3" -> [[key1, knob3]]
+    // (knobN = its press). Empty: no held condition.
+    QList<QStringList> held;
+    bool heldMatches(const QSet<QString> &down) const;
     BindingMap bindings;
 };
 
@@ -55,8 +63,15 @@ struct Profile {
     QList<Layer> layers;     // first matching layer wins, then base bindings
     BindingMap bindings;
     QHash<QString, QStringList> modes;
+    // Controls named by a layer's "held" condition: their own tap bindings
+    // fire on release, and only if no other input was used meanwhile.
+    QSet<QString> heldControls;
     bool matches(const QString &cls, const QString &title) const;
 };
+
+// Parses a "held" condition value (see Layer::held); nullopt and *error when
+// it names something that is not a key or knob of a pad.
+std::optional<QList<QStringList>> parseHeldCondition(const QJsonValue &v, QString *error);
 
 struct Settings {
     int coalesceMs = 8;        // minimum spacing between continuous-control sends
@@ -146,6 +161,11 @@ QJsonObject layoutReport(const BoardProfile &effective, const std::optional<Boar
 // A config warning when the config's layout override has another slot count
 // than the firmware (raw input then stays off); empty otherwise.
 QString layoutMismatchWarning(const BoardProfile &effective, const std::optional<BoardProfile> &firmwareBoard, int firmwareSlots = 0);
+// Bindings this board can never deliver: "shift" (turn while pressed) on a
+// knob whose press pins an encoder line or whose firmware ignores such turns,
+// held layers naming a control the layout lacks, and with "input": "evdev",
+// held-layer inputs whose keymap chord shares a key with the held key's.
+QStringList boardWarnings(const Config &cfg, const BoardProfile &layout);
 
 QByteArray stripJsonComments(const QByteArray &in);
 std::optional<Binding> parseBinding(const QJsonValue &v, QString *error);

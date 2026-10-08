@@ -39,13 +39,16 @@ MockSurface::MockSurface(const Options &o, QObject *parent)
     const Config cfg = loadOrEmpty(o.configPath, &problems);
     m_engine = std::make_unique<Engine>(m_keys.get(), m_kd.get());
     m_engine->setConfig(cfg);
+    m_engine->setOneAtATime(effectiveLayout(cfg).oneAtATime);
     m_settings = std::make_unique<SettingsService>(o.configPath);
     m_settings->setMode(QStringLiteral("mock"));
     m_settings->setDaemonVersion(QStringLiteral("mock-") + QCoreApplication::applicationVersion());
     m_settings->setFallbackLayout(effectiveLayout(cfg));
     m_settings->setConfigState(ConfigStore::hashOf(ConfigStore(o.configPath).read().text), problems.join(QStringLiteral("; ")), cfg.warnings);
+    m_settings->setBoardWarnings([this](const BoardProfile &l) { return boardWarnings(m_engine->config(), l); });
     m_settings->setConfigApplier([this](const Config &c) {
         m_engine->setConfig(c);
+        m_engine->setOneAtATime(effectiveLayout(c).oneAtATime);
         m_settings->setFallbackLayout(effectiveLayout(c));
         if (m_eww) {
             m_eww->setOptions(c.cheatsheet.eww.over(m_o.eww));
@@ -222,6 +225,8 @@ void MockSurface::event(const QString &control, PadEvent::Type type, int delta)
     const PadEvent e{control, type, delta, 0};
     if (!m_settings->filterPadEvent(e)) {
         m_engine->handle(e);
+    } else if (type == PadEvent::KeyUp || type == PadEvent::PressUp) {
+        m_engine->handle(PadEvent{control, type, delta, 0, true});  // as the daemon: no stuck hold
     }
 }
 
@@ -240,6 +245,7 @@ void MockSurface::Unplug()
 {
     m_plugged = false;
     m_bootloader = false;
+    m_engine->releaseAll();  // as the daemon: nothing stays held (held layers)
     publishDevice();
 }
 

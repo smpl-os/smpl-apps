@@ -42,12 +42,28 @@ QList<ChordEvent> Decoder::feed(int type, int code, int value, qint64 usec)
     if (value == 1) {
         // A second down without an up (lost event) still counts as a fresh press.
         const KeyChord c{m_mods, code};
-        m_down.insert(code, c);
-        out.append({c, true, usec});
+        quint8 other = 0;
+        for (auto it = m_down.cbegin(); it != m_down.cend(); ++it) {
+            if (it.key() != code) {
+                other |= it->chord.mods;
+            }
+        }
+        m_down.insert(code, Down{c, other});
+        out.append({c, true, usec, other});
     } else if (value == 0) {
-        const KeyChord c = m_down.contains(code) ? m_down.take(code) : KeyChord{m_mods, code};
-        out.append({c, false, usec});
+        const Down d = m_down.contains(code) ? m_down.take(code) : Down{KeyChord{m_mods, code}, 0};
+        out.append({d.chord, false, usec, d.otherMods});
     }
+    return out;
+}
+
+QList<ChordEvent> Decoder::releaseAll()
+{
+    QList<ChordEvent> out;
+    for (auto it = m_down.cbegin(); it != m_down.cend(); ++it) {
+        out.append({it->chord, false, 0, it->otherMods, true});
+    }
+    reset();
     return out;
 }
 
@@ -59,13 +75,17 @@ void Decoder::reset()
 
 std::optional<PadEvent> toPadEvent(const HardwareMap &map, const ChordEvent &e)
 {
-    const auto t = map.lookup(e.chord);
+    auto t = map.lookup(e.chord);
+    if (!t && (e.chord.mods & e.otherMods)) {
+        t = map.lookup(KeyChord{quint8(e.chord.mods & ~e.otherMods), e.chord.key});
+    }
     if (!t) {
         return std::nullopt;
     }
     PadEvent p;
     p.control = t->control;
     p.usec = e.usec;
+    p.synthetic = e.synthetic;
     switch (t->role) {
     case Role::Key:
         p.type = e.down ? PadEvent::KeyDown : PadEvent::KeyUp;

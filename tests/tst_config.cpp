@@ -556,6 +556,103 @@ private Q_SLOTS:
         QCOMPARE(launchers, 7);
         QVERIFY(!c->cheatsheet.autoHideMs);
     }
+
+    void heldLayers()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles": [{"name": "g",
+            "layers": [{"name": "a", "when": {"held": "key1"}, "bindings": {"knob1.cw": "a"}},
+                       {"name": "b", "when": {"held": ["key14", " key15 "]}, "bindings": {"knob1.cw": "b"}},
+                       {"name": "c", "when": {"held": "key13+knob3+key13", "$mode.m": "x"}, "bindings": {"key2": "c"}}],
+            "modes": {"m": ["x"]}, "bindings": {"key1": "a"}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        const Profile &p = c->profiles.first();
+        QCOMPARE(p.layers[0].held, (QList<QStringList>{{QStringLiteral("key1")}}));
+        QCOMPARE(p.layers[1].held, (QList<QStringList>{{QStringLiteral("key14")}, {QStringLiteral("key15")}}));
+        QCOMPARE(p.layers[2].held, (QList<QStringList>{{QStringLiteral("key13"), QStringLiteral("knob3")}}));
+        QVERIFY(!p.layers[0].when.contains(QStringLiteral("held")));
+        QCOMPARE(p.layers[2].when.value(QStringLiteral("$mode.m")).toString(), QStringLiteral("x"));
+        QCOMPARE(p.heldControls, (QSet<QString>{QStringLiteral("key1"), QStringLiteral("key13"), QStringLiteral("key14"), QStringLiteral("key15"), QStringLiteral("knob3")}));
+        QVERIFY2(c->warnings.isEmpty(), qPrintable(c->warnings.join(QLatin1Char('\n'))));  // a held layer has a condition
+        QVERIFY(p.layers[2].heldMatches({QStringLiteral("key13"), QStringLiteral("knob3"), QStringLiteral("key1")}));
+        QVERIFY(!p.layers[2].heldMatches({QStringLiteral("key13")}));
+        QVERIFY(p.layers[1].heldMatches({QStringLiteral("key15")}));
+        QVERIFY(!p.layers[1].heldMatches({}));
+
+        for (const char *bad : {R"("held": "key0")", R"("held": "knob4")", R"("held": "key17")", R"("held": [])", R"("held": 3)",
+                                R"("held": ["key1", 2])", R"("held": "key1+")", R"("held": "F14")"}) {
+            const QByteArray text = QByteArray(R"({"profiles": [{"name": "g", "layers": [{"name": "L", "when": {)") + bad + R"(}, "bindings": {"key2": "a"}}]}]})";
+            QVERIFY2(!parseConfig(text, {}, &err), bad);
+            QVERIFY2(err.startsWith(QStringLiteral("profile g layer L: ")) && err.contains(QStringLiteral("held")), qPrintable(err));
+        }
+    }
+
+    // What the measured board cannot deliver, and evdev chord collisions.
+    void boardWarningsForThePad()
+    {
+        QString err;
+        auto c = parseConfig(R"({"device": {"input": "evdev"}, "profiles": [{"name": "g",
+            "layers": [{"name": "ws", "when": {"held": ["key1", "key16"]}, "bindings": {"knob1": {"turn": "a"}, "knob2": {"ccw": "b", "cw": "c"}, "key7": "d"}}],
+            "bindings": {"knob1": {"shift": {"turn": "x"}}, "knob3": {"shift": {"cw": "y", "ccw": "z"}}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        const BoardProfile pad = *builtinBoardProfile(QStringLiteral("sy181-15k3e"));
+        QVERIFY(!pad.turnsWhilePressed);
+        QVERIFY(pad.knobs[0].pressPinsEncoder && pad.knobs[1].pressPinsEncoder && !pad.knobs[2].pressPinsEncoder);
+        QStringList w = boardWarnings(*c, pad);
+        w.sort();
+        QCOMPARE(w.size(), 5);
+        QVERIFY2(w[0].startsWith(QStringLiteral("profile g knob1.shift.turn: never fires: pressing knob1 holds one of its encoder lines low")), qPrintable(w[0]));
+        QVERIFY2(w[1].startsWith(QStringLiteral("profile g knob3.shift.")) && w[1].contains(QStringLiteral("firmware ignores turns while a knob is pressed")), qPrintable(w[1]));
+        // key1 = F14 and knob2 ccw = Alt+F14; key1 and key7 = Shift+F14.
+        QVERIFY2(w[2].startsWith(QStringLiteral("profile g layer ws: \"held\": the sy181-15k3e layout has no key16")), qPrintable(w[2]));
+        QVERIFY2(w[3].startsWith(QStringLiteral("profile g layer ws: key7: with \"input\": \"evdev\", key1 held and key7 share the pad's F14 key")), qPrintable(w[3]));
+        QVERIFY2(w[4].startsWith(QStringLiteral("profile g layer ws: knob2.ccw: with \"input\": \"evdev\", key1 held and knob2.ccw share")), qPrintable(w[4]));
+        for (const QString &x : std::as_const(w)) {
+            const ConfigIssue i = describeConfigIssue(x);
+            QCOMPARE(i.profile, QStringLiteral("g"));
+        }
+        QCOMPARE(describeConfigIssue(w[0]).slot, QStringLiteral("knob1.shift.turn"));
+        QCOMPARE(describeConfigIssue(w[4]).layer, QStringLiteral("ws"));
+        QCOMPARE(describeConfigIssue(w[4]).slot, QStringLiteral("knob2.ccw"));
+        // Raw input (auto) has no collisions; a board that turns while pressed has no shift warnings.
+        c->device.input = QStringLiteral("auto");
+        QCOMPARE(boardWarnings(*c, pad).size(), 3);
+        BoardProfile other = gridProfile(QStringLiteral("generic-16k3e"), QStringLiteral("x"), 16, 3, 4);
+        QCOMPARE(boardWarnings(*c, other), QStringList{});
+        // One at a time (the TM1650 matrix), and evdev modifiers that carry over.
+        c = parseConfig(R"({"device": {"input": "evdev"}, "profiles": [{"name": "g", "layers": [
+            {"name": "a", "when": {"held": "key13+knob3"}, "bindings": {"knob1": {"turn": "a"}}},
+            {"name": "b", "when": {"held": "key13"}, "bindings": {"key5": "x", "knob2.press": "y", "knob1": {"turn": "w"}}},
+            {"name": "c", "when": {"held": "key1+knob3"}, "bindings": {"knob1.cw": "v"}}]}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QVERIFY(pad.oneAtATime.contains(QStringLiteral("key2")) && pad.oneAtATime.contains(QStringLiteral("knob3")) && !pad.oneAtATime.contains(QStringLiteral("key1")));
+        w = boardWarnings(*c, pad);
+        QCOMPARE(w.size(), 4);
+        QVERIFY2(w[0].startsWith(QStringLiteral("profile g layer a: \"held\": key13+knob3 can never be held together")), qPrintable(w[0]));
+        QVERIFY2(w[1].startsWith(QStringLiteral("profile g layer b: ")) && w[1].contains(QStringLiteral("never fires: pressing")), qPrintable(w[1]));
+        QVERIFY2(w[2].startsWith(QStringLiteral("profile g layer b: ")) && w[2].contains(QStringLiteral("reports key13 released")), qPrintable(w[2]));
+        // knob3 = Alt+F18 held: key1 (F14) arrives as Alt+F14, which is knob2 ccw.
+        QVERIFY2(w[3].startsWith(QStringLiteral("profile g layer c: key1: with \"input\": \"evdev\", key1 while knob3 is held reads as knob2.ccw (the held key's alt")), qPrintable(w[3]));
+        QCOMPARE(describeConfigIssue(w[3]).slot, QStringLiteral("key1"));
+        c->device.input = QStringLiteral("raw");
+        QCOMPARE(boardWarnings(*c, pad).size(), 3);  // the matrix limits stay
+        // Held together on one F-key in evdev: key1 = F14, key13 = Ctrl+F14.
+        c = parseConfig(R"({"device": {"input": "evdev"}, "profiles": [{"name": "g", "layers": [
+            {"name": "d", "when": {"held": "key1+key13"}, "bindings": {"knob1": {"turn": "a"}}}]}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        w = boardWarnings(*c, pad);
+        QCOMPARE(w.size(), 1);
+        QVERIFY2(w[0].startsWith(QStringLiteral("profile g layer d: \"held\": with \"input\": \"evdev\", key1 and key13 share the pad's F14 key")), qPrintable(w[0]));
+
+        // The shipped example asks for nothing the pad cannot do.
+        QFile ex(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"));
+        QVERIFY(ex.open(QIODevice::ReadOnly));
+        auto exc = parseConfig(ex.readAll(), {}, &err);
+        QVERIFY2(exc, qPrintable(err));
+        QCOMPARE(boardWarnings(*exc, pad), QStringList{});
+        exc->device.input = QStringLiteral("evdev");
+        QCOMPARE(boardWarnings(*exc, pad), QStringList{});
+    }
 };
 
 QTEST_GUILESS_MAIN(TestConfig)

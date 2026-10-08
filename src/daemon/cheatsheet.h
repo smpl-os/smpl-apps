@@ -38,6 +38,8 @@ public:
     // The same for any window class and (optionally) Kdenlive context, from the
     // running config, without changing anything: for editors and previews.
     // Kdenlive is assumed to answer, so Kdenlive bindings show as they would work.
+    // "$held" in the context ("key1", ["key1", "knob3"] or "key1+knob3") is not
+    // Kdenlive's: those controls count as held down, so held layers show.
     QJsonObject previewFor(const QString &windowClass, const QString &title, const QVariantMap &kdenliveContext) const;
     static QJsonObject preview(const Config &cfg, const BoardProfile &layout, const QString &windowClass, const QString &title,
                                const QVariantMap &kdenliveContext);

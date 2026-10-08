@@ -69,10 +69,13 @@ that would not validate (nothing written), 3 the file could not be written.
   * `"press"`;
   * `"shift"` with its own `"turn"`/`"ccw"`/`"cw"`: turning while the knob is
     held down. A knob with shift bindings fires its `"press"` on release, and
-    only if it did not turn. **Not on this pad:** the control-surface firmware
-    (2.0.2) ignores turns while a knob is pressed (pressing moves the
-    encoder's lines), so shift bindings never fire on it. `features --json`
-    says so (`slots.shiftSupported: false`).
+    only if it did not turn. **Not on this pad:** pressing the top or middle
+    knob holds one of its encoder lines low, so a turn while it is pressed
+    has no direction on any firmware, and the control-surface firmware ignores
+    turns while any knob is pressed ([hardware-ch552.md](hardware-ch552.md)).
+    `check-config` warns about shift bindings here, and `features --json` says
+    so (`slots.shiftSupported: false`, the board's `turnsWhilePressed` and
+    `pressPinsEncoder`). Use a [held-key layer](#held-key-layers) instead.
 
 ## Profiles
 
@@ -134,6 +137,70 @@ context: delete needs timeline focus, insert/overwrite need a clip in the
 clip monitor and a target track, and the Slip tool's preview blocks playback
 and shuttle until you switch back to the Selection tool.
 
+### Held-key layers
+
+Hold a key and the other keys and knobs do something else while it is down,
+in any app:
+
+```jsonc
+"layers": [
+    {
+        "name": "Workspaces",
+        "when": { "held": "key1" },
+        "bindings": {
+            "knob1": { "ccw": { "command": ["hyprctl", "dispatch", "workspace", "e-1"], "label": "Previous workspace" },
+                       "cw":  { "command": ["hyprctl", "dispatch", "workspace", "e+1"], "label": "Next workspace" } },
+            "key2": { "command": ["hyprctl", "dispatch", "workspace", "1"], "label": "Workspace 1" }
+        }
+    }
+]
+```
+
+* `"held"` takes one control (`"key1"`), a list of alternatives
+  (`["key13", "key14"]`: either one held), or controls held together
+  (`"key1+knob3"`). Controls are `key1`..`key16`, or `knob1`..`knob3`
+  for a knob press. Other `"when"` conditions can be added; all must hold.
+* **Precedence:** while its keys are down, a held layer wins over every other
+  layer and binding. The app profile's held layers are tried first, then the
+  global profile's. So a held layer in the global profile works in every app,
+  Kdenlive and Brave included, unless the app's profile has its own held
+  layer for that input or `"fallthrough": false`.
+* **The held key's own binding:**
+  * `{"cheatsheet": "hold"}` shows the overlay at once, and the overlay shows
+    the held layer, so holding key 1 shows what the knobs do while it is
+    held.
+  * Any other binding is a tap. It fires when the key is released, and only
+    if no other key or knob was used while it was down. A key that is
+    only a modifier needs no binding of its own.
+* Releasing the key ends the layer. A pad that disappears while a key is
+  held (unplugged, raw session lost) ends it too, and the deferred tap does
+  not fire.
+* In the cheatsheet (`GetCheatsheet`), `"held"` lists the held-layer keys
+  that are down. Previews take `"$held"` in their context JSON
+  (`GetCheatsheetFor`), and the CLI takes
+  `control-surfaced cheatsheet --window brave-browser --held key1`.
+* **What this pad can hold together:** key 1 has its own pin. Keys 2–15
+  and the knob presses are read one at a time: pressing key 5 while key 13
+  is held reports key 13 released, and it reappears when key 5 comes up. So
+  a held layer works with:
+  * key 1 held plus any other key, knob press or knob turn;
+  * any key or knob press held plus the knob turns (and key 1).
+
+  A layer held on key 13 that binds key 5 never fires, and
+  `"key13+knob3"` can never be held. `check-config` warns about both. The
+  daemon recognises the pad's re-report of the held key (within 40 ms), so
+  that roll never fires the held key's own tap.
+* **Input modes:** raw mode (the default `"auto"` on firmware 2.0.2+)
+  handles every combination above. With `"input": "evdev"`, the held key's
+  keymap chord stays in the pad's report:
+  * an input whose chord shares the held key's F-key is lost, and the held
+    key reads as released (key 1 = F14 and knob2 ccw = Alt+F14);
+  * an input pressed while a modified chord is held can read as another
+    control (knob 3's press is Alt+F18, so key 1 pressed meanwhile reads as
+    Alt+F14 = knob2 ccw).
+
+  `check-config` lists both kinds.
+
 ### Layers
 
 ```jsonc
@@ -143,8 +210,8 @@ and shuttle until you switch back to the Selection tool.
 ]
 ```
 
-The first layer whose `"when"` matches and that binds a slot wins, then the
-profile's own bindings, then the global profile. `"when"` tests Kdenlive's
+Held layers aside (above), the first layer whose `"when"` matches and that
+binds a slot wins, then the profile's own bindings, then the global profile. `"when"` tests Kdenlive's
 context (`"focus"`, `"colorWheels"`, `"param.target"`,
 `"timeline.track.audio"` ...) or a mode (`"$mode.page"`). Values may be
 `"/regex/"`, `"!value"`, a list of alternatives, or a boolean. Editing

@@ -316,7 +316,14 @@ int simulate(SimEnv &env, QIODevice &in)
             QTimer::singleShot(rest.toInt(), &loop, &QEventLoop::quit);
             loop.exec();
         } else if (cmd.startsWith(QLatin1String("key"))) {
-            env.engine.handle(PadEvent{cmd, PadEvent::KeyDown, 0, 0});
+            // "key3" is a press and release; "key1 hold" ... "key1 release" holds it
+            // (held-key layers, the cheatsheet's "hold").
+            if (rest.isEmpty() || rest == QLatin1String("press") || rest == QLatin1String("hold")) {
+                env.engine.handle(PadEvent{cmd, PadEvent::KeyDown, 0, 0});
+            }
+            if (rest.isEmpty() || rest == QLatin1String("press") || rest == QLatin1String("release")) {
+                env.engine.handle(PadEvent{cmd, PadEvent::KeyUp, 0, 0});
+            }
         } else if (cmd.startsWith(QLatin1String("knob"))) {
             if (rest == QLatin1String("press") || rest == QLatin1String("hold")) {
                 env.engine.handle(PadEvent{cmd, PadEvent::PressDown, 0, 0});
@@ -394,8 +401,9 @@ int main(int argc, char **argv)
     QCommandLineOption sheetWindowOpt(QStringLiteral("window"), QStringLiteral("cheatsheet: preview for this window class (offline)"), QStringLiteral("class"));
     QCommandLineOption sheetTitleOpt(QStringLiteral("title"), QStringLiteral("cheatsheet: window title for --window"), QStringLiteral("text"));
     QCommandLineOption sheetContextOpt(QStringLiteral("context"), QStringLiteral("cheatsheet: Kdenlive context JSON for --window"), QStringLiteral("json"));
+    QCommandLineOption sheetHeldOpt(QStringLiteral("held"), QStringLiteral("cheatsheet: with --window, these controls count as held (key1, key1+knob3; repeatable)"), QStringLiteral("controls"));
     QCommandLineOption imageDirOpt(QStringLiteral("firmware-dir"), QStringLiteral("settings API: directory of flashable images (repeatable)"), QStringLiteral("dir"));
-    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt, followOpt, sheetWindowOpt, sheetTitleOpt, sheetContextOpt, ewwOpt, ewwWindowOpt, ewwConfigOpt, identifyOpt});
+    p.addOptions({configOpt, dryOpt, noGrabOpt, backendOpt, serviceOpt, writeOpt, noWriteOpt, forceWindowOpt, quietOpt, traceOpt, jsonOpt, noApiOpt, allowFlashOpt, flashToolOpt, imageDirOpt, sysRootOpt, yesOpt, followOpt, sheetWindowOpt, sheetTitleOpt, sheetContextOpt, sheetHeldOpt, ewwOpt, ewwWindowOpt, ewwConfigOpt, identifyOpt});
     p.process(app);
     const QString cmd = p.positionalArguments().value(0, QStringLiteral("run"));
     const bool explicitConfig = p.isSet(configOpt);
@@ -469,6 +477,7 @@ int main(int argc, char **argv)
             if (const QString w = layoutMismatchWarning(layout, fwBoard); !w.isEmpty()) {
                 warnings << w;
             }
+            warnings << boardWarnings(c, layout);
             bool bootloader = false;
             for (const UsbDeviceInfo &u : listUsbDevices(p.value(sysRootOpt))) {
                 bootloader = bootloader || classifyFirmware(u).type == QLatin1String("bootloader");
@@ -665,6 +674,7 @@ int main(int argc, char **argv)
                 if (const QString w = layoutMismatchWarning(layout, boardOf(d)); !w.isEmpty()) {
                     warnings << w;
                 }
+                warnings << boardWarnings(*v.config, layout);
             }
             out.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(warnings));
             QJsonArray details;
@@ -711,7 +721,17 @@ int main(int argc, char **argv)
                     .arg(pr.bindings.size())
                     .arg(pr.kdenlive ? QStringLiteral(", kdenlive") : QString(), pr.keyFallback ? QStringLiteral(", keyFallback") : QString()));
         }
-        for (const QString &w : std::as_const(cfg->warnings)) {
+        QStringList warnings = cfg->warnings;
+        {
+            // Against the pad plugged in now, from sysfs (nothing is opened).
+            const DeviceState d = offlinePad(cfg->device, p.value(sysRootOpt));
+            const BoardProfile layout = effectiveLayout(*cfg, d.firmware.board);
+            if (const QString w = layoutMismatchWarning(layout, boardOf(d)); !w.isEmpty()) {
+                warnings << w;
+            }
+            warnings << boardWarnings(*cfg, layout);
+        }
+        for (const QString &w : std::as_const(warnings)) {
             say(QStringLiteral("warning: %1").arg(w));
         }
         return 0;
@@ -748,7 +768,10 @@ int main(int argc, char **argv)
                 say(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
                 return;
             }
-            say(QStringLiteral("%1%2").arg(o.value(QStringLiteral("title")).toString(), o.value(QStringLiteral("visible")).toBool() ? QStringLiteral("  (shown)") : QString()));
+            const QStringList held = o.value(QStringLiteral("held")).toVariant().toStringList();
+            say(QStringLiteral("%1%2%3").arg(o.value(QStringLiteral("title")).toString(),
+                                             held.isEmpty() ? QString() : QStringLiteral("  (held: %1)").arg(held.join(QLatin1Char('+'))),
+                                             o.value(QStringLiteral("visible")).toBool() ? QStringLiteral("  (shown)") : QString()));
             if (!o.value(QStringLiteral("notice")).toString().isEmpty()) {
                 say(QStringLiteral("  ! %1").arg(o.value(QStringLiteral("notice")).toString()));
             }
@@ -785,6 +808,9 @@ int main(int argc, char **argv)
                     return 2;
                 }
                 ctx = d.object().toVariantMap();
+            }
+            if (p.isSet(sheetHeldOpt)) {
+                ctx.insert(QStringLiteral("$held"), p.values(sheetHeldOpt));
             }
             print(Cheatsheet::preview(*cfg, effectiveLayout(*cfg), p.value(sheetWindowOpt), p.value(sheetTitleOpt), ctx));
             return 0;
@@ -1178,6 +1204,7 @@ int main(int argc, char **argv)
     // grab stays as the second line of defence and its events are then ignored.
     RawPadDevice raw(cfg->device);
     raw.setLayout(effectiveLayout(*cfg));
+    engine.setOneAtATime(effectiveLayout(*cfg).oneAtATime);  // the TM1650 matrix: see Engine::kRollMs
     QObject::connect(&raw, &RawPadDevice::message, log);
     QObject::connect(&dev, &PadDevice::connected, [log](const QStringList &n) { log(QStringLiteral("pad connected: %1").arg(n.join(QStringLiteral(", ")))); });
     QObject::connect(&dev, &PadDevice::disconnected, [log] { log(QStringLiteral("pad disconnected, waiting")); });
@@ -1286,6 +1313,7 @@ int main(int argc, char **argv)
         applyEww(c);
         dev.setHardwareMap(c.hardware);
         raw.setLayout(effectiveLayout(c));
+        engine.setOneAtATime(effectiveLayout(c).oneAtATime);
         applyInputMode(c);
         settings.setFallbackLayout(effectiveLayout(c));
         publishPlugins();
@@ -1331,8 +1359,9 @@ int main(int argc, char **argv)
             log(QStringLiteral("raw input unavailable (not the control-surface firmware?); using evdev chords"));
         }
     });
-    QObject::connect(&dev, &PadDevice::disconnected, &settings, [publishDevice, &raw, &evdevInfo] {
+    QObject::connect(&dev, &PadDevice::disconnected, &settings, [publishDevice, &raw, &evdevInfo, &engine] {
         raw.stop();
+        engine.releaseAll();  // nothing the pad held stays down (held layers, the cheatsheet)
         evdevInfo.reset();
         publishDevice();
     });
@@ -1377,6 +1406,12 @@ int main(int argc, char **argv)
     auto dispatchPad = [&engine, &settings](const PadEvent &e) {
         if (!settings.filterPadEvent(e)) {
             engine.handle(e);
+        } else if (e.type == PadEvent::KeyUp || e.type == PadEvent::PressUp) {
+            // Identify mode swallowed it, but a key that went down before must
+            // not stay held (held layers): released, nothing fires.
+            PadEvent up = e;
+            up.synthetic = true;
+            engine.handle(up);
         }
     };
     // Keymap input is never dropped: in raw mode the pad types its keymap only
@@ -1389,6 +1424,7 @@ int main(int argc, char **argv)
         }
         dispatchPad(e);
     });
+    settings.setBoardWarnings([&engine](const BoardProfile &l) { return boardWarnings(engine.config(), l); });
     settings.setInputStatus([&engine, &raw, &evdevEvents, &evdevWhileRaw] {
         return QJsonObject{{QStringLiteral("configured"), engine.config().device.input},
                            {QStringLiteral("mode"), raw.isActive() ? QStringLiteral("raw") : QStringLiteral("evdev-chords")},
@@ -1409,6 +1445,7 @@ int main(int argc, char **argv)
         applyEww(c);
         settings.setFallbackLayout(effectiveLayout(c));
         raw.setLayout(effectiveLayout(c));
+        engine.setOneAtATime(effectiveLayout(c).oneAtATime);
         applyInputMode(c);
         settings.setConfigState(hash, QString(), c.warnings);
         publishPlugins();

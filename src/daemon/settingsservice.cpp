@@ -314,6 +314,9 @@ QStringList SettingsService::configWarnings() const
     if (!l.isEmpty()) {
         w << l;
     }
+    if (m_boardWarnings) {
+        w << m_boardWarnings(currentLayout());
+    }
     return w;
 }
 
@@ -492,9 +495,13 @@ QString SettingsService::ValidateConfig(const QString &text)
         const int fwSlots = m_device.present ? m_device.firmware.slotCount : 0;
         const BoardProfile l = effectiveLayout(*v.config, fw ? fw->id : QString());
         o.insert(QStringLiteral("layout"), layoutReport(l, fw, fwSlots));
-        const QString w = layoutMismatchWarning(l, fw, fwSlots);
-        if (!w.isEmpty()) {
-            o.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(v.warnings + QStringList{w}));
+        QStringList extra;
+        if (const QString w = layoutMismatchWarning(l, fw, fwSlots); !w.isEmpty()) {
+            extra << w;
+        }
+        extra << boardWarnings(*v.config, l);
+        if (!extra.isEmpty()) {
+            o.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(v.warnings + extra));
         }
     }
     return json(o);

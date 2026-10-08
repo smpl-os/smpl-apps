@@ -94,6 +94,8 @@ public:
     std::optional<BoardProfile> firmwareLayout() const;
     // The config's warnings plus a layout override that does not fit the firmware.
     QStringList configWarnings() const;
+    // What the running config asks of this board that it cannot do (boardWarnings).
+    void setBoardWarnings(std::function<QStringList(const BoardProfile &)> f) { m_boardWarnings = std::move(f); }
     // The cheatsheet the overlay follows (created next to the engine).
     void setCheatsheet(Cheatsheet *c);
     // Extra fields for GetStatus().cheatsheet (e.g. {"eww": {...}}).
@@ -190,6 +192,7 @@ private:
     QList<PluginInfo> m_plugins;
     QString m_configHash, m_configError;
     QStringList m_configWarnings;
+    std::function<QStringList(const BoardProfile &)> m_boardWarnings;
     std::optional<BoardProfile> m_fallbackLayout;
     ConfigApplier m_apply;
     FlashSettings m_flash;

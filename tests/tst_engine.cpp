@@ -235,6 +235,151 @@ private Q_SLOTS:
         QVERIFY(keys.taps.isEmpty());
     }
 
+    // "when": {"held": ...}: a layer that applies while a key (or knob press) is
+    // down, winning over every other binding; the held key's own tap fires on
+    // release only if nothing else was used meanwhile.
+    void heldKeyLayers()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles": [
+            {"name": "brave", "match": {"class": "^firefox$"}, "bindings": {"knob2": {"ccw": "a", "cw": "b"}}},
+            {"name": "global",
+             "layers": [{"name": "ws", "when": {"held": "key1"},
+                         "bindings": {"knob1": {"ccw": "super+left", "cw": "super+right", "press": "super+tab"}, "knob2": {"cw": "super+shift+right"}, "key2": "super+1"}},
+                        {"name": "combo", "when": {"held": "key13+knob3"}, "bindings": {"key2": "f"}},
+                        {"name": "any", "when": {"held": ["key14", "key15"]}, "bindings": {"knob3": {"cw": "x"}}}],
+             "bindings": {"key1": {"cheatsheet": "hold"}, "key2": "ctrl+z", "key13": "ctrl+n", "key14": "ctrl+o",
+                          "knob1": {"ccw": "volumedown", "cw": "volumeup", "press": "mute"}, "knob3": {"cw": "y", "press": "z"}}}]})",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QVERIFY2(c->warnings.isEmpty(), qPrintable(c->warnings.join(QLatin1Char('\n'))));
+        c->settings.accelFactor = 1;
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(*c);
+        e.setActiveWindow(kFirefox);  // brave, falling through to global
+        QStringList sheet;
+        connect(&e, &Engine::cheatsheetRequested, this, [&sheet](const QString &op) { sheet << op; });
+        QSignalSpy changed(&e, &Engine::resolutionChanged);
+        auto up = [](const QString &control, bool synthetic = false) {
+            return PadEvent{control, control.startsWith(QLatin1String("knob")) ? PadEvent::PressUp : PadEvent::KeyUp, 0, 0, synthetic};
+        };
+        auto run = [&](const QList<PadEvent> &events, const QStringList &want) {
+            keys.taps.clear();
+            for (const PadEvent &ev : events) {
+                e.handle(ev);
+            }
+            QTRY_COMPARE(keys.taps, want);
+            QTest::qWait(30);
+            QCOMPARE(keys.taps, want);  // and nothing more
+        };
+
+        run({turn(1, 1), key(2)}, {QStringLiteral("VOLUMEUP"), QStringLiteral("ctrl+Z")});
+
+        // key1 held: the cheatsheet shows at once, the held layer wins, even
+        // over the app profile's own knob2.
+        e.handle(key(1));
+        QCOMPARE(sheet, QStringList{QStringLiteral("show")});
+        QVERIFY(changed.count() >= 1);
+        QCOMPARE(e.heldModifiers(), QStringList{QStringLiteral("key1")});
+        QCOMPARE(e.resolve(QStringLiteral("knob2.cw"))->layer, QStringLiteral("ws"));
+        run({turn(1, 1), turn(1, -1), press(1), up(QStringLiteral("knob1")), turn(2, 1), key(2), up(QStringLiteral("key2"))},
+            {QStringLiteral("super+RIGHT"), QStringLiteral("super+LEFT"), QStringLiteral("super+TAB"), QStringLiteral("shift+super+RIGHT"), QStringLiteral("super+1")});
+        // A focus change keeps the hold (the key is still down).
+        e.setActiveWindow(WindowInfo{QStringLiteral("foot"), {}, 9, QStringLiteral("0x9")});
+        run({turn(1, 1)}, {QStringLiteral("super+RIGHT")});
+        e.setActiveWindow(kFirefox);
+        const int before = changed.count();
+        run({up(QStringLiteral("key1"))}, {});
+        QCOMPARE(sheet.last(), QStringLiteral("hide"));
+        QVERIFY(changed.count() > before);
+        QVERIFY(e.heldModifiers().isEmpty());
+        run({turn(1, 1), turn(2, 1)}, {QStringLiteral("VOLUMEUP"), QStringLiteral("B")});
+
+        // A held-layer key's own tap fires on release, if nothing else was used.
+        run({key(13)}, {});
+        run({up(QStringLiteral("key13"))}, {QStringLiteral("ctrl+N")});
+        run({key(13), turn(1, 1), up(QStringLiteral("key13"))}, {QStringLiteral("VOLUMEUP")});
+        // Both of "key13+knob3": the combo layer; neither tap fires afterwards.
+        run({key(13), press(3), key(2), up(QStringLiteral("key2")), up(QStringLiteral("knob3")), up(QStringLiteral("key13"))}, {QStringLiteral("F")});
+        // knob3 alone is down: its tap waits for the release (it is a held key).
+        run({press(3)}, {});
+        run({up(QStringLiteral("knob3"))}, {QStringLiteral("Z")});
+        // Alternatives: either key15 (no binding of its own) or key14.
+        run({key(15), turn(3, 1), up(QStringLiteral("key15")), turn(3, 1)}, {QStringLiteral("X"), QStringLiteral("Y")});
+        run({key(14), turn(3, 1), up(QStringLiteral("key14"))}, {QStringLiteral("X")});
+        // An inferred release (pad gone) ends the hold but never fires the tap.
+        run({key(14), up(QStringLiteral("key14"), true), turn(3, 1)}, {QStringLiteral("Y")});
+        // releaseAll: everything held is forgotten, the cheatsheet hides.
+        e.handle(key(1));
+        QCOMPARE(sheet.last(), QStringLiteral("show"));
+        e.releaseAll();
+        QCOMPARE(sheet.last(), QStringLiteral("hide"));
+        QVERIFY(e.heldModifiers().isEmpty());
+        run({turn(1, 1)}, {QStringLiteral("VOLUMEUP")});
+    }
+
+    // Review findings: a knob deferred only for its shift bindings still fires
+    // its press when another input is used meanwhile (only its own turn
+    // swallows it); and the pad's one-at-a-time matrix (TM1650) reports a held
+    // key up when another is pressed, then down again.
+    void heldLayersOnTheMatrix()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles": [{"name": "global",
+            "layers": [{"name": "ws", "when": {"held": "key13"}, "bindings": {"knob1": {"cw": "super+right"}}}],
+            "bindings": {"key13": "ctrl+n", "key5": "c", "key3": "d", "knob2": {"press": "a", "shift": {"cw": "b"}}, "knob1": {"cw": "volumeup"}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        c->settings.accelFactor = 1;
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(*c);
+        e.setActiveWindow(kFirefox);
+        e.setOneAtATime(builtinBoardProfile(QStringLiteral("sy181-15k3e"))->oneAtATime);
+        auto down = [](int k) { return PadEvent{QStringLiteral("key%1").arg(k), PadEvent::KeyDown, 0, 0}; };
+        auto up = [](int k) { return PadEvent{QStringLiteral("key%1").arg(k), PadEvent::KeyUp, 0, 0}; };
+        auto run = [&](const QList<PadEvent> &events, const QStringList &want) {
+            keys.taps.clear();
+            for (const PadEvent &ev : events) {
+                e.handle(ev);
+            }
+            QTRY_COMPARE(keys.taps, want);
+            QTest::qWait(Engine::kRollMs + 40);
+            QCOMPARE(keys.taps, want);
+        };
+        // Shift-only deferral: other inputs do not swallow the press.
+        run({press(2), down(3), up(3), turn(1, 1), PadEvent{QStringLiteral("knob2"), PadEvent::PressUp, 0, 0}},
+            {QStringLiteral("D"), QStringLiteral("VOLUMEUP"), QStringLiteral("A")});
+        run({press(2), turn(2, 1), PadEvent{QStringLiteral("knob2"), PadEvent::PressUp, 0, 0}}, {QStringLiteral("B")});
+        // A held matrix key's own tap, alone: on release (after the roll window).
+        run({down(13), up(13)}, {QStringLiteral("ctrl+N")});
+        // key5 pressed while key13 is held: the pad says key13 up, key5 down,
+        // then key13 down again when key5 comes up. No ctrl+N at all, and the
+        // layer is back for the knob.
+        run({down(13), up(13), down(5), up(5), down(13), turn(1, 1), up(13)}, {QStringLiteral("C"), QStringLiteral("super+RIGHT")});
+        // The delayed tap does what key13 did when it came up, even if key1's
+        // held layer starts meanwhile (key1 has its own pin: no roll).
+        {
+            auto c2 = parseConfig(R"({"profiles": [{"name": "global",
+                "layers": [{"name": "k1", "when": {"held": "key1"}, "bindings": {"key13": "x"}},
+                           {"name": "k13", "when": {"held": "key13"}, "bindings": {"knob1": {"cw": "y"}}}],
+                "bindings": {"key13": "ctrl+n"}}]})", {}, &err);
+            QVERIFY2(c2, qPrintable(err));
+            e.setConfig(*c2);
+            run({down(13), up(13), down(1)}, {QStringLiteral("ctrl+N")});
+            e.handle(up(1));
+            e.setConfig(*c);
+        }
+        // A real release, then a key well after it: both fire.
+        keys.taps.clear();
+        e.handle(down(13));
+        e.handle(up(13));
+        QTest::qWait(Engine::kRollMs + 30);
+        run({down(5), up(5)}, {QStringLiteral("C")});
+    }
+
     // "accel" on a binding overrides settings.accelFactor; 1 turns it off.
     void perBindingAcceleration()
     {
