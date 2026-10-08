@@ -552,10 +552,23 @@ pending was dropped (6 of 443 GET_INFO in a test).
   (`GetStatus().input`), and keeps `"input": "auto"` on evdev until raw has
   passed the stress test.
 
-Flash (user present): `ENTER_BOOTLOADER=1 firmware/flash-and-verify.sh
-firmware/release/control-surface-sy181-15k3e-2.0.2.bin 2.0.2`, then
-`scripts/stress-test.py --mode both` with the daemon running (`"input":
-"evdev"` first; the script asks for `"raw"` in between).
+Release: `firmware/release/control-surface-sy181-15k3e-2.0.2.bin`, 11448 bytes,
+sha256 `909f17f98ad61376c699f7664b23e568d0d67926174a812ed9c9cca1eb1131db`
+(two builds identical, asmcheck clean, 11445/14336 bytes code, 130 bytes
+stack free).
+
+Flash (user present). Run it with the daemon in evdev mode (`"input":
+"evdev"`) or stopped: `rawcheck` needs its own heartbeats to be the only ones.
+
+    ENTER_BOOTLOADER=1 firmware/flash-and-verify.sh \
+      firmware/release/control-surface-sy181-15k3e-2.0.2.bin \
+      909f17f98ad61376c699f7664b23e568d0d67926174a812ed9c9cca1eb1131db LOGDIR 2.0.2
+
+Its checks now include `padctl.py rawcheck` (no key presses: raw mode must
+hold for 6 s under heartbeats with every command answered, then end once
+~1.5 s after the last heartbeat). Then, with the daemon running,
+`scripts/stress-test.py --mode both` (`"input": "evdev"` first; the script
+asks for `"raw"` in between).
 
 ### 7.9 Soak plan (with the user)
 
