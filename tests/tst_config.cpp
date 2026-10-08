@@ -9,6 +9,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QElapsedTimer>
 #include <QSaveFile>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -219,6 +220,67 @@ private Q_SLOTS:
         QTest::qWait(300);
         QCOMPARE(ok.size(), 3);
         QCOMPARE(bad.size(), 1);
+    }
+
+    // The workspaces profile's object-form modes reload like they load; a file
+    // written in place, in pieces, is not reported while it is incomplete; a
+    // broken one still is, after one look again.
+    void watcherWaitsForWritersInPlace()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("config.jsonc"));
+        const QByteArray v1 = R"({"profiles": [{"name": "kd", "modes": {"audioDial": {"values": ["Volume", "Zoom"], "notify": "Dial: {value}"}},
+                                 "bindings": {"knob2.press": {"cycle": "audioDial"}}}]})";
+        const QByteArray v2 = QByteArray(v1).replace("\"Zoom\"", "\"Zoom\", \"Wave\"");
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("{\"profiles\": []}");
+        }
+        ConfigWatcher w(path);
+        w.setDebounceMs(50);
+        w.setRetryMs(400);
+        QSignalSpy ok(&w, &ConfigWatcher::reloaded);
+        QSignalSpy bad(&w, &ConfigWatcher::failed);
+        w.start();
+        auto inPlace = [&](const QByteArray &text, int pauseMs) {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(text.left(text.size() / 2));
+            f.flush();
+            QTest::qWait(pauseMs);  // the debounce fires on the half-written file
+            f.write(text.mid(text.size() / 2));
+        };
+        inPlace(v1, 200);
+        QTRY_COMPARE_WITH_TIMEOUT(ok.size(), 1, 5000);
+        QCOMPARE(ok.last().first().value<Config>().profiles.first().modes.value(QStringLiteral("audioDial")),
+                 (QStringList{QStringLiteral("Volume"), QStringLiteral("Zoom")}));
+        QCOMPARE(ok.last().first().value<Config>().profiles.first().modeNotify.value(QStringLiteral("audioDial")), QStringLiteral("Dial: {value}"));
+        QTest::qWait(600);
+        QCOMPARE(bad.size(), 0);  // the half-written state was never reported
+        // By rename (atomic) too.
+        {
+            QSaveFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(v2);
+            QVERIFY(f.commit());
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(ok.size(), 2, 5000);
+        QCOMPARE(ok.last().first().value<Config>().profiles.first().modes.value(QStringLiteral("audioDial")).size(), 3);
+        // A file that stays broken: reported once, after the second look.
+        QElapsedTimer t;
+        t.start();
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("{\"profiles\": [");
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(bad.size(), 1, 5000);
+        QVERIFY2(t.elapsed() >= 400, qPrintable(QString::number(t.elapsed())));
+        QVERIFY(bad.last().first().toString().contains(QStringLiteral("JSON error")));
+        QTest::qWait(600);
+        QCOMPARE(bad.size(), 1);
+        QCOMPARE(ok.size(), 2);
     }
 
     void conditions()

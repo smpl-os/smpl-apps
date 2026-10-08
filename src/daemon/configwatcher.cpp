@@ -14,12 +14,17 @@ ConfigWatcher::ConfigWatcher(const QString &path, QObject *parent)
 {
     m_debounce.setSingleShot(true);
     m_debounce.setInterval(300);
-    connect(&m_debounce, &QTimer::timeout, this, &ConfigWatcher::reload);
+    m_retry.setSingleShot(true);
+    m_retry.setInterval(1000);
+    connect(&m_debounce, &QTimer::timeout, this, [this] { reload(false); });
+    connect(&m_retry, &QTimer::timeout, this, [this] { reload(true); });
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, [this] {
+        m_retry.stop();  // still being written: the next reload decides
         arm();  // a replaced file drops out of the watch list: add it again
         m_debounce.start();
     });
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this] {
+        m_retry.stop();
         arm();
         m_debounce.start();
     });
@@ -81,24 +86,31 @@ QByteArray ConfigWatcher::fingerprint() const
     return h.result();
 }
 
-void ConfigWatcher::reload()
+void ConfigWatcher::reload(bool retry)
 {
     const QByteArray now = fingerprint();
-    if (now == m_last) {
+    if (now == m_last && !retry) {
         return;  // touched or re-saved without changes
     }
     m_last = now;
-    if (!QFileInfo::exists(m_path)) {
-        Q_EMIT failed(QStringLiteral("%1 was removed; keeping the running config").arg(m_path));
-        return;
-    }
     QString err;
-    auto cfg = loadConfig(m_path, &err);
-    if (!cfg) {
-        Q_EMIT failed(QStringLiteral("%1: %2; keeping the running config").arg(m_path, err));
-        return;
+    std::optional<Config> cfg;
+    if (!QFileInfo::exists(m_path)) {
+        err = QStringLiteral("%1 was removed; keeping the running config").arg(m_path);
+    } else {
+        cfg = loadConfig(m_path, &err);  // the parser startup and check-config use
+        if (!cfg) {
+            err = QStringLiteral("%1: %2; keeping the running config").arg(m_path, err);
+        }
     }
-    Q_EMIT reloaded(*cfg);
+    if (cfg) {
+        m_retry.stop();
+        Q_EMIT reloaded(*cfg);
+    } else if (!retry) {
+        m_retry.start();  // maybe half written (an editor writing in place): look again
+    } else {
+        Q_EMIT failed(err);
+    }
 }
 
 } // namespace cs
