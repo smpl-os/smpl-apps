@@ -417,25 +417,13 @@ std::optional<Engine::Resolution> Engine::resolve(const QStringList &candidates)
         }
         return std::nullopt;
     };
-    // Held layers first: while their keys are down they win over every other
-    // layer and binding, the app profile's and then the global profile's.
-    if (!m_down.isEmpty()) {
-        for (const Profile *p : chain) {
-            for (const Layer &l : p->layers) {
-                if (!l.held.isEmpty()) {
-                    if (auto r = fromLayer(p, l)) {
-                        return r;
-                    }
-                }
-            }
-        }
-    }
+    // "held" is a condition like any other: the first matching layer in list
+    // order wins (list a held layer first to let it override), then the
+    // profile's bindings, then the global profile's.
     for (const Profile *p : chain) {
         for (const Layer &l : p->layers) {
-            if (l.held.isEmpty()) {
-                if (auto r = fromLayer(p, l)) {
-                    return r;
-                }
+            if (auto r = fromLayer(p, l)) {
+                return r;
             }
         }
         for (const QString &slot : candidates) {

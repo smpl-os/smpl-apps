@@ -277,18 +277,21 @@ private Q_SLOTS:
 
         run({turn(1, 1), key(2)}, {QStringLiteral("VOLUMEUP"), QStringLiteral("ctrl+Z")});
 
-        // key1 held: the cheatsheet shows at once, the held layer wins, even
-        // over the app profile's own knob2.
+        // key1 held: the cheatsheet shows at once and the held layer applies.
+        // Held is a condition like any other: the app profile's own knob2
+        // still wins (the global profile covers what the app leaves unbound).
         e.handle(key(1));
         QCOMPARE(sheet, QStringList{QStringLiteral("show")});
         QVERIFY(changed.count() >= 1);
         QCOMPARE(e.heldModifiers(), QStringList{QStringLiteral("key1")});
-        QCOMPARE(e.resolve(QStringLiteral("knob2.cw"))->layer, QStringLiteral("ws"));
+        QCOMPARE(e.resolve(QStringLiteral("knob2.cw"))->profile, QStringLiteral("brave"));
+        QCOMPARE(e.resolve(QStringLiteral("knob1.cw"))->layer, QStringLiteral("ws"));
         run({turn(1, 1), turn(1, -1), press(1), up(QStringLiteral("knob1")), turn(2, 1), key(2), up(QStringLiteral("key2"))},
-            {QStringLiteral("super+RIGHT"), QStringLiteral("super+LEFT"), QStringLiteral("super+TAB"), QStringLiteral("shift+super+RIGHT"), QStringLiteral("super+1")});
-        // A focus change keeps the hold (the key is still down).
+            {QStringLiteral("super+RIGHT"), QStringLiteral("super+LEFT"), QStringLiteral("super+TAB"), QStringLiteral("B"), QStringLiteral("super+1")});
+        // A focus change keeps the hold (the key is still down); with no app
+        // profile there, the held layer has knob2 too.
         e.setActiveWindow(WindowInfo{QStringLiteral("foot"), {}, 9, QStringLiteral("0x9")});
-        run({turn(1, 1)}, {QStringLiteral("super+RIGHT")});
+        run({turn(1, 1), turn(2, 1)}, {QStringLiteral("super+RIGHT"), QStringLiteral("shift+super+RIGHT")});
         e.setActiveWindow(kFirefox);
         const int before = changed.count();
         run({up(QStringLiteral("key1"))}, {});
@@ -297,6 +300,19 @@ private Q_SLOTS:
         QVERIFY(e.heldModifiers().isEmpty());
         run({turn(1, 1), turn(2, 1)}, {QStringLiteral("VOLUMEUP"), QStringLiteral("B")});
 
+        // List order decides within a profile: a held layer after one that
+        // binds the same input loses to it (the designer's "hub only" layers).
+        {
+            auto c2 = parseConfig(R"({"profiles": [{"name": "global", "modes": {"ws": ["", "Edit"]},
+                "layers": [{"name": "edit", "when": {"$mode.ws": "Edit"}, "bindings": {"key2": "e"}},
+                           {"name": "hub-held", "when": {"held": "key1"}, "bindings": {"key2": "h"}}],
+                "bindings": {"key2": "m", "key3": {"cycle": "ws"}}}]})", {}, &err);
+            QVERIFY2(c2, qPrintable(err));
+            e.setConfig(*c2);
+            run({key(1), key(2), up(QStringLiteral("key2")), up(QStringLiteral("key1"))}, {QStringLiteral("H")});
+            run({key(3), up(QStringLiteral("key3")), key(1), key(2), up(QStringLiteral("key2")), up(QStringLiteral("key1"))}, {QStringLiteral("E")});
+            e.setConfig(*c);
+        }
         // A held-layer key's own tap fires on release, if nothing else was used.
         run({key(13)}, {});
         run({up(QStringLiteral("key13"))}, {QStringLiteral("ctrl+N")});

@@ -411,7 +411,7 @@ private Q_SLOTS:
     {
         const QString cfg = m_home.path() + QStringLiteral("/sheet.jsonc");
         writeFile(cfg, R"({"profiles":[{"name":"Brave","match":{"class":"^brave"},"bindings":{"key1":"ctrl+t"}},
-                                       {"name":"global","layers":[{"name":"held","when":{"held":"key15"},"bindings":{"key1":{"keys":"super+1","label":"WS1"}}}],
+                                       {"name":"global","layers":[{"name":"held","when":{"held":"key15"},"bindings":{"key2":{"keys":"super+1","label":"WS1"}}}],
                                         "bindings":{"key15":{"cheatsheet":"toggle"}}}]})");
         Run r = run({QStringLiteral("cheatsheet"), QStringLiteral("--json"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser")}, m_home.path());
         QCOMPARE(r.code, 0);
@@ -422,13 +422,14 @@ private Q_SLOTS:
         r = run({QStringLiteral("cheatsheet"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser")}, m_home.path());
         QCOMPARE(r.code, 0);
         QVERIFY(r.out.contains("Ctrl+T"));
-        // Held layers: --held previews them (they win over the app's own bindings).
+        // Held layers: --held previews them (for what the app profile leaves unbound).
         r = run({QStringLiteral("cheatsheet"), QStringLiteral("--json"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser"),
                  QStringLiteral("--held"), QStringLiteral("key15")}, m_home.path());
         QCOMPARE(r.code, 0);
         j = r.json();
         QCOMPARE(j.value(QStringLiteral("held")).toArray(), QJsonArray{QStringLiteral("key15")});
-        QCOMPARE(j.value(QStringLiteral("keys")).toArray().at(0).toObject().value(QStringLiteral("label")).toString(), QStringLiteral("WS1"));
+        QCOMPARE(j.value(QStringLiteral("keys")).toArray().at(0).toObject().value(QStringLiteral("label")).toString(), QStringLiteral("Ctrl+T"));  // Brave's own
+        QCOMPARE(j.value(QStringLiteral("keys")).toArray().at(1).toObject().value(QStringLiteral("label")).toString(), QStringLiteral("WS1"));
         r = run({QStringLiteral("cheatsheet"), QStringLiteral("-c"), cfg, QStringLiteral("--window"), QStringLiteral("brave-browser"), QStringLiteral("--held"), QStringLiteral("key15")},
                 m_home.path());
         QVERIFY2(r.out.startsWith("Brave · held  (held: key15)"), r.out.constData());

@@ -382,7 +382,7 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
 * Slots `key1`..`key16`.
 * Held-key layers: a layer with `"when": {"held": "key1"}` (or
   `["key13", "key14"]` for either one, `"key1+knob3"` for both) applies
-  while those controls are down and then wins over every other binding. The
+  while those controls are down, in list order like any layer. The
   held key's own tap binding fires on its release, only if nothing else was
   used; `{"cheatsheet": "hold"}` shows at once. `features.heldLayers`
   describes it (docs/config-reference.md, "Held-key layers").

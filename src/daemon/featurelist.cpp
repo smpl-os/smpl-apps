@@ -74,7 +74,7 @@ QJsonObject featuresJson()
         {QStringLiteral("heldLayers"), QJsonObject{
             {QStringLiteral("when"), QStringLiteral(R"("held": "key1" | ["key1", "key13"] (any of them) | "key1+knob3" (all of them together))")},
             {QStringLiteral("controls"), QStringLiteral("key1..key16, knob1..knob3 (a knob means its press)")},
-            {QStringLiteral("precedence"), QStringLiteral("while held, held layers win over every other layer and binding: the app profile's, then the global profile's")},
+            {QStringLiteral("precedence"), QStringLiteral("\"held\" is a condition like any other: the first matching layer in list order wins, then the profile's bindings, then the global profile's")},
             {QStringLiteral("ownBinding"), QStringLiteral("a held-layer key's own tap fires on release, only if no other input was used meanwhile; \"cheatsheet\": \"hold\" shows at once and follows the held layer")},
             {QStringLiteral("cheatsheet"), QStringLiteral("GetCheatsheet lists the held controls in \"held\"; GetCheatsheetFor previews them with \"$held\" in its context JSON")},
             {QStringLiteral("oneAtATime"), QStringLiteral("a board's layout lists controls it reads one at a time (sy181-15k3e: key2..key15 and the knob presses): hold key1 with one of them, or any control with the knob turns; check-config warns about combinations that cannot work")},

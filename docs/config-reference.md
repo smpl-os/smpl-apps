@@ -160,11 +160,11 @@ in any app:
   (`["key13", "key14"]`: either one held), or controls held together
   (`"key1+knob3"`). Controls are `key1`..`key16`, or `knob1`..`knob3`
   for a knob press. Other `"when"` conditions can be added; all must hold.
-* **Precedence:** while its keys are down, a held layer wins over every other
-  layer and binding. The app profile's held layers are tried first, then the
-  global profile's. So a held layer in the global profile works in every app,
-  Kdenlive and Brave included, unless the app's profile has its own held
-  layer for that input or `"fallthrough": false`.
+* **Precedence:** `"held"` is a condition like any other. The first matching
+  layer in list order wins, so list a held layer before the layers it should
+  override. A held layer listed after layers that bind the same input applies
+  only where they do not, for example only in a "hub" mode. A held layer in
+  the global profile covers what the app profile leaves unbound.
 * **The held key's own binding:**
   * `{"cheatsheet": "hold"}` shows the overlay at once, and the overlay shows
     the held layer, so holding key 1 shows what the knobs do while it is
@@ -210,8 +210,8 @@ in any app:
 ]
 ```
 
-Held layers aside (above), the first layer whose `"when"` matches and that
-binds a slot wins, then the profile's own bindings, then the global profile. `"when"` tests Kdenlive's
+The first layer whose `"when"` matches (held keys included) and that binds a
+slot wins, then the profile's own bindings, then the global profile. `"when"` tests Kdenlive's
 context (`"focus"`, `"colorWheels"`, `"param.target"`,
 `"timeline.track.audio"` ...) or a mode (`"$mode.page"`). Values may be
 `"/regex/"`, `"!value"`, a list of alternatives, or a boolean. Editing
