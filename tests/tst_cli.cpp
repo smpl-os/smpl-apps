@@ -187,7 +187,7 @@ private Q_SLOTS:
         QCOMPARE(r.code, 0);
         const QJsonObject j = r.json();
         const QJsonArray actions = j.value(QStringLiteral("actions")).toArray();
-        QCOMPARE(actions.size(), 71);
+        QCOMPARE(actions.size(), 100 + 9 + 9 + 5);  // MR1a 71 + MR1b-A 29, cameras, layouts, default tags
         int editing = 0, playback = 0;
         QSet<QString> ids;
         for (const auto &a : actions) {
@@ -197,10 +197,14 @@ private Q_SLOTS:
             playback += o.value(QStringLiteral("playback")).toBool();
             QVERIFY(!o.value(QStringLiteral("group")).toString().isEmpty());
         }
-        QCOMPARE(ids.size(), 71);
-        QCOMPARE(editing, 30);
+        QCOMPARE(ids.size(), 123);
+        QCOMPARE(editing, 39 + 9 + 5);
         QCOMPARE(playback, 7);
-        QVERIFY(ids.contains(QStringLiteral("razor_tool")));
+        QVERIFY(ids.contains(QStringLiteral("razor_tool")) && ids.contains(QStringLiteral("mix_clip")) && ids.contains(QStringLiteral("load_layout1")));
+        QVERIFY(!ids.contains(QStringLiteral("send_sequence")) && !ids.contains(QStringLiteral("add_sequence_marker")) && !ids.contains(QStringLiteral("disable_timeline_effects")));
+        QCOMPARE(j.value(QStringLiteral("families")).toArray().size(), 4);
+        QVERIFY(j.value(QStringLiteral("excluded")).toArray().contains(QStringLiteral("send_sequence")));
+        QCOMPARE(j.value(QStringLiteral("contract")).toObject().value(QStringLiteral("implementation")).toString(), QStringLiteral("Kdenlive K23 MR1b-A"));
         QCOMPARE(j.value(QStringLiteral("controls")).toArray().size(), 10);
         QCOMPARE(j.value(QStringLiteral("commands")).toArray().size(), 3);
         QCOMPARE(j.value(QStringLiteral("contract")).toObject().value(QStringLiteral("interface")).toString(), QStringLiteral("org.kde.kdenlive.ControlSurface1"));

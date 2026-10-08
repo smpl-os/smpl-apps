@@ -3,6 +3,7 @@
 #include "kdenlivecontract.h"
 
 #include <QJsonArray>
+#include <QRegularExpression>
 
 namespace cs::catalog {
 
@@ -12,7 +13,10 @@ struct Row {
     bool checkable;
     const char *group;
 };
-// K23-MR1a curated candidates, in the contract's order.
+// K23-MR1a curated candidates, in the contract's order, then K23 MR1b-A's
+// additions (k23-mr1b-a-contract.md, sha256 9e29cd2f…; ids, texts and default
+// shortcuts as Kdenlive registers them). 100 fixed ids; the families
+// (cameras, layouts, tags, effects) follow after the table.
 const Row kRows[] = {
     {"monitor_play", "Play/Pause", "Space", false, "playback"},
     {"monitor_pause", "Pause", "K", false, "playback"},
@@ -85,14 +89,53 @@ const Row kRows[] = {
     {"keyframe_previous", "Go to Previous Keyframe", "", false, "keyframes"},
     {"edit_undo", "Undo", "Ctrl+Z", false, "history"},
     {"edit_redo", "Redo", "Ctrl+Shift+Z", false, "history"},
+    // K23 MR1b-A
+    {"mix_clip", "Mix Clips", "U", false, "clips"},
+    {"group_clip", "Group Clips", "Ctrl+G", false, "clips"},
+    {"ungroup_clip", "Ungroup Clips", "Ctrl+Shift+G", false, "clips"},
+    {"clip_switch", "Disable Clip", "", false, "clips"},
+    {"clip_split", "Restore Audio", "", false, "clips"},
+    {"edit_copy", "Copy", "Ctrl+C", false, "clips"},
+    {"paste_effects", "Paste Effects", "", false, "effects"},
+    {"delete_effects", "Remove Effects", "", false, "effects"},
+    {"master_effects", "Sequence effects", "", false, "effects"},
+    {"insert_project_tree", "Insert Zone in Project Bin", "Ctrl+I", false, "bin"},
+    {"clip_in_project_tree", "Clip in Project Bin", "", false, "bin"},
+    {"multicam_tool", "Multicam Tool", "", true, "multicam"},
+    {"perform_multitrack_mode", "Perform Multitrack Operation", "", false, "multicam"},
+    {"switch_active_target", "Toggle Track Active", "A", false, "tracks"},
+    {"restore_all_sources", "Restore Current Clip Target Tracks", "", false, "tracks"},
+    {"fit_all_tracks", "Fit all Tracks in View", "", true, "tracks"},
+    {"snap", "Snap", "", true, "tools"},
+    {"sequence_next", "Switch to next Sequence", "Ctrl+Tab", false, "sequences"},
+    {"sequence_previous", "Switch to previous Sequence", "Ctrl+Shift+Tab", false, "sequences"},
+    {"monitor_fullscreen", "Switch Monitor Fullscreen", "F11", false, "monitor"},
+    {"monitor_multitrack", "Multitrack View", "F12", true, "monitor"},
+    {"monitor_overlay", "Monitor Info Overlay", "", true, "monitor"},
+    {"extract_frame_to_clipboard", "Extract Frame to Clipboard", "", false, "monitor"},
+    {"zoom_audio_in", "Zoom In Audio Waveforms", "", false, "audio"},
+    {"zoom_audio_out", "Zoom Out Audio Waveforms", "", false, "audio"},
+    {"zoom_audio_reset", "Reset Audio Waveform Zoom", "", false, "audio"},
+    {"audiomixer_button", "Audio Mixer", "", true, "audio"},
+    {"mlt_scrub", "Audio Scrubbing", "", true, "audio"},
+    {"mlt_mute", "Mute Monitor", "", true, "audio"},
 };
+// Members of MR1b-A's dynamic families that every Kdenlive has: cameras 1-9
+// (Multicam tool only), layout slots 1-9 (empty slots disabled) and the five
+// default project tags. effect_<id> exists for every installed effect; see
+// families() for the rules.
+const char *const kTagNames[] = {"Red", "Green", "Blue", "Yellow", "Cyan"};
 // Clarification E (k23-mr1a-mock-clarifications.md, ccb3d676): exactly these 30.
+// MR1b-A adds 9 (Kdenlive's EditingActions); camera, tag and effect family
+// members are editing actions too.
 const char *const kEditing[] = {"mark_in", "mark_out", "add_marker_guide_quickly", "add_marker_guide_1", "add_marker_guide_2", "add_marker_guide_3",
                                 "add_marker_guide_4", "add_marker_guide_5", "add_marker_guide_6", "add_marker_guide_7", "add_marker_guide_8",
                                 "add_marker_guide_9", "add_marker_guide_10", "delete_clip_marker", "delete_sequence_marker", "insert_to_in_point",
                                 "overwrite_to_in_point", "remove_lift", "remove_extract", "extract_clip", "cut_timeline_clip", "cut_timeline_all_clips",
                                 "delete_timeline_clip", "resize_timeline_clip_start", "resize_timeline_clip_end", "delete_space",
-                                "delete_space_all_tracks", "keyframe_add", "edit_undo", "edit_redo"};
+                                "delete_space_all_tracks", "keyframe_add", "edit_undo", "edit_redo",
+                                "mix_clip", "group_clip", "ungroup_clip", "clip_switch", "clip_split", "paste_effects", "delete_effects",
+                                "insert_project_tree", "perform_multitrack_mode"};
 // Clarification F: the playback actions the trimming preview disables.
 const char *const kPlayback[] = {"monitor_play", "monitor_play_zone", "monitor_play_zone_cursor", "monitor_loop_zone",
                                  "monitor_loop_clip", "monitor_seek_backward", "monitor_seek_forward"};
@@ -113,6 +156,73 @@ QStringList editingActionIds()
     return toList(kEditing);
 }
 
+QString actionFamily(const QString &id)
+{
+    static const QRegularExpression camera(QStringLiteral("^activate_video_[1-9]$")), layout(QStringLiteral("^load_layout[1-9]$")),
+        tag(QStringLiteral("^tag_[1-9][0-9]{0,2}$")), effect(QStringLiteral("^effect_[A-Za-z0-9_.-]+$"));
+    if (camera.match(id).hasMatch()) {
+        return QStringLiteral("camera");
+    }
+    if (layout.match(id).hasMatch()) {
+        return QStringLiteral("layout");
+    }
+    if (tag.match(id).hasMatch()) {
+        return QStringLiteral("tag");
+    }
+    if (effect.match(id).hasMatch() && id.size() <= 128) {
+        return QStringLiteral("effect");
+    }
+    return {};
+}
+
+bool isEditingAction(const QString &id)
+{
+    const QString family = actionFamily(id);
+    return editingActionIds().contains(id) || family == QLatin1String("camera") || family == QLatin1String("tag") || family == QLatin1String("effect");
+}
+
+bool isOffered(const QString &id)
+{
+    if (!actionFamily(id).isEmpty()) {
+        return true;
+    }
+    for (const Action &a : actions()) {
+        if (a.id == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QStringList excludedActionIds()
+{
+    // MR1b-A, explicitly: downstream dialogs (send_sequence, add_sequence_marker),
+    // no native undo (disable_timeline_effects); recording, replacement and file
+    // extraction stay out.
+    return {QStringLiteral("send_sequence"), QStringLiteral("add_sequence_marker"), QStringLiteral("disable_timeline_effects"),
+            QStringLiteral("audio_record")};
+}
+
+QJsonArray families()
+{
+    auto f = [](const char *id, const char *pattern, const char *members, bool editing, const char *rule) {
+        return QJsonObject{{QStringLiteral("family"), QLatin1String(id)},
+                           {QStringLiteral("pattern"), QLatin1String(pattern)},
+                           {QStringLiteral("members"), QLatin1String(members)},
+                           {QStringLiteral("editing"), editing},
+                           {QStringLiteral("rule"), QLatin1String(rule)}};
+    };
+    return QJsonArray{
+        f("camera", "^activate_video_[1-9]$", "activate_video_1..9", true,
+          "only in the Multicam tool; the camera must exist (no clamping to another); stopped: selects an angle, during a multicam interval: cuts"),
+        f("layout", "^load_layout[1-9]$", "load_layout1..9", false, "registered layout slots only; empty slots stay disabled; no save/manage dialogs"),
+        f("tag", "^tag_[1-9][0-9]{0,2}$", "tag_<n> for the project's tags (default 5: Red, Green, Blue, Yellow, Cyan)", true,
+          "the action's colour must match the project's tag n; exactly one bin clip selected"),
+        f("effect", "^effect_<id>$", "effect_<id> for every installed effect (the id as in Kdenlive's effect list)", true,
+          "a compatible, unlocked owner (timeline clip or track); from the bin exactly one selected clip"),
+    };
+}
+
 QStringList playbackActionIds()
 {
     return toList(kPlayback);
@@ -125,7 +235,17 @@ const QList<Action> &actions()
         QList<Action> l;
         for (const Row &r : kRows) {
             const QString id = QString::fromLatin1(r.id);
-            l << Action{id, QString::fromUtf8(r.text), QString::fromLatin1(r.shortcut), r.checkable, QString::fromLatin1(r.group), editing.contains(id), playback.contains(id)};
+            l << Action{id, QString::fromUtf8(r.text), QString::fromLatin1(r.shortcut), r.checkable, QString::fromLatin1(r.group), editing.contains(id), playback.contains(id), QString()};
+        }
+        for (int i = 1; i <= 9; ++i) {
+            // Native text "Select Video Track N" (shortcut N): in the Multicam tool it picks camera N.
+            l << Action{QStringLiteral("activate_video_%1").arg(i), QStringLiteral("Camera %1").arg(i), QString::number(i), false, QStringLiteral("multicam"), true, false, QStringLiteral("camera")};
+        }
+        for (int i = 1; i <= 9; ++i) {
+            l << Action{QStringLiteral("load_layout%1").arg(i), QStringLiteral("Load Layout %1").arg(i), QString(), false, QStringLiteral("layouts"), false, false, QStringLiteral("layout")};
+        }
+        for (int i = 1; i <= 5; ++i) {
+            l << Action{QStringLiteral("tag_%1").arg(i), QStringLiteral("Tag %1 (%2)").arg(i).arg(QLatin1String(kTagNames[i - 1])), QString(), false, QStringLiteral("bin"), true, false, QStringLiteral("tag")};
         }
         return l;
     }();
@@ -171,7 +291,8 @@ QJsonObject toJson()
                              {QStringLiteral("checkable"), x.checkable},
                              {QStringLiteral("group"), x.group},
                              {QStringLiteral("editing"), x.editing},
-                             {QStringLiteral("playback"), x.playback}});
+                             {QStringLiteral("playback"), x.playback},
+                             {QStringLiteral("family"), x.family.isEmpty() ? QJsonValue() : QJsonValue(x.family)}});
     }
     for (const Control &x : controls()) {
         c.append(QJsonObject{{QStringLiteral("name"), x.name},
@@ -186,8 +307,11 @@ QJsonObject toJson()
     return QJsonObject{{QStringLiteral("contract"), QJsonObject{{QStringLiteral("interface"), cs::contract::kInterface},
                                                                 {QStringLiteral("version"), int(cs::contract::kVersion)},
                                                                 {QStringLiteral("revision"), int(cs::contract::kRevision)},
-                                                                {QStringLiteral("actionsSource"), QStringLiteral("k23-contract-mr1a-actions.md (71 curated candidates)")}}},
+                                                                {QStringLiteral("implementation"), QStringLiteral("Kdenlive K23 MR1b-A")},
+                                                                {QStringLiteral("actionsSource"), QStringLiteral("K23 MR1a (71) + MR1b-A (29): 100 fixed ids, plus the families")}}},
                        {QStringLiteral("actions"), a},
+                       {QStringLiteral("families"), families()},
+                       {QStringLiteral("excluded"), QJsonArray::fromStringList(excludedActionIds())},
                        {QStringLiteral("controls"), c},
                        {QStringLiteral("commands"), m}};
 }

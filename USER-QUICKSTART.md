@@ -61,7 +61,8 @@ not:
 control-surfaced list-capabilities          # add --json for scripts
 ```
 
-Kdenlive's newer build (K23-MR1a) offers about 70 actions, and every key in
+Kdenlive's newer builds offer about 70 actions (K23-MR1a), and 100 plus the
+camera, layout, bin-tag and effect families since K23 MR1b-A. Every key in
 the default configuration uses one of them. An older build offers only 7: play,
 pause, loop zone, switch monitor, zoom fit, and zoom in/out. On an older build,
 the keys for marks, edits and undo/redo do nothing, and `list-capabilities`

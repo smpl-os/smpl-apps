@@ -132,7 +132,13 @@ daemon types nothing into Kdenlive and shows one notice instead. Set
 `"keyFallback": true` on the profile to type the stock shortcuts instead.
 Only what the running Kdenlive advertises is used; a refusal never types keys.
 
-Actions are Kdenlive's curated list (see `list-capabilities`). Some depend on
+Actions are Kdenlive's curated list (see `list-capabilities`; offline:
+`list-actions`). K23 MR1b-A adds clip, effect, multicam, sequence, view and
+audio actions and four families: `activate_video_1`..`9` (camera N, only in
+the Multicam tool, and only cameras that exist), `load_layout1`..`9`
+(registered layout slots), `tag_<n>` (the project's bin tags, exactly one bin
+clip selected) and `effect_<id>` (add an installed effect, e.g.
+`effect_avfilter.gblur`, to the selected clip). Some depend on
 context: delete needs timeline focus, insert/overwrite need a clip in the
 clip monitor and a target track, and the Slip tool's preview blocks playback
 and shuttle until you switch back to the Selection tool.
@@ -214,7 +220,9 @@ The first layer whose `"when"` matches (held keys included) and that binds a
 slot wins, then the profile's own bindings, then the global profile. `"when"` tests Kdenlive's
 context (`"focus"`, `"colorWheels"`, `"param.target"`,
 `"timeline.track.audio"` ...) or a mode (`"$mode.page"`). Values may be
-`"/regex/"`, `"!value"`, a list of alternatives, or a boolean. Editing
+`"/regex/"`, `"!value"`, a list of alternatives, or a boolean. `"focus"` is
+`timeline`, `clipMonitor`, `projectMonitor`, `effectStack`, `bin` (K23
+MR1b-A) or `other`. Editing
 controls target the focused item from Kdenlive's context;
 `"targetFrom": "hoveredColorWheel.target"` aims at the wheel under the mouse
 instead.

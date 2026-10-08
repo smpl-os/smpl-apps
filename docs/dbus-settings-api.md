@@ -144,7 +144,7 @@ For line-level error locations, use `control-surfaced check-config -c FILE
 | Method | Returns |
 |---|---|
 | `ListPlugins() → s` | `{ok, plugins: [{id, name, tier, status, detail, apps[], ...}]}` |
-| `GetCatalog(s pluginId) → s` | for `kdenlive`: `{ok, contract, actions: [{id, text, shortcut, checkable, group, editing, playback}], controls: [{name, stage, unit, editing, description}], commands: [...]}`, offline (the 71 curated actions, 10 controls, 3 commands). Other ids: `unknown-plugin`. |
+| `GetCatalog(s pluginId) → s` | for `kdenlive`: `{ok, contract, actions: [{id, text, shortcut, checkable, group, editing, playback, family}], families: [{family, pattern, members, editing, rule}], excluded: [...], controls: [{name, stage, unit, editing, description}], commands: [...]}`, offline. Actions: K23 MR1a's 71 and MR1b-A's 29 fixed ids, plus the family members every Kdenlive has (`activate_video_1..9` = cameras in the Multicam tool, `load_layout1..9`, `tag_1..5` = the default project tags; `family` names them). `effect_<id>` exists for every installed effect and is described in `families` only. `excluded` lists ids Kdenlive refuses on purpose (`send_sequence`, `add_sequence_marker`, `disable_timeline_effects`, `audio_record`). 10 controls, 3 commands. A running Kdenlive's `ListActions` stays authoritative (`list-capabilities`). Other ids: `unknown-plugin`. |
 | `GetFeatures() → s` | binding kinds with examples, `keyNames`, `modifierNames`, `mouseNames`, slot grammar and limits (16 keys, 3 knobs), layouts, device options |
 
 Plugins today:

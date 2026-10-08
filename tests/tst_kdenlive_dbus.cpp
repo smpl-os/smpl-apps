@@ -4,6 +4,7 @@
 // and Engine -> KdenliveDBusClient -> MockKdenlive end to end.
 #include "capabilities.h"
 #include "engine.h"
+#include "kdenlivecatalog.h"
 #include "kdenlivecontract.h"
 #include "kdenlivedbusclient.h"
 #include "mockkdenlive.h"
@@ -1077,15 +1078,17 @@ private Q_SLOTS:
         RawClient raw(connectClient(), QString());
         raw.subscribe();
         QVariantMap actions = raw.actionMap();
-        QCOMPARE(actions.size(), 71);
+        // MR1a's 71 + MR1b-A's 29 fixed ids, cameras 1-9, layout slots 1-9,
+        // the 5 default tags, and the mock's 39 installed effects.
+        QCOMPARE(actions.size(), 100 + 9 + 9 + 5 + 39);
         QCOMPARE(QStringList(actions.keys()), [] { QStringList c = MockKdenlive::candidateActions(); c.sort(); return c; }());
         for (const auto &a : std::as_const(actions)) {
             QCOMPARE(QStringList(a.toMap().keys()), (QStringList{QStringLiteral("checkable"), QStringLiteral("checked"), QStringLiteral("enabled"),
                                                                   QStringLiteral("id"), QStringLiteral("shortcut"), QStringLiteral("text")}));
         }
         QVERIFY(!actions.contains(QStringLiteral("roll_tool")) && !actions.contains(QStringLiteral("slide_tool")));  // not fabricated
-        // Clarification E: exactly 30 editing actions; F: 7 playback actions.
-        QCOMPARE(MockKdenlive::editingActions().size(), 30);
+        // Clarification E: 30 editing actions, 39 with MR1b-A's; F: 7 playback actions.
+        QCOMPARE(MockKdenlive::editingActions().size(), 39);
         QCOMPARE(MockKdenlive::playbackActions().size(), 7);
         for (const QString &id : MockKdenlive::editingActions() + MockKdenlive::playbackActions()) {
             QVERIFY2(actions.contains(id), qPrintable(id));
@@ -1253,6 +1256,65 @@ private Q_SLOTS:
     }
 
     // list-capabilities: read-only queries (no lease), related to the config.
+    // K23 MR1b-A (k23-mr1b-a-contract.md): the new safe actions and the
+    // dynamic families, with their admission rules, and the exclusions.
+    void mr1bActionFamilies()
+    {
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        auto trigger = [&](const QString &id) { return raw.call(QStringLiteral("TriggerAction"), {id, QVariant::fromValue(raw.common())}); };
+        auto enabled = [&](const QString &id) { return raw.actionMap().value(id).toMap().value(QStringLiteral("enabled")).toBool(); };
+        auto refresh = [&] { raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap(); };
+        const QVariantMap actions = raw.actionMap();
+        for (const char *id : {"mix_clip", "group_clip", "snap", "multicam_tool", "sequence_next", "audiomixer_button", "mlt_scrub", "extract_frame_to_clipboard",
+                               "activate_video_1", "load_layout9", "tag_5", "effect_lift_gamma_gain"}) {
+            QVERIFY2(actions.contains(QLatin1String(id)), id);
+        }
+        // Excluded on purpose: dialogs, no undo, recording. Never a fallback invitation.
+        for (const QString &id : catalog::excludedActionIds()) {
+            QVERIFY(!actions.contains(id));
+            QCOMPARE(RawClient::code(trigger(id)), contract::err::UnknownAction);
+        }
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("effect_no_such_effect"))), contract::err::UnknownAction);
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("tag_6"))), contract::err::UnknownAction);
+        // Cameras: only in the Multicam tool, and only cameras that exist.
+        QVERIFY(!enabled(QStringLiteral("activate_video_1")));
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("activate_video_1"))), contract::err::ActionDisabled);
+        QVERIFY(trigger(QStringLiteral("multicam_tool")).value(QStringLiteral("ok")).toBool());
+        QTRY_VERIFY(enabled(QStringLiteral("activate_video_1")));
+        QVERIFY(raw.actionMap().value(QStringLiteral("multicam_tool")).toMap().value(QStringLiteral("checked")).toBool());
+        QVERIFY(!enabled(QStringLiteral("activate_video_9")));
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("activate_video_9"))), contract::err::TargetNotFound);
+        const int history = int(m_mock->history().size());
+        QVERIFY(trigger(QStringLiteral("activate_video_1")).value(QStringLiteral("ok")).toBool());
+        QTRY_COMPARE(int(m_mock->history().size()), history + 1);  // an editing action: one native undo entry
+        refresh();  // history changes start a new epoch
+        // Layouts: registered slots only.
+        QVERIFY(enabled(QStringLiteral("load_layout5")));
+        QVERIFY(!enabled(QStringLiteral("load_layout6")));
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("load_layout6"))), contract::err::ActionDisabled);
+        // Tags: one bin clip (focus on the bin); copy and group need the timeline.
+        m_mock->setContextValue(QStringLiteral("focus"), QStringLiteral("timeline"));
+        refresh();
+        QTRY_VERIFY(!enabled(QStringLiteral("tag_1")));
+        QVERIFY(enabled(QStringLiteral("edit_copy")) && enabled(QStringLiteral("group_clip")));
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("tag_1"))), contract::err::TargetNotFound);
+        m_mock->setContextValue(QStringLiteral("focus"), QStringLiteral("bin"));
+        refresh();
+        QTRY_VERIFY(enabled(QStringLiteral("tag_1")));
+        QVERIFY(!enabled(QStringLiteral("edit_copy")));
+        QCOMPARE(RawClient::code(trigger(QStringLiteral("group_clip"))), contract::err::TargetNotFound);
+        QVERIFY(enabled(QStringLiteral("effect_avfilter.gblur")));
+        m_mock->setContextValue(QStringLiteral("focus"), QStringLiteral("other"));
+        QTRY_VERIFY(!enabled(QStringLiteral("effect_avfilter.gblur")));
+        // The offline catalog says the same.
+        QCOMPARE(catalog::actionFamily(QStringLiteral("activate_video_3")), QStringLiteral("camera"));
+        QCOMPARE(catalog::actionFamily(QStringLiteral("effect_frei0r.glow")), QStringLiteral("effect"));
+        QCOMPARE(catalog::actionFamily(QStringLiteral("activate_video_10")), QString());
+        QVERIFY(catalog::isEditingAction(QStringLiteral("tag_3")) && catalog::isEditingAction(QStringLiteral("mix_clip")));
+        QVERIFY(!catalog::isEditingAction(QStringLiteral("load_layout1")) && !catalog::isEditingAction(QStringLiteral("edit_copy")));
+    }
+
     void listCapabilitiesAgainstMock()
     {
         QString err;

@@ -30,8 +30,22 @@ const QStringList kPlaybackStart{QStringLiteral("monitor_seek_backward"), QStrin
                                  QStringLiteral("monitor_play_zone_cursor"), QStringLiteral("monitor_loop_zone"), QStringLiteral("monitor_loop_clip")};
 bool isEditingAction(const QString &id)
 {
-    return kEditingActions.contains(id);
+    return catalog::isEditingAction(id);  // the fixed ids plus the camera, tag and effect families (MR1b-A)
 }
+// effect_<id> exists for every installed effect; the mock offers these common
+// ones (all present in a standard Kdenlive install).
+const QStringList kMockEffects{
+    QStringLiteral("lift_gamma_gain"), QStringLiteral("volume"), QStringLiteral("fadein"), QStringLiteral("fadeout"), QStringLiteral("fade_from_black"),
+    QStringLiteral("fade_to_black"), QStringLiteral("qtcrop"), QStringLiteral("qtblend"), QStringLiteral("avfilter.gblur"), QStringLiteral("frei0r.vignette"),
+    QStringLiteral("frei0r.sharpness"), QStringLiteral("avfilter.curves"), QStringLiteral("avfilter.colorlevels"), QStringLiteral("avfilter.huesaturation"),
+    QStringLiteral("avfilter.exposure"), QStringLiteral("avfilter.colortemperature"), QStringLiteral("avfilter.lut3d"), QStringLiteral("frei0r.sopsat"),
+    QStringLiteral("chroma"), QStringLiteral("avfilter.hsvkey"), QStringLiteral("lumakey"), QStringLiteral("avfilter.despill"), QStringLiteral("mask_start-shape"),
+    QStringLiteral("mask_start-rotoscoping"), QStringLiteral("mask_apply"), QStringLiteral("freeze"), QStringLiteral("dynamictext"), QStringLiteral("timer"),
+    QStringLiteral("obscure"), QStringLiteral("frei0r.pixeliz0r"), QStringLiteral("audiopan"), QStringLiteral("avfilter.equalizer"),
+    QStringLiteral("avfilter.acompressor"), QStringLiteral("dynamic_loudness"), QStringLiteral("avfilter.highpass"), QStringLiteral("dropshadow"),
+    QStringLiteral("frei0r.glow"), QStringLiteral("avfilter.hflip"), QStringLiteral("frei0r.select0r")};
+constexpr int kMockLayoutSlots = 5;  // Kdenlive's default layouts: Logging, Editing, Audio, Effects, Color
+constexpr int kMockProjectTags = 5;  // a new project's tags: Red, Green, Blue, Yellow, Cyan
 
 struct Descriptor {
     QString id;
@@ -494,6 +508,9 @@ QStringList MockKdenlive::candidateActions()
     for (const auto &a : catalog::actions()) {
         ids << a.id;
     }
+    for (const QString &e : kMockEffects) {
+        ids << QStringLiteral("effect_") + e;
+    }
     return ids;
 }
 
@@ -510,6 +527,15 @@ QList<QVariantMap> MockKdenlive::actionList() const
                             {QStringLiteral("checkable"), a.checkable},
                             {QStringLiteral("checked"), a.checkable && (tool == id || mode == id)},
                             {QStringLiteral("shortcut"), a.shortcut}};
+    }
+    for (const QString &e : kMockEffects) {
+        const QString id = QStringLiteral("effect_") + e;
+        list << QVariantMap{{QStringLiteral("id"), id},
+                            {QStringLiteral("text"), e},
+                            {QStringLiteral("enabled"), actionRefusal(id, nullptr).isEmpty()},
+                            {QStringLiteral("checkable"), false},
+                            {QStringLiteral("checked"), false},
+                            {QStringLiteral("shortcut"), QString()}};
     }
     return list;
 }
@@ -541,6 +567,44 @@ QVariantMap MockKdenlive::actionRefusal(const QString &id, const Caller *caller)
     }
     if (id.startsWith(QLatin1String("add_marker_guide_")) && focus == QLatin1String("clipMonitor") && !m_sourceOpen) {
         return fail(err::TargetNotFound, QStringLiteral("no clip for a marker"));
+    }
+    // MR1b-A (k23-mr1b-a-contract.md). Copy and group/ungroup need timeline focus;
+    // source-zone insertion an active clip monitor source.
+    if ((id == QLatin1String("edit_copy") || id == QLatin1String("group_clip") || id == QLatin1String("ungroup_clip")) && focus != QLatin1String("timeline")) {
+        return fail(err::TargetNotFound, QStringLiteral("%1 needs timeline focus").arg(id));
+    }
+    if (id == QLatin1String("insert_project_tree") && !m_sourceOpen) {
+        return fail(err::TargetNotFound, QStringLiteral("no clip monitor source interval"));
+    }
+    const QString family = catalog::actionFamily(id);
+    if (family == QLatin1String("camera")) {
+        // Multicam tool only; the camera must exist (no clamping to another one).
+        if (m_context.value(QStringLiteral("tool")).toString() != QLatin1String("multicam")) {
+            return fail(err::ActionDisabled, QStringLiteral("cameras need the Multicam tool"));
+        }
+        int videoTracks = 0;
+        for (const auto &t : m_tracks) {
+            videoTracks += t.toMap().value(QStringLiteral("type")).toString() != QLatin1String("audio");
+        }
+        if (id.mid(15).toInt() > videoTracks) {
+            return fail(err::TargetNotFound, QStringLiteral("no such camera"));
+        }
+    } else if (family == QLatin1String("layout") && id.mid(11).toInt() > kMockLayoutSlots) {
+        return fail(err::ActionDisabled, QStringLiteral("empty layout slot"));
+    } else if (family == QLatin1String("tag")) {
+        if (id.mid(4).toInt() > kMockProjectTags) {
+            return fail(err::UnknownAction, QStringLiteral("no such project tag"));
+        }
+        if (focus != QLatin1String("bin")) {
+            return fail(err::TargetNotFound, QStringLiteral("tags need exactly one selected bin clip"));
+        }
+    } else if (family == QLatin1String("effect")) {
+        if (!kMockEffects.contains(id.mid(7))) {
+            return fail(err::UnknownAction, QStringLiteral("no such effect"));
+        }
+        if (focus != QLatin1String("timeline") && focus != QLatin1String("bin") && focus != QLatin1String("effectStack")) {
+            return fail(err::TargetNotFound, QStringLiteral("no compatible effect owner"));
+        }
     }
     if (id == QLatin1String("edit_undo") && m_history.isEmpty()) {
         return fail(err::ActionDisabled, QStringLiteral("nothing to undo"));
@@ -603,7 +667,7 @@ void MockKdenlive::applyAction(const QString &id)
     };
     if (id.endsWith(QLatin1String("_tool"))) {
         setContextValue(QStringLiteral("tool"), id.chopped(5));
-    } else if (id.endsWith(QLatin1String("_mode"))) {
+    } else if (id.endsWith(QLatin1String("_mode")) && id != QLatin1String("perform_multitrack_mode")) {
         m_editMode = id.chopped(5);
     } else if (id == QLatin1String("monitor_play")) {
         const bool playing = m_context.value(QStringLiteral("playing")).toBool();
@@ -1461,10 +1525,7 @@ QVariantMap MockKdenlive::triggerAction(const QString &id, const QVariantMap &op
     if (!e.isEmpty()) {
         return e;
     }
-    bool known = false;
-    for (const auto &a : catalog::actions()) {
-        known = known || id == a.id;
-    }
+    const bool known = catalog::isOffered(id) && (catalog::actionFamily(id) != QLatin1String("effect") || kMockEffects.contains(id.mid(7)));
     if (!known) {
         // Dialog actions and anything else not curated: never a keyboard-fallback invitation.
         return fail(err::UnknownAction, QStringLiteral("not offered to control surfaces"), QStringLiteral("id"));

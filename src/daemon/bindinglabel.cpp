@@ -216,6 +216,15 @@ QString autoLabel(const Binding &b, const LabelEnv &env)
                 return a.text;
             }
         }
+        if (catalog::actionFamily(b.name) == QLatin1String("effect")) {
+            // effect_avfilter.gblur -> "Add gblur"; the effect's own name is Kdenlive's
+            QString e = b.name.mid(7);
+            e = e.section(QLatin1Char('.'), -1);
+            return QStringLiteral("Add ") + prettyIdentifier(e).toLower();
+        }
+        if (catalog::actionFamily(b.name) == QLatin1String("tag")) {
+            return QStringLiteral("Tag ") + b.name.mid(4);
+        }
         return prettyIdentifier(b.name);
     case Binding::Control: {
         const QString name = b.name.startsWith(QLatin1Char('$')) && env.modeValue ? env.modeValue(b.name.mid(1)) : b.name;
@@ -423,8 +432,66 @@ const QHash<QString, QString> &actionIcons()
         // history
         {QStringLiteral("edit_undo"), QStringLiteral("arrow-back-up")},
         {QStringLiteral("edit_redo"), QStringLiteral("arrow-forward-up")},
+        // K23 MR1b-A
+        {QStringLiteral("mix_clip"), QStringLiteral("transition-right")},
+        {QStringLiteral("group_clip"), QStringLiteral("link")},
+        {QStringLiteral("ungroup_clip"), QStringLiteral("unlink")},
+        {QStringLiteral("clip_switch"), QStringLiteral("eye-off")},
+        {QStringLiteral("clip_split"), QStringLiteral("volume")},
+        {QStringLiteral("edit_copy"), QStringLiteral("copy")},
+        {QStringLiteral("paste_effects"), QStringLiteral("clipboard")},
+        {QStringLiteral("delete_effects"), QStringLiteral("trash")},
+        {QStringLiteral("master_effects"), QStringLiteral("sparkles")},
+        {QStringLiteral("insert_project_tree"), QStringLiteral("file-plus")},
+        {QStringLiteral("clip_in_project_tree"), QStringLiteral("folder")},
+        {QStringLiteral("multicam_tool"), QStringLiteral("video")},
+        {QStringLiteral("perform_multitrack_mode"), QStringLiteral("cut")},
+        {QStringLiteral("switch_active_target"), QStringLiteral("target")},
+        {QStringLiteral("restore_all_sources"), QStringLiteral("restore")},
+        {QStringLiteral("fit_all_tracks"), QStringLiteral("layout-rows")},
+        {QStringLiteral("snap"), QStringLiteral("magnet")},
+        {QStringLiteral("sequence_next"), QStringLiteral("arrow-bar-right")},
+        {QStringLiteral("sequence_previous"), QStringLiteral("arrow-bar-left")},
+        {QStringLiteral("monitor_fullscreen"), QStringLiteral("maximize")},
+        {QStringLiteral("monitor_multitrack"), QStringLiteral("layout-grid")},
+        {QStringLiteral("monitor_overlay"), QStringLiteral("info-circle")},
+        {QStringLiteral("extract_frame_to_clipboard"), QStringLiteral("photo")},
+        {QStringLiteral("zoom_audio_in"), QStringLiteral("zoom-in")},
+        {QStringLiteral("zoom_audio_out"), QStringLiteral("zoom-out")},
+        {QStringLiteral("zoom_audio_reset"), QStringLiteral("zoom-reset")},
+        {QStringLiteral("audiomixer_button"), QStringLiteral("adjustments-horizontal")},
+        {QStringLiteral("mlt_scrub"), QStringLiteral("wave-sine")},
+        {QStringLiteral("mlt_mute"), QStringLiteral("volume-off")},
     };
     return m;
+}
+
+// MR1b-A families: camera N, layout slots, bin tags, effects.
+QString familyIcon(const QString &action)
+{
+    const QString family = catalog::actionFamily(action);
+    if (family == QLatin1String("camera")) {
+        return QStringLiteral("number-") + action.right(1);
+    }
+    if (family == QLatin1String("layout")) {
+        return QStringLiteral("layout-board");
+    }
+    if (family == QLatin1String("tag")) {
+        return QStringLiteral("tag");
+    }
+    if (family == QLatin1String("effect")) {
+        return QStringLiteral("wand");
+    }
+    return {};
+}
+
+QStringList familyIconNames()
+{
+    QStringList n{QStringLiteral("layout-board"), QStringLiteral("tag"), QStringLiteral("wand")};
+    for (int i = 1; i <= 9; ++i) {
+        n << QStringLiteral("number-%1").arg(i);
+    }
+    return n;
 }
 
 const QHash<QString, QString> &controlIcons()
@@ -513,7 +580,11 @@ QString autoIcon(const Binding &b, const LabelEnv &env)
         return mouseIcons().value(b.name);
     case Binding::Action: {
         const QString icon = actionIcons().value(b.name);
-        return icon.isEmpty() ? markerIcon(b.name) : icon;
+        if (!icon.isEmpty()) {
+            return icon;
+        }
+        const QString marker = markerIcon(b.name);
+        return marker.isEmpty() ? familyIcon(b.name) : marker;
     }
     case Binding::Control: {
         const QString name = b.name.startsWith(QLatin1Char('$')) && env.modeValue ? env.modeValue(b.name.mid(1)) : b.name;
@@ -546,6 +617,9 @@ QString autoIcon(const Binding &b, const LabelEnv &env)
 QStringList autoIconNames()
 {
     QSet<QString> all{kCheatsheetIcon, kCycleIcon, kResetIcon, kColorIcon, kCommandDefaultIcon, QStringLiteral("bookmark")};
+    for (const QString &v : familyIconNames()) {
+        all.insert(v);
+    }
     for (const QString &v : mediaIcons()) {
         all.insert(v);
     }
