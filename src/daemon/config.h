@@ -92,7 +92,7 @@ struct EwwConfig {
 // e.g. smplOS's eww; the daemon only supplies its content and visibility).
 struct CheatsheetOptions {
     static constexpr int kDefaultAutoHideMs = 8000;
-    double opacity = 0.85;  // 0.05..1
+    double opacity = 0.35;  // 0.05..1
     // Hide after this long without pad input, unless a "hold" key holds it.
     // Unset: kDefaultAutoHideMs (nobody gets stuck with it); 0: until hidden.
     std::optional<int> autoHideMs;

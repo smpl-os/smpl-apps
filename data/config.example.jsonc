@@ -68,7 +68,7 @@
     // true, false, or {"window": "pad-cheatsheet", "config": "~/.config/eww",
     // "variable": "pad_sheet"}. Unset, `run --eww-window NAME --eww-config DIR`
     // (smplOS's unit) decides; set here, it overrides those flags.
-    "cheatsheet": { "opacity": 0.85, "position": "center" },
+    "cheatsheet": { "opacity": 0.35, "position": "center" },
 
     // Written by `control-surfaced verify`; until then the flashed default applies.
     "hardware": "~/.config/control-surface/hardware-map.json",

@@ -212,7 +212,7 @@ Content:
 {"ok": true, "visible": true, "title": "Kdenlive · Wheels", "profile": "Kdenlive",
  "layers": ["Wheels"], "window": {"class": "org.kde.kdenlive", "title": "…"},
  "context": {"focus": "effectStack"}, "notice": "",
- "options": {"opacity": 0.85, "autoHideMs": 8000, "position": "center"},
+ "options": {"opacity": 0.35, "autoHideMs": 8000, "position": "center"},
  "layout": {"id": "sy181-15k3e", "name": "…", "rows": 3, "columns": 6, "source": "firmware"},
  "keys":  [{"control": "key1", "row": 0, "column": 0, <entry>}, …],
  "knobs": [{"control": "knob1", "row": 0, "column": 5,
@@ -236,7 +236,7 @@ Content:
 * `notice` explains inactive Kdenlive bindings (interface off, or not
   answered yet).
 
-Config: `"cheatsheet": {"opacity": 0.05..1, "autoHideMs": 0..600000 (unset = 8000;
+Config: `"cheatsheet": {"opacity": 0.05..1 (unset = 0.35), "autoHideMs": 0..600000 (unset = 8000;
 0 = until hidden; restarted by pad input), "position": "center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right",
 "eww": see below}`.
 

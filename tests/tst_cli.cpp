@@ -262,6 +262,9 @@ private Q_SLOTS:
         const QJsonObject sheet = j.value(QStringLiteral("cheatsheet")).toObject();
         QCOMPARE(sheet.value(QStringLiteral("modes")).toArray().size(), 2);
         QVERIFY(sheet.value(QStringLiteral("options")).toObject().value(QStringLiteral("position")).toArray().contains(QStringLiteral("top-right")));
+        QCOMPARE(sheet.value(QStringLiteral("defaults")).toObject(),
+                 (QJsonObject{{QStringLiteral("opacity"), 0.35}, {QStringLiteral("autoHideMs"), 8000}, {QStringLiteral("position"), QStringLiteral("center")}}));
+        QVERIFY(sheet.value(QStringLiteral("options")).toObject().value(QStringLiteral("opacity")).toString().contains(QStringLiteral("default 0.35")));
         const QJsonArray keys = j.value(QStringLiteral("keyNames")).toArray();
         QVERIFY(keys.contains(QStringLiteral("F24")));
         QVERIFY(keys.contains(QStringLiteral("PLAYPAUSE")));

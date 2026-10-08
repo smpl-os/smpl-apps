@@ -65,7 +65,14 @@ QJsonObject featuresJson()
         {QStringLiteral("plugins"), QJsonArray{QStringLiteral("keys"), QStringLiteral("command"), QStringLiteral("kdenlive")}},
         {QStringLiteral("cheatsheet"), QJsonObject{{QStringLiteral("modes"), QJsonArray{QStringLiteral("toggle"), QStringLiteral("hold")}},
                                                    {QStringLiteral("slots"), QStringLiteral("keyN or knobN.press")},
-                                                   {QStringLiteral("options"), QJsonObject{{QStringLiteral("opacity"), QStringLiteral("0.05..1, default 0.85")},
+                                                   // What an unset option means, from CheatsheetOptions itself.
+                                                   {QStringLiteral("defaults"), [] {
+                                                        const CheatsheetOptions d;
+                                                        return QJsonObject{{QStringLiteral("opacity"), d.opacity},
+                                                                           {QStringLiteral("autoHideMs"), d.effectiveAutoHideMs()},
+                                                                           {QStringLiteral("position"), d.position}};
+                                                    }()},
+                                                   {QStringLiteral("options"), QJsonObject{{QStringLiteral("opacity"), QStringLiteral("0.05..1, default %1").arg(CheatsheetOptions().opacity)},
                                                                                            {QStringLiteral("autoHideMs"), QStringLiteral("0..600000; unset = 8000, 0 = until hidden; restarted by pad input; not while a hold key holds it")},
                                                                                            {QStringLiteral("position"), QJsonArray::fromStringList(CheatsheetOptions::positions())},
                                                                                            {QStringLiteral("eww"), QStringLiteral(R"(true | false | {"enabled", "variable": "pad_sheet", "window", "binary": "eww", "config"}; over run --eww / --eww-window NAME / --eww-config DIR)")}}},

@@ -442,7 +442,12 @@ private Q_SLOTS:
         QCOMPARE(c->profiles.first().bindings.value(QStringLiteral("knob2.press")).name, QStringLiteral("hold"));
         QVERIFY(c->warnings.isEmpty());
         // Defaults.
-        QCOMPARE(c->cheatsheet.opacity, 0.85);
+        QCOMPARE(c->cheatsheet.opacity, 0.35);
+        // features.cheatsheet.defaults is what an unset option means.
+        const QJsonObject defaults = featuresJson().value(QStringLiteral("cheatsheet")).toObject().value(QStringLiteral("defaults")).toObject();
+        QCOMPARE(defaults, (QJsonObject{{QStringLiteral("opacity"), c->cheatsheet.opacity},
+                                        {QStringLiteral("autoHideMs"), c->cheatsheet.effectiveAutoHideMs()},
+                                        {QStringLiteral("position"), c->cheatsheet.position}}));
         QVERIFY(!c->cheatsheet.autoHideMs);  // unset: hides itself after 8 s
         QCOMPARE(c->cheatsheet.effectiveAutoHideMs(), 8000);
         QCOMPARE(c->cheatsheet.position, QStringLiteral("center"));
