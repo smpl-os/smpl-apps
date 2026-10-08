@@ -1,0 +1,70 @@
+// The forms a hand-edited config uses (modelled on a real one): a cheatsheet
+// hold key in every profile, labels everywhere, command arrays, mouse wheel
+// turns, media keys, Kdenlive actions with fallbacks and a layer.
+{
+    "device": { "vendor": "1189", "product": "8890", "serial": "", "input": "auto" },
+    "cheatsheet": { "opacity": 0.35, "autoHideMs": 8000, "position": "center" },
+    "profiles": [
+        {
+            "name": "kdenlive",
+            "match": { "class": "^org\\.kde\\.kdenlive" },
+            "kdenlive": true,
+            "keyFallback": false,
+            "modes": { "page": ["edit", "track", "trim"] },
+            "layers": [
+                {
+                    "name": "timeline",
+                    "when": { "focus": "timeline" },
+                    "bindings": {
+                        "knob2": { "turn": { "control": "timeline.zoom" }, "press": { "action": "zoom_fit" } }
+                    }
+                }
+            ],
+            "bindings": {
+                "key1": { "cheatsheet": "hold", "label": "Cheatsheet" },
+                "key2": { "action": "mark_in", "fallback": "i" },
+                "key13": { "cycle": "page", "label": "Page" },
+                "key14": { "action": "edit_undo", "fallback": "ctrl+z" },
+                "knob1": {
+                    "turn": { "control": "playhead.jog", "fallback": ["left", "right"] },
+                    "press": { "action": "monitor_play", "fallback": "space" }
+                }
+            }
+        },
+        {
+            "name": "brave",
+            "match": { "class": "^brave-browser$" },
+            "bindings": {
+                "key6": { "keys": "alt+left", "label": "Back" },
+                "key9": { "keys": "ctrl+t", "label": "New tab" },
+                "knob2": {
+                    "ccw": { "mouse": "wheel-up", "label": "Scroll up" },
+                    "cw": { "mouse": "wheel-down", "label": "Scroll down" },
+                    "press": { "keys": "ctrl+shift+t", "label": "Reopen tab" }
+                }
+            }
+        },
+        {
+            "name": "global",
+            "bindings": {
+                "key1": { "cheatsheet": "hold", "label": "Cheatsheet" },
+                "key2": { "command": ["gtk-launch", "grafium"], "label": "Grafium" },
+                "key3": { "command": ["focus-or-launch", "brave-browser", "brave"], "label": "Brave" },
+                "key6": { "command": ["terminal"], "label": "Terminal" },
+                "key8": { "command": ["smplos-settings"], "label": "Settings", "icon": "settings" },
+                "key12": { "keys": "playpause", "label": "Play/Pause" },
+                "key13": "nextsong",
+                "knob1": {
+                    "ccw": { "keys": "volumedown", "label": "Volume down" },
+                    "cw": { "keys": "volumeup", "label": "Volume up" },
+                    "press": { "keys": "mute", "label": "Mute" }
+                },
+                "knob2": {
+                    "ccw": { "mouse": "wheel-up", "label": "Scroll up" },
+                    "cw": { "mouse": "wheel-down", "label": "Scroll down" },
+                    "press": { "mouse": "middle", "label": "Middle click", "icon": "none" }
+                }
+            }
+        }
+    ]
+}

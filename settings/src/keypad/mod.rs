@@ -6,6 +6,7 @@
 //! with `control-surfaced check-config` and backing up the previous file.
 
 pub mod config;
+pub mod icons;
 pub mod json;
 pub mod ui;
 
@@ -886,6 +887,9 @@ pub struct SheetEntry {
     pub active: bool,
     pub label: String,
     pub state: String,
+    /// The icon name the keypad app resolved (explicit or automatic); empty
+    /// for none or an app that predates icons.
+    pub icon: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -915,6 +919,7 @@ fn sheet_entry(v: Option<&Value>) -> SheetEntry {
         active: v.get("active").and_then(Value::as_bool).unwrap_or(false),
         label: text(v, "label"),
         state: text(v, "state"),
+        icon: text(v, "icon"),
     }
 }
 
@@ -1050,6 +1055,8 @@ pub struct Features {
     pub cheatsheet: bool,
     /// What the daemon uses for cheatsheet options the config leaves out.
     pub sheet_defaults: config::SheetDefaults,
+    /// The cheatsheet shows binding icons (`cheatsheet.icons`).
+    pub icons: bool,
 }
 
 /// `cheatsheet.defaults` when the daemon has it, else read from its option
@@ -1086,6 +1093,7 @@ pub fn parse_features(json: &str) -> Option<Features> {
         mouse: v.get("mouseNames").and_then(Value::as_array).is_some_and(|m| !m.is_empty()),
         cheatsheet: v.get("cheatsheet").is_some_and(Value::is_object),
         sheet_defaults: sheet_defaults(v.get("cheatsheet").filter(|s| s.is_object())),
+        icons: v.get("cheatsheet").and_then(|s| s.get("icons")).is_some_and(Value::is_object),
     })
 }
 
@@ -1279,9 +1287,11 @@ mod tests {
         )
         .unwrap();
         let defaults = config::SheetDefaults::default();
-        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true, cheatsheet: false, sheet_defaults: defaults });
-        let with_sheet = parse_features(r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"modes":["toggle","hold"]}}"#);
-        assert!(with_sheet.unwrap().cheatsheet);
+        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true, cheatsheet: false, sheet_defaults: defaults, icons: false });
+        let with_sheet = parse_features(r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"modes":["toggle","hold"]}}"#).unwrap();
+        assert!(with_sheet.cheatsheet && !with_sheet.icons);
+        let icons = r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"icons":{"set":"tabler-outline","auto":["volume"]}}}"#;
+        assert!(parse_features(icons).unwrap().icons);
         assert!(parse_features(r#"{"slots":{}}"#).is_none());
         let mut actions = Vec::new();
         parse_actions(
@@ -1328,7 +1338,7 @@ mod tests {
     fn parses_the_daemons_cheatsheet() {
         let sheet = parse_sheet(
             r#"{"ok":true,"visible":false,"title":"Kdenlive · Wheels","layers":["color-wheels"],"notice":"",
-               "keys":[{"control":"key1","row":0,"column":0,"bound":true,"active":true,"label":"Set Zone In","state":""},
+               "keys":[{"control":"key1","row":0,"column":0,"bound":true,"active":true,"label":"Set Zone In","state":"","icon":"brackets-contain-start"},
                        {"control":"key2","row":0,"column":1,"bound":false,"active":false,"label":"","state":""}],
                "knobs":[{"control":"knob1","row":0,"column":5,
                          "ccw":{"bound":true,"active":false,"label":"Lift","state":"r"},
@@ -1337,7 +1347,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!((sheet.title.as_str(), sheet.layers.as_slice()), ("Kdenlive · Wheels", &["color-wheels".to_string()][..]));
-        assert_eq!(sheet.keys[0].entries[0], SheetEntry { bound: true, active: true, label: "Set Zone In".into(), state: String::new() });
+        let zone_in = SheetEntry { bound: true, active: true, label: "Set Zone In".into(), state: String::new(), icon: "brackets-contain-start".into() };
+        assert_eq!(sheet.keys[0].entries[0], zone_in);
+        assert_eq!(sheet.knobs[0].entries[0].icon, "", "no icon from an older keypad app");
         assert!(!sheet.keys[1].entries[0].bound);
         let knob = &sheet.knobs[0];
         assert_eq!((knob.column, knob.entries.len(), knob.entries[0].state.as_str()), (5, 3, "r"));

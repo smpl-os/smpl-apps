@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use super::config::{self, ActionKind, Binding, KeypadConfig, Layout, SheetOptions};
+use super::config::{self, ActionKind, Binding, KeypadConfig, Layout, SheetOptions, ICON_NONE};
+use super::icons;
 use super::{FirmwareImage, InputEvent, SheetPreview, Status, Validation, Variant};
-use crate::{KeypadBindingRow, KeypadControl, KeypadSheetCell, KeypadVariant, MainWindow};
+use crate::{KeypadBindingRow, KeypadControl, KeypadIcon, KeypadSheetCell, KeypadSheetLine, KeypadVariant, MainWindow};
 
 const KEYPAD_TAB: i32 = 11;
 pub const SCOPE_HELP_URL: &str = "https://github.com/smpl-os/smplos/blob/main/KEYPAD.md#which-keypads-work";
@@ -76,6 +77,9 @@ struct State {
     sheet: bool,
     /// The daemon's values for cheatsheet options the config leaves out.
     sheet_defaults: config::SheetDefaults,
+    /// The installed keypad app draws binding icons on the cheatsheet.
+    icons_shown: bool,
+    icon_picker: bool,
     kdenlive_actions: Vec<(String, String)>,
     /// Kdenlive context picked for the preview (index into KDENLIVE_CONTEXTS).
     sheet_context: usize,
@@ -280,20 +284,72 @@ impl State {
         self.editor = self.config.binding(self.profile, &self.slot());
     }
 
+    /// The icon the keypad app resolved for `slot` in the preview (the
+    /// selected profile, as saved or with unsaved edits applied).
+    fn preview_icon(&self, slot: &str) -> String {
+        let Ok(p) = &self.sheet_preview else { return String::new() };
+        let (control, event) = slot.split_once('.').unwrap_or((slot, ""));
+        let entry = if event.is_empty() {
+            p.keys.iter().find(|k| k.control == control).and_then(|k| k.entries.first())
+        } else {
+            let i = ["ccw", "press", "cw"].iter().position(|e| *e == event);
+            p.knobs.iter().find(|k| k.control == control).and_then(|k| k.entries.get(i?))
+        };
+        entry.map(|e| e.icon.clone()).unwrap_or_default()
+    }
+
+    /// The icon the cheatsheet shows for this profile's own binding of `slot`:
+    /// its "icon", or the keypad app's automatic one; none when unbound here.
+    fn slot_icon(&self, slot: &str) -> String {
+        let b = self.config.binding(self.profile, slot);
+        let turned = slot.ends_with(".ccw") || slot.ends_with(".cw");
+        let by_turn = || {
+            let knob = slot.split('.').next().unwrap_or(slot);
+            self.config.binding(self.profile, &format!("{knob}.turn")).kind != ActionKind::Inherit
+        };
+        match b.kind {
+            ActionKind::Inherit if turned && by_turn() => self.preview_icon(slot),
+            ActionKind::Inherit => String::new(),
+            _ if b.icon == ICON_NONE => String::new(),
+            _ if !b.icon.is_empty() => b.icon,
+            _ => self.preview_icon(slot),
+        }
+    }
+
+    /// The glyph and caption of the editor's icon row.
+    fn icon_caption(&self) -> (&'static str, String) {
+        let icon = self.editor.icon.as_str();
+        let (glyph, text) = if icon == ICON_NONE {
+            ("", "No icon: the label alone".to_string())
+        } else if icon.is_empty() {
+            match self.preview_icon(&self.slot()) {
+                auto if auto.is_empty() => ("", "Automatic: the keypad app picks one".to_string()),
+                auto => (icons::glyph(&auto), format!("Automatic: {auto}")),
+            }
+        } else {
+            match icons::glyph(icon) {
+                "" => ("", format!("{icon} (not in smplOS's icon set: label only)")),
+                glyph => (glyph, icon.to_string()),
+            }
+        };
+        let applied = self.config.binding(self.profile, &self.slot()).icon == icon;
+        (glyph, if applied { text } else { format!("{text}. Not applied yet") })
+    }
+
     fn summary(&self, control: &str) -> String {
         if control.starts_with("knob") {
             let turn = self.config.binding(self.profile, &format!("{control}.turn"));
             if turn.kind != ActionKind::Inherit {
                 return "turn".into();
             }
-            let left = self.config.binding(self.profile, &format!("{control}.ccw")).summary();
-            let right = self.config.binding(self.profile, &format!("{control}.cw")).summary();
+            let left = self.config.binding(self.profile, &format!("{control}.ccw")).short();
+            let right = self.config.binding(self.profile, &format!("{control}.cw")).short();
             return match (left.is_empty(), right.is_empty()) {
                 (true, true) => String::new(),
                 _ => format!("{left} | {right}"),
             };
         }
-        self.config.binding(self.profile, control).summary()
+        self.config.binding(self.profile, control).short()
     }
 
     fn set_message(&mut self, text: impl Into<String>, error: bool) {
@@ -355,6 +411,8 @@ fn render_sheet_preview(ui: &MainWindow, st: &State) {
                     KeypadSheetCell {
                         num: s(k.control.trim_start_matches("key")),
                         text: s(text),
+                        glyph: s(icons::glyph(&e.icon)),
+                        lines: ModelRc::default(),
                         knob: false,
                         col: k.column as i32,
                         row: k.row as i32,
@@ -365,21 +423,22 @@ fn render_sheet_preview(ui: &MainWindow, st: &State) {
                 .collect();
             let key_cols = p.keys.iter().map(|k| k.column + 1).max().unwrap_or(0);
             for k in &p.knobs {
-                let line = |glyph: &str, e: &super::SheetEntry| {
-                    let label = if e.bound { e.label.as_str() } else { "·" };
-                    let state = if e.state.is_empty() { String::new() } else { format!(" ({})", e.state) };
-                    let full = format!("{glyph} {label}{state}");
-                    // One line per direction: the cell has room for three.
-                    if full.chars().count() > 22 {
-                        format!("{}…", full.chars().take(21).collect::<String>())
-                    } else {
-                        full
-                    }
-                };
-                let lines: Vec<String> = ["<", "o", ">"].iter().zip(&k.entries).map(|(g, e)| line(g, e)).collect();
+                let lines: Vec<KeypadSheetLine> = ["rotate", "circle-dot", "rotate-clockwise"]
+                    .iter()
+                    .zip(&k.entries)
+                    .map(|(dir, e)| KeypadSheetLine {
+                        dir: s(icons::glyph(dir)),
+                        glyph: s(icons::glyph(&e.icon)),
+                        text: s(if e.state.is_empty() { e.label.clone() } else { format!("{} ({})", e.label, e.state) }),
+                        bound: e.bound,
+                        active: e.active,
+                    })
+                    .collect();
                 cells.push(KeypadSheetCell {
                     num: s(format!("Knob {}", k.control.trim_start_matches("knob"))),
-                    text: s(lines.join("\n")),
+                    text: SharedString::new(),
+                    glyph: SharedString::new(),
+                    lines: ModelRc::from(Rc::new(VecModel::from(lines))),
                     knob: true,
                     col: key_cols as i32,
                     row: k.row as i32,
@@ -437,9 +496,10 @@ fn refresh_sheet_preview(ui: &MainWindow) {
             })
             .unwrap_or(false);
             if current {
+                // The layout, binding list and icon row show its icons too.
                 STATE.with(|cell| {
                     if let Some(st) = cell.borrow().as_ref() {
-                        render_sheet_preview(&ui, st);
+                        render_state(&ui, st);
                     }
                 });
             }
@@ -561,7 +621,21 @@ fn render_state(ui: &MainWindow, st: &State) {
                     w.seen.contains(&id)
                 }
             });
+            let glyph = if !mappable {
+                String::new()
+            } else if knob {
+                let glyphs: Vec<&str> =
+                    ["ccw", "press", "cw"].iter().map(|e| icons::glyph(&st.slot_icon(&format!("{id}.{e}")))).collect();
+                if glyphs.iter().all(|g| g.is_empty()) {
+                    String::new()
+                } else {
+                    glyphs.iter().map(|g| if g.is_empty() { "\u{2009}" } else { g }).collect::<Vec<_>>().join(" ")
+                }
+            } else {
+                icons::glyph(&st.slot_icon(&id)).to_string()
+            };
             KeypadControl {
+                glyph: s(glyph),
                 label: s(if knob { format!("Knob {n}") } else { n.to_string() }),
                 knob,
                 col: col as i32,
@@ -652,6 +726,12 @@ fn render_state(ui: &MainWindow, st: &State) {
     }));
     ui.set_kp_advanced_text(s(if st.editor.kind == ActionKind::Advanced { st.editor.value.as_str() } else { "" }));
     ui.set_kp_label_enabled(mappable && st.config_error.is_none() && st.editor.takes_label());
+    let (glyph, caption) = st.icon_caption();
+    ui.set_kp_icon_name(s(&st.editor.icon));
+    ui.set_kp_icon_glyph(s(glyph));
+    ui.set_kp_icon_caption(s(caption));
+    ui.set_kp_icon_picker_open(st.icon_picker);
+    ui.set_kp_icons_shown(st.icons_shown);
 
     // Cheatsheet: options and the preview for the selected profile.
     ui.set_kp_sheet_supported(st.sheet);
@@ -681,6 +761,7 @@ fn render_state(ui: &MainWindow, st: &State) {
                 _ => b.summary(),
             }),
             advanced: b.kind == ActionKind::Advanced,
+            glyph: s(icons::glyph(&st.slot_icon(&slot))),
             slot: s(slot),
         })
         .collect();
@@ -948,6 +1029,9 @@ fn apply_binding(ui: &MainWindow) {
             binding.value = text.clone();
         }
         binding.label = if binding.takes_label() { label.trim().to_string() } else { String::new() };
+        if !binding.takes_label() {
+            binding.icon.clear();
+        }
         let slot = st.slot();
         match st.config.set_binding(st.profile, &slot, &binding) {
             Ok(note) => {
@@ -965,6 +1049,13 @@ fn apply_binding(ui: &MainWindow) {
     });
     sync_editor_text(ui);
     render(ui);
+}
+
+/// Fills the icon picker with the icons matching `query`.
+fn show_icons(ui: &MainWindow, query: &str) {
+    let found: Vec<KeypadIcon> =
+        icons::search(query).into_iter().map(|i| KeypadIcon { name: s(&i.name), glyph: s(&i.glyph) }).collect();
+    ui.set_kp_icon_results(ModelRc::from(Rc::new(VecModel::from(found))));
 }
 
 /// Puts the editor's value into the text field (only when the selection changes).
@@ -1184,6 +1275,7 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
                     st.max_knobs = f.max_knobs;
                     st.sheet = f.cheatsheet;
                     st.sheet_defaults = f.sheet_defaults;
+                    st.icons_shown = f.icons;
                 }
             });
             if let Some(ui) = weak.upgrade() {
@@ -1218,6 +1310,8 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         mouse: false,
         sheet: false,
         sheet_defaults: config::SheetDefaults::default(),
+        icons_shown: false,
+        icon_picker: false,
         kdenlive_actions: Vec::new(),
         sheet_context: 0,
         sheet_key: String::new(),
@@ -1614,11 +1708,11 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                 return;
             }
             let current = st.config.binding(st.profile, &st.slot());
-            let label = st.editor.label.clone();
+            let (label, icon) = (st.editor.label.clone(), st.editor.icon.clone());
             st.editor = if current.kind == kind {
                 current
             } else {
-                Binding::new(kind, "").labelled(&label)
+                Binding::new(kind, "").labelled(&label).with_icon(&icon)
             };
             if let Some((first, _)) = st.choices().first().filter(|_| st.editor.value.is_empty()) {
                 st.editor.value = first.clone();
@@ -1635,6 +1729,44 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
             if let Some((id, _)) = st.choices().get(i.max(0) as usize) {
                 st.editor.value = id.clone();
             }
+        });
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_toggle_icon_picker(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let open = with(|st| {
+            st.icon_picker = !st.icon_picker;
+            st.icon_picker
+        })
+        .unwrap_or(false);
+        if open {
+            ui.set_kp_icon_query(SharedString::new());
+            show_icons(&ui, "");
+        }
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_search_icons(move |query| {
+        if let Some(ui) = weak.upgrade() {
+            show_icons(&ui, &query);
+        }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_pick_icon(move |name| {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            st.editor.icon = name.to_string();
+            st.icon_picker = false;
+            let what = match name.as_str() {
+                "" => "Automatic icon".to_string(),
+                ICON_NONE => "No icon".to_string(),
+                n => format!("Icon {n}"),
+            };
+            st.set_message(format!("{what}: Apply to control to use it."), false);
         });
         render(&ui);
     });

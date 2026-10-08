@@ -461,6 +461,25 @@ fn keypad_cheatsheet_card_label_and_preview_are_wired() {
     let on_input = ui_rs.split("fn on_input(").nth(1).unwrap().split("\nfn ").next().unwrap();
     assert!(on_input.contains("sync_editor_text(ui);"), "identify must refresh the editor's text fields");
     assert!(ui_rs.contains("if (self.sheet && config::sheet_slot(&self.slot()))"));
+    for needle in [
+        "if root.kp-label-enabled && root.kp-sheet-supported && root.kp-icon-picker-open: KeypadIconPicker {",
+        "picked(name) => { root.kp-pick-icon(name); }",
+        "search(t) => { root.kp-search-icons(t); }",
+        "clicked => { root.kp-toggle-icon-picker(); }",
+        "if root.kp-sheet-supported && !root.kp-icons-shown: Text {",
+    ] {
+        assert!(keypad.contains(needle), "missing: {needle}");
+    }
+    let picker = UI.split("component KeypadIconPicker").nth(1).unwrap().split("\ncomponent ").next().unwrap();
+    for needle in ["clicked => { root.picked(\"\"); }", "clicked => { root.picked(\"none\"); }", "font-family: KeypadIcons.family;"] {
+        assert!(picker.contains(needle), "picker: {needle}");
+    }
+    // Icons appear wherever bindings do: layout, binding list and preview.
+    let canvas = UI.split("component KeypadCanvas").nth(1).unwrap().split("\ncomponent ").next().unwrap();
+    assert!(canvas.contains("text: control.glyph;"));
+    let preview = UI.split("component KeypadSheetPreview").nth(1).unwrap().split("\ncomponent ").next().unwrap();
+    assert!(preview.contains("text: c.glyph;") && preview.contains("for line[i] in c.lines: Rectangle {"));
+    assert!(keypad.contains("text: row.glyph;"));
     let show = ui_rs.split("ui.on_kp_show_sheet(").nth(1).unwrap().split("\n    let weak").next().unwrap();
     assert!(show.contains("super::hide_sheet()"), "Show on screen never leaves a sheet up for good");
     assert!(ui_rs.contains("o.click_through &= *ms > 0;"), "until hidden needs a clickable sheet");

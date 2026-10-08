@@ -1,3 +1,6 @@
+// Keypad icons (outline Tabler Icons subset, MIT): see assets/TABLER-ICONS-LICENSE.txt.
+import "assets/keypad-icons.ttf";
+
 // ── Data structs ─────────────────────────────────────────────────────────────
 
 struct KeyData {
@@ -102,6 +105,8 @@ struct KeypadControl {
     active: bool,
     // Confirmed in the firmware wizard's input test.
     seen: bool,
+    // Icon glyph(s) in KeypadIcons.family: a key's, or a knob's ccw/press/cw.
+    glyph: string,
 }
 
 /// A keypad variant (board profile) with what its schematic needs.
@@ -112,16 +117,33 @@ struct KeypadVariant {
     cols: int,
 }
 
+/// One line of a knob in the cheatsheet preview (turn left, press, turn right).
+struct KeypadSheetLine {
+    dir: string,
+    glyph: string,
+    text: string,
+    bound: bool,
+    active: bool,
+}
+
 /// One cell of the cheatsheet preview: a key, or a knob with its three lines.
 struct KeypadSheetCell {
     num: string,
     text: string,
+    glyph: string,
     knob: bool,
+    lines: [KeypadSheetLine],
     col: int,
     row: int,
     bound: bool,
     // Would do something now (e.g. false while Kdenlive's interface is off).
     active: bool,
+}
+
+/// An icon in Settings' icon picker.
+struct KeypadIcon {
+    name: string,
+    glyph: string,
 }
 
 /// A binding of the selected keypad profile ("knob1.cw" -> "Media key").
@@ -130,6 +152,13 @@ struct KeypadBindingRow {
     label: string,
     summary: string,
     advanced: bool,
+    glyph: string,
+}
+
+// Outline keypad icons (Tabler Icons subset, MIT), embedded; see
+// assets/TABLER-ICONS-LICENSE.txt.
+global KeypadIcons {
+    out property <string> family: "smplOS Keypad Icons";
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -727,7 +756,7 @@ component KeypadCanvas inherits Rectangle {
     in property <bool> show-summary: true;
     callback clicked(string);
 
-    property <length> cell: 66px;
+    property <length> cell: 72px;
     property <length> gap: 8px;
     height: max(root.rows, 1) * root.cell;
     min-width: root.cols * root.cell + (root.knobs > 0 ? root.cell + 16px : 0px);
@@ -752,9 +781,18 @@ component KeypadCanvas inherits Rectangle {
             font-size: Typography.caption;
         }
 
+        if control.glyph != "": Text {
+            x: (parent.width - self.width) / 2;
+            y: control.knob ? 24px : 19px;
+            text: control.glyph;
+            font-family: KeypadIcons.family;
+            font-size: control.knob ? 12px : 18px;
+            color: control.active ? Theme.bg : Theme.accent;
+        }
+
         if root.show-summary: Text {
             x: 4px;
-            y: parent.height - self.height - (control.knob ? 12px : 6px);
+            y: parent.height - self.height - (control.knob ? 9px : 4px);
             width: parent.width - 8px;
             text: control.summary;
             color: control.active ? Theme.bg : Theme.fg;
@@ -983,8 +1021,8 @@ component KeypadSheetPreview inherits Rectangle {
     in property <float> sheet-opacity: 0.35;
 
     property <length> key-w: 92px;
-    property <length> key-h: 48px;
-    property <length> knob-w: 150px;
+    property <length> key-h: 62px;
+    property <length> knob-w: 160px;
     property <length> knob-h: 66px;
     property <length> gap: 6px;
     property <length> pitch: max(root.key-h, root.knob-h) + root.gap;
@@ -1031,18 +1069,63 @@ component KeypadSheetPreview inherits Rectangle {
             color: Theme.fg_dim;
             font-size: Typography.caption;
         }
-        Text {
+        // A key: its icon, large, with the label under it (or the label alone).
+        if !c.knob && c.bound && c.glyph != "": Text {
+            x: (parent.width - self.width) / 2;
+            y: 12px;
+            text: c.glyph;
+            font-family: KeypadIcons.family;
+            font-size: 22px;
+            color: c.active ? Theme.accent : Theme.fg_dim;
+        }
+        if !c.knob: Text {
             x: 5px;
-            y: 15px;
+            y: c.bound && c.glyph != "" ? 38px : 15px;
             width: parent.width - 10px;
-            height: parent.height - 16px;
-            text: c.knob ? c.text : (c.bound ? c.text : "·");
+            height: parent.height - self.y - 2px;
+            text: c.bound ? c.text : "·";
             color: c.bound && c.active ? Theme.fg : Theme.fg_dim;
             font-italic: c.bound && !c.active;
             font-size: Typography.caption;
-            horizontal-alignment: c.knob ? left : center;
+            horizontal-alignment: center;
             wrap: word-wrap;
             overflow: elide;
+        }
+        // A knob: one line per direction, with the direction's and the action's icons.
+        for line[i] in c.lines: Rectangle {
+            x: 5px;
+            y: 16px + i * 16px;
+            width: parent.width - 10px;
+            height: 16px;
+            Text {
+                x: 0px;
+                height: parent.height;
+                vertical-alignment: center;
+                text: line.dir;
+                font-family: KeypadIcons.family;
+                font-size: 12px;
+                color: Theme.fg_dim;
+            }
+            Text {
+                x: 15px;
+                height: parent.height;
+                vertical-alignment: center;
+                text: line.bound ? line.glyph : "";
+                font-family: KeypadIcons.family;
+                font-size: 13px;
+                color: line.active ? Theme.accent : Theme.fg_dim;
+            }
+            Text {
+                x: 33px;
+                width: parent.width - 33px;
+                height: parent.height;
+                vertical-alignment: center;
+                text: line.bound ? line.text : "·";
+                color: line.bound && line.active ? Theme.fg : Theme.fg_dim;
+                font-italic: line.bound && !line.active;
+                font-size: Typography.caption;
+                overflow: elide;
+            }
         }
     }
 }
@@ -1079,6 +1162,7 @@ component KeypadInput inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder;
     callback accepted();
+    callback edited(string);
 
     height: Typography.compact-control;
     border-radius: 4px;
@@ -1096,6 +1180,7 @@ component KeypadInput inherits Rectangle {
         font-size: Typography.secondary;
         text <=> root.text;
         accepted => { root.accepted(); }
+        edited => { root.edited(self.text); }
     }
 
     if root.text == "": Text {
@@ -1107,6 +1192,88 @@ component KeypadInput inherits Rectangle {
         color: Theme.fg_dim;
         font-size: Typography.secondary;
         overflow: elide;
+    }
+}
+
+// Searchable grid of the outline keypad icons, plus "Automatic" and "No icon".
+component KeypadIconPicker inherits Rectangle {
+    in property <[KeypadIcon]> icons;
+    in property <string> current;
+    in-out property <string> query;
+    callback search(string);
+    callback picked(string);
+
+    property <length> cell: 40px;
+    property <int> cols: max(1, Math.floor((self.width - 16px) / self.cell));
+    property <string> hovered;
+
+    border-radius: 6px;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: Theme.bg_lighter;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            KeypadInput {
+                horizontal-stretch: 1;
+                text <=> root.query;
+                placeholder: "Search: volume, play, folder, github";
+                edited(t) => { root.search(t); }
+            }
+            KeypadButton {
+                text: "Automatic";
+                primary: root.current == "";
+                clicked => { root.picked(""); }
+            }
+            KeypadButton {
+                text: "No icon";
+                primary: root.current == "none";
+                clicked => { root.picked("none"); }
+            }
+        }
+        Flickable {
+            height: 4 * root.cell + 12px;
+            viewport-width: self.width;
+            viewport-height: max(self.height, Math.ceil(root.icons.length / root.cols) * root.cell);
+            for icon[i] in root.icons: Rectangle {
+                x: Math.mod(i, root.cols) * root.cell;
+                y: Math.floor(i / root.cols) * root.cell;
+                width: root.cell - 4px;
+                height: root.cell - 4px;
+                border-radius: 4px;
+                // The chosen icon is outlined, not only tinted.
+                background: icon.name == root.current ? Theme.accent.transparentize(70%) : touch.has-hover ? Theme.hover : transparent;
+                border-width: icon.name == root.current ? 2px : 0px;
+                border-color: Theme.accent;
+                Text {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    text: icon.glyph;
+                    font-family: KeypadIcons.family;
+                    font-size: 20px;
+                    color: Theme.fg;
+                }
+                touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.picked(icon.name); }
+                    changed has-hover => {
+                        if self.has-hover {
+                            root.hovered = icon.name;
+                        }
+                    }
+                }
+            }
+        }
+        Text {
+            text: root.icons.length == 0 ? "No icon matches."
+                : root.hovered != "" ? root.hovered
+                : root.icons.length + " outline icons (Tabler Icons, MIT)";
+            color: Theme.fg_dim;
+            font-size: Typography.caption;
+        }
     }
 }
 
@@ -1501,6 +1668,15 @@ export component MainWindow inherits Window {
     in property <bool> kp-dry-run: true;
     // Cheatsheet: per-binding label, options and preview.
     in-out property <string> kp-label-text;
+    // Icon of the binding being edited: "" automatic, "none", or a name.
+    in property <string> kp-icon-name;
+    in property <string> kp-icon-glyph;
+    in property <string> kp-icon-caption;
+    in property <bool> kp-icon-picker-open: false;
+    in-out property <string> kp-icon-query;
+    in property <[KeypadIcon]> kp-icon-results;
+    // The keypad app draws icons on the cheatsheet (else they are only saved).
+    in property <bool> kp-icons-shown: false;
     in property <bool> kp-label-enabled: false;
     in property <bool> kp-sheet-supported: false;
     in property <float> kp-sheet-opacity: 0.35;
@@ -1538,6 +1714,9 @@ export component MainWindow inherits Window {
     callback kp-select-action(int);
     callback kp-select-choice(int);
     callback kp-apply-binding();
+    callback kp-toggle-icon-picker();
+    callback kp-search-icons(string);
+    callback kp-pick-icon(string);
     callback kp-save();
     callback kp-revert();
     callback kp-open-config();
@@ -8328,6 +8507,51 @@ export component MainWindow inherits Window {
                                     accepted => { root.kp-apply-binding(); }
                                 }
                             }
+                            if root.kp-label-enabled && root.kp-sheet-supported: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Icon";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    width: Typography.compact-control;
+                                    height: Typography.compact-control;
+                                    border-radius: 4px;
+                                    background: Theme.bg;
+                                    border-width: 1px;
+                                    border-color: Theme.bg_lighter;
+                                    Text {
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        text: root.kp-icon-glyph;
+                                        font-family: KeypadIcons.family;
+                                        font-size: 20px;
+                                        color: Theme.accent;
+                                    }
+                                }
+                                Text {
+                                    text: root.kp-icon-caption;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                KeypadButton {
+                                    text: root.kp-icon-picker-open ? "Close" : "Choose…";
+                                    clicked => { root.kp-toggle-icon-picker(); }
+                                }
+                            }
+                            if root.kp-label-enabled && root.kp-sheet-supported && root.kp-icon-picker-open: KeypadIconPicker {
+                                icons: root.kp-icon-results;
+                                current: root.kp-icon-name;
+                                query <=> root.kp-icon-query;
+                                search(t) => { root.kp-search-icons(t); }
+                                picked(name) => { root.kp-pick-icon(name); }
+                            }
                             HorizontalLayout {
                                 alignment: end;
                                 if root.kp-editor-mode != 3: KeypadButton {
@@ -8373,6 +8597,12 @@ export component MainWindow inherits Window {
                                 text: "An overlay of what every key and knob does in the app you're using. Map a key or knob press to \"Show the cheatsheet\" to bring it up.";
                                 color: Theme.fg_dim;
                                 font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                            if root.kp-sheet-supported && !root.kp-icons-shown: Text {
+                                text: "Icons on the overlay need a newer keypad app. Icons you choose are saved and appear once it's updated.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
                                 wrap: word-wrap;
                             }
                             if root.kp-sheet-supported: HorizontalLayout {
@@ -8514,6 +8744,15 @@ export component MainWindow inherits Window {
                                     padding-left: 8px;
                                     padding-right: 8px;
                                     spacing: 12px;
+                                    Text {
+                                        text: row.glyph;
+                                        width: 20px;
+                                        font-family: KeypadIcons.family;
+                                        font-size: 16px;
+                                        color: Theme.accent;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: center;
+                                    }
                                     Text {
                                         text: row.label;
                                         width: 170px;

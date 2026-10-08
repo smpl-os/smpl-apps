@@ -46,11 +46,23 @@ pub struct Binding {
     pub value: String,
     /// The binding's own `"label"`: what the cheatsheet shows for it.
     pub label: String,
+    /// The binding's `"icon"`: empty for the keypad app's automatic icon,
+    /// `ICON_NONE` for none, else an icon name (see `keypad::icons`).
+    pub icon: String,
+}
+
+/// `"icon": "none"`: the cheatsheet shows the label alone.
+pub const ICON_NONE: &str = "none";
+
+/// Icon names are kebab-case (Tabler's); the renderer skips names it lacks.
+pub fn valid_icon(icon: &str) -> bool {
+    !icon.is_empty()
+        && icon.split('-').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()))
 }
 
 impl Binding {
     pub fn new(kind: ActionKind, value: &str) -> Self {
-        Self { kind, value: value.to_string(), label: String::new() }
+        Self { kind, value: value.to_string(), label: String::new(), icon: String::new() }
     }
 
     pub fn labelled(mut self, label: &str) -> Self {
@@ -58,9 +70,23 @@ impl Binding {
         self
     }
 
+    pub fn with_icon(mut self, icon: &str) -> Self {
+        self.icon = icon.trim().to_string();
+        self
+    }
+
     /// Kinds whose label the cheatsheet can show (not "unset" or "nothing").
     pub fn takes_label(&self) -> bool {
         !matches!(self.kind, ActionKind::Inherit | ActionKind::Disabled | ActionKind::Advanced)
+    }
+
+    /// The label if it has one (what the cheatsheet shows), else the summary.
+    pub fn short(&self) -> String {
+        if self.label.is_empty() || !self.takes_label() {
+            self.summary()
+        } else {
+            self.label.clone()
+        }
     }
 
     pub fn summary(&self) -> String {
@@ -335,43 +361,50 @@ pub fn classify(value: Option<&Json>) -> Binding {
             Binding::new(ActionKind::Shortcut, s)
         }
         Json::Obj(entries) => {
-            // A "label" is the cheatsheet's text and may accompany any form.
-            let label = match value.get("label") {
-                Some(Json::Str(l)) => l.as_str(),
-                Some(_) => return advanced(),
-                None => "",
+            // "label" and "icon" are the cheatsheet's and may accompany any form.
+            let meta = |key: &str| match value.get(key) {
+                Some(Json::Str(v)) => Some(v.as_str()),
+                Some(_) => None,
+                None => Some(""),
             };
-            let rest: Vec<&(String, Json)> = entries.iter().filter(|(k, _)| k != "label").collect();
+            let (Some(label), Some(icon)) = (meta("label"), meta("icon")) else {
+                return advanced();
+            };
+            if !icon.is_empty() && !valid_icon(icon) {
+                return advanced();
+            }
+            let labelled = |b: Binding| b.labelled(label).with_icon(icon);
+            let rest: Vec<&(String, Json)> = entries.iter().filter(|(k, _)| k != "label" && k != "icon").collect();
             let only = |key: &str| rest.len() == 1 && rest[0].0 == key;
             if only("keys") {
                 match &rest[0].1 {
                     Json::Str(s) => {
                         let lower = s.trim().to_lowercase();
                         if MEDIA_KEYS.iter().any(|(k, _)| *k == lower) {
-                            return Binding::new(ActionKind::Media, &lower).labelled(label);
+                            return labelled(Binding::new(ActionKind::Media, &lower));
                         }
-                        return Binding::new(ActionKind::Shortcut, s).labelled(label);
+                        return labelled(Binding::new(ActionKind::Shortcut, s));
                     }
                     Json::Arr(items) if items.iter().all(|i| i.as_str().is_some()) => {
                         let seq: Vec<&str> = items.iter().filter_map(Json::as_str).collect();
-                        return Binding::new(ActionKind::Shortcut, &seq.join(" ")).labelled(label);
+                        return labelled(Binding::new(ActionKind::Shortcut, &seq.join(" ")));
                     }
                     _ => {}
                 }
             }
             if let Some(Json::Str(action)) = value.get("action") {
                 // Extra fields (fallback, options) are kept when it is edited.
-                return Binding::new(ActionKind::Kdenlive, action).labelled(label);
+                return labelled(Binding::new(ActionKind::Kdenlive, action));
             }
             if let (true, Some(Json::Arr(argv))) = (only("command"), value.get("command")) {
                 let argv: Vec<String> = argv.iter().filter_map(|a| a.as_str().map(String::from)).collect();
-                return Binding::new(ActionKind::Command, &join_command(&argv)).labelled(label);
+                return labelled(Binding::new(ActionKind::Command, &join_command(&argv)));
             }
             if let (true, Some(Json::Str(button))) = (only("mouse"), value.get("mouse")) {
-                return Binding::new(ActionKind::Mouse, button).labelled(label);
+                return labelled(Binding::new(ActionKind::Mouse, button));
             }
             if let (true, Some(Json::Str(mode))) = (only("cheatsheet"), value.get("cheatsheet")) {
-                return Binding::new(ActionKind::Cheatsheet, mode).labelled(label);
+                return labelled(Binding::new(ActionKind::Cheatsheet, mode));
             }
             advanced()
         }
@@ -379,21 +412,28 @@ pub fn classify(value: Option<&Json>) -> Binding {
     }
 }
 
-/// The JSON for a binding; `None` removes the slot (inherit). A label turns
-/// the short string forms into objects (`{"keys": "ctrl+z", "label": "Undo"}`).
+/// The JSON for a binding; `None` removes the slot (inherit). A label or icon
+/// turns the short string forms into objects (`{"keys": "ctrl+z", "label": "Undo"}`).
 pub fn to_json(binding: &Binding) -> Result<Option<Json>, String> {
     let label = binding.label.trim();
     if label.chars().count() > 40 {
         return Err("keep the cheatsheet label under 40 characters".into());
     }
+    let icon = binding.icon.trim();
+    if !icon.is_empty() && !valid_icon(icon) {
+        return Err(format!("'{icon}' is not an icon name"));
+    }
     let with_label = |mut entries: Vec<(String, Json)>| {
         if !label.is_empty() {
             entries.push(("label".into(), Json::str(label)));
         }
+        if !icon.is_empty() {
+            entries.push(("icon".into(), Json::str(icon)));
+        }
         Json::Obj(entries)
     };
     let keys = |text: &str| {
-        if label.is_empty() {
+        if label.is_empty() && icon.is_empty() {
             Json::str(text)
         } else {
             with_label(vec![("keys".into(), Json::str(text))])
@@ -437,8 +477,8 @@ pub fn to_json(binding: &Binding) -> Result<Option<Json>, String> {
 }
 
 /// Keeps what Settings doesn't edit (e.g. a Kdenlive action's "fallback")
-/// when only the label changed. Those fields belong to one specific action
-/// or command, so any other edit starts clean.
+/// when only the label or icon changed. Those fields belong to one specific
+/// action or command, so any other edit starts clean.
 fn merge_extras(old: Option<&Json>, new: Json) -> Json {
     const FORMS: [&str; 5] = ["keys", "action", "command", "mouse", "cheatsheet"];
     let (Some(Json::Obj(old)), Json::Obj(mut entries)) = (old, new.clone()) else {
@@ -449,7 +489,7 @@ fn merge_extras(old: Option<&Json>, new: Json) -> Json {
         return new;
     }
     for (k, v) in old {
-        if k != "label" && !FORMS.contains(&k.as_str()) && !entries.iter().any(|(e, _)| e == k) {
+        if k != "label" && k != "icon" && !FORMS.contains(&k.as_str()) && !entries.iter().any(|(e, _)| e == k) {
             entries.push((k.clone(), v.clone()));
         }
     }
@@ -1198,6 +1238,68 @@ mod tests {
             SheetOptions { click_through: true, auto_hide_ms: 0, ..o.clone() },
         ] {
             assert!(c.set_sheet_options(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn hand_edited_configs_round_trip_unchanged() {
+        let text = include_str!("testdata/live-like.jsonc");
+        let original = KeypadConfig::parse(text).unwrap();
+        let mut c = KeypadConfig::parse(text).unwrap();
+        let (kdenlive, brave, global) = (0, 1, 2);
+        let b = |kind, value: &str, label: &str| Binding::new(kind, value).labelled(label);
+        assert_eq!(c.binding(global, "key1"), b(ActionKind::Cheatsheet, "hold", "Cheatsheet"));
+        assert_eq!(c.binding(kdenlive, "key1"), b(ActionKind::Cheatsheet, "hold", "Cheatsheet"));
+        assert_eq!(c.binding(global, "key2"), b(ActionKind::Command, "gtk-launch grafium", "Grafium"));
+        assert_eq!(c.binding(global, "key3"), b(ActionKind::Command, "focus-or-launch brave-browser brave", "Brave"));
+        assert_eq!(c.binding(global, "key8"), b(ActionKind::Command, "smplos-settings", "Settings").with_icon("settings"));
+        assert_eq!(c.binding(global, "key12"), b(ActionKind::Media, "playpause", "Play/Pause"));
+        assert_eq!(c.binding(global, "key13"), Binding::new(ActionKind::Media, "nextsong"));
+        assert_eq!(c.binding(global, "knob1.cw"), b(ActionKind::Media, "volumeup", "Volume up"));
+        assert_eq!(c.binding(global, "knob2.ccw"), b(ActionKind::Mouse, "wheel-up", "Scroll up"));
+        assert_eq!(c.binding(global, "knob2.press"), b(ActionKind::Mouse, "middle", "Middle click").with_icon(ICON_NONE));
+        assert_eq!(c.binding(brave, "knob2.press"), b(ActionKind::Shortcut, "ctrl+shift+t", "Reopen tab"));
+        assert_eq!(c.binding(kdenlive, "key2"), Binding::new(ActionKind::Kdenlive, "mark_in"));
+
+        // Applying every binding Settings can edit, unchanged, changes nothing.
+        let mut applied = 0;
+        for p in 0..c.profiles().len() {
+            for (slot, binding) in c.bound_slots(p) {
+                if binding.kind != ActionKind::Advanced {
+                    c.set_binding(p, &slot, &binding).unwrap_or_else(|e| panic!("{slot}: {e}"));
+                    applied += 1;
+                }
+            }
+        }
+        assert!(applied >= 20, "{applied}");
+        assert_eq!(c.doc, original.doc);
+
+        // An icon comes and goes without touching the rest (a Kdenlive fallback included).
+        for (p, slot) in [(kdenlive, "key2"), (kdenlive, "knob1.press"), (global, "key13"), (global, "knob1.cw"),
+                          (global, "key3"), (brave, "knob2.ccw"), (global, "key1")] {
+            let before = c.binding(p, slot);
+            c.set_binding(p, slot, &before.clone().with_icon("star")).unwrap();
+            assert_eq!(c.binding(p, slot), before.clone().with_icon("star"), "{slot}");
+            c.set_binding(p, slot, &before).unwrap();
+        }
+        assert_eq!(c.doc, original.doc);
+        assert_eq!(KeypadConfig::parse(&c.render()).unwrap().doc, original.doc, "the saved file reads back the same");
+    }
+
+    #[test]
+    fn icons_are_written_beside_the_label() {
+        let json = |b: &Binding| json::to_compact(&to_json(b).unwrap().unwrap());
+        let media = Binding::new(ActionKind::Media, "playpause");
+        assert_eq!(json(&media), r#""playpause""#);
+        assert_eq!(json(&media.clone().with_icon("player-play")), r#"{ "keys": "playpause", "icon": "player-play" }"#);
+        let undo = Binding::new(ActionKind::Shortcut, "ctrl+z").labelled("Undo").with_icon(ICON_NONE);
+        assert_eq!(json(&undo), r#"{ "keys": "ctrl+z", "label": "Undo", "icon": "none" }"#);
+        assert!(to_json(&media.clone().with_icon("Bad Name")).is_err());
+        // A hand-written icon Settings can't read keeps the binding out of the editor.
+        let odd = Json::Obj(vec![("keys".into(), Json::str("a")), ("icon".into(), Json::Num("3".into()))]);
+        assert_eq!(classify(Some(&odd)).kind, ActionKind::Advanced);
+        for (name, ok) in [("volume-3", true), ("brand-github", true), ("none", true), ("", false), ("-x", false), ("a--b", false), ("Vol", false)] {
+            assert_eq!(valid_icon(name), ok, "{name}");
         }
     }
 
