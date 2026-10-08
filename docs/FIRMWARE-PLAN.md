@@ -565,8 +565,11 @@ sha256 `909f17f98ad61376c699f7664b23e568d0d67926174a812ed9c9cca1eb1131db`
 (two builds identical, asmcheck clean, 11445/14336 bytes code, 130 bytes
 stack free).
 
-Flash (user present). Run it with the daemon in evdev mode (`"input":
-"evdev"`) or stopped: `rawcheck` needs its own heartbeats to be the only ones.
+Flash (user present). Run it with the daemon in evdev mode
+(`control-surfaced set input evdev`) or stopped: `rawcheck` needs its own
+heartbeats to be the only ones. The script checks this itself and stops
+before anything is flashed (exit 8) while a daemon reads the pad raw or would
+(`auto`). Afterwards: `control-surfaced set input auto`.
 
     ENTER_BOOTLOADER=1 firmware/flash-and-verify.sh \
       firmware/release/control-surface-sy181-15k3e-2.0.2.bin \
@@ -575,8 +578,9 @@ Flash (user present). Run it with the daemon in evdev mode (`"input":
 Its checks now include `padctl.py rawcheck` (no key presses: raw mode must
 hold for 6 s under heartbeats with every command answered, then end once
 ~1.5 s after the last heartbeat). Then, with the daemon running,
-`scripts/stress-test.py --mode both` (`"input": "evdev"` first; the script
-asks for `"raw"` in between).
+`scripts/stress-test.py --mode both` (it switches the input mode itself with
+`control-surfaced set input evdev|raw` after asking y/N, and offers to put
+it back at the end).
 
 ### 7.9 Soak plan (with the user)
 

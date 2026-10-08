@@ -18,8 +18,13 @@
 # the top-left key; if that fails it still waits for the key method.
 #
 # Environment: WCHISP (default /mnt/ai/keypad-lab/tools/wchisp/bin/wchisp).
+# A running control-surfaced must read the pad as evdev (or be stopped): in
+# raw mode its heartbeats would keep raw mode alive during rawcheck, and with
+# "input": "auto" it switches to raw as soon as the new firmware answers.
+#
 # Exit codes: 0 ok, 2 usage, 3 hash mismatch, 4 no bootloader within 300 s,
-# 5 flash failed, 6 pad did not come back, 7 protocol check failed.
+# 5 flash failed, 6 pad did not come back, 7 protocol check failed,
+# 8 a running control-surfaced reads the pad raw (nothing was flashed).
 
 set -u
 IMAGE=${1:-}; SHA=${2:-}; LOG=${3:-}; VERSION=${4:-}
@@ -45,6 +50,25 @@ echo "$(stamp) image $IMAGE"
 GOT=$(sha256sum "$IMAGE" | cut -d' ' -f1)
 [ "$GOT" = "$SHA" ] || { echo "hash mismatch: got $GOT, want $SHA"; exit 3; }
 echo "$(stamp) sha256 ok $GOT ($(stat -c %s "$IMAGE") bytes)"
+
+# The daemon's input mode, if one runs on this session bus.
+INPUT=$(gdbus call --session --dest org.smplos.ControlSurface --object-path /org/smplos/ControlSurface \
+        --method org.smplos.ControlSurface1.GetStatus 2>/dev/null | python3 -c '
+import ast, json, sys
+try:
+    st = json.loads(ast.literal_eval(sys.stdin.read().strip())[0]).get("input") or {}
+    if st:  # the mock has none: it never opens the pad
+        print(st.get("configured", "?"), st.get("mode", "?"))
+except Exception:
+    pass')
+if [ -n "$INPUT" ]; then
+    echo "$(stamp) control-surfaced is running: input $INPUT"
+    case "$INPUT" in
+        "evdev "*) ;;
+        *) echo "$(stamp) it reads (or will read) the pad raw: run \`control-surfaced set input evdev\`" \
+                "(or stop the daemon), flash again, then \`control-surfaced set input auto\`"; exit 8 ;;
+    esac
+fi
 
 # A bootloader session that already answered something can wedge; only use a
 # session that appears after this script started.

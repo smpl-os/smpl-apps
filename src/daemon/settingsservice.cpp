@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "settingsservice.h"
 #include "cheatsheet.h"
+#include "configedit.h"
 #include "featurelist.h"
 #include "kdenlivecatalog.h"
 
@@ -514,6 +515,37 @@ QString SettingsService::applyText(const QByteArray &text, const QString &hash, 
         out->insert(QStringLiteral("warnings"), QJsonArray::fromStringList(configWarnings()));
     }
     return {};
+}
+
+QString SettingsService::SetOption(const QString &key, const QString &value)
+{
+    const OptionChange r = setOption(m_store.path(), key, value);
+    QJsonObject o = r.toJson();
+    if (r.ok && r.changed) {
+        const QString err = applyText(r.text, r.hash, nullptr);
+        if (!err.isEmpty()) {
+            // Written and valid, but the running daemon could not take it.
+            o.insert(QStringLiteral("ok"), false);
+            o.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), QStringLiteral("apply")}, {QStringLiteral("message"), err}});
+            m_configError = err;
+            Q_EMIT ConfigRejected(err);
+        }
+    }
+    return json(o);
+}
+
+QString SettingsService::GetOption(const QString &key)
+{
+    return json(getOption(m_store.path(), key));
+}
+
+QString SettingsService::ListOptions()
+{
+    QJsonArray a;
+    for (const OptionSpec &s : settableOptions()) {
+        a.append(s.toJson());
+    }
+    return json(QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("options"), a}});
 }
 
 QString SettingsService::SetConfig(const QString &text, const QString &expectedHash)

@@ -17,7 +17,10 @@ launchers fire, the volume does not change) while the test runs.
 
     scripts/stress-test.py --mode evdev     the pad's keymap ("input": "evdev")
     scripts/stress-test.py --mode raw       raw events ("input": "raw", firmware 2.0.2+)
-    scripts/stress-test.py --mode both      evdev, then raw (asks for the config change)
+    scripts/stress-test.py --mode both      evdev, then raw
+                                            (it switches the input mode itself with
+                                            `control-surfaced set input ...` after asking,
+                                            and offers to put it back at the end)
     --quick                                 fewer holds and spins
     --report FILE                           results as JSON (default /tmp/control-surface-stress-<time>.json)
     --bin PATH                              control-surfaced to use (default: on PATH)
@@ -206,6 +209,48 @@ class Run:
         self.check(mode, f"knob{knob} {label}: every detent once", ok,
                    f"host cw {cw} ccw {ccw}, {source} cw {fcw} ccw {fccw}" + (f", other events {other}" if other else ""))
 
+    def input_setting(self):
+        opt, _ = self.cli_json("get", "input", "--json")
+        return (opt or {}).get("value")
+
+    def ensure_mode(self, mode):
+        """The daemon reads the pad as this mode, switching it (after asking) if needed."""
+        want = "raw" if mode == "raw" else "evdev-chords"
+        if (self.status().get("input") or {}).get("mode") == want:
+            return True
+        value = "raw" if mode == "raw" else "evdev"
+        ans = input(f'\n>> The daemon does not read the pad as {value} now. Switch it with '
+                    f'"control-surfaced set input {value}"? [y/N] ')
+        if ans.strip().lower() not in ("y", "yes"):
+            return False
+        out = subprocess.run([self.bin, "set", "input", value], capture_output=True, text=True)
+        print("   " + (out.stdout or out.stderr).strip())
+        if out.returncode:
+            return False
+        self.switched = True
+        for _ in range(40):  # raw mode needs GET_INFO and the first heartbeat answer
+            if (self.status().get("input") or {}).get("mode") == want:
+                return True
+            time.sleep(0.25)
+        return False
+
+    def offer_restore(self, original):
+        """Put the input mode back if this run changed it, also after Ctrl-C or an error."""
+        if not self.switched:
+            return
+        back = original or "auto"
+        cmd = f"control-surfaced set input {back}"
+        try:
+            ans = input(f'\n>> Put the input mode back to "{back}" ({cmd})? [y/N] ')
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if ans.strip().lower() in ("y", "yes"):
+            out = subprocess.run([self.bin, "set", "input", back], capture_output=True, text=True)
+            print("   " + (out.stdout or out.stderr).strip())
+        else:
+            print(f'   The input mode stays changed; to put it back later: {cmd}')
+        self.switched = False
+
     # --------------------------------------------------------------------- runs
     def run_mode(self, mode):
         print(f"\n=== {mode} mode ===")
@@ -216,10 +261,12 @@ class Run:
         keys = len((st.get("layout") or {}).get("keys", [])) or 15
         knobs = len((st.get("layout") or {}).get("knobs", [])) or 3
         if not self.simulate:
-            want = "raw" if mode == "raw" else "evdev-chords"
             fw = ((st.get("device") or {}).get("firmware") or {}).get("version", "?")
-            self.check(mode, "daemon input mode", inp.get("mode") == want, f"{inp.get('mode')} (firmware {fw})")
-            if inp.get("mode") != want:
+            ok = self.ensure_mode(mode)
+            st = self.status()
+            inp = st.get("input") or {}
+            self.check(mode, "daemon input mode", ok, f"{inp.get('mode')} (firmware {fw})")
+            if not ok:
                 return
         diag0 = inp.get("raw") or {}
         evdev0 = inp.get("evdev") or {}
@@ -267,19 +314,15 @@ class Run:
         if self.simulate and not shutil.which("gdbus"):
             sys.exit("--simulate needs gdbus")
         modes = ["evdev", "raw"] if self.args.mode == "both" else [self.args.mode]
+        self.switched = False
+        original = None if self.simulate else self.input_setting()
         self.start_monitor()
         try:
-            for i, mode in enumerate(modes):
-                if i and not self.simulate:
-                    input('\n>> Now set "input": "raw" in the "device" section of ~/.config/control-surface/config.jsonc\n'
-                          "   and save; the daemon applies it at once. Press Enter when done. ")
-                    for _ in range(20):
-                        if (self.status().get("input") or {}).get("mode") == "raw":
-                            break
-                        time.sleep(0.5)
+            for mode in modes:
                 self.run_mode(mode)
         finally:
             self.stop_monitor()
+            self.offer_restore(original)
         failed = [c for c in self.checks if c["status"] == "FAIL"]
         warned = [c for c in self.checks if c["status"] == "WARN"]
         report = self.args.report or time.strftime("/tmp/control-surface-stress-%Y%m%d-%H%M%S.json")

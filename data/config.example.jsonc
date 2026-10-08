@@ -1,97 +1,21 @@
-// control-surface configuration (JSON with comments and trailing commas).
-// Installed as ~/.config/control-surface/config.jsonc; edits are picked up
-// live (an invalid file is reported and the previous config stays active).
-// Check a file with:   control-surfaced check-config -c FILE
-// See what Kdenlive offers: control-surfaced list-capabilities
+// What the CH552 pad's 15 keys and 3 knobs do, per app. JSON with comments.
+// Saved changes apply at once; a broken file is reported and the last good one
+// stays in use.
 //
-// Physical names: key1..key15 are row-major (row 1 = key1..key5), knob1..knob3.
-// Knob slots: "turn" (signed detents, preferred for continuous controls),
-// or "ccw"/"cw" (one binding per direction), "press", and "shift" with its
-// own "turn"/"ccw"/"cw" for turning while the knob is held down. A knob with
-// shift bindings fires its "press" on release, and only if it did not turn.
+//   control-surfaced set input raw         change a simple option ("get" lists them)
+//   control-surfaced check-config          check this file
+//   control-surfaced cheatsheet --window brave-browser   what each input does there
 //
-// Binding forms:
-//   "ctrl+z"                         tap keys through the virtual keyboard
-//   {"keys": ["ctrl+k", "x"]}        key sequence
-//   {"action": "mark_in", "fallback": "i"}
-//        Kdenlive action by its KActionCollection id (see list-capabilities);
-//        "fallback" keys are typed only in a profile with "keyFallback": true
-//        and only while Kdenlive's interface is absent or off.
-//   {"control": "playhead.jog", "scale": 1, "accel": 3, "options": {...}, "fallback": ["left", "right"]}
-//        continuous control (coalesced); "scale" multiplies detents, "accel"
-//        overrides settings.accelFactor for this binding (1 = never accelerate),
-//        fallback = [negative key, positive key]
-//   {"cycle": "liftAxis", "label": "Lift"}  advance a mode; "$liftAxis" in options expands,
-//        "$ctx:tool" expands to a value from Kdenlive's context and "$!ctx:path"
-//        to its negation (toggles); a missing context value sends nothing.
-//        "control": "$mode" lets a mode choose the control a knob drives.
-//   {"request": "colorwheel.reset", "params": {"wheel": "lift"}}   Invoke() on Kdenlive
-//   {"mouse": "left"}               left right middle back forward, or one wheel detent:
-//        wheel-up wheel-down wheel-left wheel-right (per knob detent)
-//   {"command": ["gtk-launch", "org.kde.kdenlive"]}   start a program (argv, no shell;
-//        "~" and "~/..." are expanded)
-//   {"cheatsheet": "hold"}           show an overlay of what every key and knob does
-//        right now (profile, Kdenlive layer, modes) while held; "toggle" shows or
-//        hides it. Keys and knob presses only.
-//   "none"                            explicitly unbound (stops fallthrough)
-// Any binding object may also carry:
-//   "label": "Back"                  the cheatsheet's text (default: made from what it does)
-//   "icon": "player-play"            the cheatsheet's icon, a Tabler outline icon name
-//        (default: chosen from what it does; "none" for no icon)
-//   "ifInstalled": "grafium"         a program or desktop id (or a list): while one is
-//        missing the binding is skipped and the slot falls through
-//
-// Kdenlive is driven ONLY through its control-surface interface (D-Bus
-// ControlSurface1), which is OFF by default in Kdenlive: enable it in
-// Kdenlive's settings (enableControlSurfaceInterface). While it is off the
-// daemon types nothing into Kdenlive and shows one notice instead. Set
-// "keyFallback": true on the profile to type the stock shortcuts instead.
-// Only what the running Kdenlive advertises is used; a refusal never types keys.
-// Actions are Kdenlive's curated list (K23-MR1a, see list-capabilities). Some
-// depend on context: delete needs timeline focus, insert/overwrite need a clip
-// in the clip monitor and a target track, and the Slip tool's preview blocks
-// playback and shuttle until you switch back to the Selection tool (key11).
-//
-// Layers: the first layer whose "when" matches and that binds a slot wins,
-// then the profile's own bindings (the default fallback), then "global".
-// "when" tests Kdenlive's context ("focus", "colorWheels", "param.target",
-// "timeline.track.audio" ...; "/regex/" matches strings) or a mode
-// ("$mode.page"). Editing controls target the focused item from Kdenlive's
-// context; "targetFrom": "hoveredColorWheel.target" aims at the wheel under
-// the mouse instead.
+// Keys: key1..key15, row by row from the top left. Knobs: knob1..knob3 from the
+// top, each with "turn" (or "ccw"/"cw") and "press". Every binding form and
+// option: docs/config-reference.md.
 {
-    // "serial": "" drives the first 1189:8890 pad found (set one to pick among
-    // several). "input": "evdev" reads the keys the pad types (its keymap: real
-    // press and release); "raw" uses the control-surface firmware's own events
-    // (firmware 2.0.2+, older firmware falls back to evdev). "auto" is raw on
-    // firmware 2.0.2+ and evdev otherwise.
-    "device": { "vendor": "1189", "product": "8890", "serial": "", "input": "auto" },
-
-    // The cheatsheet overlay (drawn by the desktop, e.g. smplOS's eww bar).
-    // autoHideMs: hide after this long without pad input (unset: 8000; 0 =
-    // until hidden). A "hold" key keeps it up while held. Clicking it hides it.
-    // position: center, top, bottom, left, right, top-left, top-right,
-    // bottom-left, bottom-right.
-    // eww: the daemon pushes the overlay into eww itself (`eww update
-    // pad_sheet=<json>`, and `eww open WINDOW --anchor ...` / `eww close`):
-    // true, false, or {"window": "pad-cheatsheet", "config": "~/.config/eww",
-    // "variable": "pad_sheet"}. Unset, `run --eww-window NAME --eww-config DIR`
-    // (smplOS's unit) decides; set here, it overrides those flags.
-    "cheatsheet": { "opacity": 0.35, "position": "center" },
-
-    // Written by `control-surfaced verify`; until then the flashed default applies.
-    "hardware": "~/.config/control-surface/hardware-map.json",
-
-    "settings": {
-        "coalesceMs": 8,      // at most one continuous update per control every 8 ms
-        "ackTimeoutMs": 60,   // and only one in flight until Kdenlive acknowledges it
-        "accelWindowMs": 35,  // detents closer than this ...
-        "accelFactor": 3,     // ... move 3x as far (per binding: "accel")
-        "keyRateHz": 120      // pacing for key taps produced by knobs
-    },
-
     "profiles": [
         {
+            // Kdenlive, through its control-surface interface (off by default in
+            // Kdenlive: enableControlSurfaceInterface). Layers follow what Kdenlive
+            // has focused: the first matching layer wins, then these bindings,
+            // then the "global" profile.
             "name": "kdenlive",
             "match": { "class": "^org\\.kde\\.kdenlive" },
             "kdenlive": true,
@@ -108,23 +32,20 @@
                 {
                     // Lift/Gamma/Gain focused: one knob per wheel (Kdenlive publishes a
                     // handle per wheel), press cycles the channel: value -> R -> G -> B.
-                    // Hold a knob and turn for fine steps. Keys 6-8 reset a wheel.
+                    // Keys 6-8 reset a wheel.
                     "name": "color-wheels",
                     "when": { "colorWheels": true },
                     "bindings": {
                         "knob1": {
                             "turn": { "control": "colorwheel.nudge", "options": { "wheel": "lift", "axis": "$liftAxis" } },
-                            "shift": { "turn": { "control": "colorwheel.nudge", "options": { "wheel": "lift", "axis": "$liftAxis", "step": "fine" } } },
                             "press": { "cycle": "liftAxis", "label": "Lift" }
                         },
                         "knob2": {
                             "turn": { "control": "colorwheel.nudge", "options": { "wheel": "gamma", "axis": "$gammaAxis" } },
-                            "shift": { "turn": { "control": "colorwheel.nudge", "options": { "wheel": "gamma", "axis": "$gammaAxis", "step": "fine" } } },
                             "press": { "cycle": "gammaAxis", "label": "Gamma" }
                         },
                         "knob3": {
                             "turn": { "control": "colorwheel.nudge", "options": { "wheel": "gain", "axis": "$gainAxis" } },
-                            "shift": { "turn": { "control": "colorwheel.nudge", "options": { "wheel": "gain", "axis": "$gainAxis", "step": "fine" } } },
                             "press": { "cycle": "gainAxis", "label": "Gain" }
                         },
                         "key6": { "request": "colorwheel.reset", "params": { "wheel": "lift" } },
@@ -140,7 +61,6 @@
                     "bindings": {
                         "knob1": {
                             "turn": { "control": "param.nudge", "options": { "step": "$paramStep", "keyframe": "$paramKey" } },
-                            "shift": { "turn": { "control": "param.nudge", "options": { "step": "fine", "keyframe": "$paramKey" } } },
                             "press": { "cycle": "paramStep", "label": "Step" }
                         },
                         "knob2": {
@@ -229,14 +149,13 @@
                     }
                 },
                 {
-                    // Timeline focused: knob1 scrubs (hold + turn scrolls), knob2 zooms,
+                    // Timeline focused: knob1 scrubs, knob2 zooms,
                     // knob3 moves between tracks.
                     "name": "timeline",
                     "when": { "focus": "timeline" },
                     "bindings": {
                         "knob1": {
                             "turn": { "control": "playhead.jog" },
-                            "shift": { "turn": { "control": "timeline.scroll" } },
                             "press": { "action": "monitor_play" }
                         },
                         "knob2": { "turn": { "control": "timeline.zoom" }, "press": { "action": "zoom_fit" } },
@@ -335,5 +254,26 @@
                 "knob2": { "ccw": { "mouse": "wheel-up" }, "cw": { "mouse": "wheel-down" }, "press": { "mouse": "middle" } }
             }
         }
-    ]
+    ],
+
+    // ---- Advanced -------------------------------------------------------------
+
+    // input: "auto" (raw on firmware 2.0.2+, else evdev), "evdev" (the keys the
+    // pad types: compatible) or "raw" (the firmware's own events: fastest).
+    // serial: "" drives the first 1189:8890 pad found.
+    "device": { "serial": "", "input": "auto" },
+
+    // The on-screen cheatsheet (key1 held): opacity 0.05..1, position center,
+    // top, bottom, left, right, top-left, top-right, bottom-left, bottom-right.
+    // It hides itself after 8 s without pad input ("autoHideMs", 0 = never).
+    "cheatsheet": { "opacity": 0.35, "position": "center" },
+
+    // Knob feel: detents closer than accelWindowMs move accelFactor times as far;
+    // key taps made by knob detents are paced at keyRateHz. Continuous controls
+    // send at most one update per coalesceMs, one at a time until Kdenlive
+    // answers (ackTimeoutMs).
+    "settings": { "coalesceMs": 8, "ackTimeoutMs": 60, "accelWindowMs": 35, "accelFactor": 3, "keyRateHz": 120 },
+
+    // Written by `control-surfaced verify`; until then the firmware's default applies.
+    "hardware": "~/.config/control-surface/hardware-map.json"
 }

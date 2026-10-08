@@ -3,6 +3,7 @@
 #include "bindinglabel.h"
 #include "boardprofile.h"
 #include "config.h"
+#include "configedit.h"
 #include "kdenlivecontract.h"
 #include "keynames.h"
 #include "keysink.h"
@@ -58,7 +59,10 @@ QJsonObject featuresJson()
                                               {QStringLiteral("keys"), QStringLiteral("key1..key16 (row-major)")},
                                               {QStringLiteral("knobEvents"), QJsonArray{QStringLiteral("turn"), QStringLiteral("ccw"), QStringLiteral("cw"), QStringLiteral("press"),
                                                                                         QStringLiteral("shift.turn"), QStringLiteral("shift.ccw"), QStringLiteral("shift.cw")}},
-                                              {QStringLiteral("knob"), QStringLiteral("knob1..knob3 with .turn/.ccw/.cw/.press or .shift.turn/.shift.ccw/.shift.cw (turning while held)")}}},
+                                              {QStringLiteral("knob"), QStringLiteral("knob1..knob3 with .turn/.ccw/.cw/.press or .shift.turn/.shift.ccw/.shift.cw (turning while held)")},
+                                              // The control-surface firmware ignores turns while a knob is pressed
+                                              // (pressing moves the encoder's lines), so shift never fires on it.
+                                              {QStringLiteral("shiftSupported"), false}}},
         {QStringLiteral("inputEvents"), QJsonArray{QStringLiteral("press"), QStringLiteral("release"), QStringLiteral("ccw"), QStringLiteral("cw")}},
         {QStringLiteral("layouts"), QJsonObject{{QStringLiteral("builtin"), boards},
                                                 {QStringLiteral("custom"), QStringLiteral(R"({"keys": 0..16, "knobs": 0..3, "columns": 1..8})")},
@@ -71,7 +75,18 @@ QJsonObject featuresJson()
                                                {QStringLiteral("inputModes"), QJsonObject{
                                                     {QStringLiteral("evdev"), QStringLiteral("the pad's keymap: chords with real press and release")},
                                                     {QStringLiteral("raw"), QStringLiteral("the firmware's events with snapshots (2.0.2+); older firmware falls back to evdev")},
-                                                    {QStringLiteral("auto"), QStringLiteral("raw on control-surface firmware 2.0.2+, evdev otherwise")}}}}},
+                                                    {QStringLiteral("auto"), QStringLiteral("raw on control-surface firmware 2.0.2+, evdev otherwise")}}},
+                                               {QStringLiteral("inputLabels"), optionSpec(QStringLiteral("input"))->toJson().value(QStringLiteral("labels"))},
+                                               {QStringLiteral("inputDefault"), Config().device.input}}},
+        // Simple options: `control-surfaced set KEY VALUE` / `get [KEY]`, D-Bus
+        // SetOption/GetOption/ListOptions. Edited in place, comments kept.
+        {QStringLiteral("options"), [] {
+             QJsonArray a;
+             for (const OptionSpec &s : settableOptions()) {
+                 a.append(s.toJson());
+             }
+             return a;
+         }()},
         {QStringLiteral("plugins"), QJsonArray{QStringLiteral("keys"), QStringLiteral("command"), QStringLiteral("kdenlive")}},
         {QStringLiteral("cheatsheet"), QJsonObject{{QStringLiteral("modes"), QJsonArray{QStringLiteral("toggle"), QStringLiteral("hold")}},
                                                    {QStringLiteral("slots"), QStringLiteral("keyN or knobN.press")},

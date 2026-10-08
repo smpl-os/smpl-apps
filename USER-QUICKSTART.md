@@ -87,15 +87,17 @@ To stop it: `systemctl --user disable --now control-surface.service`.
 
 ## 5. What the controls do (default configuration)
 
-Which layer applies depends on what Kdenlive reports as focused. "Hold + turn"
-means turning a knob while it is pressed down.
+Hold key 1 (top left) in any app to see what every key and knob does there
+right now; release it to hide the overlay.
+
+In Kdenlive, which layer applies depends on what Kdenlive reports as focused:
 
 | Where | Knob 1 | Knob 2 | Knob 3 |
 |---|---|---|---|
-| Timeline | scrub/jog by frames; hold + turn scrolls; press play/pause | zoom; press zoom to fit | move between tracks; press switch monitor |
+| Timeline | scrub/jog by frames; press play/pause | zoom; press zoom to fit | move between tracks; press switch monitor |
 | Clip or project monitor | jog by frames; press play/pause | shuttle; press pause | jog by 10 frames; press switch monitor |
 | Lift/Gamma/Gain wheels | lift | gamma | gain |
-| Any other effect parameter | change the value; hold + turn for fine steps; press toggles normal/fine | move the playhead; press play/pause | next/previous parameter |
+| Any other effect parameter | change the value; press toggles normal/fine steps | move the playhead; press play/pause | next/previous parameter |
 | Track page (key 13) | pick a track | track mixer gain | selected clip's gain |
 | Trim page (key 13 twice) | jog | resize the start of the selected clip(s) | resize the end |
 | Anything else in Kdenlive | as on the timeline | | |
@@ -103,11 +105,10 @@ means turning a knob while it is pressed down.
 More detail on some of these:
 
 * **Lift/Gamma/Gain wheels:** each knob edits its own wheel. Pressing a knob
-  cycles that wheel's channel: value, then red, green, blue. Hold + turn
-  gives fine steps.
-* **Track page:** keys 1–4 toggle mute (hide on a video track), solo, lock and
+  cycles that wheel's channel: value, then red, green, blue.
+* **Track page:** keys 2–5 toggle mute (hide on a video track), solo, lock and
   target for the selected track.
-* **Trim page:** the knobs only resize clips; they never ripple. Keys 1–4:
+* **Trim page:** the knobs only resize clips; they never ripple. Keys 2–5:
   cut the clip's start to the playhead, cut its end to the playhead, remove
   the gap at the playhead, and extract the selection (delete and close the
   gap).
@@ -118,7 +119,7 @@ Keys (row 1 = keys 1–5):
 
 | | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|
-| Row 1 | mark in | mark out | insert | overwrite | switch monitor |
+| Row 1 | cheatsheet (hold) | mark in | mark out | insert | overwrite |
 | Row 2 | cut | delete | previous snap | next snap | add marker |
 | Row 3 | select tool | razor tool | **page**: edit → track → trim | undo | redo |
 
@@ -132,25 +133,51 @@ effect parameter layer:
 
 Each knob gesture is one undo step in Kdenlive.
 
-Other apps have their own profiles. For example, the global profile sets knob 1
-to volume (press = mute) and keys 11–13 to previous track, play/pause and next
-track.
+Other apps:
+
+* **Brave:** keys 6–10 back, forward, reload, new tab, close tab; knob 2
+  scrolls (press reopens a closed tab); knob 3 switches tabs (press: address
+  bar).
+* **Everything else (global profile):** keys 2–5 start Grafium, Brave,
+  Copilot and Kdenlive, keys 6–8 a terminal, your files and Settings (an app
+  that is not installed is skipped); keys 11–13 previous track, play/pause,
+  next track; knob 1 is the volume (press mutes), knob 2 scrolls (press:
+  middle click).
+
+Turning a knob while it is pressed does nothing: the pad's firmware ignores
+it, because pressing a knob moves its contacts.
 
 ## 6. Change the configuration
 
-Edit `~/.config/control-surface/config.jsonc`. The service reloads it when you
-save. If the file has an error, the service keeps the previous configuration
-and tells you why, in a notification and in the log. To check a file before
-saving it in place:
+Simple options have a command, so you never have to edit the file for them:
+
+```sh
+control-surfaced get                      # every simple option and its value
+control-surfaced set input raw            # how the pad is read: auto, evdev or raw
+control-surfaced set cheatsheet.opacity 0.5
+```
+
+`set` checks the value, keeps the previous file as `config.jsonc.bak`, changes
+only that value (your comments stay) and tells you when the running service
+has applied it. The input modes: `auto` (the default) reads the pad raw on
+firmware 2.0.2 or newer, else through its keymap; `evdev` always uses the
+keymap ("compatible"); `raw` always the firmware's own events ("fastest").
+
+What each key and knob does lives in `~/.config/control-surface/config.jsonc`:
+the per-app profiles come first, the advanced settings at the end. The
+service reloads the file when you save. If it has an error, the service keeps
+the previous configuration and tells you why, in a notification and in the
+log. To check a file:
 
 ```sh
 control-surfaced check-config -c ~/.config/control-surface/config.jsonc
 ```
 
-Errors name the place, for example `profile kdenlive layer trim key1: cycles
+Errors name the place, for example `profile kdenlive layer trim key2: cycles
 undefined mode 'x'`. Warnings point out names that this daemon does not know.
 
-The file's header documents every binding form. In short:
+[docs/config-reference.md](docs/config-reference.md) documents every option
+and binding form. In short:
 
 * **Layers.** Each layer has a `"when"` (for example `{"focus":
   "clipMonitor"}`, `{"colorWheels": true}` or `{"$mode.page": "track"}`) and
@@ -160,10 +187,11 @@ The file's header documents every binding form. In short:
   * an action: `{"action": "zoom_fit"}`;
   * a command: `{"request": "track.set", "params": {…}}`;
   * a mode switch: `{"cycle": "page"}`;
-  * keys, for other apps: `"ctrl+z"`.
-* **Knobs.** `"turn"`, `"ccw"`/`"cw"`, `"press"`, and `"shift": {"turn": …}`
-  for hold + turn. `"scale"` multiplies detents. `"accel"` sets acceleration
-  for one binding; 1 turns it off.
+  * keys, for other apps: `"ctrl+z"`;
+  * a program: `{"command": ["gtk-launch", "brave-browser"]}`;
+  * the overlay: `{"cheatsheet": "hold"}`.
+* **Knobs.** `"turn"`, `"ccw"`/`"cw"` and `"press"`. `"scale"` multiplies
+  detents. `"accel"` sets acceleration for one binding; 1 turns it off.
 
 `control-surfaced list-capabilities` prints every context value that `"when"`
 can test, with its current value.

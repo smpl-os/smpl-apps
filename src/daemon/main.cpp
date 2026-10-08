@@ -3,6 +3,7 @@
 #include "cheatsheet.h"
 #include "ewwsink.h"
 #include "config.h"
+#include "configedit.h"
 #include "configstore.h"
 #include "configwatcher.h"
 #include "engine.h"
@@ -37,6 +38,7 @@
 #include <QStandardPaths>
 #include <QSocketNotifier>
 #include <QTextStream>
+#include <QThread>
 #include <QTimer>
 
 #include <algorithm>
@@ -362,7 +364,8 @@ int main(int argc, char **argv)
     p.setApplicationDescription(QStringLiteral(
         "Per-application control surface for the CH552 macro pad (1189:8890).\n"
         "Commands: run (default) | status | monitor | simulate [FILE|-] | verify | list-devices | list-capabilities | list-actions |\n"
-        "          firmware-info | enter-bootloader --yes | features | cheatsheet | check-config | example-config | bench-dbus [N]"));
+        "          firmware-info | enter-bootloader --yes | features | cheatsheet | check-config | example-config | bench-dbus [N] |\n"
+        "          set KEY VALUE | get [KEY]   (simple options without editing: set input raw|evdev|auto)"));
     p.addHelpOption();
     p.addVersionOption();
     p.addPositionalArgument(QStringLiteral("command"), QStringLiteral("see above"));
@@ -502,6 +505,124 @@ int main(int argc, char **argv)
                     .arg(lay.value(QStringLiteral("source")).toString()));
             say(QStringLiteral("config:   %1%2").arg(cf.value(QStringLiteral("path")).toString(),
                                                     cf.value(QStringLiteral("error")).toString().isEmpty() ? QString() : QStringLiteral(" (invalid: %1)").arg(cf.value(QStringLiteral("error")).toString())));
+        }
+        return 0;
+    }
+    if (cmd == QLatin1String("set") || cmd == QLatin1String("get")) {
+        // Simple options without editing the file: validated as a whole
+        // config, written atomically with a backup; a running daemon that uses
+        // this file applies it at once. Exit 0 ok, 2 bad option or value, 3 not written.
+        const QStringList a = p.positionalArguments();
+        const QString path = p.value(configOpt);
+        const bool asJson = p.isSet(jsonOpt);
+        auto emitJson = [](const QJsonObject &o) { say(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))); };
+        auto text = [](const QJsonValue &v) {
+            return v.isNull() || v.isUndefined() ? QStringLiteral("(not set)") : QString::fromUtf8(QJsonDocument(QJsonArray{v}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
+        };
+        if (cmd == QLatin1String("get") || a.size() == 1) {
+            QJsonArray all;
+            for (const OptionSpec &s : settableOptions()) {
+                if (a.size() < 2 || s.key.compare(a.at(1), Qt::CaseInsensitive) == 0) {
+                    all.append(getOption(path, s.key));
+                }
+            }
+            if (all.isEmpty()) {
+                const QJsonObject e = getOption(path, a.value(1));
+                asJson ? emitJson(e) : say(QStringLiteral("error: %1").arg(e.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString()));
+                return 2;
+            }
+            if (asJson) {
+                emitJson(all.size() == 1 && a.size() == 2 ? all.first().toObject() : QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("options"), all}});
+                return 0;
+            }
+            for (const auto &v : std::as_const(all)) {
+                const QJsonObject o = v.toObject();
+                const bool set = !o.value(QStringLiteral("value")).isNull();
+                QString line = QStringLiteral("%1 = %2%3").arg(o.value(QStringLiteral("key")).toString(), text(o.value(QStringLiteral("effective"))),
+                                                               set ? QString() : QStringLiteral("  (default)"));
+                if (a.size() < 2) {
+                    const QString values = o.contains(QStringLiteral("values"))
+                                               ? o.value(QStringLiteral("values")).toVariant().toStringList().join(QLatin1Char('|'))
+                                               : o.value(QStringLiteral("type")).toString();
+                    line += QStringLiteral("\n    %1: %2").arg(values, o.value(QStringLiteral("help")).toString());
+                }
+                say(line);
+            }
+            if (a.size() < 2) {
+                say(QStringLiteral("\nChange one with: control-surfaced set KEY VALUE   (file: %1)").arg(path));
+            }
+            return 0;
+        }
+        if (a.size() != 3) {
+            const auto spec = a.size() == 2 ? optionSpec(a.at(1)) : std::nullopt;
+            if (spec) {
+                const QJsonObject o = getOption(path, spec->key);
+                const QString values = spec->type == OptionSpec::Enum ? spec->values.join(QLatin1Char('|'))
+                                       : spec->type == OptionSpec::Bool ? QStringLiteral("true|false")
+                                       : spec->type == OptionSpec::String ? QStringLiteral("TEXT")
+                                                                          : QStringLiteral("%1..%2").arg(spec->min).arg(spec->max);
+                std::fprintf(stderr, "usage: control-surfaced set %s %s   (now: %s)\n", qPrintable(spec->key), qPrintable(values),
+                             qPrintable(text(o.value(QStringLiteral("effective")))));
+            } else {
+                std::fprintf(stderr, "usage: control-surfaced set KEY VALUE   (control-surfaced get lists the keys)\n");
+            }
+            return 2;
+        }
+        const OptionChange r = setOption(path, a.at(1), a.at(2));
+        QJsonObject out = r.toJson();
+        QString applied;
+        if (r.ok && r.changed) {
+            // The daemon reloads the file by itself; report what it does now.
+            QDBusConnection bus = QDBusConnection::sessionBus();
+            if (bus.interface() && bus.interface()->isServiceRegistered(QLatin1String(SettingsService::kService))) {
+                QJsonObject st;
+                // Raw input starts after a GET_INFO round trip: give an input
+                // change up to 3 s to show the mode it asked for.
+                const QString wantMode = r.key != QLatin1String("input") ? QString()
+                                         : r.newValue.toString() == QLatin1String("evdev") ? QStringLiteral("evdev-chords") : QStringLiteral("raw");
+                int settle = 0;
+                for (int i = 0; i < 60; ++i) {
+                    auto m = QDBusMessage::createMethodCall(QLatin1String(SettingsService::kService), QLatin1String(SettingsService::kPath),
+                                                            QLatin1String(SettingsService::kInterface), QStringLiteral("GetStatus"));
+                    st = QJsonDocument::fromJson(bus.call(m, QDBus::Block, 2000).arguments().value(0).toString().toUtf8()).object();
+                    const QJsonObject c = st.value(QStringLiteral("config")).toObject();
+                    if (c.value(QStringLiteral("path")).toString() != QFileInfo(path).absoluteFilePath() && c.value(QStringLiteral("path")).toString() != path) {
+                        applied = QStringLiteral("the running daemon uses another config file (%1)").arg(c.value(QStringLiteral("path")).toString());
+                        break;
+                    }
+                    if (c.value(QStringLiteral("hash")).toString() == r.hash) {
+                        const QString mode = st.value(QStringLiteral("input")).toObject().value(QStringLiteral("mode")).toString();
+                        if (!wantMode.isEmpty() && !mode.isEmpty() && mode != wantMode && ++settle < 30) {
+                            QThread::msleep(100);
+                            continue;
+                        }
+                        out.insert(QStringLiteral("daemon"), QJsonObject{{QStringLiteral("applied"), true}, {QStringLiteral("inputMode"), mode}});
+                        applied = mode.isEmpty() ? QStringLiteral("the running daemon applied it") : QStringLiteral("the running daemon applied it (input now: %1)").arg(mode);
+                        break;
+                    }
+                    QThread::msleep(100);
+                }
+                if (applied.isEmpty()) {
+                    out.insert(QStringLiteral("daemon"), QJsonObject{{QStringLiteral("applied"), false}});
+                    applied = QStringLiteral("the running daemon has not applied it yet (see its log)");
+                }
+            } else {
+                applied = QStringLiteral("no daemon running: it applies at the next start");
+            }
+        }
+        if (asJson) {
+            emitJson(out);
+        } else if (!r.ok) {
+            std::fprintf(stderr, "error: %s\n", qPrintable(r.message));
+        } else if (!r.changed) {
+            say(QStringLiteral("%1 is already %2").arg(r.key, text(r.newValue)));
+        } else {
+            say(QStringLiteral("%1: %2 -> %3 (saved %4%5); %6")
+                    .arg(r.key, text(r.oldValue), text(r.newValue), r.path,
+                         r.backup.isEmpty() ? QString() : QStringLiteral(", previous version %1").arg(r.backup), applied));
+        }
+        if (!r.ok) {
+            return r.code == QLatin1String("unknown-option") || r.code == QLatin1String("invalid-value") || r.code == QLatin1String("invalid-config") ? 2 : 3;
         }
         return 0;
     }

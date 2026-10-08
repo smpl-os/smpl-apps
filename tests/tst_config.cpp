@@ -59,7 +59,9 @@ private Q_SLOTS:
         QCOMPARE(layers, (QStringList{QStringLiteral("color-wheels"), QStringLiteral("effect-parameter"), QStringLiteral("track-video"), QStringLiteral("track-mixer"),
                                       QStringLiteral("trim"), QStringLiteral("clip-monitor"), QStringLiteral("project-monitor"), QStringLiteral("timeline")}));
         QCOMPARE(kd->layers.at(3).when.value(QStringLiteral("$mode.page")).toString(), QStringLiteral("track"));
-        QCOMPARE(kd->layers.at(0).bindings.value(QStringLiteral("knob2.shift.turn")).options.value(QStringLiteral("step")).toString(), QStringLiteral("fine"));
+        QCOMPARE(kd->layers.at(0).bindings.value(QStringLiteral("knob2.turn")).options.value(QStringLiteral("wheel")).toString(), QStringLiteral("gamma"));
+        QCOMPARE(kd->layers.at(0).bindings.value(QStringLiteral("knob2.press")).kind, Binding::Cycle);
+        QVERIFY(!kd->layers.at(0).bindings.contains(QStringLiteral("knob2.shift.turn")));  // the firmware ignores turns while pressed
         QCOMPARE(kd->bindings.value(QStringLiteral("key13")).kind, Binding::Cycle);
         QVERIFY(cfg->warnings.isEmpty());
         QCOMPARE(cfg->profileFor(QStringLiteral("org.kde.kdenlive.automation-preview"), {})->name, QStringLiteral("kdenlive"));

@@ -286,7 +286,121 @@ private Q_SLOTS:
         QCOMPARE(j.value(QStringLiteral("slots")).toObject().value(QStringLiteral("maxKnobs")).toInt(), 3);
         QCOMPARE(j.value(QStringLiteral("dbus")).toObject().value(QStringLiteral("interface")).toString(), QStringLiteral("org.smplos.ControlSurface1"));
         QVERIFY(j.value(QStringLiteral("layouts")).toObject().value(QStringLiteral("builtin")).toArray().size() >= 5);
+        // Simple options and the input-mode names a settings UI shows.
+        const QJsonObject device = j.value(QStringLiteral("device")).toObject();
+        QCOMPARE(device.value(QStringLiteral("inputDefault")).toString(), QStringLiteral("auto"));
+        QCOMPARE(device.value(QStringLiteral("inputLabels")).toObject(),
+                 (QJsonObject{{QStringLiteral("auto"), QStringLiteral("Automatic")}, {QStringLiteral("evdev"), QStringLiteral("Keymap (compatible)")},
+                              {QStringLiteral("raw"), QStringLiteral("Raw (fastest)")}}));
+        QStringList optionKeys;
+        for (const auto &o : j.value(QStringLiteral("options")).toArray()) {
+            optionKeys << o.toObject().value(QStringLiteral("key")).toString();
+        }
+        QVERIFY(optionKeys.contains(QStringLiteral("input")) && optionKeys.contains(QStringLiteral("cheatsheet.opacity")));
+        QCOMPARE(j.value(QStringLiteral("slots")).toObject().value(QStringLiteral("shiftSupported")), QJsonValue(false));
         // (tst_config checks that every advertised name and example parses.)
+    }
+
+    void setAndGet()
+    {
+        QFile ex(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"));
+        QVERIFY(ex.open(QIODevice::ReadOnly));
+        const QByteArray example = ex.readAll();
+        const QString cfg = m_home.path() + QStringLiteral("/set/config.jsonc");
+        writeFile(cfg, example);
+
+        Run r = run({QStringLiteral("set"), QStringLiteral("input"), QStringLiteral("keymap"), QStringLiteral("-c"), cfg, QStringLiteral("--json")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QJsonObject j = r.json();
+        QVERIFY(j.value(QStringLiteral("ok")).toBool());
+        QVERIFY(j.value(QStringLiteral("changed")).toBool());
+        QCOMPARE(j.value(QStringLiteral("old")).toString(), QStringLiteral("auto"));
+        QCOMPARE(j.value(QStringLiteral("new")).toString(), QStringLiteral("evdev"));
+        QCOMPARE(j.value(QStringLiteral("backup")).toString(), cfg + QStringLiteral(".bak"));
+        QFile bak(cfg + QStringLiteral(".bak"));
+        QVERIFY(bak.open(QIODevice::ReadOnly));
+        QCOMPARE(bak.readAll(), example);
+        QFile now(cfg);
+        QVERIFY(now.open(QIODevice::ReadOnly));
+        QCOMPARE(now.readAll(), QByteArray(example).replace("\"input\": \"auto\"", "\"input\": \"evdev\""));
+
+        r = run({QStringLiteral("set"), QStringLiteral("input"), QStringLiteral("evdev"), QStringLiteral("-c"), cfg}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QVERIFY(r.out.contains("already"));
+        r = run({QStringLiteral("set"), QStringLiteral("input"), QStringLiteral("fast"), QStringLiteral("-c"), cfg, QStringLiteral("--json")}, m_home.path());
+        QCOMPARE(r.code, 2);
+        QCOMPARE(r.json().value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toString(), QStringLiteral("invalid-value"));
+        r = run({QStringLiteral("set"), QStringLiteral("nope"), QStringLiteral("1"), QStringLiteral("-c"), cfg}, m_home.path());
+        QCOMPARE(r.code, 2);
+        QVERIFY(r.err.contains("no option 'nope'"));
+        r = run({QStringLiteral("set"), QStringLiteral("input"), QStringLiteral("-c"), cfg}, m_home.path());  // no value: how to
+        QCOMPARE(r.code, 2);
+        QVERIFY2(r.err.contains("usage: control-surfaced set input auto|evdev|raw   (now: \"evdev\")"), r.err.constData());
+
+        r = run({QStringLiteral("get"), QStringLiteral("input"), QStringLiteral("-c"), cfg, QStringLiteral("--json")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QCOMPARE(r.json().value(QStringLiteral("value")).toString(), QStringLiteral("evdev"));
+        QCOMPARE(r.json().value(QStringLiteral("default")).toString(), QStringLiteral("auto"));
+        r = run({QStringLiteral("get"), QStringLiteral("-c"), cfg, QStringLiteral("--json")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QCOMPARE(r.json().value(QStringLiteral("options")).toArray().size(), 9);
+        r = run({QStringLiteral("get"), QStringLiteral("-c"), cfg}, m_home.path());
+        QVERIFY(r.out.contains("cheatsheet.autoHideMs = 8000  (default)"));
+        QVERIFY(r.out.contains("control-surfaced set KEY VALUE"));
+        r = run({QStringLiteral("get"), QStringLiteral("nope"), QStringLiteral("-c"), cfg}, m_home.path());
+        QCOMPARE(r.code, 2);
+
+        // No file yet: it starts from the shipped example.
+        const QString fresh = m_home.path() + QStringLiteral("/set/fresh/config.jsonc");
+        r = run({QStringLiteral("set"), QStringLiteral("cheatsheet.opacity"), QStringLiteral("0.5"), QStringLiteral("-c"), fresh, QStringLiteral("--json")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QFile f(fresh);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray(example).replace("\"opacity\": 0.35", "\"opacity\": 0.5"));
+
+        // A file that cannot be written: exit 3, nothing changed.
+        const QString lockedDir = m_home.path() + QStringLiteral("/set/locked");
+        writeFile(lockedDir + QStringLiteral("/config.jsonc"), example);
+        QVERIFY(QFile::setPermissions(lockedDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        r = run({QStringLiteral("set"), QStringLiteral("input"), QStringLiteral("raw"), QStringLiteral("-c"), lockedDir + QStringLiteral("/config.jsonc")}, m_home.path());
+        QFile::setPermissions(lockedDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        QCOMPARE(r.code, 3);
+    }
+
+    // `set` waits for a running daemon to load the change and says so.
+    void setAppliesToRunningDaemon()
+    {
+        if (qEnvironmentVariable("CS_PRIVATE_BUS") != QLatin1String("1")) {
+            QSKIP("starts a daemon with the settings API: private bus only (ctest)");
+        }
+        const QString cfg = m_home.path() + QStringLiteral("/applied.jsonc");
+        writeFile(cfg, R"({"device": {"serial": "cs-test-no-such-pad", "input": "auto"}, "profiles": [{"name": "global", "bindings": {"key1": "ctrl+t"}}]})");
+        QProcess p;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("XDG_CONFIG_HOME"), m_home.path() + QStringLiteral("/config"));
+        p.setProcessEnvironment(env);
+        p.start(QStringLiteral(CS_DAEMON_BINARY), {QStringLiteral("run"), QStringLiteral("--quiet"), QStringLiteral("--dry-run"), QStringLiteral("--window-backend"),
+                                                  QStringLiteral("none"), QStringLiteral("-c"), cfg});
+        QVERIFY(p.waitForStarted());
+        QTRY_VERIFY_WITH_TIMEOUT(QDBusConnection::sessionBus().interface()->isServiceRegistered(QStringLiteral("org.smplos.ControlSurface")), 5000);
+
+        Run r = run({QStringLiteral("set"), QStringLiteral("input"), QStringLiteral("evdev"), QStringLiteral("-c"), cfg, QStringLiteral("--json")}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QJsonObject d = r.json().value(QStringLiteral("daemon")).toObject();
+        QVERIFY2(d.value(QStringLiteral("applied")).toBool(), r.out.constData());
+        QCOMPARE(d.value(QStringLiteral("inputMode")).toString(), QStringLiteral("evdev-chords"));
+        r = run({QStringLiteral("set"), QStringLiteral("cheatsheet.position"), QStringLiteral("top"), QStringLiteral("-c"), cfg}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QVERIFY2(r.out.contains("the running daemon applied it"), r.out.constData());
+        // Another file than the daemon's: said so, not waited for.
+        const QString other = m_home.path() + QStringLiteral("/other.jsonc");
+        writeFile(other, R"({"profiles": []})");
+        r = run({QStringLiteral("set"), QStringLiteral("input"), QStringLiteral("raw"), QStringLiteral("-c"), other}, m_home.path());
+        QCOMPARE(r.code, 0);
+        QVERIFY2(r.out.contains("uses another config file"), r.out.constData());
+
+        p.terminate();
+        QVERIFY(p.waitForFinished(8000));
     }
 
     void cheatsheetCommand()

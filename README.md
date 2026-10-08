@@ -50,9 +50,13 @@ systemctl --user enable --now control-surface.service
 ```
 
 Configuration: `~/.config/control-surface/config.jsonc` (installed from
-`data/config.example.jsonc`, which documents every binding form). It is
-reloaded on save. Check it with `control-surfaced check-config`, and compare it
-with what Kdenlive offers with `control-surfaced list-capabilities`.
+`data/config.example.jsonc`: the per-app profiles first, advanced settings at
+the end). It is reloaded on save. Simple options never need an editor:
+`control-surfaced get` lists them, `control-surfaced set input raw` changes
+one (validated, with a backup, comments kept). Check the file with
+`control-surfaced check-config`, and compare it with what Kdenlive offers with
+`control-surfaced list-capabilities`. Every option and binding form:
+[docs/config-reference.md](docs/config-reference.md).
 
 ## Commands
 
@@ -62,6 +66,7 @@ with what Kdenlive offers with `control-surfaced list-capabilities`.
 | `control-surfaced verify [--no-write]` | interactive pad check / hardware map learning |
 | `control-surfaced simulate FILE\|-` | run scripted events (`window org.kde.kdenlive`, `key3`, `knob1 +5`, `knob2 press`/`hold`/`release`, `context {…}`, `kdenlive off`, `expect notice`, `expect no-keys`, …) and print the resulting actions; `--kdenlive-service NAME` drives a real Kdenlive with a non-emitting key sink |
 | `control-surfaced list-capabilities [--json] [--kdenlive-service NAME]` | what the running Kdenlive offers (controls, commands, actions, limits, context paths for `when`) and which configured bindings it does not offer; read-only, no lease |
+| `control-surfaced set KEY VALUE` / `get [KEY]` `[-c FILE] [--json]` | change or show a simple option (`input`, `serial`, `cheatsheet.*`, `settings.*`) in place: validated, backed up, written atomically; waits for a running daemon to apply it |
 | `control-surfaced status [--json]` | daemon, pad, firmware, effective layout and config (offline when the daemon is not running) |
 | `control-surfaced monitor [--json] [--identify]` | live input, one line per press/release/detent; follows daemon restarts; `--identify` reports without dispatching |
 | `control-surfaced list-actions [--json]` / `features [--json]` | offline: the curated Kdenlive actions, controls and commands; binding kinds and key/mouse names |

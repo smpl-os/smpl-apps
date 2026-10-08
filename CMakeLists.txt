@@ -67,6 +67,7 @@ add_library(cs_core STATIC
     src/daemon/cheatsheet.cpp
     src/daemon/ewwsink.cpp
     src/daemon/installed.cpp
+    src/daemon/configedit.cpp
 )
 target_include_directories(cs_core PUBLIC src/daemon src/proto)
 target_link_libraries(cs_core PUBLIC cs_proto cs_catalog Qt6::Core Qt6::Network Qt6::DBus PkgConfig::UDEV)
@@ -95,7 +96,7 @@ install(TARGETS control-surfaced ch552-padprog RUNTIME DESTINATION ${CMAKE_INSTA
 
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    foreach(t proto decoder hardwaremap config coalescer engine hyprland kdenlive_dbus kdenlive_bus uinput paddevice cheatsheet eww)
+    foreach(t proto decoder hardwaremap config coalescer engine hyprland kdenlive_dbus kdenlive_bus uinput paddevice cheatsheet eww configedit)
         add_executable(tst_${t} tests/tst_${t}.cpp)
         target_link_libraries(tst_${t} PRIVATE cs_core cs_mock Qt6::Test)
         target_compile_definitions(tst_${t} PRIVATE CS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
@@ -117,6 +118,9 @@ if(BUILD_TESTING)
     if(Python3_Interpreter_FOUND)
         add_test(NAME fw_asmcheck COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/firmware/asmcheck.py --self-test)
     endif()
+    # flash-and-verify.sh refuses to run while a daemon reads the pad raw (a
+    # fake gdbus answers; nothing can be flashed).
+    add_test(NAME flash_preflight COMMAND bash ${CMAKE_SOURCE_DIR}/tests/tst_flash_preflight.sh ${CMAKE_SOURCE_DIR}/firmware/flash-and-verify.sh)
     target_sources(tst_kdenlive_dbus PRIVATE tests/rawclient.h)
     target_sources(tst_kdenlive_bus PRIVATE tests/rawclient.h)
     # The pacing test runs the mock as a separate process (its own event loop).

@@ -102,6 +102,9 @@ nothing is dispatched (no keys, no Kdenlive actions). It turns off:
 | `ValidateConfig(s text) → s` | `{ok, errors[], warnings[], profiles: [{name, layers, bindings, kdenlive, keyFallback}], hardwareSource, layout}`: `layout` is what this config would give on the pad plugged in now (with `firmwareLayout`, `matchesFirmware`); a mismatching override adds a `layout:` warning. Nothing is written or applied. |
 | `SetConfig(s text, s expectedHash) → s` | `{ok, hash, backup, errors[], warnings[], error?}` |
 | `ReloadConfig() → s` | `{ok, hash, warnings[], error?}` (re-reads the file) |
+| `ListOptions() → s` | `{ok, options: [{key, path, type: enum\|string\|number\|integer\|bool, values?, labels?, min?, max?, help}]}`: the simple options (`input`, `serial`, `cheatsheet.opacity`, `cheatsheet.autoHideMs`, `cheatsheet.position`, `cheatsheet.eww`, `settings.accelFactor`, `settings.accelWindowMs`, `settings.keyRateHz`). `labels` maps enum values to UI names (input: auto "Automatic", evdev "Keymap (compatible)", raw "Raw (fastest)"). Also in `features.options`. |
+| `GetOption(s key) → s` | `{ok, key, path, type, ..., value, default, effective, file}`: `value` is what the file says (`null`: not set), `effective` what applies |
+| `SetOption(s key, s value) → s` | `{ok, key, old, new, changed, hash, backup, path, error?: {code, message}}`: changes one value in place (comments and layout kept; a missing member is added), validates the whole config, writes it like `SetConfig` (backup, atomic) and applies it. The value is text as typed (`raw`, `0.5`, `true`; input also accepts `keymap` and `automatic`). Error codes: `unknown-option`, `invalid-value`, `invalid-config` (nothing written), `io`, `apply`. Unchanged values write nothing (`changed: false`). |
 
 `SetConfig` rules:
 * The text must validate (error code `invalid`).
@@ -113,6 +116,11 @@ nothing is dispatched (no keys, no Kdenlive actions). It turns off:
   atomically, then applied.
 * `apply` means the file was written but the daemon refused to apply it.
 * A hand edit is never overwritten silently.
+
+A settings UI changes simple options with `SetOption` (the Keypad tab's
+"Input mode: Automatic / Keymap (compatible) / Raw (fastest)" is
+`SetOption("input", "auto"|"evdev"|"raw")`); `SetConfig` is for the
+profile editor. Neither needs the person to edit JSON.
 
 For line-level error locations, use `control-surfaced check-config -c FILE
 --json`. It reports `error: {message, profile, layer, slot}` and
@@ -325,6 +333,8 @@ change, shown or hidden) stays for debugging.
 | Command | Output |
 |---|---|
 | `control-surfaced monitor [--json] [--identify]` | One line per input: `{"slot","event","delta","ms"}`. It follows a running daemon (or the mock) over D-Bus, also across daemon restarts; without one, it reads the pad directly (grabbed, nothing dispatched). `--identify` keeps `SetIdentify(true)` while it runs: inputs are reported, nothing is dispatched (`scripts/stress-test.py` uses it). |
+| `control-surfaced set KEY VALUE [-c FILE] [--json]` | `SetOption` on the file, without a daemon: `{ok, key, old, new, changed, hash, backup, path, daemon?: {applied, inputMode}}`. A missing file starts from the shipped example. With a daemon running on that file it waits (up to ~6 s) until the daemon has loaded the change; after an `input` change, until the mode settles. Exit 0 (also when already so), 2 unknown option, bad value or invalid result (nothing written), 3 not written. `set KEY` alone prints the allowed values and the current one. |
+| `control-surfaced get [KEY] [-c FILE] [--json]` | `GetOption` for one key, or `{ok, options: [...]}` for all; the text form lists each value, `(default)` when unset, and the allowed values |
 | `control-surfaced status [--json]` | The daemon's `GetStatus`, or offline: `{ok, daemon: false, mode: "offline", device, bootloaderPresent, layout, config}` (sysfs only: the version is bcdDevice's) |
 | `control-surfaced check-config [-c FILE] --json` | `{ok, error: {message, profile, layer, slot} \| null, warnings[], warningDetails[], profiles[], path, source, layout}`; `layout` and a `layout:` mismatch warning against the pad plugged in now (sysfs only); exit 0 or 2 |
 | `control-surfaced list-actions [--json]` | `GetCatalog("kdenlive")` offline |
@@ -354,20 +364,24 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
 * `"layout"`, described under State.
 * `"device": {"serial": "", "input": "auto|evdev|raw"}`. An empty serial
   drives the first 1189:8890 pad found and keeps it if another is plugged in.
-  Input modes are below; a change applies on reload, no restart.
+  Input modes are below; a change applies on reload, no restart. Prefer
+  `SetOption("input", ...)` / `control-surfaced set input ...` over editing.
 
 ## Input modes
 
-* `auto` (the default): `raw` with the control-surface firmware 2.0.2+,
-  `evdev` with anything else.
-* `evdev`: the daemon reads what the pad types from its
+Change it with `control-surfaced set input auto|evdev|raw` or
+`SetOption("input", ...)`.
+
+* `auto` (the default; "Automatic"): `raw` with the control-surface firmware
+  2.0.2+, `evdev` with anything else.
+* `evdev` ("Keymap (compatible)"): the daemon reads what the pad types from its
   keymap (layer 0 chords). A key's chord goes down with the key and up with
   it, so holds are real; a detent is one tap. Verified on hardware. Limit:
   keys that share an F-key in layer 0 (keyN, keyN+6 and keyN+12: F14..F19
   plain, with Shift, with Ctrl) cannot be told apart while held together;
   raw mode has no such limit. (The TM1650 itself reports one matrix key at a
   time; key 1 is on its own pin.)
-* `raw`: the control-surface firmware sends its own events (report 5:
+* `raw` ("Raw (fastest)"): the control-surface firmware sends its own events (report 5:
   sequence number, slot, down/up/tap, count) while the daemon sends a
   heartbeat every 500 ms. Needs firmware 2.0.2: 2.0.1 left raw mode at every
   wrap of its 8-bit millisecond clock (an SDCC miscompile), which lost inputs

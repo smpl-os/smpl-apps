@@ -137,6 +137,14 @@ public Q_SLOTS:
     Q_SCRIPTABLE QString GetConfig(QString &path, QString &hash);
     Q_SCRIPTABLE QString ValidateConfig(const QString &text);
     Q_SCRIPTABLE QString SetConfig(const QString &text, const QString &expectedHash);
+    // One simple option (input, serial, cheatsheet.opacity ...; ListOptions)
+    // without editing the text: validated, backed up, written and applied.
+    // value is as typed ("raw", "0.35", "true"). -> {ok, key, old, new, changed, hash, backup} or {ok: false, error}
+    Q_SCRIPTABLE QString SetOption(const QString &key, const QString &value);
+    // -> {ok, key, path, type, values?, min?, max?, help, value (null: not set), default, effective, file}
+    Q_SCRIPTABLE QString GetOption(const QString &key);
+    // -> {ok, options: [{key, path, type, values?, min?, max?, help}]}
+    Q_SCRIPTABLE QString ListOptions();
     Q_SCRIPTABLE QString ReloadConfig();
     Q_SCRIPTABLE QString ListPlugins();
     Q_SCRIPTABLE QString GetCatalog(const QString &pluginId);  // offline: what bindings can name

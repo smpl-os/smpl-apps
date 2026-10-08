@@ -2,6 +2,7 @@
 // Settings API (org.smplos.ControlSurface1), its building blocks and the mock.
 // Bus tests run only on a PRIVATE bus (ctest starts this under dbus-run-session).
 #include "boardprofile.h"
+#include "configedit.h"
 #include "configstore.h"
 #include "ewwmock.h"
 #include "flashjob.h"
@@ -778,6 +779,64 @@ private Q_SLOTS:
         s.setConfigApplier([](const Config &) { return QStringLiteral("busy"); });
         writeFile(path, kConfig);
         r = obj(s.SetConfig(QString::fromUtf8(kConfig2), ConfigStore::hashOf(kConfig)));
+        QCOMPARE(r.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toString(), QStringLiteral("apply"));
+    }
+
+    // SetOption/GetOption/ListOptions: `control-surfaced set` for the Settings app.
+    void serviceOptions()
+    {
+        QTemporaryDir t;
+        const QString path = t.path() + QStringLiteral("/config.jsonc");
+        const QByteArray text = "// mine\n{\n    \"profiles\": [],  // none yet\n    \"device\": { \"serial\": \"\", \"input\": \"auto\" }\n}\n";
+        writeFile(path, text);
+        SettingsService s(path);
+        QList<Config> applied;
+        s.setConfigApplier([&](const Config &c) {
+            applied << c;
+            return QString();
+        });
+        s.setConfigState(ConfigStore::hashOf(text), QString(), {});
+        QSignalSpy changed(&s, &SettingsService::ConfigChanged);
+
+        const QJsonObject list = obj(s.ListOptions());
+        QVERIFY(list.value(QStringLiteral("ok")).toBool());
+        QCOMPARE(list.value(QStringLiteral("options")).toArray().size(), settableOptions().size());
+        const QJsonObject input = list.value(QStringLiteral("options")).toArray().first().toObject();
+        QCOMPARE(input.value(QStringLiteral("key")).toString(), QStringLiteral("input"));
+        QCOMPARE(input.value(QStringLiteral("labels")).toObject().value(QStringLiteral("evdev")).toString(), QStringLiteral("Keymap (compatible)"));
+
+        QJsonObject r = obj(s.SetOption(QStringLiteral("input"), QStringLiteral("raw")));
+        QVERIFY2(r.value(QStringLiteral("ok")).toBool(), qPrintable(QJsonDocument(r).toJson()));
+        QVERIFY(r.value(QStringLiteral("changed")).toBool());
+        QCOMPARE(applied.size(), 1);
+        QCOMPARE(applied.last().device.input, QStringLiteral("raw"));
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(s.configHash(), r.value(QStringLiteral("hash")).toString());
+        QByteArray now;
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            now = f.readAll();
+        }
+        QCOMPARE(now, QByteArray(text).replace("\"auto\"", "\"raw\""));  // comments kept
+        QVERIFY(QFile::exists(path + QStringLiteral(".bak")));
+
+        r = obj(s.SetOption(QStringLiteral("cheatsheet.opacity"), QStringLiteral("0.5")));
+        QVERIFY(r.value(QStringLiteral("ok")).toBool());
+        QCOMPARE(applied.last().cheatsheet.opacity, 0.5);
+        QCOMPARE(obj(s.GetOption(QStringLiteral("cheatsheet.opacity"))).value(QStringLiteral("value")).toDouble(), 0.5);
+        QCOMPARE(obj(s.GetOption(QStringLiteral("input"))).value(QStringLiteral("effective")).toString(), QStringLiteral("raw"));
+
+        r = obj(s.SetOption(QStringLiteral("input"), QStringLiteral("fast")));
+        QCOMPARE(r.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toString(), QStringLiteral("invalid-value"));
+        r = obj(s.SetOption(QStringLiteral("profiles"), QStringLiteral("[]")));
+        QCOMPARE(r.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toString(), QStringLiteral("unknown-option"));
+        QCOMPARE(applied.size(), 2);
+
+        // Written, but the daemon refuses it: reported.
+        s.setConfigApplier([](const Config &) { return QStringLiteral("busy"); });
+        r = obj(s.SetOption(QStringLiteral("input"), QStringLiteral("evdev")));
+        QVERIFY(!r.value(QStringLiteral("ok")).toBool());
         QCOMPARE(r.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toString(), QStringLiteral("apply"));
     }
 
