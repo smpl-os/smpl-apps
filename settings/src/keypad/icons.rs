@@ -91,6 +91,8 @@ mod tests {
             "space-off", "square", "square-check",
             // The Kdenlive catalog (c271522).
             "unlink", "wave-sine", "layout-board", "tag",
+            // The bin filter (af559d1).
+            "filter", "filter-off",
         ] {
             assert!(!glyph(name).is_empty(), "{name}");
         }
