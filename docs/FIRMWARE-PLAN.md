@@ -549,8 +549,16 @@ pending was dropped (6 of 443 GET_INFO in a test).
 * Daemon: refuses raw mode below 2.0.2, restores lost UPs, DOWNs and detents
   from the snapshots, releases a session's holds on a new epoch or 1.5 s of
   silence, uses keymap input that arrives while raw is on, counts all of it
-  (`GetStatus().input`), and keeps `"input": "auto"` on evdev until raw has
-  passed the stress test.
+  (`GetStatus().input`). `"input": "auto"` was evdev until raw passed the
+  stress test; it is raw on 2.0.2+ now.
+
+Verified on hardware (2026-10-08): flashed via CMD_BOOTLOADER, wchisp Verify
+OK; `rawcheck` 495 samples over 6 s, raw off 0, unanswered 0, ended 1.51 s
+after the last heartbeat; `scripts/stress-test.py --mode both` with the user
+59/59 (evdev 27, raw 32): exact press/release pairs, holds of 0.1–5 s,
+key1 + key2/key8, every knob's slow, fast and flick detents equal to the
+firmware's decoder counts in both modes; raw mode flips, drops, heartbeat
+misses, pad expiries, sequence gaps and restores all 0.
 
 Release: `firmware/release/control-surface-sy181-15k3e-2.0.2.bin`, 11448 bytes,
 sha256 `909f17f98ad61376c699f7664b23e568d0d67926174a812ed9c9cca1eb1131db`

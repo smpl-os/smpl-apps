@@ -63,8 +63,8 @@
     // "serial": "" drives the first 1189:8890 pad found (set one to pick among
     // several). "input": "evdev" reads the keys the pad types (its keymap: real
     // press and release); "raw" uses the control-surface firmware's own events
-    // (firmware 2.0.2+, older firmware falls back to evdev). "auto" is evdev
-    // until raw input has passed scripts/stress-test.py on the pad.
+    // (firmware 2.0.2+, older firmware falls back to evdev). "auto" is raw on
+    // firmware 2.0.2+ and evdev otherwise.
     "device": { "vendor": "1189", "product": "8890", "serial": "", "input": "auto" },
 
     // The cheatsheet overlay (drawn by the desktop, e.g. smplOS's eww bar).

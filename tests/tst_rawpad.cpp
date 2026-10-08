@@ -539,6 +539,17 @@ private Q_SLOTS:
         QCOMPARE(info.reportIds, (std::vector<int>{1, 2, 4, 3, 5}));
         // Stock-like: a vendor report 3 but no raw report 5.
         const QByteArray stockDesc = QByteArray::fromHex("0600ff0901a101850375089510090281029510090391020c0");
+        // The stock firmware's four real descriptors (read from the pad before the
+        // first flash) have no report IDs at all: "auto" never writes to it.
+        for (const char *real : {"05010906a101050719e029e7150025017501950881029501750881019503750105081901290391029505750191019506750826ff000507190029918100c0",
+                                 "05010900a101150025ff190129089508750881020902150025ff750895409106c0",
+                                 "05010902a1010901a1000509190129031500250175019503810275059501810105010930093109381581257f750895038106c0c0",
+                                 "050c0901a101150025010aea000ae9000ae2000ab5000ab6000acd000a8a010a83010a23020ab7000a70000a6f000a00000a00000a00000a00000a00000a00000a00000a00000a00000a00000a00000a112275019518810205011900298315002583750895018100c0"}) {
+            const QByteArray d = QByteArray::fromHex(real);
+            const auto stock = ch552::parseDescriptor(std::vector<std::uint8_t>(d.begin(), d.end()));
+            QVERIFY(stock.ok);
+            QVERIFY(stock.reportIds.empty());
+        }
 
         QTemporaryDir root;
         auto pad = [&](const QString &port, const QByteArray &serial, const QByteArray &desc, int n) {

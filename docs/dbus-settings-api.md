@@ -358,7 +358,9 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
 
 ## Input modes
 
-* `evdev` (and `auto`, for now): the daemon reads what the pad types from its
+* `auto` (the default): `raw` with the control-surface firmware 2.0.2+,
+  `evdev` with anything else.
+* `evdev`: the daemon reads what the pad types from its
   keymap (layer 0 chords). A key's chord goes down with the key and up with
   it, so holds are real; a detent is one tap. Verified on hardware. Limit:
   keys that share an F-key in layer 0 (keyN, keyN+6 and keyN+12: F14..F19
@@ -375,8 +377,9 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
   a lost DOWN or lost detents are restored at the next reply (a sequence gap
   asks for one at once), and a new epoch (the pad was on its keymap
   meanwhile) releases everything the session held. Keymap input that arrives
-  while raw mode is on is used, never dropped. `auto` switches to raw once
-  `scripts/stress-test.py --mode raw` has passed on the pad.
+  while raw mode is on is used, never dropped. Verified on hardware with 2.0.2
+  (`scripts/stress-test.py --mode both`: 59/59, no raw-mode flip, nothing
+  had to be restored).
 
 `GetStatus().input` has the counters; `scripts/stress-test.py` checks exact
 press/release pairs, holds of 0.1 to 5 s, two keys at once and every detent

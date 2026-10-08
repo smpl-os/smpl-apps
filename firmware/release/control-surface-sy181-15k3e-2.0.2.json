@@ -18,7 +18,23 @@
   "source": "firmware/ at commit 146df30",
   "toolchain": "SDCC 4.5.0 #15242",
   "flash": "wchisp flash <file> (ROM bootloader 4348:55e0; config registers untouched)",
-  "verifiedOnHardware": false,
+  "verifiedOnHardware": true,
   "knownIssues": [],
-  "notes": "Built reproducibly and host-tested (fw_logic including a 10 s run over ~39 wraps of the 8-bit millisecond clock under the daemon's heartbeats, fw_store, fw_asmcheck); not yet flashed. Fixes 2.0.1's raw-mode drops and dropped commands, adds the raw-session snapshot (GET_KEYS, RAW_MODE reply) and raw counters (GET_STATS page 2). On the pad: padctl.py rawcheck (run by flash-and-verify.sh), then scripts/stress-test.py --mode both."
+  "notes": "Built reproducibly, host-tested (fw_logic including a 10 s run over ~39 wraps of the 8-bit millisecond clock, fw_store, fw_asmcheck) and verified on hardware in both input modes.",
+  "hardwareVerification": {
+    "date": "2026-10-08",
+    "flashed": true,
+    "flashMethod": "CMD_BOOTLOADER from 2.0.1 (no key hold), wchisp Verify OK (2026-10-07 22:58)",
+    "protocolChecks": true,
+    "keymapSurvivedReflash": true,
+    "rawCheck": "padctl.py rawcheck: 495 samples over 6 s under 500 ms heartbeats, raw off 0, unanswered commands 0, raw mode ended 1.51 s after the last heartbeat",
+    "keys": true,
+    "knobPress": true,
+    "slowRotation": true,
+    "fastRotation": true,
+    "rawMode": true,
+    "evdevMode": true,
+    "stressTest": "scripts/stress-test.py --mode both with the user at the pad: 59/59 checks, 0 warnings, 0 failures (evdev 27, raw 32)",
+    "details": "In both modes: taps of all 15 keys in order, holds of 0.1/0.3/1/2/3/4/5 s, key1 held while key2 and key8 are tapped, knob presses x3; per knob slow turns, fast back-and-forth spins and flicks where the host's detent counts matched the firmware's decoder counts exactly (raw, knob1: slow 20/21, fast cw 75 ccw 71, flick 25; knob2: 20/20, 85/81, 24; knob3: 20/20, 79/72, 22). Raw mode: mode flips 0, raw drops 0, heartbeat misses 0, keymap input while raw 0, expiries on the pad 0, sequence gaps 0, nothing restored."
+  }
 }

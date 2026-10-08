@@ -1143,11 +1143,13 @@ int main(int argc, char **argv)
         });
         uinputRetry.start(10000);
     }
-    // device.input: "raw" uses the control-surface firmware's events with
-    // snapshots (2.0.2+; older firmware is refused); "evdev" the pad's keymap
-    // (chords with real down/up). "auto" is evdev until raw input has passed
-    // the hardware stress test (scripts/stress-test.py). Applied on reload too.
-    auto wantRaw = [](const Config &c) { return c.device.input == QLatin1String("raw"); };
+    // device.input: "evdev" reads the pad's keymap (chords with real down/up);
+    // "raw" and "auto" ask the control-surface firmware for its own events with
+    // snapshots. RawPadDevice refuses firmware before 2.0.2 (and any other
+    // firmware), which leaves the pad on evdev: "auto" is raw on 2.0.2+ and
+    // evdev otherwise (raw verified on hardware with scripts/stress-test.py).
+    // Applied on reload too.
+    auto wantRaw = [](const Config &c) { return c.device.input != QLatin1String("evdev"); };
     auto applyInputMode = [&dev, &raw, log, wantRaw](const Config &c) {
         if (!wantRaw(c)) {
             if (raw.isOpen()) {

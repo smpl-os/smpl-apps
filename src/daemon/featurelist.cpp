@@ -71,7 +71,7 @@ QJsonObject featuresJson()
                                                {QStringLiteral("inputModes"), QJsonObject{
                                                     {QStringLiteral("evdev"), QStringLiteral("the pad's keymap: chords with real press and release")},
                                                     {QStringLiteral("raw"), QStringLiteral("the firmware's events with snapshots (2.0.2+); older firmware falls back to evdev")},
-                                                    {QStringLiteral("auto"), QStringLiteral("evdev for now (raw once it has passed the hardware stress test)")}}}}},
+                                                    {QStringLiteral("auto"), QStringLiteral("raw on control-surface firmware 2.0.2+, evdev otherwise")}}}}},
         {QStringLiteral("plugins"), QJsonArray{QStringLiteral("keys"), QStringLiteral("command"), QStringLiteral("kdenlive")}},
         {QStringLiteral("cheatsheet"), QJsonObject{{QStringLiteral("modes"), QJsonArray{QStringLiteral("toggle"), QStringLiteral("hold")}},
                                                    {QStringLiteral("slots"), QStringLiteral("keyN or knobN.press")},

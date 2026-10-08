@@ -2,7 +2,8 @@
 
 | File | What |
 |---|---|
-| `control-surface-sy181-15k3e-2.0.1.bin` | Firmware for the CH552G + TM1650 pad with 15 keys and 3 knobs (USB 1189:8890, serial key153). Current. |
+| `control-surface-sy181-15k3e-2.0.2.bin` | Firmware for the CH552G + TM1650 pad with 15 keys and 3 knobs (USB 1189:8890, serial key153). Current; verified on hardware in both input modes. |
+| `control-surface-sy181-15k3e-2.0.1.bin` | Superseded: raw mode drops every 256 ms, commands can be dropped (see its JSON `knownIssues`). Kept for reference only. |
 | `control-surface-sy181-15k3e-2.0.0.bin` | Superseded: fast knob rotation drops detents (see its JSON `knownIssues`). Kept for reference only. |
 | `<name>.json` | Name, version, board, licence, SHA-256, size, source commit, toolchain, `verifiedOnHardware`, `knownIssues`, `supersededBy` |
 | `LICENSE` | Licence notice (CC BY-SA 3.0) |
