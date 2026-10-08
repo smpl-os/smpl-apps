@@ -89,6 +89,8 @@ mod tests {
             "arrow-bar-to-left", "arrow-bar-to-right", "arrow-left-bar", "arrow-right-bar", "arrows-left-right",
             "bookmark-off", "brackets-contain", "column-remove", "list-check", "ripple", "select-all", "space",
             "space-off", "square", "square-check",
+            // The Kdenlive catalog (c271522).
+            "unlink", "wave-sine", "layout-board", "tag",
         ] {
             assert!(!glyph(name).is_empty(), "{name}");
         }
