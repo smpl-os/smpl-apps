@@ -3,6 +3,7 @@
 #include "installed.h"
 #include "kdenlivecontract.h"
 
+#include <QElapsedTimer>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -394,6 +395,183 @@ private Q_SLOTS:
         e.handle(up(13));
         QTest::qWait(Engine::kRollMs + 30);
         run({down(5), up(5)}, {QStringLiteral("C")});
+    }
+
+    // The workspaces designer's extras (DESIGN.md §7): set a mode, cycle back,
+    // notify templates, negative key steps, sequences, context -> mode rules.
+    void modesSequencesAndRules()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles": [{"name": "kd", "match": {"class": "^kd$"}, "kdenlive": true,
+            "modes": {"ws": {"values": ["Main", "Edit", "Color"], "notify": "Workspace: {value}"}, "page": ["Cut", "Marks", "Trim"],
+                      "open": ["", "Edit"]},
+            "autoModes": [{"name": "wheels", "when": {"colorWheels": true}, "set": {"ws": "Color"}, "restore": true},
+                          {"name": "quiet", "when": {"focus": "bin"}, "set": {"page": "Marks"}, "notify": false}],
+            "layers": [{"name": "color", "when": {"$mode.ws": "Color"}, "bindings": {"key9": {"action": "edit_undo"}}}],
+            "bindings": {
+                "key2": {"mode": "ws", "set": "Edit"}, "key3": {"mode": "ws", "set": "Main", "notify": false},
+                "key4": {"cycle": "page", "step": -1, "label": "Page"}, "key5": {"cycle": "page", "label": "Page"},
+                "key6": {"control": "colorwheel.nudge", "scale": -1, "options": {"wheel": "lift", "axis": "r"}},
+                "key7": {"do": [{"mode": "ws", "set": "Color"}, {"action": "load_layout5"}, {"action": "zoom_fit"}], "delayMs": 40},
+                "key8": {"cycle": "open", "notify": "Workspace: {value|Main}"}, "key9": {"action": "mark_in"},
+                "key10": {"do": [{"action": "seek_end"}, {"action": "insert_to_in_point"}]}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QVERIFY2(c->warnings.isEmpty(), qPrintable(c->warnings.join(QLatin1Char('\n'))));
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        kd.setState(State::Available);
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("timeline")}});
+        Engine e(&keys, &kd);
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        auto run = [&](const QList<PadEvent> &events, const QStringList &want) {
+            kd.calls.clear();
+            for (const PadEvent &ev : events) {
+                e.handle(ev);
+            }
+            QTRY_VERIFY2(kd.calls == want, qPrintable(kd.calls.join(QLatin1Char('|')) + QStringLiteral(" / want ") + want.join(QLatin1Char('|'))));
+            QTest::qWait(60);
+            QVERIFY2(kd.calls == want, qPrintable(kd.calls.join(QLatin1Char('|')) + QStringLiteral(" / want ") + want.join(QLatin1Char('|'))));
+        };
+        auto k = [](int n) { return key(n); };
+        // Set, with the mode's own notify template; a binding's "notify": false is silent.
+        run({k(2)}, {QStringLiteral("notify Workspace: Edit")});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Edit"));
+        run({k(3)}, {});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Main"));
+        // Cycle back (wraps), and forward.
+        run({k(4), k(4), k(5)}, {QStringLiteral("notify Page: Trim"), QStringLiteral("notify Page: Marks"), QStringLiteral("notify Page: Trim")});
+        // {value|Main}: the empty value reads as Main.
+        run({k(8), k(8)}, {QStringLiteral("notify Workspace: Edit"), QStringLiteral("notify Workspace: Main")});
+        // A sequence: the mode at once, the actions after 40 ms each, in order.
+        kd.calls.clear();
+        e.handle(k(7));
+        QCOMPARE(kd.calls, QStringList{QStringLiteral("notify Workspace: Color")});
+        QTRY_COMPARE(kd.calls, (QStringList{QStringLiteral("notify Workspace: Color"), QStringLiteral("action load_layout5"), QStringLiteral("action zoom_fit")}));
+        run({k(9)}, {QStringLiteral("action edit_undo")});  // the Color layer
+        // Without a delay, all steps at once.
+        run({k(10)}, {QStringLiteral("action seek_end"), QStringLiteral("action insert_to_in_point")});
+        // A window change drops the steps still waiting.
+        kd.calls.clear();
+        e.handle(k(7));
+        e.setActiveWindow(kFirefox);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        QTest::qWait(120);
+        QCOMPARE(kd.calls, QStringList{QStringLiteral("notify Workspace: Color")});
+        // A key's negative scale steps the control the other way (a focused wheel,
+        // without the "colorWheels" list the rule below watches).
+        e.handle(k(3));
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("effectStack")},
+                       {QStringLiteral("colorWheel"), QVariantMap{{QStringLiteral("target"), QStringLiteral("w-lift")}, {QStringLiteral("wheel"), QStringLiteral("lift")}}}});
+        kd.calls.clear();
+        e.handle(k(6));
+        QTRY_COMPARE(kd.calls.size(), 1);
+        QVERIFY2(kd.calls.first().startsWith(QStringLiteral("control colorwheel.nudge -1 ")), qPrintable(kd.calls.first()));
+        e.endAllGestures(false);
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("timeline")}});
+        // Context -> mode: wheels open Color, closing them restores what was there.
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Main"));
+        kd.calls.clear();
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("effectStack")}, {QStringLiteral("colorWheels"), true}});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Color"));
+        QCOMPARE(kd.calls, QStringList{QStringLiteral("notify Workspace: Color")});
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("timeline")}});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Main"));
+        // A manual choice wins: no restore over it.
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("effectStack")}, {QStringLiteral("colorWheels"), true}});
+        e.handle(k(2));
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("timeline")}});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Edit"));
+        // Edge triggered: while the context stays, a manual change sticks.
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("bin")}});
+        QCOMPARE(e.modeValue(QStringLiteral("page")), QStringLiteral("Marks"));
+        e.handle(k(5));
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("bin")}, {QStringLiteral("position"), 12}});
+        QCOMPARE(e.modeValue(QStringLiteral("page")), QStringLiteral("Trim"));
+        // A reload (e.g. a save in Settings) keeps the rules' state: restore
+        // still goes back to Main, and a manual choice is not overridden.
+        e.handle(k(3));
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("effectStack")}, {QStringLiteral("colorWheels"), true}});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Color"));
+        e.setConfig(*c);
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("timeline")}});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Main"));
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("effectStack")}, {QStringLiteral("colorWheels"), true}});
+        e.handle(k(2));
+        e.setConfig(*c);
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Edit"));
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("timeline")}});
+        // Kdenlive not answering: rules decide nothing (no restore either).
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("effectStack")}, {QStringLiteral("colorWheels"), true}});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Color"));
+        kd.setState(State::Absent);
+        kd.setContext({{QStringLiteral("focus"), QStringLiteral("timeline")}});
+        QCOMPARE(e.modeValue(QStringLiteral("ws")), QStringLiteral("Color"));
+    }
+
+    // Sequences never interleave: a second one waits behind the first's steps;
+    // a knob turning back drops what it queued the other way; the queue is capped.
+    void sequenceOrder()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles": [{"name": "kd", "match": {"class": "^kd$"}, "kdenlive": true,
+            "bindings": {"key1": {"do": [{"action": "a1"}, {"action": "a2"}], "delayMs": 30},
+                         "key2": {"do": [{"action": "b1"}, {"action": "b2"}]},
+                         "knob1": {"cw": {"do": [{"action": "c1"}, {"action": "c2"}], "delayMs": 30},
+                                   "ccw": {"do": [{"action": "d1"}, {"action": "d2"}], "delayMs": 30}}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        c->settings.accelFactor = 1;
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        auto actions = [&] {
+            QStringList l;
+            for (const QString &x : kd.calls) {
+                l << x.section(QLatin1Char(' '), 1, 1);
+            }
+            return l;
+        };
+        e.handle(key(1));
+        e.handle(key(2));
+        QTRY_COMPARE(actions(), (QStringList{QStringLiteral("a1"), QStringLiteral("a2"), QStringLiteral("b1"), QStringLiteral("b2")}));
+        // 3 detents cw, then 1 ccw: the cw second steps still waiting are dropped.
+        kd.calls.clear();
+        e.handle(turn(1, 1));
+        e.handle(turn(1, 1));
+        e.handle(turn(1, 1));
+        e.handle(turn(1, -1));
+        QTest::qWait(300);
+        const QStringList got = actions();
+        QCOMPARE(got.first(), QStringLiteral("c1"));
+        QVERIFY2(got.indexOf(QStringLiteral("d1")) > 0 && got.last() == QStringLiteral("d2"), qPrintable(got.join(QLatin1Char(' '))));
+        QVERIFY2(got.count(QStringLiteral("c1")) == 1 && got.count(QStringLiteral("c2")) == 0, qPrintable(got.join(QLatin1Char(' '))));
+        // A flood: at most 64 steps wait, and only whole sequences.
+        kd.calls.clear();
+        for (int i = 0; i < 100; ++i) {
+            e.handle(key(1));
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(kd.calls.size() >= 64, 5000);
+        QTest::qWait(100);
+        QCOMPARE(actions().count(QStringLiteral("a1")), actions().count(QStringLiteral("a2")));
+        QCOMPARE(kd.calls.size(), 64);  // the first pair (a2 waiting) and 31 more waiting pairs
+        // Turning back cancels what waits; the new sequence keeps its own delay.
+        auto slow = parseConfig(R"({"profiles": [{"name": "kd", "match": {"class": "^kd$"}, "kdenlive": true,
+            "bindings": {"knob1": {"cw": {"do": [{"action": "c1"}, {"action": "c2"}], "delayMs": 200},
+                                   "ccw": {"do": [{"action": "d1"}, {"action": "d2"}], "delayMs": 200}}}}]})", {}, &err);
+        QVERIFY2(slow, qPrintable(err));
+        e.setConfig(*slow);
+        kd.calls.clear();
+        QElapsedTimer t;
+        t.start();
+        e.handle(turn(1, 1));
+        QTest::qWait(150);
+        e.handle(turn(1, -1));
+        const qint64 d1 = t.elapsed();
+        QTRY_VERIFY(kd.calls.contains(QStringLiteral("action d2")));
+        QVERIFY2(t.elapsed() - d1 >= 190, qPrintable(QString::number(t.elapsed() - d1)));
+        QCOMPARE(actions(), (QStringList{QStringLiteral("c1"), QStringLiteral("d1"), QStringLiteral("d2")}));
     }
 
     // "accel" on a binding overrides settings.accelFactor; 1 turns it off.

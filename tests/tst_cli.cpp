@@ -262,7 +262,9 @@ private Q_SLOTS:
             kinds << k.toObject().value(QStringLiteral("kind")).toString();
         }
         QCOMPARE(kinds, (QStringList{QStringLiteral("keys"), QStringLiteral("mouse"), QStringLiteral("action"), QStringLiteral("control"), QStringLiteral("request"),
-                                     QStringLiteral("cycle"), QStringLiteral("command"), QStringLiteral("cheatsheet"), QStringLiteral("none")}));
+                                     QStringLiteral("cycle"), QStringLiteral("mode"), QStringLiteral("do"), QStringLiteral("command"), QStringLiteral("cheatsheet"),
+                                     QStringLiteral("none")}));
+        QVERIFY(j.value(QStringLiteral("modes")).toObject().value(QStringLiteral("autoModes")).toString().contains(QStringLiteral("restore")));
         const QJsonObject sheet = j.value(QStringLiteral("cheatsheet")).toObject();
         QCOMPARE(sheet.value(QStringLiteral("modes")).toArray().size(), 2);
         QVERIFY(sheet.value(QStringLiteral("options")).toObject().value(QStringLiteral("position")).toArray().contains(QStringLiteral("top-right")));

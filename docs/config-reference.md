@@ -95,9 +95,18 @@ that would not validate (nothing written), 3 the file could not be written.
   profile has `"fallthrough": false`.
 * `"kdenlive": true`: the profile talks to Kdenlive (see below);
   `"keyFallback"`, `"modes"` and `"layers"` are mostly used there.
-* `"modes"`: named cycles, e.g. `"page": ["edit", "track", "trim"]`. A
-  `{"cycle": "page"}` binding advances one; `"$page"` in options expands to
-  its value; `"when": {"$mode.page": "trim"}` tests it.
+* `"modes"`: named values, e.g. `"page": ["edit", "track", "trim"]`. Each
+  starts at its first value. `{"cycle": "page"}` advances one value,
+  `{"cycle": "page", "step": -1}` goes back, and
+  `{"mode": "page", "set": "trim"}` sets one directly. `"$page"` in options
+  expands to the current value, and `"when": {"$mode.page": "trim"}` tests
+  it. Changing a mode tells Kdenlive the new value (`{label}: {value}`):
+  * the object form gives a mode its own text,
+    `"workspace": {"values": ["", "Edit"], "notify": "Workspace: {value|Main}"}`
+    (`{value|Main}` reads `Main` while the value is empty);
+  * a binding's `"notify"` overrides it, and `"notify": false` says
+    nothing. Placeholders: `{label}`, `{mode}`, `{value}`, `{value|text}`.
+* `"autoModes"`: modes that follow Kdenlive's context (see below).
 
 ## Binding forms
 
@@ -106,8 +115,10 @@ that would not validate (nothing written), 3 the file could not be written.
 | `"ctrl+z"` | tap keys through the virtual keyboard |
 | `{"keys": ["ctrl+k", "x"]}` | a key sequence |
 | `{"action": "mark_in", "fallback": "i"}` | a Kdenlive action by its KActionCollection id (see `list-capabilities`); `fallback` keys are typed only in a profile with `"keyFallback": true` and only while Kdenlive's interface is absent or off |
-| `{"control": "playhead.jog", "scale": 1, "accel": 3, "options": {...}, "fallback": ["left", "right"]}` | a continuous control (coalesced); `scale` multiplies detents, `accel` overrides `settings.accelFactor` for this binding (1 = never accelerate), `fallback` = [negative key, positive key] |
-| `{"cycle": "liftAxis", "label": "Lift"}` | advance a mode; `"$liftAxis"` in options expands, `"$ctx:tool"` expands to a value from Kdenlive's context and `"$!ctx:path"` to its negation (toggles); a missing context value sends nothing; `"control": "$mode"` lets a mode choose the control a knob drives |
+| `{"control": "playhead.jog", "scale": 1, "accel": 3, "options": {...}, "fallback": ["left", "right"]}` | a continuous control (coalesced); `scale` multiplies detents and may be negative (the other way: on keys, a `+R`/`-R` pair is `"scale": 1` and `"scale": -1`), `accel` overrides `settings.accelFactor` for this binding (1 = never accelerate), `fallback` = [negative key, positive key] |
+| `{"cycle": "liftAxis", "label": "Lift"}` | advance a mode (`"step": -1` goes back); `"$liftAxis"` in options expands, `"$ctx:tool"` expands to a value from Kdenlive's context and `"$!ctx:path"` to its negation (toggles); a missing context value sends nothing; `"control": "$mode"` lets a mode choose the control a knob drives |
+| `{"mode": "workspace", "set": "Edit"}` | set a mode to one of its values (`"value"` works too); the overlay shows the key as `on` while the mode has that value |
+| `{"do": [{"mode": "workspace", "set": "Color"}, {"action": "load_layout5"}], "delayMs": 50}` | several bindings in order (a "multi-action"): each step acts as if it were bound itself. `delayMs` (0–5000) waits before each later step; steps still waiting are dropped when the focused window changes. No nested `"do"`, `"none"` or cheatsheet `"hold"` steps. The overlay greys it out when any step cannot run |
 | `{"request": "colorwheel.reset", "params": {"wheel": "lift"}}` | `Invoke()` on Kdenlive |
 | `{"mouse": "left"}` | `left`, `right`, `middle`, `back`, `forward`, or one wheel detent per knob detent: `wheel-up`, `wheel-down`, `wheel-left`, `wheel-right` |
 | `"volumeup"`, `"playpause"`, `"mute"` ... | media keys (any name from `features --json` `keyNames`, in any case) |
@@ -142,6 +153,24 @@ clip selected) and `effect_<id>` (add an installed effect, e.g.
 context: delete needs timeline focus, insert/overwrite need a clip in the
 clip monitor and a target track, and the Slip tool's preview blocks playback
 and shuttle until you switch back to the Selection tool.
+
+### Modes that follow Kdenlive (autoModes)
+
+```jsonc
+"autoModes": [
+    { "name": "wheels", "when": { "colorWheels": true }, "set": { "workspace": "Color" }, "restore": true },
+    { "name": "bin", "when": { "focus": "bin" }, "set": { "workspace": "Media" }, "notify": false }
+]
+```
+
+A rule sets its modes when its `"when"` (Kdenlive's context and modes, as
+for layers; not `"held"`) starts to match, once. It is edge triggered:
+changing the mode by hand afterwards sticks. With `"restore": true` the
+modes go back to what they were when the condition stops matching, unless you
+changed them meanwhile. `"notify": false` sets them silently; by default the
+mode's text is sent. Rules apply in the focused profile only, and only while
+Kdenlive answers. Make a rule optional with a mode condition, e.g.
+`"$mode.auto": "on"` plus a key that cycles `auto`.
 
 ### Held-key layers
 

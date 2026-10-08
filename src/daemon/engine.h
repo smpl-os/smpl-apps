@@ -139,6 +139,32 @@ private:
     QTimer *m_navTimer = nullptr;
     void releaseNavigation();
     QHash<QString, int> m_modeIndex;  // "profile/mode" -> index
+    // Sets a mode's value; false when the mode or the value is unknown (or it was already so).
+    bool setModeValue(const QString &mode, const QString &value);
+    void stepMode(const QString &mode, int step);
+    // Tells the user (log, Kdenlive notification) what a mode is now.
+    void announceMode(const QString &mode, const QString &label, const std::optional<QString> &bindingNotify);
+    // "autoModes": rules of the active profile, edge triggered.
+    void applyAutoModes();
+    struct RuleState {
+        bool on = false;
+        QHash<QString, QString> before;  // values the rule replaced, for "restore"
+    };
+    QHash<QString, RuleState> m_ruleState;  // "profile#index"
+    bool m_applyingRules = false;
+    // "do" sequences with a delay: the steps still to run.
+    struct PendingStep {
+        Resolution r;
+        QString slot;
+        double detents = 1;
+        bool isTurn = false;
+        double accel = 1;
+        int delayMs = 0;    // after the step before it
+        int direction = 0;  // turns: -1 ccw, +1 cw
+    };
+    static constexpr int kMaxPendingSteps = 64;
+    QList<PendingStep> m_steps;
+    QTimer *m_stepTimer = nullptr;
     QHash<QString, QElapsedTimer> m_lastTurn;
     struct Fallback {
         QList<KeyChord> keys;

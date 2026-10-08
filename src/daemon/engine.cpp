@@ -6,6 +6,7 @@
 #include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QTimer>
 #include <algorithm>
 #include <cmath>
@@ -80,6 +81,18 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
     m_navTimer->setSingleShot(true);
     m_navTimer->setInterval(250);
     connect(m_navTimer, &QTimer::timeout, this, &Engine::releaseNavigation);
+    m_stepTimer = new QTimer(this);
+    m_stepTimer->setSingleShot(true);
+    connect(m_stepTimer, &QTimer::timeout, this, [this] {
+        if (m_steps.isEmpty()) {
+            return;
+        }
+        const PendingStep s = m_steps.takeFirst();
+        execute(s.r, s.slot, s.detents, s.isTurn, s.accel);
+        if (!m_steps.isEmpty()) {
+            m_stepTimer->start(m_steps.first().delayMs);
+        }
+    });
     m_rollTimer = new QTimer(this);
     m_rollTimer->setSingleShot(true);
     m_rollTimer->setInterval(kRollMs);
@@ -144,6 +157,7 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
         connect(m_kd, &KdenliveClient::stateChanged, this, [this](KdenliveClient::State) {
             dropPendingWork();
             m_said.clear();
+            applyAutoModes();  // its context is known now
         });
         connect(m_kd, &KdenliveClient::contextChanged, this, [this](const QVariantMap &ctx) {
             // A seek ends a multi-key edit in the host (its captured frame moved):
@@ -156,6 +170,7 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
                     m_coalescer.drop(g.key);
                 }
             }
+            applyAutoModes();
         });
         connect(m_kd, &KdenliveClient::epochChanged, this, [this](quint64) {
             // Targets changed and the host has already invalidated pending work
@@ -198,6 +213,10 @@ void Engine::releaseNavigation()
 
 void Engine::dropPendingWork()
 {
+    m_steps.clear();  // a sequence's later steps belong to the window it started in
+    if (m_stepTimer) {
+        m_stepTimer->stop();
+    }
     m_navInFlight.clear();
     m_navAwaitingEpoch.clear();
     if (m_navTimer) {
@@ -219,6 +238,19 @@ void Engine::setConfig(const Config &cfg)
     m_tapTimer->setInterval(qMax(1, 1000 / qMax(1, cfg.settings.keyRateHz)));
     m_profile = nullptr;
     clearHeld();
+    // Rule state survives a reload (a save in Settings applies the same rules
+    // again): otherwise every matching rule would fire anew, losing what
+    // "restore" goes back to and overriding manual choices. Rules that are gone
+    // are forgotten.
+    QSet<QString> rules;
+    for (const Profile &p : m_cfg.profiles) {
+        for (const Profile::ModeRule &r : p.autoModes) {
+            rules.insert(p.name + QLatin1Char('#') + r.name);
+        }
+    }
+    for (auto it = m_ruleState.begin(); it != m_ruleState.end();) {
+        it = rules.contains(it.key()) ? std::next(it) : m_ruleState.erase(it);
+    }
     setActiveWindow(m_window);
 }
 
@@ -247,6 +279,7 @@ void Engine::setActiveWindow(const WindowInfo &w)
         // pid 0 for a Kdenlive window is a provisional focus event; keep the
         // current attachment until the window query reports the real pid.
     }
+    applyAutoModes();
     Q_EMIT resolutionChanged();
 }
 
@@ -456,6 +489,126 @@ QString Engine::modeValue(const QString &mode) const
     }
     const QStringList values = modes->value(mode);
     return values.value(m_modeIndex.value(owner + QLatin1Char('/') + mode) % values.size());
+}
+
+bool Engine::setModeValue(const QString &mode, const QString &value)
+{
+    QString owner;
+    const auto *modes = modesFor(mode, &owner);
+    if (!modes) {
+        return false;
+    }
+    const int index = modes->value(mode).indexOf(value);
+    const QString key = owner + QLatin1Char('/') + mode;
+    if (index < 0 || m_modeIndex.value(key) == index) {
+        return false;
+    }
+    m_modeIndex[key] = index;
+    return true;
+}
+
+void Engine::stepMode(const QString &mode, int step)
+{
+    QString owner;
+    const auto *modes = modesFor(mode, &owner);
+    if (!modes || modes->value(mode).isEmpty()) {
+        return;
+    }
+    const int n = int(modes->value(mode).size());
+    const QString key = owner + QLatin1Char('/') + mode;
+    m_modeIndex[key] = ((m_modeIndex.value(key) + step) % n + n) % n;
+}
+
+void Engine::announceMode(const QString &mode, const QString &label, const std::optional<QString> &bindingNotify)
+{
+    // The binding's "notify", else the mode's, else "{label}: {value}".
+    QString tmpl = QStringLiteral("{label}: {value}");
+    QString owner;
+    if (bindingNotify) {
+        tmpl = *bindingNotify;
+    } else if (modesFor(mode, &owner)) {
+        for (const Profile *p : {m_profile, m_cfg.globalProfile()}) {
+            if (p && p->name == owner && p->modeNotify.contains(mode)) {
+                tmpl = p->modeNotify.value(mode);
+            }
+        }
+    }
+    const QString value = modeValue(mode);
+    QString text = tmpl;
+    static const QRegularExpression valueOr(QStringLiteral("\\{value\\|([^}]*)\\}"));
+    for (auto m = valueOr.globalMatch(tmpl); m.hasNext();) {
+        const auto match = m.next();
+        text.replace(match.captured(0), value.isEmpty() ? match.captured(1) : value);
+    }
+    text.replace(QStringLiteral("{value}"), value).replace(QStringLiteral("{mode}"), mode).replace(QStringLiteral("{label}"), label.isEmpty() ? mode : label);
+    if (text.isEmpty()) {
+        say(QStringLiteral("%1 = %2").arg(mode, value));  // log only
+        return;
+    }
+    say(text);
+    if (kdenliveActive()) {
+        m_kd->notify(text);
+    }
+}
+
+void Engine::applyAutoModes()
+{
+    if (m_applyingRules || !m_profile || m_profile->autoModes.isEmpty()) {
+        return;
+    }
+    if (m_profile->kdenlive && !kdenliveActive()) {
+        return;  // no context yet: decide nothing (and restore nothing)
+    }
+    m_applyingRules = true;
+    bool any = false;
+    for (int pass = 0; pass < 4; ++pass) {  // a rule may enable another through a mode
+        bool changed = false;
+        QVariantMap ctx = kdenliveActive() ? m_kd->context() : QVariantMap{};
+        ctx.insert(QStringLiteral("$mode"), modeContext());
+        for (int i = 0; i < m_profile->autoModes.size(); ++i) {
+            const Profile::ModeRule &rule = m_profile->autoModes.at(i);
+            RuleState &st = m_ruleState[m_profile->name + QLatin1Char('#') + rule.name];
+            const bool on = conditionMatches(rule.when, ctx);
+            if (on == st.on) {
+                continue;
+            }
+            st.on = on;
+            if (on) {
+                st.before.clear();
+                for (const auto &[mode, value] : rule.set) {
+                    st.before.insert(mode, modeValue(mode));
+                    if (setModeValue(mode, value)) {
+                        changed = true;
+                        if (rule.notify) {
+                            announceMode(mode, QString(), std::nullopt);
+                        }
+                    }
+                }
+            } else if (rule.restore) {
+                // Back, unless the user changed it meanwhile (the manual choice wins).
+                for (const auto &[mode, value] : rule.set) {
+                    if (modeValue(mode) == value && st.before.contains(mode) && setModeValue(mode, st.before.value(mode))) {
+                        changed = true;
+                        if (rule.notify) {
+                            announceMode(mode, QString(), std::nullopt);
+                        }
+                    }
+                }
+            }
+            if (changed) {
+                ctx.insert(QStringLiteral("$mode"), modeContext());
+            }
+        }
+        if (!changed) {
+            break;
+        }
+        any = true;
+    }
+    m_applyingRules = false;
+    if (any) {
+        endAllGestures(false);
+        Q_EMIT resolutionChanged();
+    }
 }
 
 QVariantMap Engine::modeContext() const
@@ -716,21 +869,58 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
             Q_EMIT cheatsheetRequested(QStringLiteral("toggle"));
         }
         return;
-    case Binding::Cycle: {
+    case Binding::Cycle:
+    case Binding::Mode: {
         QString owner;
-        const auto *modes = modesFor(b.name, &owner);
-        if (!modes) {
-            say(QStringLiteral("cycle: unknown mode %1").arg(b.name));
+        if (!modesFor(b.name, &owner)) {
+            say(QStringLiteral("%1: unknown mode %2").arg(b.kind == Binding::Cycle ? QStringLiteral("cycle") : QStringLiteral("mode"), b.name));
             return;
         }
         endAllGestures(false);  // options change: the next turn is a new gesture
-        const QString key = owner + QLatin1Char('/') + b.name;
-        m_modeIndex[key] = (m_modeIndex.value(key) + 1) % modes->value(b.name).size();
+        if (b.kind == Binding::Cycle) {
+            stepMode(b.name, b.step);
+        } else {
+            setModeValue(b.name, b.value);
+        }
         Q_EMIT resolutionChanged();  // layers and labels may follow the mode
-        const QString text = QStringLiteral("%1: %2").arg(b.label.isEmpty() ? b.name : b.label, modeValue(b.name));
-        say(text);
-        if (kdenliveActive()) {
-            m_kd->notify(text);
+        announceMode(b.name, b.label, b.notify);
+        applyAutoModes();
+        return;
+    }
+    case Binding::Sequence: {
+        // Each step as if it were the binding (same slot and detents); with a
+        // delay, later steps wait in order (dropped if the window changes).
+        // While steps wait, a new sequence queues behind them, so sequences
+        // never interleave. A knob turning back drops what it queued the
+        // other way, as typed taps do.
+        if (isTurn) {
+            const auto removed = m_steps.removeIf([&](const PendingStep &p) {
+                return p.isTurn && p.slot.section(QLatin1Char('.'), 0, 0) == group && p.direction != dir;
+            });
+            if (removed) {
+                m_stepTimer->stop();  // restarted below with the new first step's own delay
+            }
+        }
+        // All or nothing: a sequence is never cut in half by the limit.
+        const bool runFirstNow = m_steps.isEmpty();
+        const qsizetype queued = qsizetype(b.steps.size()) - (runFirstNow ? 1 : 0);
+        if (m_steps.size() + queued > kMaxPendingSteps) {
+            sayOnce(QStringLiteral("steps"), QStringLiteral("%1: too many sequence steps waiting; this one dropped").arg(slot));
+            return;
+        }
+        bool first = true;
+        for (const Binding &s : b.steps) {
+            Resolution sr = r;
+            sr.binding = s;
+            if (first && runFirstNow) {
+                execute(sr, slot, detents, isTurn, accel);
+            } else {
+                m_steps << PendingStep{sr, slot, detents, isTurn, accel, first ? 0 : b.delayMs, dir};
+            }
+            first = false;
+        }
+        if (!m_steps.isEmpty() && !m_stepTimer->isActive()) {
+            m_stepTimer->start(m_steps.first().delayMs);
         }
         return;
     }

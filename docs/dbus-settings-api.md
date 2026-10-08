@@ -380,6 +380,14 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
   `"~"` and `"~/..."` in a command line are the home directory.
   `features.bindingFields` lists these.
 * Slots `key1`..`key16`.
+* Modes: `{"mode": NAME, "set": VALUE}`, `{"cycle": NAME, "step": -1}`, a
+  `"notify"` text on either (`{label} {mode} {value} {value|text}`, or
+  `false`), the object form `"modes": {"ws": {"values": [...], "notify":
+  "..."}}` and `"autoModes": [{"when", "set", "restore", "notify"}]`.
+  Sequences: `{"do": [binding...], "delayMs": N}`; a control's `"scale"` may be
+  negative. `GetCheatsheet` entries have kinds `mode` (state `on` while the
+  mode has that value) and `do`. `features.modes` and
+  `features.bindingKinds` describe them (docs/config-reference.md).
 * Held-key layers: a layer with `"when": {"held": "key1"}` (or
   `["key13", "key14"]` for either one, `"key1+knob3"` for both) applies
   while those controls are down, in list order like any layer. The

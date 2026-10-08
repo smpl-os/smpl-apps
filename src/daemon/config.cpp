@@ -13,6 +13,8 @@
 #include <QJsonObject>
 #include <QStandardPaths>
 #include <algorithm>
+#include <functional>
+#include <cmath>
 #include <linux/input-event-codes.h>
 
 namespace cs {
@@ -43,6 +45,15 @@ QString Binding::describe() const
         return QStringLiteral("mouse:") + name;
     case Cheatsheet:
         return QStringLiteral("cheatsheet:") + name;
+    case Mode:
+        return QStringLiteral("mode:%1=%2").arg(name, value);
+    case Sequence: {
+        QStringList l;
+        for (const Binding &s : steps) {
+            l << s.describe();
+        }
+        return QStringLiteral("do:[") + l.join(QStringLiteral(", ")) + QLatin1Char(']');
+    }
     }
     return {};
 }
@@ -312,9 +323,9 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
         b.name = o.value(QStringLiteral("control")).toString();
         b.scale = o.value(QStringLiteral("scale")).toDouble(1.0);
         b.accel = o.value(QStringLiteral("accel")).toDouble(0);
-        if (b.scale <= 0 || b.accel < 0) {
+        if (b.scale == 0 || !std::isfinite(b.scale) || std::abs(b.scale) > 1000 || b.accel < 0) {
             if (error) {
-                *error = QStringLiteral("\"scale\" must be > 0 and \"accel\" >= 0");
+                *error = QStringLiteral("\"scale\" must be a non-zero number (negative: the other way) and \"accel\" >= 0");
             }
             return std::nullopt;
         }
@@ -333,6 +344,64 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
     } else if (o.contains(QStringLiteral("cycle"))) {
         b.kind = Binding::Cycle;
         b.name = o.value(QStringLiteral("cycle")).toString();
+        if (o.contains(QStringLiteral("step"))) {
+            const QJsonValue s = o.value(QStringLiteral("step"));
+            const double d = s.toDouble(0);
+            if (!s.isDouble() || d != std::floor(d) || d == 0 || std::abs(d) > 100) {
+                if (error) {
+                    *error = QStringLiteral("\"step\" must be a whole number other than 0 (-1 goes back)");
+                }
+                return std::nullopt;
+            }
+            b.step = int(d);
+        }
+    } else if (o.contains(QStringLiteral("mode"))) {
+        b.kind = Binding::Mode;
+        b.name = o.value(QStringLiteral("mode")).toString();
+        const QJsonValue v = o.contains(QStringLiteral("set")) ? o.value(QStringLiteral("set")) : o.value(QStringLiteral("value"));
+        if (!v.isString()) {
+            if (error) {
+                *error = QStringLiteral("{\"mode\": NAME} needs \"set\": a value of that mode (\"\" allowed)");
+            }
+            return std::nullopt;
+        }
+        b.value = v.toString();
+    } else if (o.contains(QStringLiteral("do"))) {
+        b.kind = Binding::Sequence;
+        const QJsonValue list = o.value(QStringLiteral("do"));
+        if (!list.isArray() || list.toArray().isEmpty() || list.toArray().size() > 16) {
+            if (error) {
+                *error = QStringLiteral("\"do\" takes a list of 1 to 16 bindings");
+            }
+            return std::nullopt;
+        }
+        int n = 0;
+        for (const QJsonValue &sv : list.toArray()) {
+            ++n;
+            QString err;
+            auto s = parseBinding(sv, &err);
+            if (!s) {
+                if (error) {
+                    *error = QStringLiteral("\"do\" step %1: %2").arg(n).arg(err);
+                }
+                return std::nullopt;
+            }
+            if (s->kind == Binding::Sequence || (s->kind == Binding::Cheatsheet && s->name == QLatin1String("hold")) || s->kind == Binding::None) {
+                if (error) {
+                    *error = QStringLiteral("\"do\" step %1: not a nested \"do\", \"none\" or a cheatsheet \"hold\"").arg(n);
+                }
+                return std::nullopt;
+            }
+            b.steps.push_back(*s);
+        }
+        const double delay = o.value(QStringLiteral("delayMs")).toDouble(0);
+        if (delay < 0 || delay > 5000 || delay != std::floor(delay)) {
+            if (error) {
+                *error = QStringLiteral("\"delayMs\" must be 0..5000");
+            }
+            return std::nullopt;
+        }
+        b.delayMs = int(delay);
     } else if (o.contains(QStringLiteral("mouse"))) {
         b.kind = Binding::Mouse;
         b.name = o.value(QStringLiteral("mouse")).toString();
@@ -357,11 +426,21 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
         b.options = o.value(QStringLiteral("params")).toObject().toVariantMap();
     } else {
         if (error) {
-            *error = QStringLiteral("binding object needs one of keys/mouse/action/control/command/cycle/request/cheatsheet");
+            *error = QStringLiteral("binding object needs one of keys/mouse/action/control/command/cycle/mode/do/request/cheatsheet");
         }
         return std::nullopt;
     }
-    if ((b.kind == Binding::Action || b.kind == Binding::Control || b.kind == Binding::Cycle || b.kind == Binding::Request) && b.name.isEmpty()) {
+    if (o.contains(QStringLiteral("notify"))) {
+        const QJsonValue n = o.value(QStringLiteral("notify"));
+        if ((b.kind != Binding::Cycle && b.kind != Binding::Mode) || !(n.isString() || (n.isBool() && !n.toBool()))) {
+            if (error) {
+                *error = QStringLiteral("\"notify\" goes on a cycle or mode binding: a text (\"{label}: {value}\") or false");
+            }
+            return std::nullopt;
+        }
+        b.notify = n.isString() ? n.toString() : QString();
+    }
+    if ((b.kind == Binding::Action || b.kind == Binding::Control || b.kind == Binding::Cycle || b.kind == Binding::Mode || b.kind == Binding::Request) && b.name.isEmpty()) {
         if (error) {
             *error = QStringLiteral("binding name is empty");
         }
@@ -614,8 +693,21 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
         p.keyFallback = po.value(QStringLiteral("keyFallback")).toBool(false);
         const QJsonObject modes = po.value(QStringLiteral("modes")).toObject();
         for (auto it = modes.begin(); it != modes.end(); ++it) {
+            // ["a", "b"] or {"values": ["a", "b"], "notify": "Page: {value}"}
+            const QJsonObject mo = it.value().toObject();
+            const QJsonArray list = it.value().isObject() ? mo.value(QStringLiteral("values")).toArray() : it.value().toArray();
+            if (it.value().isObject() && mo.contains(QStringLiteral("notify"))) {
+                const QJsonValue n = mo.value(QStringLiteral("notify"));
+                if (!(n.isString() || (n.isBool() && !n.toBool()))) {
+                    if (error) {
+                        *error = QStringLiteral("profile %1: mode %2: \"notify\" is a text or false").arg(p.name, it.key());
+                    }
+                    return std::nullopt;
+                }
+                p.modeNotify.insert(it.key(), n.isString() ? n.toString() : QString());
+            }
             QStringList values;
-            for (const auto &v : it.value().toArray()) {
+            for (const auto &v : list) {
                 values << v.toString();
             }
             if (values.isEmpty()) {
@@ -661,6 +753,46 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
                 return std::nullopt;
             }
             p.layers << l;
+        }
+        const QJsonValue rules = po.value(QStringLiteral("autoModes"));
+        if (!rules.isUndefined() && !rules.isArray()) {
+            if (error) {
+                *error = QStringLiteral("profile %1: \"autoModes\" is a list of {\"when\", \"set\"} rules").arg(p.name);
+            }
+            return std::nullopt;
+        }
+        for (const QJsonValue &rv : rules.toArray()) {
+            const QJsonObject ro = rv.toObject();
+            Profile::ModeRule r;
+            r.name = ro.value(QStringLiteral("name")).toString(QStringLiteral("rule %1").arg(p.autoModes.size() + 1));
+            r.when = ro.value(QStringLiteral("when")).toObject().toVariantMap();
+            const QJsonObject set = ro.value(QStringLiteral("set")).toObject();
+            for (auto it = set.begin(); it != set.end(); ++it) {
+                r.set << qMakePair(it.key(), it.value().toString());
+            }
+            r.restore = ro.value(QStringLiteral("restore")).toBool(false);
+            r.notify = ro.value(QStringLiteral("notify")).toBool(true);
+            if (r.when.isEmpty() || r.set.isEmpty() || r.when.contains(QStringLiteral("held"))) {
+                if (error) {
+                    *error = QStringLiteral("profile %1: autoModes %2: needs \"when\" (Kdenlive context or modes, not \"held\") and \"set\": {mode: value}").arg(p.name, r.name);
+                }
+                return std::nullopt;
+            }
+            for (auto it = set.begin(); it != set.end(); ++it) {
+                if (!it.value().isString()) {
+                    if (error) {
+                        *error = QStringLiteral("profile %1: autoModes %2: \"set\" values are texts").arg(p.name, r.name);
+                    }
+                    return std::nullopt;
+                }
+            }
+            if (std::any_of(p.autoModes.cbegin(), p.autoModes.cend(), [&r](const Profile::ModeRule &o) { return o.name == r.name; })) {
+                if (error) {
+                    *error = QStringLiteral("profile %1: autoModes: two rules named '%2'").arg(p.name, r.name);
+                }
+                return std::nullopt;
+            }
+            p.autoModes << r;
         }
         cfg.profiles << p;
     }
@@ -744,9 +876,26 @@ bool checkConfig(Config &cfg, QString *error)
     const Profile *global = cfg.globalProfile();
     for (const Profile &p : cfg.profiles) {
         auto modeKnown = [&](const QString &m) { return p.modes.contains(m) || (global && global->modes.contains(m)); };
-        auto checkBinding = [&](const QString &where, const Binding &b) -> bool {
+        auto modeValues = [&](const QString &m) { return p.modes.contains(m) ? p.modes.value(m) : global ? global->modes.value(m) : QStringList(); };
+        std::function<bool(const QString &, const Binding &)> checkBinding = [&](const QString &where, const Binding &b) -> bool {
             if (b.kind == Binding::Cycle && !modeKnown(b.name)) {
                 return fail(error, QStringLiteral("%1: cycles undefined mode '%2' (define it under \"modes\")").arg(where, b.name));
+            }
+            if (b.kind == Binding::Mode) {
+                if (!modeKnown(b.name)) {
+                    return fail(error, QStringLiteral("%1: sets undefined mode '%2' (define it under \"modes\")").arg(where, b.name));
+                }
+                if (!modeValues(b.name).contains(b.value)) {
+                    return fail(error, QStringLiteral("%1: mode '%2' has no value '%3' (%4)").arg(where, b.name, b.value, modeValues(b.name).join(QStringLiteral(", "))));
+                }
+            }
+            if (b.kind == Binding::Sequence) {
+                for (std::size_t i = 0; i < b.steps.size(); ++i) {
+                    if (!checkBinding(QStringLiteral("%1 step %2").arg(where).arg(i + 1), b.steps[i])) {
+                        return false;
+                    }
+                }
+                return true;
             }
             if (b.kind == Binding::Control && b.name.startsWith(QLatin1Char('$')) && !modeKnown(b.name.mid(1))) {
                 return fail(error, QStringLiteral("%1: control comes from undefined mode '%2'").arg(where, b.name.mid(1)));
@@ -792,6 +941,24 @@ bool checkConfig(Config &cfg, QString *error)
         }
         if (p.keyFallback && !p.kdenlive) {
             cfg.warnings << QStringLiteral("profile %1: \"keyFallback\" only applies to Kdenlive profiles").arg(p.name);
+        }
+        for (const Profile::ModeRule &r : p.autoModes) {
+            for (const auto &[mode, value] : r.set) {
+                if (!modeKnown(mode)) {
+                    return fail(error, QStringLiteral("profile %1: autoModes %2: sets undefined mode '%3'").arg(p.name, r.name, mode));
+                }
+                if (!modeValues(mode).contains(value)) {
+                    return fail(error, QStringLiteral("profile %1: autoModes %2: mode '%3' has no value '%4' (%5)").arg(p.name, r.name, mode, value, modeValues(mode).join(QStringLiteral(", "))));
+                }
+            }
+            for (auto w = r.when.cbegin(); w != r.when.cend(); ++w) {
+                if (w.key().startsWith(QLatin1String("$mode.")) && !modeKnown(w.key().mid(6))) {
+                    return fail(error, QStringLiteral("profile %1: autoModes %2: condition uses undefined mode '%3'").arg(p.name, r.name, w.key().mid(6)));
+                }
+            }
+            if (!p.kdenlive && !std::all_of(r.when.keyBegin(), r.when.keyEnd(), [](const QString &k) { return k.startsWith(QLatin1String("$mode.")); })) {
+                cfg.warnings << QStringLiteral("profile %1: autoModes %2: tests Kdenlive's context in a profile without \"kdenlive\": true (never matches)").arg(p.name, r.name);
+            }
         }
     }
     return true;

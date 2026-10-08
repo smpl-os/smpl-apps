@@ -13,15 +13,23 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <optional>
+#include <vector>
 
 namespace cs {
 
 struct Binding {
-    enum Kind { None, Keys, Action, Control, Command, Cycle, Request, Mouse, Cheatsheet };
+    enum Kind { None, Keys, Action, Control, Command, Cycle, Request, Mouse, Cheatsheet, Mode, Sequence };
     Kind kind = None;
     QList<KeyChord> keys;  // Keys, or Action/Control fallback when Kdenlive does not answer
-    QString name;          // action id, control id, cycle mode, request method, mouse action, cheatsheet toggle|hold
-    double scale = 1.0;    // Control: multiplier applied to detents
+    QString name;          // action id, control id, cycle/mode mode, request method, mouse action, cheatsheet toggle|hold
+    double scale = 1.0;    // Control: multiplier applied to detents (negative: the other way, e.g. a "-R" key)
+    int step = 1;          // Cycle: values to advance; -1 goes back
+    QString value;         // Mode: the value to set
+    // Cycle/Mode: what Kdenlive is told ({label} {mode} {value} {value|text}); "" = nothing;
+    // unset: the mode's own "notify", else "{label}: {value}"
+    std::optional<QString> notify;
+    std::vector<Binding> steps;  // Sequence ("do"): run in order
+    int delayMs = 0;             // Sequence: pause before each step after the first
     double accel = 0;      // Control: acceleration factor for fast detents; 0 = settings.accelFactor
     QVariantMap options;   // Control/Request options; "$mode" expands to a mode value, "$ctx:path" to a context value
     QString targetFrom;    // context path of the target handle (default per control; e.g. "hoveredColorWheel.target")
@@ -63,6 +71,17 @@ struct Profile {
     QList<Layer> layers;     // first matching layer wins, then base bindings
     BindingMap bindings;
     QHash<QString, QStringList> modes;
+    QHash<QString, QString> modeNotify;  // "modes": {"ws": {"values": [...], "notify": "Workspace: {value|Main}"}}
+    // "autoModes": set modes when Kdenlive's context starts to match (edge
+    // triggered: a manual change wins), optionally back when it stops.
+    struct ModeRule {
+        QString name;
+        QVariantMap when;
+        QList<QPair<QString, QString>> set;
+        bool restore = false;
+        bool notify = true;
+    };
+    QList<ModeRule> autoModes;
     // Controls named by a layer's "held" condition: their own tap bindings
     // fire on release, and only if no other input was used meanwhile.
     QSet<QString> heldControls;

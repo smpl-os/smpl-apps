@@ -166,7 +166,13 @@ ConfigFindings checkAgainstConfig(const CapabilityReport &r, const Config &cfg, 
         }
         QVariantMap ctx = r.context;
         ctx.insert(QStringLiteral("$mode"), modes);
-        auto check = [&](const QString &where, const Binding &b) {
+        std::function<void(const QString &, const Binding &)> check = [&](const QString &where, const Binding &b) {
+            if (b.kind == Binding::Sequence) {
+                for (std::size_t i = 0; i < b.steps.size(); ++i) {
+                    check(QStringLiteral("%1 step %2").arg(where).arg(i + 1), b.steps[i]);
+                }
+                return;
+            }
             QStringList names{b.name};
             if (b.kind == Binding::Control && b.name.startsWith(QLatin1Char('$'))) {
                 names = p.modes.value(b.name.mid(1));  // every control the mode can select

@@ -668,6 +668,47 @@ private Q_SLOTS:
         QCOMPARE(vis.count(), 0);
     }
 
+    // Mode sets, reverse cycles and sequences in the overlay: labels, the "on"
+    // state of the open workspace, icons, and greyed sequences.
+    void modesAndSequences()
+    {
+        QString err;
+        auto c = parseConfig(R"({"profiles": [{"name": "kd", "match": {"class": "^org\\.kde\\.kdenlive"}, "kdenlive": true,
+            "modes": {"ws": ["", "Edit", "Color"], "page": ["Cut", "Trim"]},
+            "bindings": {"key2": {"mode": "ws", "set": "Edit"}, "key3": {"mode": "ws", "set": ""},
+                         "key4": {"cycle": "page", "step": -1}, "key5": {"cycle": "page"},
+                         "key6": {"do": [{"mode": "ws", "set": "Color"}, {"action": "load_layout5"}]},
+                         "key7": {"do": [{"action": "seek_end"}, {"action": "insert_to_in_point"}], "label": "Append"}}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        Rig r;
+        r.kd.setCapabilities({}, {QStringLiteral("seek_end"), QStringLiteral("insert_to_in_point")}, {});
+        r.engine.setConfig(*c);
+        r.engine.setActiveWindow(kKdenlive);
+        QJsonObject now = r.sheet.content();
+        QCOMPARE(label(keyEntry(now, QStringLiteral("key2"))), QStringLiteral("Edit"));
+        QCOMPARE(label(keyEntry(now, QStringLiteral("key3"))), QStringLiteral("Ws off"));
+        QCOMPARE(label(keyEntry(now, QStringLiteral("key4"))), QStringLiteral("Page back"));
+        QCOMPARE(keyEntry(now, QStringLiteral("key4")).value(QStringLiteral("state")).toString(), QStringLiteral("Cut"));
+        QCOMPARE(keyEntry(now, QStringLiteral("key2")).value(QStringLiteral("kind")).toString(), QStringLiteral("mode"));
+        QCOMPARE(keyEntry(now, QStringLiteral("key2")).value(QStringLiteral("state")).toString(), QString());
+        QCOMPARE(keyEntry(now, QStringLiteral("key3")).value(QStringLiteral("state")).toString(), QStringLiteral("on"));  // ws is "" now
+        QCOMPARE(keyEntry(now, QStringLiteral("key2")).value(QStringLiteral("icon")).toString(), QStringLiteral("stack-2"));
+        QCOMPARE(label(keyEntry(now, QStringLiteral("key6"))), QStringLiteral("Color + Load Layout 5"));
+        QCOMPARE(keyEntry(now, QStringLiteral("key6")).value(QStringLiteral("kind")).toString(), QStringLiteral("do"));
+        QCOMPARE(keyEntry(now, QStringLiteral("key6")).value(QStringLiteral("icon")).toString(), QStringLiteral("layout-board"));
+        QCOMPARE(keyEntry(now, QStringLiteral("key6")).value(QStringLiteral("active")).toBool(), false);  // load_layout5 not offered here
+        QCOMPARE(label(keyEntry(now, QStringLiteral("key7"))), QStringLiteral("Append"));
+        QCOMPARE(keyEntry(now, QStringLiteral("key7")).value(QStringLiteral("active")).toBool(), true);
+        QCOMPARE(keyEntry(now, QStringLiteral("key7")).value(QStringLiteral("icon")).toString(), QStringLiteral("arrow-bar-to-right"));
+        r.engine.handle(PadEvent{QStringLiteral("key2"), PadEvent::KeyDown, 0, 0});
+        now = r.sheet.content();
+        QCOMPARE(keyEntry(now, QStringLiteral("key2")).value(QStringLiteral("state")).toString(), QStringLiteral("on"));
+        QCOMPARE(keyEntry(now, QStringLiteral("key3")).value(QStringLiteral("state")).toString(), QString());
+        QCOMPARE(keyEntry(now, QStringLiteral("key6")).value(QStringLiteral("state")).toString(), QString());  // its mode step: Color is not open
+        r.engine.handle(PadEvent{QStringLiteral("key4"), PadEvent::KeyDown, 0, 0});
+        QCOMPARE(keyEntry(r.sheet.content(), QStringLiteral("key4")).value(QStringLiteral("state")).toString(), QStringLiteral("Trim"));  // back wraps
+    }
+
     // Held-key layers: holding key1 (cheatsheet "hold") shows the held layer's
     // labels live, lists the held key, and goes back on release. Previews take
     // "$held" in the context.

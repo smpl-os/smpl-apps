@@ -5,6 +5,7 @@
 #include "keysink.h"
 
 #include <QJsonArray>
+#include <algorithm>
 #include <QJsonDocument>
 #include <QSet>
 #include <QTimer>
@@ -153,6 +154,9 @@ bool Cheatsheet::isActive(const Binding &b) const
         return m_engine->kdenliveActive() && m_kd->supportsCommand(b.name);
     case Binding::Command:
         return isInstalled(b.argv.first());  // greyed out when the program is missing
+    case Binding::Sequence:
+        // Greyed out when any step cannot run (e.g. an action Kdenlive does not offer yet).
+        return std::all_of(b.steps.cbegin(), b.steps.cend(), [this](const Binding &s) { return isActive(s); });
     case Binding::None:
         return false;
     default:

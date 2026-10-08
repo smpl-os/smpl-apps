@@ -1341,6 +1341,14 @@ private Q_SLOTS:
         const QJsonObject j = reportJson(r, &*def);
         QCOMPARE(j.value(QStringLiteral("status")).toString(), QStringLiteral("available"));
         QVERIFY(j.value(QStringLiteral("contextPaths")).toObject().contains(QStringLiteral("colorWheel.target")));
+        // Steps of a "do" are checked too.
+        auto seq = parseConfig(R"({"profiles": [{"name": "kd", "kdenlive": true, "modes": {"ws": ["", "Color"]},
+            "bindings": {"key7": {"do": [{"mode": "ws", "set": "Color"}, {"action": "load_layout9"}, {"action": "zoom_fit"}]}}}]})", {}, &err);
+        QVERIFY2(seq, qPrintable(err));
+        CapabilityReport noLayouts = r;
+        noLayouts.actions.removeIf([](const QVariant &a) { return a.toMap().value(QStringLiteral("id")).toString() == QLatin1String("load_layout9"); });
+        const ConfigFindings sf = checkAgainstConfig(noLayouts, *seq);
+        QCOMPARE(sf.notOffered, QStringList{QStringLiteral("action load_layout9 (profile kd key7 step 2)")});
         // A mode selects layers: the trim page applies once chosen.
         const ConfigFindings trim = checkAgainstConfig(r, *def, {{QStringLiteral("page"), QStringLiteral("trim")}});
         QVERIFY(trim.layersNow.contains(QStringLiteral("kdenlive/trim")));

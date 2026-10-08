@@ -653,6 +653,79 @@ private Q_SLOTS:
         exc->device.input = QStringLiteral("evdev");
         QCOMPARE(boardWarnings(*exc, pad), QStringList{});
     }
+
+    // DESIGN.md §7 extras: mode set, reverse cycle, notify, negative scale, "do", autoModes.
+    void modesSequencesAndRules()
+    {
+        QString err;
+        auto ok = [&](const char *bindings, const char *extra = "") {
+            const QByteArray text = QByteArray(R"({"profiles": [{"name": "g", "kdenlive": true, "modes": {"ws": {"values": ["Main", "Edit"], "notify": "Workspace: {value}"}, "page": ["A", "B"]})")
+                + extra + R"(, "bindings": )" + bindings + "}]}";
+            return parseConfig(text, {}, &err);
+        };
+        auto c = ok(R"({"key1": {"mode": "ws", "set": "Edit"}, "key2": {"mode": "ws", "value": "Main", "notify": false},
+                        "key3": {"cycle": "page", "step": -1, "notify": "Page {value|none}"},
+                        "key4": {"control": "colorwheel.nudge", "scale": -0.5, "options": {"wheel": "lift"}},
+                        "key5": {"do": [{"mode": "ws", "set": "Edit"}, {"action": "load_layout2"}, {"cheatsheet": "toggle"}], "delayMs": 50}})",
+                    R"(, "autoModes": [{"when": {"colorWheels": true}, "set": {"ws": "Edit"}, "restore": true}, {"name": "x", "when": {"$mode.page": "B"}, "set": {"ws": "Main"}, "notify": false}])");
+        QVERIFY2(c, qPrintable(err));
+        const Profile &p = c->profiles.first();
+        QCOMPARE(p.modes.value(QStringLiteral("ws")), (QStringList{QStringLiteral("Main"), QStringLiteral("Edit")}));
+        QCOMPARE(p.modeNotify.value(QStringLiteral("ws")), QStringLiteral("Workspace: {value}"));
+        QCOMPARE(p.bindings.value(QStringLiteral("key1")).kind, Binding::Mode);
+        QCOMPARE(p.bindings.value(QStringLiteral("key1")).value, QStringLiteral("Edit"));
+        QVERIFY(!p.bindings.value(QStringLiteral("key1")).notify);
+        QCOMPARE(*p.bindings.value(QStringLiteral("key2")).notify, QString());
+        QCOMPARE(p.bindings.value(QStringLiteral("key3")).step, -1);
+        QCOMPARE(p.bindings.value(QStringLiteral("key4")).scale, -0.5);
+        const Binding seq = p.bindings.value(QStringLiteral("key5"));
+        QCOMPARE(seq.kind, Binding::Sequence);
+        QCOMPARE(int(seq.steps.size()), 3);
+        QCOMPARE(seq.delayMs, 50);
+        QCOMPARE(seq.describe(), QStringLiteral("do:[mode:ws=Edit, action:load_layout2, cheatsheet:toggle]"));
+        QCOMPARE(p.autoModes.size(), 2);
+        QCOMPARE(p.autoModes[0].name, QStringLiteral("rule 1"));
+        QVERIFY(p.autoModes[0].restore && p.autoModes[0].notify && !p.autoModes[1].notify);
+        QVERIFY2(c->warnings.isEmpty(), qPrintable(c->warnings.join(QLatin1Char('\n'))));
+
+        const std::pair<const char *, const char *> bad[] = {
+            {R"({"key1": {"mode": "nope", "set": "x"}})", "undefined mode 'nope'"},
+            {R"({"key1": {"mode": "ws", "set": "Color"}})", "has no value 'Color'"},
+            {R"({"key1": {"mode": "ws"}})", "needs \"set\""},
+            {R"({"key1": {"cycle": "page", "step": 0}})", "\"step\""},
+            {R"({"key1": {"cycle": "page", "step": 1.5}})", "\"step\""},
+            {R"({"key1": {"action": "mark_in", "notify": "x"}})", "\"notify\" goes on a cycle or mode"},
+            {R"({"key1": {"cycle": "page", "notify": true}})", "\"notify\""},
+            {R"({"key1": {"control": "playhead.jog", "scale": 0}})", "\"scale\""},
+            {R"({"key1": {"do": []}})", "\"do\" takes"},
+            {R"({"key1": {"do": [{"do": [{"action": "mark_in"}]}]}})", "nested"},
+            {R"({"key1": {"do": [{"cheatsheet": "hold"}]}})", "cheatsheet"},
+            {R"({"key1": {"do": [{"mode": "ws", "set": "Nope"}]}})", "step 1: mode 'ws' has no value 'Nope'"},
+            {R"({"key1": {"do": [{"action": "mark_in"}], "delayMs": 9000}})", "\"delayMs\""},
+        };
+        for (const auto &[b, msg] : bad) {
+            QVERIFY2(!ok(b), b);
+            QVERIFY2(err.contains(QLatin1String(msg)), qPrintable(QStringLiteral("%1 -> %2").arg(QLatin1String(b), err)));
+        }
+        const std::pair<const char *, const char *> badRules[] = {
+            {R"(, "autoModes": [{"when": {"colorWheels": true}, "set": {"nope": "x"}}])", "undefined mode 'nope'"},
+            {R"(, "autoModes": [{"when": {"colorWheels": true}, "set": {"ws": "Color"}}])", "no value 'Color'"},
+            {R"(, "autoModes": [{"when": {"held": "key1"}, "set": {"ws": "Edit"}}])", "not \"held\""},
+            {R"(, "autoModes": [{"set": {"ws": "Edit"}}])", "needs \"when\""},
+            {R"(, "autoModes": [{"when": {"$mode.nope": "a"}, "set": {"ws": "Edit"}}])", "undefined mode 'nope'"},
+            {R"(, "autoModes": {"when": {}})", "is a list"},
+            {R"(, "autoModes": [{"name": "a", "when": {"focus": "bin"}, "set": {"ws": "Edit"}}, {"name": "a", "when": {"focus": "timeline"}, "set": {"ws": "Main"}}])", "two rules named 'a'"},
+        };
+        for (const auto &[extra, msg] : badRules) {
+            QVERIFY2(!ok("{}", extra), extra);
+            QVERIFY2(err.contains(QLatin1String(msg)), qPrintable(QStringLiteral("%1 -> %2").arg(QLatin1String(extra), err)));
+        }
+        // A rule on Kdenlive's context in a profile without Kdenlive: warned.
+        c = parseConfig(R"({"profiles": [{"name": "g", "modes": {"ws": ["Main", "Edit"]}, "autoModes": [{"when": {"focus": "bin"}, "set": {"ws": "Edit"}}]}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(c->warnings.size(), 1);
+        QVERIFY(c->warnings.first().contains(QStringLiteral("never matches")));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestConfig)

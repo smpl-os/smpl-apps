@@ -178,6 +178,10 @@ QString bindingKindName(Binding::Kind k)
         return QStringLiteral("mouse");
     case Binding::Cheatsheet:
         return QStringLiteral("cheatsheet");
+    case Binding::Mode:
+        return QStringLiteral("mode");
+    case Binding::Sequence:
+        return QStringLiteral("do");
     }
     return QStringLiteral("none");
 }
@@ -279,11 +283,21 @@ QString autoLabel(const Binding &b, const LabelEnv &env)
         }
         return prettyIdentifier(b.name);
     case Binding::Cycle:
-        return prettyIdentifier(b.name);
+        return b.step < 0 ? prettyIdentifier(b.name) + QStringLiteral(" back") : prettyIdentifier(b.name);
     case Binding::Command:
         return b.argv.isEmpty() ? QStringLiteral("Run") : QStringLiteral("Run ") + QFileInfo(b.argv.first()).fileName();
     case Binding::Cheatsheet:
         return QStringLiteral("Cheatsheet");
+    case Binding::Mode:
+        return b.value.isEmpty() ? prettyIdentifier(b.name) + QStringLiteral(" off") : b.value;
+    case Binding::Sequence: {
+        QStringList l;
+        for (const Binding &s : b.steps) {
+            l << bindingLabel(s, env);
+        }
+        l.removeAll(QString());
+        return l.mid(0, 3).join(QStringLiteral(" + "));
+    }
     }
     return {};
 }
@@ -605,11 +619,23 @@ QString autoIcon(const Binding &b, const LabelEnv &env)
         }
         return {};
     case Binding::Cycle:
+    case Binding::Mode:
         return kCycleIcon;
     case Binding::Command:
         return commandIcon(b.argv);
     case Binding::Cheatsheet:
         return kCheatsheetIcon;
+    case Binding::Sequence:
+        // The first step that has one (an action, not the mode it opens).
+        for (const Binding &s : b.steps) {
+            if (s.kind != Binding::Mode && s.kind != Binding::Cycle) {
+                const QString i = bindingIcon(s, env);
+                if (!i.isEmpty()) {
+                    return i;
+                }
+            }
+        }
+        return b.steps.empty() ? QString() : bindingIcon(b.steps.front(), env);
     }
     return {};
 }
@@ -640,6 +666,16 @@ QString bindingState(const Binding &b, const LabelEnv &env)
 {
     if (b.kind == Binding::Cycle && env.modeValue) {
         return env.modeValue(b.name);
+    }
+    if (b.kind == Binding::Mode && env.modeValue) {
+        return env.modeValue(b.name) == b.value ? QStringLiteral("on") : QString();  // e.g. the open workspace
+    }
+    if (b.kind == Binding::Sequence) {
+        for (const Binding &s : b.steps) {
+            if (s.kind == Binding::Mode || s.kind == Binding::Cycle) {
+                return bindingState(s, env);
+            }
+        }
     }
     return {};
 }
