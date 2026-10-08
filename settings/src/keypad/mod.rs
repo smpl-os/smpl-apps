@@ -1020,6 +1020,15 @@ pub fn show_sheet() -> Result<(), String> {
         .map_err(|_| "the keypad app isn't running, or is too old to show the cheatsheet".into())
 }
 
+/// Takes the overlay down (what a click on it does, too).
+pub fn hide_sheet() -> Result<(), String> {
+    bus()
+        .ok_or("no session bus")?
+        .call_method(Some(DBUS_SERVICE), DBUS_PATH, Some(DBUS_INTERFACE), "HideCheatsheet", &())
+        .map(|_| ())
+        .map_err(|_| "the keypad app isn't running".into())
+}
+
 /// Kdenlive contexts for the preview (the example config's layers).
 pub const KDENLIVE_CONTEXTS: &[(&str, &str)] = &[
     ("No particular focus", ""),
@@ -1039,6 +1048,33 @@ pub struct Features {
     pub mouse: bool,
     /// `{"cheatsheet": ...}` bindings, options and previews.
     pub cheatsheet: bool,
+    /// What the daemon uses for cheatsheet options the config leaves out.
+    pub sheet_defaults: config::SheetDefaults,
+}
+
+/// `cheatsheet.defaults` when the daemon has it, else read from its option
+/// descriptions ("0.05..1, default 0.85"; "...; unset = 8000, ..."). Before
+/// "unset = N" existed an unset autoHideMs meant until hidden.
+fn sheet_defaults(sheet: Option<&Value>) -> config::SheetDefaults {
+    let mut d = config::SheetDefaults::default();
+    let Some(sheet) = sheet else { return d };
+    let structured = sheet.get("defaults");
+    let described = |key: &str, after: &str| {
+        let text = sheet.get("options")?.get(key)?.as_str()?;
+        let rest = text.split(after).nth(1).map(str::trim_start);
+        Some(rest.map(|r| r.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect::<String>()))
+    };
+    if let Some(o) = structured.and_then(|s| s.get("opacity")).and_then(Value::as_f64) {
+        d.opacity = o;
+    } else if let Some(Some(o)) = described("opacity", "default") {
+        d.opacity = o.parse().unwrap_or(d.opacity);
+    }
+    if let Some(ms) = structured.and_then(|s| s.get("autoHideMs")).and_then(Value::as_u64) {
+        d.auto_hide_ms = ms as u32;
+    } else if let Some(ms) = described("autoHideMs", "unset =") {
+        d.auto_hide_ms = ms.and_then(|ms| ms.parse().ok()).unwrap_or(0);
+    }
+    d
 }
 
 pub fn parse_features(json: &str) -> Option<Features> {
@@ -1049,6 +1085,7 @@ pub fn parse_features(json: &str) -> Option<Features> {
         max_knobs: slots.get("maxKnobs").and_then(Value::as_u64)? as usize,
         mouse: v.get("mouseNames").and_then(Value::as_array).is_some_and(|m| !m.is_empty()),
         cheatsheet: v.get("cheatsheet").is_some_and(Value::is_object),
+        sheet_defaults: sheet_defaults(v.get("cheatsheet").filter(|s| s.is_object())),
     })
 }
 
@@ -1241,7 +1278,8 @@ mod tests {
             r#"{"daemonVersion":"0.2.0","slots":{"maxKeys":16,"maxKnobs":3},"mouseNames":["left","right"]}"#,
         )
         .unwrap();
-        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true, cheatsheet: false });
+        let defaults = config::SheetDefaults::default();
+        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true, cheatsheet: false, sheet_defaults: defaults });
         let with_sheet = parse_features(r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"modes":["toggle","hold"]}}"#);
         assert!(with_sheet.unwrap().cheatsheet);
         assert!(parse_features(r#"{"slots":{}}"#).is_none());
@@ -1251,6 +1289,22 @@ mod tests {
             &mut actions,
         );
         assert_eq!(actions, [("mark_in".to_string(), "Set In Point".to_string())]);
+    }
+
+    #[test]
+    fn cheatsheet_defaults_follow_the_daemon() {
+        let sheet = |options: &str| {
+            let json = format!(r#"{{"slots":{{"maxKeys":16,"maxKnobs":3}},"cheatsheet":{{"options":{options}}}}}"#);
+            parse_features(&json).unwrap().sheet_defaults
+        };
+        let d = |opacity, auto_hide_ms| config::SheetDefaults { opacity, auto_hide_ms };
+        // 738e334: unset autoHideMs = 8000.
+        assert_eq!(sheet(r#"{"opacity":"0.05..1, default 0.85","autoHideMs":"0..600000; unset = 8000, 0 = until hidden"}"#), d(0.85, 8000));
+        // 2dc06f5..ebeabe8: unset meant until hidden.
+        assert_eq!(sheet(r#"{"opacity":"0.05..1, default 0.85","autoHideMs":"0..600000, 0 = until hidden; restarted by pad input"}"#), d(0.85, 0));
+        // Requested: structured defaults win over the descriptions.
+        let json = r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"defaults":{"opacity":0.35,"autoHideMs":8000},"options":{"opacity":"default 0.85"}}}"#;
+        assert_eq!(parse_features(json).unwrap().sheet_defaults, d(0.35, 8000));
     }
 
     #[test]

@@ -980,7 +980,7 @@ component KeypadSheetPreview inherits Rectangle {
     in property <int> rows: 3;
     in property <string> title;
     in property <string> notice;
-    in property <float> sheet-opacity: 0.85;
+    in property <float> sheet-opacity: 0.35;
 
     property <length> key-w: 92px;
     property <length> key-h: 48px;
@@ -1503,7 +1503,8 @@ export component MainWindow inherits Window {
     in-out property <string> kp-label-text;
     in property <bool> kp-label-enabled: false;
     in property <bool> kp-sheet-supported: false;
-    in property <float> kp-sheet-opacity: 0.85;
+    in property <float> kp-sheet-opacity: 0.35;
+    in property <bool> kp-sheet-click-through: false;
     in property <[string]> kp-sheet-hide-names;
     in property <int> kp-sheet-hide-index: 0;
     in property <int> kp-sheet-position: 4;
@@ -1550,6 +1551,7 @@ export component MainWindow inherits Window {
     callback kp-flash();
     callback kp-set-sheet-opacity(float);
     callback kp-set-sheet-hide(int);
+    callback kp-set-sheet-click-through(bool);
     callback kp-set-sheet-position(int);
     callback kp-set-sheet-context(int);
     callback kp-show-sheet();
@@ -8428,6 +8430,29 @@ export component MainWindow inherits Window {
                                     current: root.kp-sheet-position;
                                     selected(i) => { root.kp-set-sheet-position(i); }
                                 }
+                            }
+                            if root.kp-sheet-supported: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Click-through overlay: clicks reach the window below it";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                KeypadToggle {
+                                    on: root.kp-sheet-click-through;
+                                    toggled(on) => { root.kp-set-sheet-click-through(on); }
+                                }
+                            }
+                            if root.kp-sheet-supported: Text {
+                                text: root.kp-sheet-click-through
+                                    ? "It hides by itself (see Hide) or when you press your cheatsheet key. Needs smplOS's updated bar (eww with click-through); an older bar keeps the overlay clickable."
+                                    : "Click anywhere on the overlay to close it.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
                             }
                             if root.kp-sheet-supported && root.kp-sheet-contexts.length > 0: HorizontalLayout {
                                 spacing: 8px;

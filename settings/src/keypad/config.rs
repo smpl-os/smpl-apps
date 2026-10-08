@@ -164,6 +164,24 @@ pub const SHEET_POSITIONS: [&str; 9] = [
     "top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right",
 ];
 
+/// smplOS's click-through overlay window (eww.yuck); `cheatsheet.eww.window`
+/// picks it instead of the unit's default `pad-cheatsheet`.
+pub const SHEET_PASSTHROUGH_WINDOW: &str = "pad-cheatsheet-passthrough";
+
+/// What the daemon uses for options the config leaves out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SheetDefaults {
+    pub opacity: f64,
+    pub auto_hide_ms: u32,
+}
+
+impl Default for SheetDefaults {
+    /// smplOS's: a see-through background, hidden after 8 s without input.
+    fn default() -> Self {
+        Self { opacity: 0.35, auto_hide_ms: 8000 }
+    }
+}
+
 /// Slots that can carry a cheatsheet binding (the daemon refuses turns).
 pub fn sheet_slot(slot: &str) -> bool {
     !slot.contains('.') || slot.ends_with(".press")
@@ -504,6 +522,9 @@ pub struct SheetOptions {
     /// 0: shown until hidden.
     pub auto_hide_ms: u32,
     pub position: String,
+    /// Clicks go through the overlay (SHEET_PASSTHROUGH_WINDOW), so it can't
+    /// be clicked away and must hide by itself.
+    pub click_through: bool,
 }
 
 /// A literal window class that a simple `match.class` pattern matches, for
@@ -786,31 +807,40 @@ impl KeypadConfig {
         Ok(())
     }
 
-    pub fn sheet_options(&self) -> SheetOptions {
+    /// The options in effect: the config's, else the daemon's `defaults`.
+    pub fn sheet_options(&self, defaults: &SheetDefaults) -> SheetOptions {
         let o = self.doc.get("cheatsheet");
         let num = |k: &str| match o.and_then(|o| o.get(k)) {
             Some(Json::Num(n)) => n.parse::<f64>().ok(),
             _ => None,
         };
         SheetOptions {
-            opacity: num("opacity").unwrap_or(0.85),
-            auto_hide_ms: num("autoHideMs").map_or(0, |v| v.max(0.0) as u32),
+            opacity: num("opacity").unwrap_or(defaults.opacity),
+            auto_hide_ms: num("autoHideMs").map_or(defaults.auto_hide_ms, |v| v.max(0.0) as u32),
             position: o
                 .and_then(|o| o.get("position"))
                 .and_then(Json::as_str)
                 .unwrap_or("center")
                 .to_string(),
+            click_through: o
+                .and_then(|o| o.get("eww"))
+                .and_then(|e| e.get("window"))
+                .and_then(Json::as_str)
+                == Some(SHEET_PASSTHROUGH_WINDOW),
         }
     }
 
-    /// Sets the cheatsheet options; anything else under "cheatsheet"
-    /// (e.g. "eww") is kept.
+    /// Sets the cheatsheet options; anything else under "cheatsheet" is kept,
+    /// including the other "eww" fields.
     pub fn set_sheet_options(&mut self, o: &SheetOptions) -> Result<(), String> {
         if !(0.05..=1.0).contains(&o.opacity) {
             return Err("opacity is 5% to 100%".into());
         }
         if o.auto_hide_ms > 600_000 {
             return Err("hide after at most 10 minutes".into());
+        }
+        if o.click_through && o.auto_hide_ms == 0 {
+            return Err("a click-through cheatsheet can't be clicked away: choose when it hides".into());
         }
         if !SHEET_POSITIONS.contains(&o.position.as_str()) {
             return Err(format!("unknown position '{}'", o.position));
@@ -821,6 +851,24 @@ impl KeypadConfig {
         sheet.set("opacity", Json::Num(opacity.to_string()));
         sheet.set("autoHideMs", Json::Num(o.auto_hide_ms.to_string()));
         sheet.set("position", Json::str(&o.position));
+        let window = sheet.get("eww").and_then(|e| e.get("window")).and_then(Json::as_str);
+        let through = window == Some(SHEET_PASSTHROUGH_WINDOW);
+        if o.click_through && !through {
+            // `"eww": false` stays off: {"enabled": false, "window": ...}.
+            let mut eww = match sheet.get("eww") {
+                Some(e @ Json::Obj(_)) => e.clone(),
+                Some(Json::Bool(on)) => Json::Obj(vec![("enabled".into(), Json::Bool(*on))]),
+                _ => Json::obj(),
+            };
+            eww.set("window", Json::str(SHEET_PASSTHROUGH_WINDOW));
+            sheet.set("eww", eww);
+        } else if !o.click_through && through {
+            let eww = sheet.get_mut("eww").expect("has a window");
+            eww.remove("window");
+            if *eww == Json::obj() {
+                sheet.remove("eww");
+            }
+        }
         Ok(())
     }
 
@@ -1132,20 +1180,54 @@ mod tests {
 
     #[test]
     fn sheet_options_round_trip_and_keep_the_eww_block() {
+        let d = SheetDefaults::default();
         let mut c = KeypadConfig::parse(r#"{"cheatsheet": {"eww": {"window": "pad-cheatsheet"}}, "profiles": []}"#).unwrap();
-        assert_eq!(c.sheet_options(), SheetOptions { opacity: 0.85, auto_hide_ms: 0, position: "center".into() });
-        let o = SheetOptions { opacity: 0.6, auto_hide_ms: 5000, position: "top-right".into() };
+        let unset = SheetOptions { opacity: 0.35, auto_hide_ms: 8000, position: "center".into(), click_through: false };
+        assert_eq!(c.sheet_options(&d), unset, "unset options are the daemon's defaults");
+        let old_daemon = SheetDefaults { opacity: 0.85, auto_hide_ms: 0 };
+        assert_eq!(c.sheet_options(&old_daemon), SheetOptions { opacity: 0.85, auto_hide_ms: 0, ..unset.clone() });
+        let o = SheetOptions { opacity: 0.6, auto_hide_ms: 5000, position: "top-right".into(), click_through: false };
         c.set_sheet_options(&o).unwrap();
-        assert_eq!(c.sheet_options(), o);
+        assert_eq!(c.sheet_options(&d), o);
         let out = c.render();
         assert!(out.contains(r#""opacity": 0.6"#) && out.contains(r#""eww": { "window": "pad-cheatsheet" }"#), "{out}");
         for bad in [
             SheetOptions { opacity: 0.01, ..o.clone() },
             SheetOptions { auto_hide_ms: 700_000, ..o.clone() },
             SheetOptions { position: "middle".into(), ..o.clone() },
+            SheetOptions { click_through: true, auto_hide_ms: 0, ..o.clone() },
         ] {
             assert!(c.set_sheet_options(&bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn click_through_picks_the_passthrough_window_and_keeps_other_eww_fields() {
+        let d = SheetDefaults::default();
+        let eww = |c: &KeypadConfig| c.doc.get("cheatsheet").and_then(|s| s.get("eww")).cloned();
+        let through = |c: &KeypadConfig, on: bool| {
+            let mut c = KeypadConfig { doc: c.doc.clone() };
+            let o = SheetOptions { click_through: on, ..c.sheet_options(&d) };
+            c.set_sheet_options(&o).unwrap();
+            assert_eq!(c.sheet_options(&d).click_through, on);
+            c
+        };
+        let window = Json::str(SHEET_PASSTHROUGH_WINDOW);
+
+        let plain = KeypadConfig::parse(r#"{"profiles": []}"#).unwrap();
+        let on = through(&plain, true);
+        assert_eq!(eww(&on), Some(Json::Obj(vec![("window".into(), window.clone())])));
+        assert_eq!(eww(&through(&on, false)), None, "back to the unit's window");
+
+        let off = KeypadConfig::parse(r#"{"cheatsheet": {"eww": false}, "profiles": []}"#).unwrap();
+        let on = through(&off, true);
+        assert_eq!(eww(&on), Some(Json::Obj(vec![("enabled".into(), Json::Bool(false)), ("window".into(), window.clone())])));
+        assert_eq!(eww(&through(&on, false)), Some(Json::Obj(vec![("enabled".into(), Json::Bool(false))])));
+
+        let custom = KeypadConfig::parse(r#"{"cheatsheet": {"eww": {"binary": "/opt/eww", "window": "pad-cheatsheet"}}, "profiles": []}"#).unwrap();
+        let on = through(&custom, true);
+        assert_eq!(eww(&on), Some(Json::Obj(vec![("binary".into(), Json::str("/opt/eww")), ("window".into(), window)])));
+        assert_eq!(eww(&through(&on, false)), Some(Json::Obj(vec![("binary".into(), Json::str("/opt/eww"))])));
     }
 
     #[test]

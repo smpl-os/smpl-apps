@@ -48,7 +48,13 @@ All notable changes to smpl-apps are documented here.
   preview of the selected profile, unsaved edits included
   (`control-surfaced cheatsheet --json --window CLASS` on a temporary copy,
   else `GetCheatsheetFor`), with a Kdenlive context picker. Show on screen
-  calls the running app's `ShowCheatsheet`.
+  calls the running app's `ShowCheatsheet`. If the saved setting is "until
+  hidden", Settings hides that preview after 8 s (`HideCheatsheet`). Options
+  the config leaves out show the daemon's defaults (from `features`; 8 s
+  auto-hide on current daemons). A Click-through overlay toggle (off by
+  default) points `cheatsheet.eww.window` at smplOS's
+  `pad-cheatsheet-passthrough`, keeping the other `eww` fields. It is never
+  combined with "until hidden", because nothing could close the sheet.
 
 - **start-menu: resident mode opens the menu in about 20 ms.** Each Super
   press used to start a new process, taking 260–300 ms to map, mostly for

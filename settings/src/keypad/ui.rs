@@ -74,6 +74,8 @@ struct State {
     mouse: bool,
     /// The installed keypad app supports the cheatsheet.
     sheet: bool,
+    /// The daemon's values for cheatsheet options the config leaves out.
+    sheet_defaults: config::SheetDefaults,
     kdenlive_actions: Vec<(String, String)>,
     /// Kdenlive context picked for the preview (index into KDENLIVE_CONTEXTS).
     sheet_context: usize,
@@ -321,10 +323,14 @@ fn render(ui: &MainWindow) {
 }
 
 /// Auto-hide choices (milliseconds, label).
-const SHEET_HIDE: [(u32, &str); 6] = [
-    (0, "Until hidden"),
+/// How long Show on screen leaves a sheet whose saved setting is "until hidden".
+const SHEET_SHOW_PREVIEW_MS: u32 = 8000;
+
+const SHEET_HIDE: [(u32, &str); 7] = [
+    (0, "Until hidden (click it or press the key)"),
     (3000, "After 3 s without keypad input"),
     (5000, "After 5 s without keypad input"),
+    (8000, "After 8 s without keypad input"),
     (10000, "After 10 s without keypad input"),
     (30000, "After 30 s without keypad input"),
     (60000, "After 1 min without keypad input"),
@@ -446,12 +452,20 @@ fn set_sheet_option(ui: &MainWindow, change: impl FnOnce(&mut SheetOptions)) {
         if st.config_error.is_some() {
             return;
         }
-        let mut o = st.config.sheet_options();
+        let before = st.config.sheet_options(&st.sheet_defaults);
+        let mut o = before.clone();
         change(&mut o);
         match st.config.set_sheet_options(&o) {
             Ok(()) => {
                 st.dirty = true;
-                st.set_message("Cheatsheet options changed. Not saved yet.", false);
+                let note = if o.click_through && !before.click_through && before.auto_hide_ms == 0 {
+                    format!(" It now hides after {} s, because it can't be clicked away.", o.auto_hide_ms / 1000)
+                } else if before.click_through && !o.click_through {
+                    if o.auto_hide_ms == 0 { " Click-through is off, so a click can close it.".to_string() } else { String::new() }
+                } else {
+                    String::new()
+                };
+                st.set_message(format!("Cheatsheet options changed. Not saved yet.{note}"), false);
             }
             Err(e) => st.set_message(e, true),
         }
@@ -641,8 +655,9 @@ fn render_state(ui: &MainWindow, st: &State) {
 
     // Cheatsheet: options and the preview for the selected profile.
     ui.set_kp_sheet_supported(st.sheet);
-    let o = st.config.sheet_options();
+    let o = st.config.sheet_options(&st.sheet_defaults);
     ui.set_kp_sheet_opacity(o.opacity as f32);
+    ui.set_kp_sheet_click_through(o.click_through);
     ui.set_kp_sheet_hide_index(SHEET_HIDE.iter().position(|(ms, _)| *ms == o.auto_hide_ms).map_or(-1, |i| i as i32));
     ui.set_kp_sheet_hide_names(strings(SHEET_HIDE.iter().map(|(_, l)| l.to_string())));
     ui.set_kp_sheet_position(config::SHEET_POSITIONS.iter().position(|p| *p == o.position).map_or(4, |i| i as i32));
@@ -1168,6 +1183,7 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
                     st.max_keys = f.max_keys;
                     st.max_knobs = f.max_knobs;
                     st.sheet = f.cheatsheet;
+                    st.sheet_defaults = f.sheet_defaults;
                 }
             });
             if let Some(ui) = weak.upgrade() {
@@ -1201,6 +1217,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         editor: Binding::new(ActionKind::Inherit, ""),
         mouse: false,
         sheet: false,
+        sheet_defaults: config::SheetDefaults::default(),
         kdenlive_actions: Vec::new(),
         sheet_context: 0,
         sheet_key: String::new(),
@@ -1328,8 +1345,24 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     let weak = ui.as_weak();
     ui.on_kp_set_sheet_hide(move |i| {
         if let (Some(ui), Some((ms, _))) = (weak.upgrade(), SHEET_HIDE.get(i.max(0) as usize)) {
-            set_sheet_option(&ui, |o| o.auto_hide_ms = *ms);
+            set_sheet_option(&ui, |o| {
+                o.auto_hide_ms = *ms;
+                // "Until hidden" needs a sheet that a click can close.
+                o.click_through &= *ms > 0;
+            });
         }
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_sheet_click_through(move |on| {
+        let Some(ui) = weak.upgrade() else { return };
+        let fallback = with(|st| st.sheet_defaults.auto_hide_ms).filter(|ms| *ms > 0).unwrap_or(SHEET_SHOW_PREVIEW_MS);
+        set_sheet_option(&ui, |o| {
+            o.click_through = on;
+            if on && o.auto_hide_ms == 0 {
+                o.auto_hide_ms = fallback;
+            }
+        });
     });
 
     let weak = ui.as_weak();
@@ -1349,6 +1382,16 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     let weak = ui.as_weak();
     ui.on_kp_show_sheet(move || {
         let Some(ui) = weak.upgrade() else { return };
+        // The daemon shows the saved config's sheet; a saved "until hidden"
+        // would leave this preview up, so Settings takes it down itself.
+        let saved = with(|st| {
+            let defaults = st.sheet_defaults;
+            st.loaded_text
+                .as_deref()
+                .and_then(|t| KeypadConfig::parse(t).ok())
+                .map_or(defaults.auto_hide_ms, |c| c.sheet_options(&defaults).auto_hide_ms)
+        })
+        .unwrap_or(0);
         let weak = ui.as_weak();
         std::thread::spawn(move || {
             let result = super::show_sheet();
@@ -1360,7 +1403,24 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                             "The keypad app isn't sending its cheatsheet to the bar. It needs to run as control-surface.service (or with --eww-window pad-cheatsheet).".to_string(),
                             true,
                         ),
-                        (Ok(()), _) => ("Cheatsheet shown on screen (it uses the saved config).".to_string(), false),
+                        (Ok(()), _) if saved == 0 => {
+                            Timer::single_shot(Duration::from_millis(SHEET_SHOW_PREVIEW_MS.into()), || {
+                                std::thread::spawn(|| {
+                                    let _ = super::hide_sheet();
+                                });
+                            });
+                            (
+                                format!(
+                                    "Cheatsheet shown for {} s. Your saved setting keeps it up until it's clicked or its key is pressed.",
+                                    SHEET_SHOW_PREVIEW_MS / 1000
+                                ),
+                                false,
+                            )
+                        }
+                        (Ok(()), _) => (
+                            format!("Cheatsheet shown on screen. It hides after {} s (the saved setting).", saved / 1000),
+                            false,
+                        ),
                         (Err(e), _) => (e, true),
                     };
                     with(|st| st.set_message(message.0, message.1));

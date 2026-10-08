@@ -446,9 +446,12 @@ fn keypad_cheatsheet_card_label_and_preview_are_wired() {
         "selected(i) => { root.kp-set-sheet-context(i); }",
         "clicked => { root.kp-show-sheet(); }",
         "if root.kp-sheet-supported: KeypadSheetPreview {",
+        "toggled(on) => { root.kp-set-sheet-click-through(on); }",
+        ": \"Click anywhere on the overlay to close it.\";",
     ] {
         assert!(keypad.contains(needle), "missing: {needle}");
     }
+    assert!(UI.contains("in property <float> kp-sheet-opacity: 0.35;"), "see-through by default");
     let preview = UI.split("component KeypadSheetPreview").nth(1).unwrap().split("\ncomponent ").next().unwrap();
     assert!(preview.contains("background: Theme.bg.transparentize(1 - root.sheet-opacity);"), "opacity on the background only");
     assert!(preview.contains("font-italic: c.bound && !c.active;"), "inactive is shown by shape, not color alone");
@@ -458,4 +461,7 @@ fn keypad_cheatsheet_card_label_and_preview_are_wired() {
     let on_input = ui_rs.split("fn on_input(").nth(1).unwrap().split("\nfn ").next().unwrap();
     assert!(on_input.contains("sync_editor_text(ui);"), "identify must refresh the editor's text fields");
     assert!(ui_rs.contains("if (self.sheet && config::sheet_slot(&self.slot()))"));
+    let show = ui_rs.split("ui.on_kp_show_sheet(").nth(1).unwrap().split("\n    let weak").next().unwrap();
+    assert!(show.contains("super::hide_sheet()"), "Show on screen never leaves a sheet up for good");
+    assert!(ui_rs.contains("o.click_through &= *ms > 0;"), "until hidden needs a clickable sheet");
 }
