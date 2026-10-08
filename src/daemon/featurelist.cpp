@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "featurelist.h"
+#include "bindinglabel.h"
 #include "boardprofile.h"
 #include "config.h"
 #include "kdenlivecontract.h"
@@ -27,7 +28,7 @@ QJsonObject featuresJson()
         kind("control", R"({"control": "playhead.jog", "scale": 1, "accel": 3})", "A continuous Kdenlive control, coalesced (kdenlive profiles)"),
         kind("request", R"({"request": "colorwheel.reset", "params": {"wheel": "lift"}})", "Invoke a Kdenlive command (kdenlive profiles)"),
         kind("cycle", R"({"cycle": "liftAxis"})", "Advance a mode defined under \"modes\""),
-        kind("command", R"({"command": ["notify-send", "hello"]})", "Start a program (argv, no shell)", false),
+        kind("command", R"({"command": ["gtk-launch", "org.kde.kdenlive"], "ifInstalled": "org.kde.kdenlive"})", "Start a program (argv, no shell; \"~\" and \"~/...\" are expanded)", false),
         kind("cheatsheet", R"({"cheatsheet": "toggle"} | {"cheatsheet": "hold"})", "Show what each input does now as an overlay: toggle, or while held (keys and knob presses only)", false),
         kind("none", R"("none")", "Explicitly unbound; stops the fall-through to the global profile"),
     };
@@ -43,6 +44,11 @@ QJsonObject featuresJson()
                                              {QStringLiteral("path"), QLatin1String(SettingsService::kPath)},
                                              {QStringLiteral("interface"), QLatin1String(SettingsService::kInterface)}}},
         {QStringLiteral("bindingKinds"), kinds},
+        // Fields any binding object may carry, whatever its kind.
+        {QStringLiteral("bindingFields"), QJsonObject{
+            {QStringLiteral("label"), QStringLiteral("text for the cheatsheet and editors; default: made from what the binding does")},
+            {QStringLiteral("icon"), QStringLiteral("cheatsheet icon: a Tabler outline name (^[a-z0-9]+(-[a-z0-9]+)*$), \"none\" for no icon; absent: automatic")},
+            {QStringLiteral("ifInstalled"), QStringLiteral("a program or desktop id (or a list): when one is missing the binding is skipped and the slot falls through")}}},
         {QStringLiteral("keyNames"), QJsonArray::fromStringList(keyNames())},
         {QStringLiteral("modifierNames"), QJsonArray::fromStringList(modifierNames())},
         {QStringLiteral("chordSyntax"), QStringLiteral("modifier+modifier+KEY, case-insensitive, e.g. ctrl+shift+F14; a sequence is a list")},
@@ -86,7 +92,11 @@ QJsonObject featuresJson()
                                                                                             }
                                                                                             return a;
                                                                                         }()}}},
-                                                   {QStringLiteral("label"), QStringLiteral("any binding object may carry \"label\"; otherwise one is made from what it does")}}},
+                                                   {QStringLiteral("label"), QStringLiteral("any binding object may carry \"label\"; otherwise one is made from what it does")},
+                                                   // The overlay's icon contract: entries carry "icon", a name from this set or "".
+                                                   {QStringLiteral("icons"), QJsonObject{{QStringLiteral("set"), QLatin1String(kIconSet)},
+                                                                                         {QStringLiteral("version"), QLatin1String(kIconSetVersion)},
+                                                                                         {QStringLiteral("auto"), QJsonArray::fromStringList(autoIconNames())}}}}},
         {QStringLiteral("kdenlive"), QJsonObject{{QStringLiteral("interface"), cs::contract::kInterface},
                                                  {QStringLiteral("catalog"), QStringLiteral("control-surfaced list-actions --json")}}},
     };

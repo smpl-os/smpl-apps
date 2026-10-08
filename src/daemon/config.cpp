@@ -263,6 +263,29 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
     }
     const QJsonObject o = v.toObject();
     b.label = o.value(QStringLiteral("label")).toString();
+    if (o.contains(QStringLiteral("icon"))) {
+        b.icon = o.value(QStringLiteral("icon")).toString();
+        if (!isIconName(b.icon)) {
+            if (error) {
+                *error = QStringLiteral("\"icon\" must be a Tabler outline icon name like \"player-play\", or \"none\"");
+            }
+            return std::nullopt;
+        }
+    }
+    if (o.contains(QStringLiteral("ifInstalled"))) {
+        const QJsonValue need = o.value(QStringLiteral("ifInstalled"));
+        const QJsonArray list = need.isArray() ? need.toArray() : QJsonArray{need};
+        for (const QJsonValue &n : list) {
+            const QString name = n.toString();
+            if (!n.isString() || name.isEmpty() || name.contains(QLatin1Char(' '))) {
+                if (error) {
+                    *error = QStringLiteral("\"ifInstalled\" must be a program or desktop id, or a list of them");
+                }
+                return std::nullopt;
+            }
+            b.ifInstalled << name;
+        }
+    }
     b.targetFrom = o.value(QStringLiteral("targetFrom")).toString();
     b.options = o.value(QStringLiteral("options")).toObject().toVariantMap();
     if (o.contains(QStringLiteral("fallback"))) {
@@ -296,7 +319,8 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
     } else if (o.contains(QStringLiteral("command"))) {
         b.kind = Binding::Command;
         for (const auto &a : o.value(QStringLiteral("command")).toArray()) {
-            b.argv << a.toString();
+            const QString arg = a.toString();
+            b.argv << (arg == QLatin1String("~") ? QDir::homePath() : expandHome(arg));
         }
         if (b.argv.isEmpty()) {
             if (error) {
@@ -342,6 +366,12 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error)
         return std::nullopt;
     }
     return b;
+}
+
+bool isIconName(const QString &name)
+{
+    static const QRegularExpression re(QStringLiteral("^[a-z0-9]+(-[a-z0-9]+)*$"));
+    return re.match(name).hasMatch();
 }
 
 bool Profile::matches(const QString &cls, const QString &title) const

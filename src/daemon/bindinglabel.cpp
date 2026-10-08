@@ -5,6 +5,8 @@
 
 #include <QFileInfo>
 #include <QHash>
+#include <QSet>
+#include <linux/input-event-codes.h>
 
 namespace cs {
 
@@ -124,6 +126,7 @@ QString prettyKeyName(int code)
         {QStringLiteral("STOPCD"), QStringLiteral("Stop")},
         {QStringLiteral("BRIGHTNESSDOWN"), QStringLiteral("Brightness down")},
         {QStringLiteral("BRIGHTNESSUP"), QStringLiteral("Brightness up")},
+        {QStringLiteral("MICMUTE"), QStringLiteral("Microphone mute")},
     };
     const QString n = keyName(code);
     if (names.contains(n)) {
@@ -274,6 +277,289 @@ QString autoLabel(const Binding &b, const LabelEnv &env)
         return QStringLiteral("Cheatsheet");
     }
     return {};
+}
+
+// ---------------------------------------------------------------------------------
+// Icons (the smplOS overlay's contract: Tabler outline names)
+// ---------------------------------------------------------------------------------
+
+namespace {
+const QHash<int, QString> &mediaIcons()
+{
+    static const QHash<int, QString> m{
+        {KEY_PLAYPAUSE, QStringLiteral("player-play")},          {KEY_NEXTSONG, QStringLiteral("player-track-next")},
+        {KEY_PREVIOUSSONG, QStringLiteral("player-track-prev")}, {KEY_STOPCD, QStringLiteral("player-stop")},
+        {KEY_VOLUMEUP, QStringLiteral("volume")},                {KEY_VOLUMEDOWN, QStringLiteral("volume-2")},
+        {KEY_MUTE, QStringLiteral("volume-3")},                  {KEY_MICMUTE, QStringLiteral("microphone-off")},
+        {KEY_BRIGHTNESSUP, QStringLiteral("brightness-up")},     {KEY_BRIGHTNESSDOWN, QStringLiteral("brightness-down")},
+    };
+    return m;
+}
+
+const QHash<quint32, QString> &shortcutIcons()
+{
+    static const QHash<quint32, QString> m = [] {
+        const QList<QPair<const char *, const char *>> list{
+            {"ctrl+z", "arrow-back-up"},     {"ctrl+shift+z", "arrow-forward-up"}, {"ctrl+y", "arrow-forward-up"},
+            {"ctrl+c", "copy"},              {"ctrl+v", "clipboard"},              {"ctrl+x", "cut"},
+            {"ctrl+s", "device-floppy"},     {"ctrl+t", "square-plus"},            {"ctrl+w", "x"},
+            {"ctrl+r", "refresh"},           {"f5", "refresh"},                    {"alt+left", "arrow-left"},
+            {"alt+right", "arrow-right"},    {"ctrl+tab", "chevron-right"},        {"ctrl+shift+tab", "chevron-left"},
+            {"ctrl+l", "link"},              {"ctrl+shift+t", "restore"},
+        };
+        QHash<quint32, QString> h;
+        for (const auto &[chord, icon] : list) {
+            if (auto c = parseChord(QLatin1String(chord))) {
+                h.insert(c->id(), QLatin1String(icon));
+            }
+        }
+        return h;
+    }();
+    return m;
+}
+
+const QHash<QString, QString> &mouseIcons()
+{
+    static const QHash<QString, QString> m{
+        {QStringLiteral("left"), QStringLiteral("mouse")},          {QStringLiteral("right"), QStringLiteral("mouse")},
+        {QStringLiteral("middle"), QStringLiteral("mouse")},        {QStringLiteral("back"), QStringLiteral("arrow-left")},
+        {QStringLiteral("forward"), QStringLiteral("arrow-right")}, {QStringLiteral("wheel-up"), QStringLiteral("arrow-up")},
+        {QStringLiteral("wheel-down"), QStringLiteral("arrow-down")}, {QStringLiteral("wheel-left"), QStringLiteral("arrow-left")},
+        {QStringLiteral("wheel-right"), QStringLiteral("arrow-right")},
+    };
+    return m;
+}
+
+// Words in a command line (lower-cased basenames) and the app they name.
+const QHash<QString, QString> &commandIcons()
+{
+    static const QHash<QString, QString> m{
+        {QStringLiteral("brave"), QStringLiteral("world")},           {QStringLiteral("firefox"), QStringLiteral("world")},
+        {QStringLiteral("chromium"), QStringLiteral("world")},        {QStringLiteral("github"), QStringLiteral("brand-github")},
+        {QStringLiteral("kdenlive"), QStringLiteral("movie")},        {QStringLiteral("grafium"), QStringLiteral("chart-dots-3")},
+        {QStringLiteral("terminal"), QStringLiteral("terminal-2")},   {QStringLiteral("st"), QStringLiteral("terminal-2")},
+        {QStringLiteral("foot"), QStringLiteral("terminal-2")},       {QStringLiteral("kitty"), QStringLiteral("terminal-2")},
+        {QStringLiteral("nemo"), QStringLiteral("folder")},           {QStringLiteral("files"), QStringLiteral("folder")},
+        {QStringLiteral("nautilus"), QStringLiteral("folder")},       {QStringLiteral("thunar"), QStringLiteral("folder")},
+        {QStringLiteral("smplos-settings"), QStringLiteral("settings")}, {QStringLiteral("settings"), QStringLiteral("settings")},
+        {QStringLiteral("spotify"), QStringLiteral("brand-spotify")},
+    };
+    return m;
+}
+const QString kCommandDefaultIcon = QStringLiteral("terminal");
+
+// The curated Kdenlive actions (kdenlivecatalog.cpp); tst_cheatsheet checks every one has an icon.
+const QHash<QString, QString> &actionIcons()
+{
+    static const QHash<QString, QString> m{
+        // playback
+        {QStringLiteral("monitor_play"), QStringLiteral("player-play")},
+        {QStringLiteral("monitor_pause"), QStringLiteral("player-pause")},
+        {QStringLiteral("monitor_seek_backward"), QStringLiteral("chevrons-left")},
+        {QStringLiteral("monitor_seek_forward"), QStringLiteral("chevrons-right")},
+        {QStringLiteral("monitor_play_zone"), QStringLiteral("player-play")},
+        {QStringLiteral("monitor_play_zone_cursor"), QStringLiteral("player-play")},
+        {QStringLiteral("monitor_loop_zone"), QStringLiteral("repeat")},
+        {QStringLiteral("monitor_loop_clip"), QStringLiteral("repeat")},
+        // monitor
+        {QStringLiteral("switch_monitor"), QStringLiteral("switch-horizontal")},
+        {QStringLiteral("monitor_zoomin"), QStringLiteral("zoom-in")},
+        {QStringLiteral("monitor_zoomout"), QStringLiteral("zoom-out")},
+        {QStringLiteral("monitor_zoomreset"), QStringLiteral("zoom-reset")},
+        // navigation
+        {QStringLiteral("zoom_fit"), QStringLiteral("zoom-reset")},
+        {QStringLiteral("view_zoom_in"), QStringLiteral("zoom-in")},
+        {QStringLiteral("view_zoom_out"), QStringLiteral("zoom-out")},
+        {QStringLiteral("seek_start"), QStringLiteral("arrow-bar-to-left")},
+        {QStringLiteral("seek_end"), QStringLiteral("arrow-bar-to-right")},
+        {QStringLiteral("seek_clip_start"), QStringLiteral("arrow-bar-to-left")},
+        {QStringLiteral("seek_clip_end"), QStringLiteral("arrow-bar-to-right")},
+        {QStringLiteral("seek_zone_start"), QStringLiteral("player-skip-back")},
+        {QStringLiteral("seek_zone_end"), QStringLiteral("player-skip-forward")},
+        {QStringLiteral("monitor_seek_snap_backward"), QStringLiteral("player-skip-back")},
+        {QStringLiteral("monitor_seek_snap_forward"), QStringLiteral("player-skip-forward")},
+        {QStringLiteral("monitor_seek_guide_backward"), QStringLiteral("arrow-left-bar")},
+        {QStringLiteral("monitor_seek_guide_forward"), QStringLiteral("arrow-right-bar")},
+        // zone
+        {QStringLiteral("mark_in"), QStringLiteral("brackets-contain-start")},
+        {QStringLiteral("mark_out"), QStringLiteral("brackets-contain-end")},
+        // markers (add_marker_guide_1..10 below)
+        {QStringLiteral("add_marker_guide_quickly"), QStringLiteral("bookmark")},
+        {QStringLiteral("delete_clip_marker"), QStringLiteral("bookmark-off")},
+        {QStringLiteral("delete_sequence_marker"), QStringLiteral("bookmark-off")},
+        // editing
+        {QStringLiteral("insert_to_in_point"), QStringLiteral("column-insert-right")},
+        {QStringLiteral("overwrite_to_in_point"), QStringLiteral("replace")},
+        {QStringLiteral("remove_lift"), QStringLiteral("eraser")},
+        {QStringLiteral("remove_extract"), QStringLiteral("column-remove")},
+        {QStringLiteral("cut_timeline_clip"), QStringLiteral("scissors")},
+        {QStringLiteral("cut_timeline_all_clips"), QStringLiteral("scissors")},
+        {QStringLiteral("delete_timeline_clip"), QStringLiteral("trash")},
+        {QStringLiteral("extract_clip"), QStringLiteral("column-remove")},
+        {QStringLiteral("resize_timeline_clip_start"), QStringLiteral("arrows-move-horizontal")},
+        {QStringLiteral("resize_timeline_clip_end"), QStringLiteral("arrows-move-horizontal")},
+        {QStringLiteral("delete_space"), QStringLiteral("space-off")},
+        {QStringLiteral("delete_space_all_tracks"), QStringLiteral("space-off")},
+        // tools and modes
+        {QStringLiteral("select_tool"), QStringLiteral("pointer")},
+        {QStringLiteral("razor_tool"), QStringLiteral("blade")},
+        {QStringLiteral("spacer_tool"), QStringLiteral("space")},
+        {QStringLiteral("ripple_tool"), QStringLiteral("ripple")},
+        {QStringLiteral("slip_tool"), QStringLiteral("arrows-left-right")},
+        {QStringLiteral("normal_mode"), QStringLiteral("pencil")},
+        {QStringLiteral("overwrite_mode"), QStringLiteral("replace")},
+        {QStringLiteral("insert_mode"), QStringLiteral("column-insert-right")},
+        // selection
+        {QStringLiteral("select_timeline_clip"), QStringLiteral("square-check")},
+        {QStringLiteral("deselect_timeline_clip"), QStringLiteral("square")},
+        {QStringLiteral("select_add_timeline_clip"), QStringLiteral("square-plus")},
+        {QStringLiteral("select_timeline_zone"), QStringLiteral("brackets-contain")},
+        {QStringLiteral("select_track"), QStringLiteral("list-check")},
+        {QStringLiteral("select_all_tracks"), QStringLiteral("select-all")},
+        // keyframes
+        {QStringLiteral("keyframe_add"), QStringLiteral("keyframe")},
+        {QStringLiteral("keyframe_next"), QStringLiteral("chevron-right")},
+        {QStringLiteral("keyframe_previous"), QStringLiteral("chevron-left")},
+        // history
+        {QStringLiteral("edit_undo"), QStringLiteral("arrow-back-up")},
+        {QStringLiteral("edit_redo"), QStringLiteral("arrow-forward-up")},
+    };
+    return m;
+}
+
+const QHash<QString, QString> &controlIcons()
+{
+    using namespace cs::contract;
+    static const QHash<QString, QString> m{
+        {kJog, QStringLiteral("arrows-horizontal")},
+        {kShuttle, QStringLiteral("chevrons-right")},
+        {kZoom, QStringLiteral("zoom-in")},
+        {kTrackFocus, QStringLiteral("arrows-vertical")},
+        {kScroll, QStringLiteral("arrows-horizontal")},
+        {kAudioGain, QStringLiteral("volume")},
+        {kTrim, QStringLiteral("arrows-move-horizontal")},
+        {kParamNudge, QStringLiteral("adjustments-horizontal")},
+        {kParamFocus, QStringLiteral("list-details")},
+    };
+    return m;
+}
+
+const QHash<QString, QString> &trackIcons()  // track.set "what"
+{
+    static const QHash<QString, QString> m{
+        {QStringLiteral("mute"), QStringLiteral("volume-3")}, {QStringLiteral("solo"), QStringLiteral("headphones")},
+        {QStringLiteral("lock"), QStringLiteral("lock")},     {QStringLiteral("target"), QStringLiteral("target")},
+        {QStringLiteral("hide"), QStringLiteral("eye-off")},
+    };
+    return m;
+}
+
+const QString kCheatsheetIcon = QStringLiteral("help-circle");
+const QString kCycleIcon = QStringLiteral("stack-2");
+const QString kResetIcon = QStringLiteral("rotate");
+const QString kColorIcon = QStringLiteral("color-filter");
+
+QString markerIcon(const QString &action)
+{
+    return action.startsWith(QLatin1String("add_marker_guide_")) ? QStringLiteral("bookmark") : QString();
+}
+
+QString commandIcon(const QStringList &argv)
+{
+    // The first word that names a known app: "focus-or-launch brave-browser
+    // brave", "gtk-launch org.kde.kdenlive" and "/usr/bin/nemo" all count.
+    for (const QString &arg : argv) {
+        const QString base = QFileInfo(arg).fileName().toLower();
+        QString id = base;
+        if (id.endsWith(QLatin1String(".desktop"))) {
+            id.chop(8);
+        }
+        const QString lastDot = id.section(QLatin1Char('.'), -1);
+        for (const QString &w : {base, id, lastDot, lastDot.section(QLatin1Char('-'), 0, 0)}) {
+            if (const auto it = commandIcons().constFind(w); it != commandIcons().cend()) {
+                return *it;
+            }
+        }
+    }
+    return kCommandDefaultIcon;
+}
+} // namespace
+
+QString bindingIcon(const Binding &b, const LabelEnv &env)
+{
+    if (b.icon == QLatin1String("none")) {
+        return {};
+    }
+    return b.icon.isEmpty() ? autoIcon(b, env) : b.icon;
+}
+
+QString autoIcon(const Binding &b, const LabelEnv &env)
+{
+    using namespace cs::contract;
+    switch (b.kind) {
+    case Binding::None:
+        return {};
+    case Binding::Keys: {
+        if (b.keys.size() != 1) {
+            return {};  // a sequence: the label says it
+        }
+        const KeyChord &c = b.keys.first();
+        if (c.mods == 0 && mediaIcons().contains(c.key)) {
+            return mediaIcons().value(c.key);
+        }
+        return shortcutIcons().value(c.id());
+    }
+    case Binding::Mouse:
+        return mouseIcons().value(b.name);
+    case Binding::Action: {
+        const QString icon = actionIcons().value(b.name);
+        return icon.isEmpty() ? markerIcon(b.name) : icon;
+    }
+    case Binding::Control: {
+        const QString name = b.name.startsWith(QLatin1Char('$')) && env.modeValue ? env.modeValue(b.name.mid(1)) : b.name;
+        if (name.startsWith(QLatin1String("colorwheel."))) {
+            return kColorIcon;
+        }
+        return controlIcons().value(name);
+    }
+    case Binding::Request:
+        if (b.name.endsWith(QLatin1String(".reset"))) {
+            return kResetIcon;
+        }
+        if (b.name.startsWith(QLatin1String("colorwheel."))) {
+            return kColorIcon;
+        }
+        if (b.name == kCmdTrackSet) {
+            return trackIcons().value(opt(b, "what", env));
+        }
+        return {};
+    case Binding::Cycle:
+        return kCycleIcon;
+    case Binding::Command:
+        return commandIcon(b.argv);
+    case Binding::Cheatsheet:
+        return kCheatsheetIcon;
+    }
+    return {};
+}
+
+QStringList autoIconNames()
+{
+    QSet<QString> all{kCheatsheetIcon, kCycleIcon, kResetIcon, kColorIcon, kCommandDefaultIcon, QStringLiteral("bookmark")};
+    for (const QString &v : mediaIcons()) {
+        all.insert(v);
+    }
+    for (const QString &v : shortcutIcons()) {
+        all.insert(v);
+    }
+    for (const auto *table : {&mouseIcons(), &commandIcons(), &actionIcons(), &controlIcons(), &trackIcons()}) {
+        for (const QString &v : *table) {
+            all.insert(v);
+        }
+    }
+    QStringList out(all.cbegin(), all.cend());
+    out.sort();
+    return out;
 }
 
 QString bindingState(const Binding &b, const LabelEnv &env)

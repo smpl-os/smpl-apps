@@ -1271,7 +1271,7 @@ private Q_SLOTS:
         // Stage 2 has no MR3 track/trim controls: the config's track and trim pages say so.
         QVERIFY2(f.notOffered.contains(QStringLiteral("control timeline.track (profile kdenlive knob3.turn)")), qPrintable(f.notOffered.join(QLatin1Char('\n'))));
         QVERIFY(f.notOffered.contains(QStringLiteral("control edit.trim (profile kdenlive layer trim knob2.turn)")));
-        QVERIFY(f.notOffered.contains(QStringLiteral("command track.set (profile kdenlive layer track-mixer key1)")));
+        QVERIFY(f.notOffered.contains(QStringLiteral("command track.set (profile kdenlive layer track-mixer key2)")));
         QVERIFY(!f.notOffered.join(QLatin1Char(' ')).contains(QStringLiteral("colorwheel.nudge")));
         const QString text = formatReport(r, &*def);
         QVERIFY(text.contains(QStringLiteral("colorWheels[3]")));

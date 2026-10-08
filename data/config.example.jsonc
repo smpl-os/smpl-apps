@@ -28,11 +28,18 @@
 //   {"request": "colorwheel.reset", "params": {"wheel": "lift"}}   Invoke() on Kdenlive
 //   {"mouse": "left"}               left right middle back forward, or one wheel detent:
 //        wheel-up wheel-down wheel-left wheel-right (per knob detent)
-//   {"command": ["notify-send", "hello"]}
-//   {"cheatsheet": "toggle"}         show/hide an overlay of what every key and knob does
-//        right now (profile, Kdenlive layer, modes); "hold" shows it while held.
-//        Keys and knob presses only. Any binding object may carry "label" for it.
+//   {"command": ["gtk-launch", "org.kde.kdenlive"]}   start a program (argv, no shell;
+//        "~" and "~/..." are expanded)
+//   {"cheatsheet": "hold"}           show an overlay of what every key and knob does
+//        right now (profile, Kdenlive layer, modes) while held; "toggle" shows or
+//        hides it. Keys and knob presses only.
 //   "none"                            explicitly unbound (stops fallthrough)
+// Any binding object may also carry:
+//   "label": "Back"                  the cheatsheet's text (default: made from what it does)
+//   "icon": "player-play"            the cheatsheet's icon, a Tabler outline icon name
+//        (default: chosen from what it does; "none" for no icon)
+//   "ifInstalled": "grafium"         a program or desktop id (or a list): while one is
+//        missing the binding is skipped and the slot falls through
 //
 // Kdenlive is driven ONLY through its control-surface interface (D-Bus
 // ControlSurface1), which is OFF by default in Kdenlive: enable it in
@@ -152,11 +159,11 @@
                     }
                 },
                 {
-                    // Track/mixer page, video track: key1 hides instead of muting.
+                    // Track/mixer page, video track: key2 hides instead of muting.
                     "name": "track-video",
                     "when": { "$mode.page": "track", "timeline.track.audio": false },
                     "bindings": {
-                        "key1": { "request": "track.set", "params": { "what": "hide", "value": "$!ctx:timeline.track.hidden" } }
+                        "key2": { "request": "track.set", "params": { "what": "hide", "value": "$!ctx:timeline.track.hidden" } }
                     }
                 },
                 {
@@ -168,10 +175,10 @@
                         "knob1": { "turn": { "control": "timeline.track" }, "press": "none" },
                         "knob2": { "turn": { "control": "audio.gain", "targetFrom": "timeline.track.gain.target" }, "press": "none" },
                         "knob3": { "turn": { "control": "audio.gain", "targetFrom": "timeline.clipGain.target" }, "press": "none" },
-                        "key1": { "request": "track.set", "params": { "what": "mute", "value": "$!ctx:timeline.track.muted" } },
-                        "key2": { "request": "track.set", "params": { "what": "solo", "value": "$!ctx:timeline.track.solo", "soloMode": "exclusive" } },
-                        "key3": { "request": "track.set", "params": { "what": "lock", "value": "$!ctx:timeline.track.locked" } },
-                        "key4": { "request": "track.set", "params": { "what": "target", "value": "$!ctx:timeline.track.targeted" } }
+                        "key2": { "request": "track.set", "params": { "what": "mute", "value": "$!ctx:timeline.track.muted" } },
+                        "key3": { "request": "track.set", "params": { "what": "solo", "value": "$!ctx:timeline.track.solo", "soloMode": "exclusive" } },
+                        "key4": { "request": "track.set", "params": { "what": "lock", "value": "$!ctx:timeline.track.locked" } },
+                        "key5": { "request": "track.set", "params": { "what": "target", "value": "$!ctx:timeline.track.targeted" } }
                     }
                 },
                 {
@@ -185,10 +192,10 @@
                         "knob1": { "turn": { "control": "playhead.jog" }, "press": { "action": "monitor_play" } },
                         "knob2": { "turn": { "control": "edit.trim", "accel": 1, "options": { "edge": "start", "mode": "resize" } }, "press": "none" },
                         "knob3": { "turn": { "control": "edit.trim", "accel": 1, "options": { "edge": "end", "mode": "resize" } }, "press": "none" },
-                        "key1": { "action": "resize_timeline_clip_start" },
-                        "key2": { "action": "resize_timeline_clip_end" },
-                        "key3": { "action": "delete_space" },
-                        "key4": { "action": "extract_clip" }
+                        "key2": { "action": "resize_timeline_clip_start" },
+                        "key3": { "action": "resize_timeline_clip_end" },
+                        "key4": { "action": "delete_space" },
+                        "key5": { "action": "extract_clip" }
                     }
                 },
                 {
@@ -237,12 +244,12 @@
             ],
             // Default fallback (any other focus): like the timeline.
             "bindings": {
-                // Row 1: marking and three-point editing
-                "key1": { "action": "mark_in", "fallback": "i" },
-                "key2": { "action": "mark_out", "fallback": "o" },
-                "key3": { "action": "insert_to_in_point", "fallback": "v" },
-                "key4": { "action": "overwrite_to_in_point", "fallback": "b" },
-                "key5": { "action": "switch_monitor", "fallback": "t" },
+                // Row 1: the cheatsheet (while held), marking and three-point editing
+                "key1": { "cheatsheet": "hold" },
+                "key2": { "action": "mark_in", "fallback": "i" },
+                "key3": { "action": "mark_out", "fallback": "o" },
+                "key4": { "action": "insert_to_in_point", "fallback": "v" },
+                "key5": { "action": "overwrite_to_in_point", "fallback": "b" },
                 // Row 2: cutting and navigation
                 "key6": { "action": "cut_timeline_clip", "fallback": "shift+r" },
                 "key7": { "action": "delete_timeline_clip", "fallback": "delete" },
@@ -275,18 +282,55 @@
             "name": "fl-studio",
             "match": { "class": "^(fl64\\.exe|fl\\.exe|FL64\\.exe)$" },
             "bindings": {
-                "key1": "space",
+                "key1": { "cheatsheet": "hold" },
+                "key2": { "keys": "space", "label": "Play/Stop", "icon": "player-play" },
                 "knob1": { "ccw": "left", "cw": "right" }
             }
         },
         {
-            // Global fallback for every other window: conservative on purpose.
+            // Brave: navigation and tabs; unbound inputs fall through to global.
+            "name": "brave",
+            "match": { "class": "^brave-browser$" },
+            "bindings": {
+                "key6": { "keys": "alt+left", "label": "Back" },
+                "key7": { "keys": "alt+right", "label": "Forward" },
+                "key8": { "keys": "ctrl+r", "label": "Reload" },
+                "key9": { "keys": "ctrl+t", "label": "New tab" },
+                "key10": { "keys": "ctrl+w", "label": "Close tab" },
+                "knob2": {
+                    "ccw": { "mouse": "wheel-up", "label": "Scroll up" },
+                    "cw": { "mouse": "wheel-down", "label": "Scroll down" },
+                    "press": { "keys": "ctrl+shift+t", "label": "Reopen tab" }
+                },
+                "knob3": {
+                    "ccw": { "keys": "ctrl+shift+tab", "label": "Previous tab" },
+                    "cw": { "keys": "ctrl+tab", "label": "Next tab" },
+                    "press": { "keys": "ctrl+l", "label": "Address bar" }
+                }
+            }
+        },
+        {
+            // Global: every other window. A launcher whose app is not installed
+            // is skipped ("ifInstalled"); gtk-launch starts a desktop entry by id.
             "name": "global",
             "bindings": {
+                "key1": { "cheatsheet": "hold" },
+                // Row 1: apps
+                "key2": { "command": ["gtk-launch", "grafium"], "ifInstalled": ["gtk-launch", "grafium"], "label": "Grafium" },
+                "key3": { "command": ["gtk-launch", "brave-browser"], "ifInstalled": ["gtk-launch", "brave-browser"], "label": "Brave" },
+                "key4": { "command": ["gtk-launch", "github"], "ifInstalled": ["gtk-launch", "github"], "label": "Copilot" },
+                "key5": { "command": ["gtk-launch", "org.kde.kdenlive"], "ifInstalled": ["gtk-launch", "org.kde.kdenlive"], "label": "Kdenlive" },
+                // Row 2: system (terminal and smplos-settings are smplOS's)
+                "key6": { "command": ["terminal"], "ifInstalled": "terminal", "label": "Terminal" },
+                "key7": { "command": ["xdg-open", "~"], "ifInstalled": "xdg-open", "label": "Files", "icon": "folder" },
+                "key8": { "command": ["smplos-settings"], "ifInstalled": "smplos-settings", "label": "Settings" },
+                // Row 3: media
+                "key11": { "keys": "previoussong", "label": "Previous" },
+                "key12": { "keys": "playpause", "label": "Play/Pause" },
+                "key13": { "keys": "nextsong", "label": "Next" },
+                // knob1 volume (press mutes), knob2 scrolls (press: middle click)
                 "knob1": { "ccw": "volumedown", "cw": "volumeup", "press": "mute" },
-                "key11": "previoussong",
-                "key12": "playpause",
-                "key13": "nextsong"
+                "knob2": { "ccw": { "mouse": "wheel-up" }, "cw": { "mouse": "wheel-down" }, "press": { "mouse": "middle" } }
             }
         }
     ]

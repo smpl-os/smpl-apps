@@ -4,6 +4,7 @@
 #include "learn.h"
 #include "configwatcher.h"
 
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -43,7 +44,7 @@ private Q_SLOTS:
         QString err;
         auto cfg = loadConfig(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"), &err);
         QVERIFY2(cfg, qPrintable(err));
-        QCOMPARE(cfg->profiles.size(), 3);
+        QCOMPARE(cfg->profiles.size(), 4);  // kdenlive, fl-studio, brave, global
         QVERIFY(cfg->device.serial.isEmpty());  // any 1189:8890 pad
         QCOMPARE(cfg->device.input, QStringLiteral("auto"));
         QCOMPARE(cfg->settings.coalesceMs, 8);
@@ -69,7 +70,10 @@ private Q_SLOTS:
         QCOMPARE(jog.keys.size(), 2);
         QCOMPARE(kd->bindings.value(QStringLiteral("knob2.turn")).name, QStringLiteral("timeline.zoom"));
         QCOMPARE(kd->bindings.value(QStringLiteral("knob3.turn")).name, QStringLiteral("timeline.track"));
-        QCOMPARE(kd->bindings.value(QStringLiteral("key1")).keys.value(0).key, KEY_I);
+        QCOMPARE(kd->bindings.value(QStringLiteral("key1")).kind, Binding::Cheatsheet);  // held: the overlay
+        QCOMPARE(kd->bindings.value(QStringLiteral("key2")).name, QStringLiteral("mark_in"));
+        QCOMPARE(kd->bindings.value(QStringLiteral("key2")).keys.value(0).key, KEY_I);
+        QCOMPARE(cfg->profileFor(QStringLiteral("brave-browser"), {})->name, QStringLiteral("brave"));
         QCOMPARE(kd->modes.value(QStringLiteral("liftAxis")).size(), 4);
         // The learned map is absent in a clean checkout: default numbering applies.
         QCOMPARE(cfg->hardware.size(), 24);
@@ -488,6 +492,67 @@ private Q_SLOTS:
             QVERIFY2(!parseConfig(bad, {}, &err), bad);
             QVERIFY(err.startsWith(QStringLiteral("cheatsheet")));
         }
+    }
+
+    void bindingFields()
+    {
+        QString err;
+        auto one = [&](const QByteArray &json) { return parseBinding(QJsonDocument::fromJson("[" + json + "]").array().at(0), &err); };
+        // icon: a Tabler outline name (unknown names pass), or "none".
+        for (const char *ok : {"player-play", "brand-github", "chart-dots-3", "none", "some-future-icon"}) {
+            const auto b = one(QByteArray(R"({"keys": "a", "icon": ")") + ok + "\"}");
+            QVERIFY2(b, ok);
+            QCOMPARE(b->icon, QLatin1String(ok));
+        }
+        for (const char *bad : {"Player-play", "app:grafium", "-x", "x-", "a b", "", "a--b"}) {
+            QVERIFY2(!one(QByteArray(R"({"keys": "a", "icon": ")") + bad + "\"}"), bad);
+            QVERIFY(err.contains(QStringLiteral("icon")));
+        }
+        QVERIFY(!one(R"({"keys": "a", "icon": 3})"));
+        QVERIFY(one(R"({"keys": "a"})")->icon.isEmpty());  // automatic
+        // ifInstalled: one name or a list.
+        auto b = one(R"({"command": ["gtk-launch", "grafium"], "ifInstalled": "grafium"})");
+        QVERIFY2(b, qPrintable(err));
+        QCOMPARE(b->ifInstalled, QStringList{QStringLiteral("grafium")});
+        b = one(R"({"command": ["gtk-launch", "grafium"], "ifInstalled": ["gtk-launch", "grafium"]})");
+        QCOMPARE(b->ifInstalled, (QStringList{QStringLiteral("gtk-launch"), QStringLiteral("grafium")}));
+        for (const char *bad : {R"({"keys": "a", "ifInstalled": 1})", R"({"keys": "a", "ifInstalled": ""})", R"({"keys": "a", "ifInstalled": ["x", 2]})",
+                                R"({"keys": "a", "ifInstalled": "two words"})"}) {
+            QVERIFY2(!one(bad), bad);
+            QVERIFY(err.contains(QStringLiteral("ifInstalled")));
+        }
+        // "~" in a command line is the home directory.
+        b = one(R"({"command": ["xdg-open", "~", "~/Videos", "a~b", "~user"]})");
+        QCOMPARE(b->argv, (QStringList{QStringLiteral("xdg-open"), QDir::homePath(), QDir::homePath() + QStringLiteral("/Videos"), QStringLiteral("a~b"),
+                                       QStringLiteral("~user")}));
+    }
+
+    void exampleConfigUsesEveryInputOnce()
+    {
+        // The shipped example: the cheatsheet on key1 in every profile, and
+        // launchers that only apply when their app is installed.
+        QFile f(QStringLiteral(CS_SOURCE_DIR "/data/config.example.jsonc"));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QString err;
+        const auto c = parseConfig(f.readAll(), QStringLiteral(CS_SOURCE_DIR "/data"), &err);
+        QVERIFY2(c, qPrintable(err));
+        QVERIFY2(c->warnings.isEmpty(), qPrintable(c->warnings.join(QLatin1Char('\n'))));
+        const Profile *global = c->globalProfile();
+        QVERIFY(global);
+        for (const Profile &p : c->profiles) {
+            // Its own key1, or the global one through the fall-through (Brave).
+            const Binding k1 = p.bindings.value(QStringLiteral("key1"), global->bindings.value(QStringLiteral("key1")));
+            QVERIFY2(k1.kind == Binding::Cheatsheet && k1.name == QLatin1String("hold"), qPrintable(p.name));
+        }
+        int launchers = 0;
+        for (const Binding &b : global->bindings) {
+            if (b.kind == Binding::Command) {
+                ++launchers;
+                QVERIFY2(!b.ifInstalled.isEmpty(), qPrintable(b.argv.join(QLatin1Char(' '))));
+            }
+        }
+        QCOMPARE(launchers, 7);
+        QVERIFY(!c->cheatsheet.autoHideMs);
     }
 };
 

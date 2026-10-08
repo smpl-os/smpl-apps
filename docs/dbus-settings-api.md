@@ -220,7 +220,35 @@ Content:
 ```
 
 `<entry>` is
-`{"bound", "label", "kind", "custom", "state", "binding", "profile", "layer", "active"}`:
+`{"bound", "label", "kind", "custom", "state", "binding", "profile", "layer", "active", "icon"}`:
+
+* `icon` is a [Tabler Icons](https://tabler.io/icons) **outline** name,
+  version 3.49.0 (MIT), kebab-case without `ti-` (`player-play`,
+  `brand-github`), or `""` for none. It is the binding's own `"icon"`
+  (`"none"`: no icon; any `^[a-z0-9]+(-[a-z0-9]+)*$` name is accepted), else
+  an automatic one. `features.cheatsheet.icons` is
+  `{"set": "tabler-outline", "version": "3.49.0", "auto": [...]}` with every
+  name the automatic rules can give. The label stays as tooltip and fallback.
+  Automatic rules: the cheatsheet `help-circle`; media keys (`playpause`
+  `player-play`, `nextsong` `player-track-next`, `previoussong`
+  `player-track-prev`, `stopcd` `player-stop`, `volumeup` `volume`,
+  `volumedown` `volume-2`, `mute` `volume-3`, `micmute` `microphone-off`,
+  `brightnessup`/`down` `brightness-up`/`down`); mouse (clicks `mouse`,
+  back/forward and wheel directions as arrows); commands by any argv word
+  (brave/firefox/chromium `world`, github `brand-github`, kdenlive `movie`,
+  grafium `chart-dots-3`, terminal/st/foot/kitty `terminal-2`,
+  nemo/files/nautilus/thunar `folder`, smplos-settings/settings `settings`,
+  spotify `brand-spotify`, otherwise `terminal`); common shortcuts (Ctrl+Z
+  `arrow-back-up`, Ctrl+Shift+Z/Ctrl+Y `arrow-forward-up`, Ctrl+C `copy`,
+  Ctrl+V `clipboard`, Ctrl+X `cut`, Ctrl+S `device-floppy`, Ctrl+T
+  `square-plus`, Ctrl+W `x`, Ctrl+R/F5 `refresh`, Alt+Left/Right
+  `arrow-left`/`right`, Ctrl+Tab `chevron-right`, Ctrl+Shift+Tab
+  `chevron-left`, Ctrl+L `link`, Ctrl+Shift+T `restore`; others none); every
+  curated Kdenlive action, control and command (e.g. `mark_in`
+  `brackets-contain-start`, `razor_tool` `blade`, `playhead.jog`
+  `arrows-horizontal`, `colorwheel.*` `color-filter`, `*.reset` `rotate`,
+  track mute/solo/lock/target/hide `volume-3`/`headphones`/`lock`/`target`/`eye-off`);
+  cycles `stack-2`.
 
 * `label` is the binding's own `"label"` (`custom: true`), or a readable name
   made from what it does: Kdenlive catalog titles ("Set Zone In"), controls
@@ -313,8 +341,15 @@ descriptor has reports 3 and 5 (protocol v3), never to stock firmware.
 
 * Mouse bindings: `{"mouse": "left|right|middle|back|forward|wheel-up|wheel-down|wheel-left|wheel-right"}`.
 * Cheatsheet bindings: `{"cheatsheet": "toggle"}` or `{"cheatsheet": "hold"}`
-  on `keyN` or `knobN.press`, and the root `"cheatsheet"` options above. Any
-  binding object may carry `"label"` for the overlay.
+  on `keyN` or `knobN.press`, and the root `"cheatsheet"` options above.
+* Any binding object may carry `"label"` (the overlay's text), `"icon"` (a
+  Tabler outline name, `"none"` for none; absent: automatic) and
+  `"ifInstalled"`: a program or desktop id, or a list. While one is missing
+  (not on PATH and no `<id>.desktop`; checked at most every 30 s) the
+  binding is skipped and the slot falls through to the next layer or
+  profile. A command whose program is missing shows `active: false`.
+  `"~"` and `"~/..."` in a command line are the home directory.
+  `features.bindingFields` lists these.
 * Slots `key1`..`key16`.
 * `"layout"`, described under State.
 * `"device": {"serial": "", "input": "auto|evdev|raw"}`. An empty serial

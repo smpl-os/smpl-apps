@@ -66,6 +66,7 @@ add_library(cs_core STATIC
     src/daemon/bindinglabel.cpp
     src/daemon/cheatsheet.cpp
     src/daemon/ewwsink.cpp
+    src/daemon/installed.cpp
 )
 target_include_directories(cs_core PUBLIC src/daemon src/proto)
 target_link_libraries(cs_core PUBLIC cs_proto cs_catalog Qt6::Core Qt6::Network Qt6::DBus PkgConfig::UDEV)

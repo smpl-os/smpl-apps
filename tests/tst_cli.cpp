@@ -265,6 +265,18 @@ private Q_SLOTS:
         QCOMPARE(sheet.value(QStringLiteral("defaults")).toObject(),
                  (QJsonObject{{QStringLiteral("opacity"), 0.35}, {QStringLiteral("autoHideMs"), 8000}, {QStringLiteral("position"), QStringLiteral("center")}}));
         QVERIFY(sheet.value(QStringLiteral("options")).toObject().value(QStringLiteral("opacity")).toString().contains(QStringLiteral("default 0.35")));
+        // The overlay's icon contract.
+        const QJsonObject icons = sheet.value(QStringLiteral("icons")).toObject();
+        QCOMPARE(icons.keys(), (QStringList{QStringLiteral("auto"), QStringLiteral("set"), QStringLiteral("version")}));
+        QCOMPARE(icons.value(QStringLiteral("set")).toString(), QStringLiteral("tabler-outline"));
+        QCOMPARE(icons.value(QStringLiteral("version")).toString(), QStringLiteral("3.49.0"));
+        const QJsonArray autoIcons = icons.value(QStringLiteral("auto")).toArray();
+        QVERIFY(autoIcons.size() > 60);
+        for (const char *n : {"help-circle", "player-play", "volume-2", "brand-github", "chart-dots-3", "terminal", "brackets-contain-start", "color-filter", "stack-2", "rotate"}) {
+            QVERIFY2(autoIcons.contains(QLatin1String(n)), n);
+        }
+        const QJsonObject fields = j.value(QStringLiteral("bindingFields")).toObject();
+        QVERIFY(fields.contains(QStringLiteral("icon")) && fields.contains(QStringLiteral("label")) && fields.contains(QStringLiteral("ifInstalled")));
         const QJsonArray keys = j.value(QStringLiteral("keyNames")).toArray();
         QVERIFY(keys.contains(QStringLiteral("F24")));
         QVERIFY(keys.contains(QStringLiteral("PLAYPAUSE")));

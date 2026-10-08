@@ -24,8 +24,9 @@ namespace cs {
 //    keys:  [{control, row, column, <entry>}],
 //    knobs: [{control, row, column, ccw, press, cw, shiftCcw, shiftCw}]}
 // where <entry> / each knob field is
-//   {bound, label, kind, custom, state, binding, profile, layer, active}
-// (unbound: bound false, label "", kind "none").
+//   {bound, label, kind, custom, state, binding, profile, layer, active, icon}
+// (unbound: bound false, label "", kind "none", icon ""). icon is a Tabler
+// outline name (bindingIcon) or "" for none; the label stays as tooltip/fallback.
 class Cheatsheet : public QObject
 {
     Q_OBJECT

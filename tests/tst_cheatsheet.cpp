@@ -5,6 +5,8 @@
 #include "cheatsheet.h"
 #include "config.h"
 #include "engine.h"
+#include "installed.h"
+#include "kdenlivecatalog.h"
 #include "kdenliveclient.h"
 #include "keysink.h"
 
@@ -144,6 +146,196 @@ private Q_SLOTS:
         cyc.name = QStringLiteral("liftAxis");
         QCOMPARE(bindingState(cyc, env), QStringLiteral("r"));
         QCOMPARE(bindingKindName(Binding::Mouse), QStringLiteral("mouse"));
+    }
+
+    void icons()
+    {
+        // The smplOS overlay's contract: Tabler outline names, "" for none.
+        QHash<QString, QString> modes{{QStringLiteral("knobTool"), QStringLiteral("edit.trim")}};
+        LabelEnv env;
+        env.modeValue = [&modes](const QString &m) { return modes.value(m); };
+        auto icon = [&](const QByteArray &json) {
+            QString err;
+            const auto b = parseBinding(QJsonDocument::fromJson("[" + json + "]").array().at(0), &err);
+            return b ? bindingIcon(*b, env) : QStringLiteral("PARSE ERROR ") + err;
+        };
+        const QList<QPair<const char *, const char *>> rules{
+            // cheatsheet
+            {R"({"cheatsheet": "hold"})", "help-circle"},
+            {R"({"cheatsheet": "toggle"})", "help-circle"},
+            // media keys
+            {R"("playpause")", "player-play"},
+            {R"("nextsong")", "player-track-next"},
+            {R"("previoussong")", "player-track-prev"},
+            {R"("stopcd")", "player-stop"},
+            {R"("volumeup")", "volume"},
+            {R"("volumedown")", "volume-2"},
+            {R"("mute")", "volume-3"},
+            {R"("micmute")", "microphone-off"},
+            {R"("brightnessup")", "brightness-up"},
+            {R"("brightnessdown")", "brightness-down"},
+            // mouse
+            {R"({"mouse": "left"})", "mouse"},
+            {R"({"mouse": "right"})", "mouse"},
+            {R"({"mouse": "middle"})", "mouse"},
+            {R"({"mouse": "back"})", "arrow-left"},
+            {R"({"mouse": "forward"})", "arrow-right"},
+            {R"({"mouse": "wheel-up"})", "arrow-up"},
+            {R"({"mouse": "wheel-down"})", "arrow-down"},
+            {R"({"mouse": "wheel-left"})", "arrow-left"},
+            {R"({"mouse": "wheel-right"})", "arrow-right"},
+            // commands: any argv word, lower-cased basename
+            {R"({"command": ["brave"]})", "world"},
+            {R"({"command": ["focus-or-launch", "brave-browser", "brave"]})", "world"},
+            {R"({"command": ["gtk-launch", "brave-browser"]})", "world"},
+            {R"({"command": ["/usr/bin/firefox"]})", "world"},
+            {R"({"command": ["Chromium", "--incognito"]})", "world"},
+            {R"({"command": ["focus-or-launch", "github", "github"]})", "brand-github"},
+            {R"({"command": ["focus-or-launch", "org.kde.kdenlive", "kdenlive"]})", "movie"},
+            {R"({"command": ["gtk-launch", "org.kde.kdenlive"]})", "movie"},
+            {R"({"command": ["gtk-launch", "grafium"]})", "chart-dots-3"},
+            {R"({"command": ["terminal"]})", "terminal-2"},
+            {R"({"command": ["st"]})", "terminal-2"},
+            {R"({"command": ["foot", "-e", "htop"]})", "terminal-2"},
+            {R"({"command": ["kitty"]})", "terminal-2"},
+            {R"({"command": ["focus-or-launch", "nemo", "nemo"]})", "folder"},
+            {R"({"command": ["files"]})", "folder"},
+            {R"({"command": ["nautilus"]})", "folder"},
+            {R"({"command": ["thunar"]})", "folder"},
+            {R"({"command": ["smplos-settings"]})", "settings"},
+            {R"({"command": ["settings"]})", "settings"},
+            {R"({"command": ["spotify"]})", "brand-spotify"},
+            {R"({"command": ["notify-send", "hi"]})", "terminal"},  // otherwise
+            // shortcuts
+            {R"("ctrl+z")", "arrow-back-up"},
+            {R"("ctrl+shift+z")", "arrow-forward-up"},
+            {R"("ctrl+y")", "arrow-forward-up"},
+            {R"("ctrl+c")", "copy"},
+            {R"("ctrl+v")", "clipboard"},
+            {R"("ctrl+x")", "cut"},
+            {R"("ctrl+s")", "device-floppy"},
+            {R"("ctrl+t")", "square-plus"},
+            {R"("ctrl+w")", "x"},
+            {R"("ctrl+r")", "refresh"},
+            {R"("f5")", "refresh"},
+            {R"("alt+left")", "arrow-left"},
+            {R"("alt+right")", "arrow-right"},
+            {R"("ctrl+tab")", "chevron-right"},
+            {R"("ctrl+shift+tab")", "chevron-left"},
+            {R"("ctrl+l")", "link"},
+            {R"("ctrl+shift+t")", "restore"},
+            {R"("ctrl+k")", ""},                     // other shortcuts
+            {R"("space")", ""},
+            {R"("shift+volumeup")", ""},
+            {R"({"keys": ["ctrl+k", "x"]})", ""},    // a sequence
+            // Kdenlive actions named by the contract
+            {R"({"action": "mark_in"})", "brackets-contain-start"},
+            {R"({"action": "mark_out"})", "brackets-contain-end"},
+            {R"({"action": "insert_to_in_point"})", "column-insert-right"},
+            {R"({"action": "overwrite_to_in_point"})", "replace"},
+            {R"({"action": "cut_timeline_clip"})", "scissors"},
+            {R"({"action": "delete_timeline_clip"})", "trash"},
+            {R"({"action": "add_marker_guide_quickly"})", "bookmark"},
+            {R"({"action": "select_tool"})", "pointer"},
+            {R"({"action": "razor_tool"})", "blade"},
+            {R"({"action": "edit_undo"})", "arrow-back-up"},
+            {R"({"action": "edit_redo"})", "arrow-forward-up"},
+            {R"({"action": "monitor_seek_snap_backward"})", "player-skip-back"},
+            {R"({"action": "monitor_seek_snap_forward"})", "player-skip-forward"},
+            {R"({"action": "monitor_play"})", "player-play"},
+            {R"({"action": "monitor_pause"})", "player-pause"},
+            {R"({"action": "zoom_fit"})", "zoom-reset"},
+            {R"({"action": "switch_monitor"})", "switch-horizontal"},
+            {R"({"action": "monitor_loop_zone"})", "repeat"},
+            {R"({"action": "monitor_loop_clip"})", "repeat"},
+            {R"({"action": "seek_zone_start"})", "player-skip-back"},
+            {R"({"action": "seek_zone_end"})", "player-skip-forward"},
+            {R"({"action": "keyframe_add"})", "keyframe"},
+            {R"({"action": "keyframe_previous"})", "chevron-left"},
+            {R"({"action": "keyframe_next"})", "chevron-right"},
+            {R"({"action": "add_marker_guide_7"})", "bookmark"},
+            {R"({"action": "not_in_the_catalog"})", ""},
+            // Kdenlive controls, requests, cycles
+            {R"({"control": "playhead.jog"})", "arrows-horizontal"},
+            {R"({"control": "playhead.shuttle"})", "chevrons-right"},
+            {R"({"control": "timeline.zoom"})", "zoom-in"},
+            {R"({"control": "timeline.track"})", "arrows-vertical"},
+            {R"({"control": "timeline.scroll"})", "arrows-horizontal"},
+            {R"({"control": "audio.gain"})", "volume"},
+            {R"({"control": "edit.trim", "options": {"edge": "end"}})", "arrows-move-horizontal"},
+            {R"({"control": "colorwheel.nudge", "options": {"wheel": "lift"}})", "color-filter"},
+            {R"({"control": "param.nudge"})", "adjustments-horizontal"},
+            {R"({"control": "param.focus"})", "list-details"},
+            {R"({"control": "$knobTool"})", "arrows-move-horizontal"},  // a mode picks edit.trim
+            {R"({"cycle": "page"})", "stack-2"},
+            {R"({"cycle": "liftAxis"})", "stack-2"},
+            {R"({"request": "track.set", "params": {"what": "mute"}})", "volume-3"},
+            {R"({"request": "track.set", "params": {"what": "solo"}})", "headphones"},
+            {R"({"request": "track.set", "params": {"what": "lock"}})", "lock"},
+            {R"({"request": "track.set", "params": {"what": "target"}})", "target"},
+            {R"({"request": "track.set", "params": {"what": "hide"}})", "eye-off"},
+            {R"({"request": "param.reset"})", "rotate"},
+            {R"({"request": "colorwheel.reset", "params": {"wheel": "lift"}})", "rotate"},
+            // the binding's own icon wins; "none" is none
+            {R"({"keys": "ctrl+z", "icon": "history"})", "history"},
+            {R"({"keys": "space", "icon": "player-play"})", "player-play"},
+            {R"({"action": "mark_in", "icon": "none"})", ""},
+            {R"("none")", ""},
+        };
+        const QStringList known = autoIconNames();
+        for (const auto &[json, want] : rules) {
+            const QString got = icon(QByteArray(json));
+            QVERIFY2(got == QLatin1String(want), qPrintable(QStringLiteral("%1 -> %2, want %3").arg(QLatin1String(json), got, QLatin1String(want))));
+            if (!got.isEmpty() && !QByteArray(json).contains("\"icon\"")) {
+                QVERIFY2(known.contains(got), qPrintable(got));  // features lists every automatic icon
+            }
+        }
+        // Every curated Kdenlive action and control has one.
+        for (const auto &a : catalog::actions()) {
+            const QString i = icon(QStringLiteral(R"({"action": "%1"})").arg(a.id).toUtf8());
+            QVERIFY2(!i.isEmpty() && known.contains(i), qPrintable(a.id));
+        }
+        for (const auto &c : catalog::controls()) {
+            const QString i = icon(QStringLiteral(R"({"control": "%1"})").arg(c.name).toUtf8());
+            QVERIFY2(!i.isEmpty() && known.contains(i), qPrintable(c.name));
+        }
+        // The list itself: sorted, unique, valid names.
+        QStringList sorted = known;
+        sorted.sort();
+        sorted.removeDuplicates();
+        QCOMPARE(known, sorted);
+        for (const QString &n : known) {
+            QVERIFY2(isIconName(n) && n != QLatin1String("none"), qPrintable(n));
+        }
+    }
+
+    void iconsInContent()
+    {
+        Rig r;
+        r.engine.setConfig(m_cfg);
+        r.engine.setActiveWindow(kBrave);
+        const QJsonObject c = r.sheet.content();
+        QCOMPARE(keyEntry(c, QStringLiteral("key15")).value(QStringLiteral("icon")).toString(), QStringLiteral("help-circle"));
+        QCOMPARE(keyEntry(c, QStringLiteral("key1")).value(QStringLiteral("icon")).toString(), QStringLiteral("square-plus"));  // ctrl+t
+        QCOMPARE(keyEntry(c, QStringLiteral("key13")).value(QStringLiteral("icon")).toString(), QStringLiteral("terminal"));   // notify-send
+        QCOMPARE(knobEntry(c, "knob2", "cw").value(QStringLiteral("icon")).toString(), QStringLiteral("arrow-down"));
+        QCOMPARE(knobEntry(c, "knob3", "press").value(QStringLiteral("icon")).toString(), QStringLiteral("volume-3"));
+        // Every entry carries the field, "" when unbound.
+        const QJsonObject unbound = keyEntry(c, QStringLiteral("key9"));
+        QCOMPARE(unbound.value(QStringLiteral("bound")).toBool(), false);
+        QVERIFY(unbound.contains(QStringLiteral("icon")));
+        QCOMPARE(unbound.value(QStringLiteral("icon")).toString(), QString());
+        for (const auto &k : c.value(QStringLiteral("knobs")).toArray()) {
+            for (const char *f : {"ccw", "press", "cw", "shiftCcw", "shiftCw"}) {
+                QVERIFY(k.toObject().value(QLatin1String(f)).toObject().contains(QStringLiteral("icon")));
+            }
+        }
+        // A command whose program is missing shows, but greyed out.
+        setInstalledCheck([](const QString &) { return false; });
+        QCOMPARE(keyEntry(r.sheet.content(), QStringLiteral("key13")).value(QStringLiteral("active")).toBool(), false);
+        setInstalledCheck([](const QString &n) { return n == QLatin1String("/usr/bin/notify-send"); });
+        QCOMPARE(keyEntry(r.sheet.content(), QStringLiteral("key13")).value(QStringLiteral("active")).toBool(), true);
+        setInstalledCheck(nullptr);
     }
 
     void contentPerProfile()

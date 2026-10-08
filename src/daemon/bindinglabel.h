@@ -29,4 +29,14 @@ QString bindingState(const Binding &b, const LabelEnv &env);
 // Short kind name: keys, mouse, action, control, request, cycle, command, cheatsheet, none.
 QString bindingKindName(Binding::Kind k);
 
+// Cheatsheet icons are Tabler Icons outline names (kIconSet, kIconSetVersion),
+// kebab-case without "ti-". The binding's "icon" ("none": no icon), else the
+// automatic one, else "" (the overlay shows the label).
+inline constexpr const char *kIconSet = "tabler-outline";
+inline constexpr const char *kIconSetVersion = "3.49.0";
+QString bindingIcon(const Binding &b, const LabelEnv &env);
+QString autoIcon(const Binding &b, const LabelEnv &env);
+// Every name autoIcon can return, sorted, for features.cheatsheet.icons.auto.
+QStringList autoIconNames();
+
 } // namespace cs

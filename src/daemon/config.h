@@ -23,8 +23,10 @@ struct Binding {
     double accel = 0;      // Control: acceleration factor for fast detents; 0 = settings.accelFactor
     QVariantMap options;   // Control/Request options; "$mode" expands to a mode value, "$ctx:path" to a context value
     QString targetFrom;    // context path of the target handle (default per control; e.g. "hoveredColorWheel.target")
-    QStringList argv;      // Command
+    QStringList argv;      // Command ("~" and "~/..." arguments are expanded)
     QString label;
+    QString icon;              // cheatsheet icon: a Tabler outline name, "none" = no icon; empty = automatic
+    QStringList ifInstalled;   // programs or desktop ids that must exist, else the slot falls through
     bool isValid() const { return kind != None; }
     QString describe() const;
 };
@@ -147,6 +149,9 @@ QString layoutMismatchWarning(const BoardProfile &effective, const std::optional
 
 QByteArray stripJsonComments(const QByteArray &in);
 std::optional<Binding> parseBinding(const QJsonValue &v, QString *error);
+// A valid "icon" value: a Tabler Icons outline name, kebab-case without "ti-"
+// (player-play, brand-github), or "none". Unknown names are accepted.
+bool isIconName(const QString &name);
 std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDir, QString *error);
 std::optional<Config> loadConfig(const QString &path, QString *error);
 // Semantic checks run by parseConfig: errors fail, warnings go to cfg.warnings.

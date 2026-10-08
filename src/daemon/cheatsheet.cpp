@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cheatsheet.h"
 #include "bindinglabel.h"
+#include "installed.h"
 #include "keysink.h"
 
 #include <QJsonArray>
@@ -150,6 +151,8 @@ bool Cheatsheet::isActive(const Binding &b) const
     }
     case Binding::Request:
         return m_engine->kdenliveActive() && m_kd->supportsCommand(b.name);
+    case Binding::Command:
+        return isInstalled(b.argv.first());  // greyed out when the program is missing
     case Binding::None:
         return false;
     default:
@@ -164,7 +167,7 @@ QJsonObject Cheatsheet::entry(const std::optional<Engine::Resolution> &r) const
                            {QStringLiteral("kind"), QStringLiteral("none")}, {QStringLiteral("custom"), false},
                            {QStringLiteral("state"), QString()},   {QStringLiteral("binding"), QString()},
                            {QStringLiteral("profile"), r ? r->profile : QString()}, {QStringLiteral("layer"), r ? r->layer : QString()},
-                           {QStringLiteral("active"), false}};
+                           {QStringLiteral("active"), false}, {QStringLiteral("icon"), QString()}};
     }
     const Binding &b = r->binding;
     LabelEnv env;
@@ -178,7 +181,8 @@ QJsonObject Cheatsheet::entry(const std::optional<Engine::Resolution> &r) const
                        {QStringLiteral("binding"), b.describe()},
                        {QStringLiteral("profile"), r->profile},
                        {QStringLiteral("layer"), r->layer},
-                       {QStringLiteral("active"), isActive(b)}};
+                       {QStringLiteral("active"), isActive(b)},
+                       {QStringLiteral("icon"), bindingIcon(b, env)}};
 }
 
 QJsonObject Cheatsheet::content() const

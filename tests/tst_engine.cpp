@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "engine.h"
+#include "installed.h"
 #include "kdenlivecontract.h"
 
 #include <QSignalSpy>
@@ -88,6 +89,46 @@ private Q_SLOTS:
         QTRY_COMPARE(keys.taps, (QStringList{QStringLiteral("VOLUMEUP"), QStringLiteral("VOLUMEDOWN"), QStringLiteral("MUTE"), QStringLiteral("PLAYPAUSE")}));
         QVERIFY(kd.calls.isEmpty());
         QCOMPARE(kd.attachedPid(), 0);
+    }
+
+    void ifInstalledFallsThrough()
+    {
+        // A launcher for a missing app is skipped: the slot falls through to
+        // the next layer or profile, here the global one.
+        QString err;
+        auto c = parseConfig(R"({"profiles": [
+            {"name": "app", "match": {"class": "^firefox$"},
+             "layers": [{"name": "L", "when": {"$mode.m": "a"}, "bindings": {"key3": {"command": ["grafium"], "ifInstalled": "grafium"}}}],
+             "modes": {"m": ["a"]},
+             "bindings": {"key2": {"command": ["gtk-launch", "grafium"], "ifInstalled": ["gtk-launch", "grafium"]}, "key3": "ctrl+c"}},
+            {"name": "global", "bindings": {"key2": "ctrl+z"}}]})", {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        e.setConfig(*c);
+        e.setActiveWindow(kFirefox);
+        QStringList asked;
+        setInstalledCheck([&asked](const QString &n) {
+            asked << n;
+            return n == QLatin1String("gtk-launch");
+        });
+        QCOMPARE(e.resolve(QStringLiteral("key2"))->profile, QStringLiteral("global"));
+        QCOMPARE(e.resolve(QStringLiteral("key2"))->binding.kind, Binding::Keys);
+        QCOMPARE(e.resolve(QStringLiteral("key3"))->layer, QString());  // the layer's launcher is skipped too
+        QVERIFY(asked.contains(QStringLiteral("grafium")));
+        QStringList commands;
+        connect(&e, &Engine::runCommand, this, [&commands](const QStringList &a) { commands << a.join(QLatin1Char(' ')); });
+        e.handle(key(2));
+        QTRY_COMPARE(keys.taps, QStringList{QStringLiteral("ctrl+Z")});
+        QVERIFY(commands.isEmpty());
+        // Installed: the launcher applies.
+        setInstalledCheck([](const QString &) { return true; });
+        QCOMPARE(e.resolve(QStringLiteral("key2"))->profile, QStringLiteral("app"));
+        QCOMPARE(e.resolve(QStringLiteral("key3"))->layer, QStringLiteral("L"));
+        e.handle(key(2));
+        QTRY_COMPARE(commands, QStringList{QStringLiteral("gtk-launch grafium")});
+        setInstalledCheck(nullptr);
     }
 
     void mouseBindingsPerDetent()

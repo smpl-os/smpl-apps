@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "engine.h"
+#include "installed.h"
 #include "kdenlivecontract.h"
 
 #include <QCoreApplication>
@@ -327,14 +328,17 @@ std::optional<Engine::Resolution> Engine::resolve(const QStringList &candidates)
                 continue;
             }
             for (const QString &slot : candidates) {
-                if (l.bindings.contains(slot)) {
-                    return Resolution{l.bindings.value(slot), p->name, l.name, slot};
+                // A binding whose "ifInstalled" app is missing is skipped: the slot falls through.
+                const auto it = l.bindings.constFind(slot);
+                if (it != l.bindings.cend() && bindingAvailable(*it)) {
+                    return Resolution{*it, p->name, l.name, slot};
                 }
             }
         }
         for (const QString &slot : candidates) {
-            if (p->bindings.contains(slot)) {
-                return Resolution{p->bindings.value(slot), p->name, QString(), slot};
+            const auto it = p->bindings.constFind(slot);
+            if (it != p->bindings.cend() && bindingAvailable(*it)) {
+                return Resolution{*it, p->name, QString(), slot};
             }
         }
     }
