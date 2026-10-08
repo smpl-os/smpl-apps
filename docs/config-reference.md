@@ -65,7 +65,11 @@ that would not validate (nothing written), 3 the file could not be written.
 * Keys: `key1`..`key15`, row by row from the top left (row 1 = key1..key5).
 * Knobs: `knob1`..`knob3`, from the top. Each knob has:
   * `"turn"`: signed detents; preferred for continuous controls;
-  * or `"ccw"` / `"cw"`: one binding per direction;
+  * or `"ccw"` / `"cw"`: one binding per direction. A control on a half keeps
+    the physical sign: `ccw` sends −1 per detent and `cw` +1, as `"turn"`
+    would (before 2026-10-08 both halves sent +1; check-config flags a
+    leftover `"scale": -1` on a `ccw` half). Keys bound to a control send +1
+    per press, so a minus key needs `"scale": -1`;
   * `"press"`;
   * `"shift"` with its own `"turn"`/`"ccw"`/`"cw"`: turning while the knob is
     held down. A knob with shift bindings fires its `"press"` on release, and

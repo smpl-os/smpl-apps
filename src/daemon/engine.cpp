@@ -810,11 +810,9 @@ void Engine::handle(const PadEvent &e)
         }
         // Per-binding "accel" overrides settings.accelFactor (1 disables it).
         const double accel = !fast ? 1.0 : (r->binding.accel > 0 ? r->binding.accel : m_cfg.settings.accelFactor);
-        if (r->slot == candidates.first()) {
-            execute(*r, r->slot, e.delta, true, accel);
-        } else {
-            execute(*r, r->slot, std::abs(e.delta), true, accel);
-        }
+        // Signed on a half too: a control on knobN.ccw moves as a ccw turn would
+        // (-1 per detent). Discrete bindings take their direction from the slot.
+        execute(*r, r->slot, e.delta, true, accel);
         return;
     }
     }

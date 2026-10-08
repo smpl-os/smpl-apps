@@ -918,6 +918,12 @@ bool checkConfig(Config &cfg, QString *error)
             if (b.kind == Binding::Request && !contract::kKnownCommands.contains(b.name)) {
                 cfg.warnings << QStringLiteral("%1: unknown command '%2' (known: %3)").arg(where, b.name, contract::kKnownCommands.join(QStringLiteral(", ")));
             }
+            if (b.kind == Binding::Control && b.scale < 0 && where.contains(QLatin1String(".ccw"))) {
+                // Before 2026-10-08 a half always received +1, and split ccw/cw
+                // bindings compensated with "scale": -1 on the ccw half.
+                cfg.warnings << QStringLiteral("%1: a ccw half now sends -1 per detent by itself, so \"scale\": %2 makes it move the cw way; drop the minus sign unless that is intended")
+                                    .arg(where).arg(b.scale);
+            }
             if (b.kind == Binding::Control || b.kind == Binding::Request) {
                 for (const QString &problem : catalog::optionProblems(b.name, b.kind == Binding::Request, b.options)) {
                     cfg.warnings << QStringLiteral("%1: %2").arg(where, problem);

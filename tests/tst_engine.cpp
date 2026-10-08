@@ -1268,6 +1268,44 @@ private Q_SLOTS:
         QVERIFY(keys.taps.isEmpty());
     }
 
+    // A control on a knob half keeps the physical sign (ccw = -1 per detent),
+    // also through its stock key fallback [negative key, positive key].
+    void controlOnKnobHalvesIsSigned()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        Engine e(&keys, &kd);
+        QString err;
+        auto c = parseConfig(R"({"profiles": [{"name": "kd", "match": {"class": "^kd$"}, "kdenlive": true, "bindings": {
+            "knob1": {"ccw": {"control": "playhead.jog", "fallback": ["left", "right"]}, "cw": {"control": "playhead.jog", "fallback": ["left", "right"]}},
+            "knob2": {"ccw": {"control": "timeline.zoom", "scale": -1}}}}]})",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(c->warnings.size(), 1);  // the leftover compensation on knob2.ccw
+        QVERIFY2(c->warnings.first().contains(QLatin1String("knob2.ccw")), qPrintable(c->warnings.first()));
+        c->settings.accelFactor = 1;
+        c->settings.coalesceMs = 1;
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)}});
+        e.handle(turn(1, -2));
+        QTRY_COMPARE(kd.calls.size(), 1);
+        QCOMPARE(kd.calls.last(), QStringLiteral("control playhead.jog -2"));
+        e.handle(turn(1, 3));
+        QTRY_COMPARE(kd.calls.size(), 2);
+        QCOMPARE(kd.calls.last(), QStringLiteral("control playhead.jog 3"));
+        e.handle(turn(2, -1));
+        QTRY_COMPARE(kd.calls.size(), 3);
+        QCOMPARE(kd.calls.last(), QStringLiteral("control timeline.zoom 1"));  // as configured: reversed
+        // Stock Kdenlive with keyFallback: the ccw half types the negative key.
+        c->profiles.first().keyFallback = true;
+        e.setConfig(*c);
+        kd.setState(KdenliveClient::State::Absent);
+        e.handle(turn(1, -1));
+        QTRY_VERIFY(!keys.taps.isEmpty());
+        QCOMPARE(keys.taps.first(), QStringLiteral("LEFT"));  // the negative key
+    }
+
     // MR1b-B: effect.focus, bin.cursor and timeline.target start a new epoch in
     // Kdenlive when they change something, so they wait like timeline.track.
     void mr1bNavigationWaitsForItsOwnEpochChange()
