@@ -382,15 +382,17 @@ fn keypad_tab_states_its_device_scope_first() {
     let scope = keypad.find("// ── Which keypads this supports").expect("scope note");
     let device = keypad.find("// ── Device: keypad (sysfs) and the keypad app").unwrap();
     assert!(scope < device, "the scope note comes before the device card");
-    for needle in [
-        "Supports CH552-based macro keypads only: USB ID 1189:8890",
-        "\\\"MINI KeyBoard\\\"-style pads with 3 to 16 keys and up to 3 knobs",
-        "a supported keypad shows up as connected just below",
-        "keypad-ctl present (or lsusb) finds USB ID 1189:8890",
-        "clicked => { root.kp-open-scope-help(); }",
-    ] {
+    for needle in ["text: root.kp-scope-text;", "text: root.kp-scope-help;", "clicked => { root.kp-open-scope-help(); }"] {
         assert!(keypad.contains(needle), "missing: {needle}");
     }
+    // The text comes from smplOS's keypad registry (generated registry.rs).
+    use crate::keypad::registry::{SCOPE, SCOPE_HELP, SUPPORTED_IDS};
+    assert!(SCOPE.starts_with("Supports CH552 macro keypads (USB ID 1189:8890)"), "{SCOPE}");
+    assert!(SCOPE.contains("\"MINI KeyBoard\"-style pads with 3 to 16 keys and up to 3 knobs"));
+    assert!(SCOPE.contains("Planned, not working yet: Elgato Stream Deck."), "planned devices are named, not supported");
+    assert!(SCOPE_HELP.contains("keypad-ctl present (or lsusb) finds USB ID 1189:8890"));
+    assert_eq!(SUPPORTED_IDS, [("1189", "8890")], "a planned Stream Deck is not detected as supported");
+    assert!(!SUPPORTED_IDS.iter().any(|(v, _)| *v == "0fd9"));
     let ui_rs = include_str!("keypad/ui.rs");
     assert!(ui_rs.contains("KEYPAD.md#which-keypads-work"));
 }

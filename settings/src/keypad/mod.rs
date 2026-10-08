@@ -8,6 +8,7 @@
 pub mod config;
 pub mod icons;
 pub mod json;
+pub mod registry;
 pub mod ui;
 
 use std::io::{BufRead, BufReader};
@@ -22,8 +23,7 @@ const BACKUPS_KEPT: usize = 10;
 
 // ── Devices (sysfs only: the keypad is never opened) ─────────────────────────
 
-const PAD_ID: (&str, &str) = ("1189", "8890");
-const BOOTLOADER_IDS: [(&str, &str); 2] = [("4348", "55e0"), ("1a86", "55e0")];
+use registry::{BOOTLOADER_IDS, SUPPORTED_IDS};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pad {
@@ -172,7 +172,7 @@ pub fn scan_sysfs(root: &Path) -> (Vec<Pad>, usize) {
     let (mut pads, mut loaders) = (Vec::new(), 0);
     for dir in dirs {
         let id = (attr(&dir, "idVendor").to_lowercase(), attr(&dir, "idProduct").to_lowercase());
-        if (id.0.as_str(), id.1.as_str()) == PAD_ID {
+        if SUPPORTED_IDS.iter().any(|(v, p)| (id.0.as_str(), id.1.as_str()) == (*v, *p)) {
             let manufacturer = attr(&dir, "manufacturer");
             let product = attr(&dir, "product");
             let (firmware, firmware_label, version, board) =

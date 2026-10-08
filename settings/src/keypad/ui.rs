@@ -2012,6 +2012,8 @@ impl State {
 pub fn install(ui: &MainWindow) -> KeypadTab {
     let state = State::new();
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
+    ui.set_kp_scope_text(s(super::registry::SCOPE));
+    ui.set_kp_scope_help(s(super::registry::SCOPE_HELP));
     if ui.get_active_tab() == KEYPAD_TAB {
         ensure_loaded(ui);
     }

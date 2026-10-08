@@ -1715,6 +1715,9 @@ export component MainWindow inherits Window {
     in property <bool> kp-dry-run: true;
     // Cheatsheet: per-binding label, options and preview.
     in-out property <string> kp-label-text;
+    // From smplOS's keypad registry (src/keypad/registry.rs, generated).
+    in property <string> kp-scope-text;
+    in property <string> kp-scope-help;
     // "ifInstalled" of the binding being edited (space-separated names).
     in-out property <string> kp-needs-text;
     in property <string> kp-needs-placeholder;
@@ -8172,13 +8175,13 @@ export component MainWindow inherits Window {
                                 horizontal-stretch: 1;
                                 spacing: 4px;
                                 Text {
-                                    text: "Supports CH552-based macro keypads only: USB ID 1189:8890, the inexpensive \"MINI KeyBoard\"-style pads with 3 to 16 keys and up to 3 knobs.";
+                                    text: root.kp-scope-text;
                                     color: Theme.fg;
                                     font-size: Typography.secondary;
                                     wrap: word-wrap;
                                 }
                                 Text {
-                                    text: "Is yours one? Plug it in: a supported keypad shows up as connected just below. In a terminal, keypad-ctl present (or lsusb) finds USB ID 1189:8890. Other keypads won't show up here.";
+                                    text: root.kp-scope-help;
                                     color: Theme.fg_dim;
                                     font-size: Typography.secondary;
                                     wrap: word-wrap;
