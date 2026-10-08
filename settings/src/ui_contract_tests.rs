@@ -434,6 +434,41 @@ fn keypad_variant_picker_has_previews_custom_grid_and_detected_mode() {
 }
 
 #[test]
+fn keypad_advanced_reaches_what_was_hand_edited() {
+    let keypad = keypad_page();
+    let advanced = keypad.split("// ── Advanced: what would otherwise be hand-edited in the file ──").nth(1).unwrap()
+        .split("// ── Save ──").next().unwrap();
+    for needle in [
+        r#"for mode[idx] in ["Automatic", "Keymap (compatible)", "Raw (fastest, firmware 2.0.2+)"]: Rectangle {"#,
+        "clicked => { root.kp-set-input-mode(idx); }",
+        "text: root.kp-input-now;",
+        "text: root.kp-input-health;",
+        r#"text: root.kp-input-healthy ? "\u{2713}" : "!";"#,
+        "for t in root.kp-knob-tunings: VerticalLayout {",
+        "for t in root.kp-kdenlive-tunings: VerticalLayout {",
+        "changed(v) => { root.kp-set-tuning(t.key, v); }",
+        "clicked => { root.kp-reset-tunings(); }",
+        "toggled(on) => { root.kp-set-sheet-overlay(on); }",
+        "clicked => { root.kp-advanced-open = !root.kp-advanced-open; }",
+    ] {
+        assert!(advanced.contains(needle), "advanced: {needle}");
+    }
+    assert!(UI.contains("in-out property <bool> kp-advanced-open: false;"), "collapsed by default");
+    for needle in [
+        "text <=> root.kp-profile-name;",
+        "text <=> root.kp-profile-title;",
+        "toggled(on) => { root.kp-set-fallthrough(on); }",
+        "text <=> root.kp-needs-text;",
+    ] {
+        assert!(keypad.contains(needle), "missing: {needle}");
+    }
+    assert!(!UI.contains("kp-apply-profile-class"), "one Apply for name, class and title");
+    let ui_rs = include_str!("keypad/ui.rs");
+    assert!(ui_rs.contains("super::input_summary(st.status.input.as_ref(), st.status.app.running(), firmware, &mode)"));
+    assert!(ui_rs.contains("(set in the file)"), "a file's custom auto-hide value is shown, not blank");
+}
+
+#[test]
 fn keypad_cheatsheet_card_label_and_preview_are_wired() {
     let keypad = keypad_page();
     for needle in [

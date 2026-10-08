@@ -1,9 +1,11 @@
 // The forms a hand-edited config uses (modelled on a real one): a cheatsheet
 // hold key in every profile, labels everywhere, command arrays, mouse wheel
-// turns, media keys, Kdenlive actions with fallbacks and a layer.
+// turns, media keys, Kdenlive actions with fallbacks and a layer, launchers
+// with "ifInstalled" (the keypad app's example config) and engine settings.
 {
     "device": { "vendor": "1189", "product": "8890", "serial": "", "input": "auto" },
     "cheatsheet": { "opacity": 0.35, "autoHideMs": 8000, "position": "center" },
+    "settings": { "coalesceMs": 8, "ackTimeoutMs": 60, "accelWindowMs": 35, "accelFactor": 3, "keyRateHz": 120 },
     "profiles": [
         {
             "name": "kdenlive",
@@ -50,7 +52,9 @@
                 "key1": { "cheatsheet": "hold", "label": "Cheatsheet" },
                 "key2": { "command": ["gtk-launch", "grafium"], "label": "Grafium" },
                 "key3": { "command": ["focus-or-launch", "brave-browser", "brave"], "label": "Brave" },
+                "key5": { "command": ["gtk-launch", "org.kde.kdenlive"], "ifInstalled": ["gtk-launch", "org.kde.kdenlive"], "label": "Kdenlive" },
                 "key6": { "command": ["terminal"], "label": "Terminal" },
+                "key7": { "command": ["xdg-open", "~"], "ifInstalled": "xdg-open", "label": "Files", "icon": "folder" },
                 "key8": { "command": ["smplos-settings"], "label": "Settings", "icon": "settings" },
                 "key12": { "keys": "playpause", "label": "Play/Pause" },
                 "key13": "nextsong",

@@ -16,7 +16,9 @@ use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use super::config::{self, ActionKind, Binding, KeypadConfig, Layout, SheetOptions, ICON_NONE};
 use super::icons;
 use super::{FirmwareImage, InputEvent, SheetPreview, Status, Validation, Variant};
-use crate::{KeypadBindingRow, KeypadControl, KeypadIcon, KeypadSheetCell, KeypadSheetLine, KeypadVariant, MainWindow};
+use crate::{
+    KeypadBindingRow, KeypadControl, KeypadIcon, KeypadSheetCell, KeypadSheetLine, KeypadTuning, KeypadVariant, MainWindow,
+};
 
 const KEYPAD_TAB: i32 = 11;
 pub const SCOPE_HELP_URL: &str = "https://github.com/smpl-os/smplos/blob/main/KEYPAD.md#which-keypads-work";
@@ -79,6 +81,8 @@ struct State {
     sheet_defaults: config::SheetDefaults,
     /// The installed keypad app draws binding icons on the cheatsheet.
     icons_shown: bool,
+    /// The keypad app's own words for each input mode (`features`).
+    input_modes: Vec<(String, String)>,
     icon_picker: bool,
     kdenlive_actions: Vec<(String, String)>,
     /// Kdenlive context picked for the preview (index into KDENLIVE_CONTEXTS).
@@ -671,6 +675,13 @@ fn render_state(ui: &MainWindow, st: &State) {
     if !st.dirty || ui.get_kp_profile_class().is_empty() {
         ui.set_kp_profile_class(s(current.as_ref().map_or("", |p| p.class.as_str())));
     }
+    if !st.dirty || ui.get_kp_profile_name().is_empty() {
+        ui.set_kp_profile_name(s(current.as_ref().map_or("", |p| p.name.as_str())));
+    }
+    if !st.dirty {
+        ui.set_kp_profile_title(s(current.as_ref().map_or("", |p| p.title.as_str())));
+    }
+    ui.set_kp_profile_fallthrough(current.as_ref().is_none_or(|p| p.fallthrough));
     ui.set_kp_profile_kdenlive(current.as_ref().is_some_and(|p| p.kdenlive));
     ui.set_kp_profile_key_fallback(current.as_ref().is_some_and(|p| p.key_fallback));
     ui.set_kp_profile_note(s(current.as_ref().map_or(String::new(), |p| {
@@ -726,6 +737,14 @@ fn render_state(ui: &MainWindow, st: &State) {
     }));
     ui.set_kp_advanced_text(s(if st.editor.kind == ActionKind::Advanced { st.editor.value.as_str() } else { "" }));
     ui.set_kp_label_enabled(mappable && st.config_error.is_none() && st.editor.takes_label());
+    ui.set_kp_needs_placeholder(s(match st.editor.kind {
+        ActionKind::Command => format!(
+            "Optional, e.g. {}: skip this binding while it isn't installed",
+            launched_program(&st.editor.value).unwrap_or("grafium")
+        ),
+        _ => "Optional: programs or app ids; skip this binding while one isn't installed".to_string(),
+    }));
+    render_advanced(ui, st, pad);
     let (glyph, caption) = st.icon_caption();
     ui.set_kp_icon_name(s(&st.editor.icon));
     ui.set_kp_icon_glyph(s(glyph));
@@ -738,8 +757,15 @@ fn render_state(ui: &MainWindow, st: &State) {
     let o = st.config.sheet_options(&st.sheet_defaults);
     ui.set_kp_sheet_opacity(o.opacity as f32);
     ui.set_kp_sheet_click_through(o.click_through);
-    ui.set_kp_sheet_hide_index(SHEET_HIDE.iter().position(|(ms, _)| *ms == o.auto_hide_ms).map_or(-1, |i| i as i32));
-    ui.set_kp_sheet_hide_names(strings(SHEET_HIDE.iter().map(|(_, l)| l.to_string())));
+    let mut hide_names: Vec<String> = SHEET_HIDE.iter().map(|(_, l)| l.to_string()).collect();
+    let hide_index = SHEET_HIDE.iter().position(|(ms, _)| *ms == o.auto_hide_ms).unwrap_or_else(|| {
+        // A value set in the file: shown as is, and kept unless another is chosen.
+        hide_names.push(format!("After {} s without keypad input (set in the file)", config::number(f64::from(o.auto_hide_ms) / 1000.0)));
+        SHEET_HIDE.len()
+    });
+    ui.set_kp_sheet_hide_index(hide_index as i32);
+    ui.set_kp_sheet_hide_names(strings(hide_names));
+    ui.set_kp_sheet_overlay(o.overlay);
     ui.set_kp_sheet_position(config::SHEET_POSITIONS.iter().position(|p| *p == o.position).map_or(4, |i| i as i32));
     let kdenlive = st.profiles().get(st.profile).is_some_and(|p| p.kdenlive);
     ui.set_kp_sheet_contexts(strings(if kdenlive {
@@ -1020,6 +1046,7 @@ fn select_slot(st: &mut State, slot: &str) {
 fn apply_binding(ui: &MainWindow) {
     let text = ui.get_kp_action_text().to_string();
     let label = ui.get_kp_label_text().to_string();
+    let needs = ui.get_kp_needs_text().to_string();
     with(|st| {
         if st.config_error.is_some() {
             return;
@@ -1029,8 +1056,11 @@ fn apply_binding(ui: &MainWindow) {
             binding.value = text.clone();
         }
         binding.label = if binding.takes_label() { label.trim().to_string() } else { String::new() };
-        if !binding.takes_label() {
+        if binding.takes_label() {
+            binding = binding.needing(&needs);
+        } else {
             binding.icon.clear();
+            binding.needs.clear();
         }
         let slot = st.slot();
         match st.config.set_binding(st.profile, &slot, &binding) {
@@ -1051,6 +1081,91 @@ fn apply_binding(ui: &MainWindow) {
     render(ui);
 }
 
+/// The program a command line starts, past launcher wrappers
+/// ("focus-or-launch nemo nemo" and "gtk-launch nemo" -> "nemo").
+fn launched_program(command: &str) -> Option<&str> {
+    const WRAPPERS: [&str; 4] = ["focus-or-launch", "gtk-launch", "uwsm-app", "setsid"];
+    let words: Vec<&str> = command.split_whitespace().collect();
+    match words.first() {
+        Some(first) if WRAPPERS.contains(first) => words.last().copied().filter(|w| w != first),
+        first => first.copied(),
+    }
+}
+
+/// Puts the selected profile's name, window class and title into their fields.
+fn sync_profile_fields(ui: &MainWindow) {
+    if let Some(p) = with(|st| st.profiles().get(st.profile).cloned()).flatten() {
+        ui.set_kp_profile_name(s(&p.name));
+        ui.set_kp_profile_class(s(&p.class));
+        ui.set_kp_profile_title(s(&p.title));
+    }
+}
+
+/// What an input mode does, for the line under the mode buttons.
+fn input_help(st: &State, mode: &str, firmware: Option<(&str, &str)>) -> String {
+    let text = match mode {
+        "evdev" => "Reads the keys the keypad types (its keymap). Works with every firmware; a few key pairs that share a key code can't be held together.".to_string(),
+        "raw" => "Reads the open firmware's own events, with snapshots that restore anything lost: fastest, and any keys can be held together.".to_string(),
+        _ => {
+            let now = st.input_modes.iter().find(|(m, _)| m == "auto").map(|(_, d)| d.as_str());
+            match now {
+                Some(d) => format!("The keypad app chooses; right now it says: {d}."),
+                None => "The keypad app chooses: the keymap for now, raw once raw input has passed its hardware test.".to_string(),
+            }
+        }
+    };
+    let caution = match (mode, firmware) {
+        ("raw", Some((kind, _))) if kind != "control-surface" => {
+            " This keypad doesn't have the open firmware, so the keymap stays in use (install it under Firmware below)."
+                .to_string()
+        }
+        ("raw", Some((_, version))) => match config::version_at_least(version, config::RAW_MIN_FIRMWARE) {
+            Some(false) => format!(" This keypad has firmware {version}: raw needs 2.0.2 or newer, so the keymap stays in use."),
+            None => " Raw needs firmware 2.0.2 or newer; with older firmware the keymap stays in use.".to_string(),
+            Some(true) => String::new(),
+        },
+        _ => String::new(),
+    };
+    format!("{text}{caution}")
+}
+
+/// Keypad > Advanced: input mode and its health, engine tuning, overlay.
+fn render_advanced(ui: &MainWindow, st: &State, pad: Option<&super::Pad>) {
+    let mode = st.config.input_mode();
+    ui.set_kp_input_index(config::INPUT_MODES.iter().position(|(m, _)| *m == mode).map_or(0, |i| i as i32));
+    let firmware = pad.map(|p| (p.firmware.as_str(), p.version.as_str()));
+    ui.set_kp_input_help(s(input_help(st, &mode, firmware)));
+    let (now, health, healthy) = super::input_summary(st.status.input.as_ref(), st.status.app.running(), firmware, &mode);
+    ui.set_kp_input_now(s(now));
+    ui.set_kp_input_health(s(health));
+    ui.set_kp_input_healthy(healthy);
+    let rows = |kdenlive: bool| -> Vec<KeypadTuning> {
+        config::TUNINGS
+            .iter()
+            .filter(|t| t.kdenlive == kdenlive)
+            .map(|t| {
+                let set = st.config.tuning(t.key);
+                let v = set.unwrap_or(t.default);
+                let off = if t.key == "accelFactor" && v <= 1.0 { " (off)" } else { "" };
+                let default = if set.is_none() { " (default)" } else { "" };
+                KeypadTuning {
+                    key: s(t.key),
+                    label: s(t.label),
+                    help: s(t.help),
+                    min: t.min as f32,
+                    max: t.max as f32,
+                    step: t.step as f32,
+                    value: v as f32,
+                    display: s(format!("{}{}{off}{default}", config::number(v), t.unit)),
+                }
+            })
+            .collect()
+    };
+    ui.set_kp_knob_tunings(ModelRc::from(Rc::new(VecModel::from(rows(false)))));
+    ui.set_kp_kdenlive_tunings(ModelRc::from(Rc::new(VecModel::from(rows(true)))));
+    ui.set_kp_tunings_custom(config::TUNINGS.iter().any(|t| st.config.tuning(t.key).is_some()));
+}
+
 /// Fills the icon picker with the icons matching `query`.
 fn show_icons(ui: &MainWindow, query: &str) {
     let found: Vec<KeypadIcon> =
@@ -1060,15 +1175,16 @@ fn show_icons(ui: &MainWindow, query: &str) {
 
 /// Puts the editor's value into the text field (only when the selection changes).
 fn sync_editor_text(ui: &MainWindow) {
-    if let Some((text, label)) = with(|st| {
+    if let Some((text, label, needs)) = with(|st| {
         let text = match st.editor.kind {
             ActionKind::Shortcut | ActionKind::Command => st.editor.value.clone(),
             _ => String::new(),
         };
-        (text, st.editor.label.clone())
+        (text, st.editor.label.clone(), st.editor.needs.join(" "))
     }) {
         ui.set_kp_action_text(s(text));
         ui.set_kp_label_text(s(label));
+        ui.set_kp_needs_text(s(needs));
     }
 }
 
@@ -1276,6 +1392,7 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
                     st.sheet = f.cheatsheet;
                     st.sheet_defaults = f.sheet_defaults;
                     st.icons_shown = f.icons;
+                    st.input_modes = f.input_modes;
                 }
             });
             if let Some(ui) = weak.upgrade() {
@@ -1311,6 +1428,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         sheet: false,
         sheet_defaults: config::SheetDefaults::default(),
         icons_shown: false,
+        input_modes: Vec::new(),
         icon_picker: false,
         kdenlive_actions: Vec::new(),
         sheet_context: 0,
@@ -1551,8 +1669,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
             st.adding = false;
             st.load_editor();
         });
-        let class = with(|st| st.profiles().get(st.profile).map(|p| p.class.clone())).flatten();
-        ui.set_kp_profile_class(s(class.unwrap_or_default()));
+        sync_profile_fields(&ui);
         sync_editor_text(&ui);
         render(&ui);
     });
@@ -1600,8 +1717,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                 Err(e) => st.set_message(e, true),
             }
         });
-        let class = with(|st| st.profiles().get(st.profile).map(|p| p.class.clone())).flatten();
-        ui.set_kp_profile_class(s(class.unwrap_or_default()));
+        sync_profile_fields(&ui);
         sync_editor_text(&ui);
         render(&ui);
     });
@@ -1628,24 +1744,120 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                 Err(e) => st.set_message(e, true),
             }
         });
-        let class = with(|st| st.profiles().get(st.profile).map(|p| p.class.clone())).flatten();
-        ui.set_kp_profile_class(s(class.unwrap_or_default()));
+        sync_profile_fields(&ui);
         sync_editor_text(&ui);
         render(&ui);
     });
 
     let weak = ui.as_weak();
-    ui.on_kp_apply_profile_class(move || {
+    ui.on_kp_apply_profile_details(move || {
         let Some(ui) = weak.upgrade() else { return };
-        let regex = ui.get_kp_profile_class().to_string();
-        with(|st| match st.config.set_profile_class(st.profile, &regex) {
-            Ok(()) => {
-                st.dirty = true;
-                st.set_message("Window class updated. Not saved yet.", false);
+        let (name, class, title) =
+            (ui.get_kp_profile_name().to_string(), ui.get_kp_profile_class().to_string(), ui.get_kp_profile_title().to_string());
+        with(|st| {
+            let Some(p) = st.profiles().get(st.profile).cloned() else { return };
+            let mut result = Ok(());
+            if name.trim() != p.name {
+                result = st.config.set_profile_name(st.profile, &name);
             }
-            Err(e) => st.set_message(e, true),
+            if result.is_ok() && !p.global && class.trim() != p.class {
+                result = st.config.set_profile_class(st.profile, &class);
+            }
+            if result.is_ok() && !p.global && title.trim() != p.title {
+                result = st.config.set_profile_title(st.profile, &title);
+            }
+            match result {
+                Ok(()) if st.profiles().get(st.profile) != Some(&p) => {
+                    st.dirty = true;
+                    st.set_message("Profile updated. Not saved yet.", false);
+                }
+                Ok(()) => {}
+                Err(e) => st.set_message(e, true),
+            }
         });
         render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_fallthrough(move |on| {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            if st.config.set_profile_fallthrough(st.profile, on).is_ok() {
+                st.dirty = true;
+                st.set_message(
+                    if on {
+                        "Controls this profile leaves unset now do what Global maps them to. Not saved yet."
+                    } else {
+                        "Controls this profile leaves unset now do nothing in this app. Not saved yet."
+                    },
+                    false,
+                );
+            }
+        });
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_input_mode(move |i| {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            let Some((mode, label)) = config::INPUT_MODES.get(i.max(0) as usize) else { return };
+            if *mode == st.config.input_mode() {
+                return;
+            }
+            match st.config.set_input_mode(mode) {
+                Ok(()) => {
+                    st.dirty = true;
+                    st.set_message(
+                        format!("Input mode: {label}. Save to use it; the keypad app switches without a restart."),
+                        false,
+                    );
+                }
+                Err(e) => st.set_message(e, true),
+            }
+        });
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_tuning(move |key, value| {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            let before = st.config.tuning(&key);
+            match st.config.set_tuning(&key, Some(f64::from(value))) {
+                Ok(()) if st.config.tuning(&key) != before => {
+                    st.dirty = true;
+                    let t = config::TUNINGS.iter().find(|t| t.key == key.as_str());
+                    let label = t.map_or("Setting", |t| t.label);
+                    let unit = t.map_or("", |t| t.unit);
+                    let v = st.config.tuning(&key).unwrap_or_default();
+                    st.set_message(format!("{label}: {}{unit}. Not saved yet.", config::number(v)), false);
+                }
+                Ok(()) => {}
+                Err(e) => st.set_message(e, true),
+            }
+        });
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_reset_tunings(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        with(|st| {
+            for t in config::TUNINGS {
+                let _ = st.config.set_tuning(t.key, None);
+            }
+            st.dirty = true;
+            st.set_message("Knob and Kdenlive tuning back to the keypad app's defaults. Not saved yet.", false);
+        });
+        render(&ui);
+    });
+
+    let weak = ui.as_weak();
+    ui.on_kp_set_sheet_overlay(move |on| {
+        if let Some(ui) = weak.upgrade() {
+            set_sheet_option(&ui, |o| o.overlay = on);
+        }
     });
 
     let weak = ui.as_weak();
@@ -1695,6 +1907,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                 None => st.set_message("The recommended layout comes with the keypad app, which isn't installed.", true),
             }
         });
+        sync_profile_fields(&ui);
         sync_editor_text(&ui);
         render(&ui);
     });
@@ -1708,11 +1921,11 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
                 return;
             }
             let current = st.config.binding(st.profile, &st.slot());
-            let (label, icon) = (st.editor.label.clone(), st.editor.icon.clone());
+            let (label, icon, needs) = (st.editor.label.clone(), st.editor.icon.clone(), st.editor.needs.join(" "));
             st.editor = if current.kind == kind {
                 current
             } else {
-                Binding::new(kind, "").labelled(&label).with_icon(&icon)
+                Binding::new(kind, "").labelled(&label).with_icon(&icon).needing(&needs)
             };
             if let Some((first, _)) = st.choices().first().filter(|_| st.editor.value.is_empty()) {
                 st.editor.value = first.clone();
@@ -1958,6 +2171,15 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn if_installed_suggests_the_launched_program() {
+        assert_eq!(launched_program("focus-or-launch nemo nemo"), Some("nemo"));
+        assert_eq!(launched_program("gtk-launch grafium"), Some("grafium"));
+        assert_eq!(launched_program("smplos-settings"), Some("smplos-settings"));
+        assert_eq!(launched_program("gtk-launch"), None);
+        assert_eq!(launched_program(""), None);
+    }
 
     #[test]
     fn wizard_titles_match_the_ui_step_count() {

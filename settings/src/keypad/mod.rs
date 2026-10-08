@@ -74,6 +74,27 @@ pub struct DaemonLayout {
     pub columns: usize,
 }
 
+/// How the running keypad app reads the keypad (`GetStatus().input`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InputStatus {
+    /// `device.input` of the config it runs: auto | evdev | raw.
+    pub configured: String,
+    /// raw | evdev-chords
+    pub mode: String,
+    /// Raw-mode counters since it started.
+    pub raw_events: u64,
+    pub seq_gaps: u64,
+    pub lost_events: u64,
+    pub restored: u64,
+    pub heartbeat_misses: u64,
+    pub raw_drops: u64,
+    /// Keymap (evdev) events, and those that arrived while raw mode was on.
+    pub keymap_events: u64,
+    pub keymap_while_raw: u64,
+    /// Config warnings about the layout (raw input stays off on a mismatch).
+    pub layout_warnings: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Status {
     pub pads: Vec<Pad>,
@@ -82,6 +103,8 @@ pub struct Status {
     pub layout: Option<DaemonLayout>,
     /// The running app pushes the cheatsheet into the bar (GetStatus).
     pub sheet_push: Option<bool>,
+    /// Input mode and its health; `None` for keypad apps that predate it.
+    pub input: Option<InputStatus>,
 }
 
 fn sysfs_root() -> PathBuf {
@@ -220,7 +243,7 @@ pub fn load_status() -> Status {
         process: !bus
             && daemon_process_running(&std::env::var_os("SMPLOS_KEYPAD_PROC").map_or_else(|| PathBuf::from("/proc"), PathBuf::from)),
     };
-    let mut status = Status { pads, bootloaders, app, layout: None, sheet_push: None };
+    let mut status = Status { pads, bootloaders, app, layout: None, sheet_push: None, input: None };
     if status.app.bus {
         status.layout = daemon_layout();
         if let Some(daemon) = daemon_status() {
@@ -251,6 +274,85 @@ fn apply_daemon_status(status: &mut Status, v: &Value) {
         .and_then(|c| c.get("eww"))
         .and_then(|e| e.get("enabled"))
         .and_then(Value::as_bool);
+    status.input = v.get("input").filter(|i| i.is_object()).map(|i| {
+        let n = |o: Option<&Value>, k: &str| o.and_then(|o| o.get(k)).and_then(Value::as_u64).unwrap_or(0);
+        let raw = i.get("raw");
+        let evdev = i.get("evdev");
+        InputStatus {
+            configured: text(i, "configured"),
+            mode: text(i, "mode"),
+            raw_events: n(raw, "events"),
+            seq_gaps: n(raw, "seqGaps"),
+            lost_events: n(raw, "lostEvents"),
+            restored: n(raw, "reconciledDowns") + n(raw, "reconciledUps") + n(raw, "reconciledDetents"),
+            heartbeat_misses: n(raw, "heartbeatMisses"),
+            raw_drops: n(raw, "rawDrops"),
+            keymap_events: n(evdev, "events"),
+            keymap_while_raw: n(evdev, "whileRaw"),
+            layout_warnings: v
+                .get("config")
+                .and_then(|c| c.get("warnings"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|w| w.starts_with("layout:"))
+                .map(String::from)
+                .collect(),
+        }
+    });
+}
+
+/// What the Advanced section says about input: (what's in use now, a health
+/// line, whether it looks healthy). `firmware` is the pad's firmware type and
+/// version, `configured` the mode chosen in Settings (maybe not saved yet).
+pub fn input_summary(input: Option<&InputStatus>, running: bool, firmware: Option<(&str, &str)>, configured: &str) -> (String, String, bool) {
+    let Some(i) = input.filter(|_| running) else {
+        let why = if running { "the keypad app is too old to say" } else { "the keypad app isn't running" };
+        return (format!("In use now: unknown ({why})."), String::new(), true);
+    };
+    let raw = i.mode == "raw";
+    let now = if raw {
+        "In use now: Raw (the firmware's own events).".to_string()
+    } else {
+        "In use now: Keymap (the keys the keypad types).".to_string()
+    };
+    if raw {
+        let mut parts = vec![format!("{} events", i.raw_events)];
+        // Losses the snapshots restored are the design working; unrestored
+        // losses or leaving raw mode are worth a look.
+        let healthy = i.lost_events <= i.restored && i.raw_drops == 0;
+        if i.seq_gaps == 0 && i.lost_events == 0 {
+            parts.push("none lost".into());
+        } else {
+            parts.push(format!("{} lost, {} restored from snapshots", i.lost_events, i.restored));
+        }
+        if i.raw_drops > 0 {
+            parts.push(format!("left raw mode {} times (the keymap took over meanwhile)", i.raw_drops));
+        }
+        if i.heartbeat_misses > 0 {
+            parts.push(format!("{} late heartbeats", i.heartbeat_misses));
+        }
+        return (now, format!("Since the keypad app started: {}.", parts.join(", ")), healthy);
+    }
+    let mut health = format!("Since the keypad app started: {} events.", i.keymap_events);
+    let wants_raw = configured == "raw" || i.configured == "raw";
+    if wants_raw {
+        let reason = match firmware {
+            _ if !i.layout_warnings.is_empty() => format!(
+                "Raw stays off because the layout chosen here doesn't match the keypad's firmware ({}).",
+                i.layout_warnings[0].trim_start_matches("layout:").trim()
+            ),
+            Some((kind, _)) if kind != "control-surface" => "Raw needs the open control-surface firmware; this keypad uses its keymap.".into(),
+            Some((_, version)) if config::version_at_least(version, config::RAW_MIN_FIRMWARE) == Some(false) => {
+                format!("Raw needs firmware 2.0.2 or newer; this keypad has {version}, so the keymap is used.")
+            }
+            _ if configured == "raw" && i.configured != "raw" => "Raw starts once you save.".into(),
+            _ => "Raw isn't on yet; the keypad app tries again when the keypad reconnects.".into(),
+        };
+        health = format!("{health} {reason}");
+    }
+    (now, health, !wants_raw || configured != i.configured)
 }
 
 /// What to say about the keypad app, and whether to offer Start.
@@ -1057,6 +1159,8 @@ pub struct Features {
     pub sheet_defaults: config::SheetDefaults,
     /// The cheatsheet shows binding icons (`cheatsheet.icons`).
     pub icons: bool,
+    /// What each `device.input` mode does, in the keypad app's words.
+    pub input_modes: Vec<(String, String)>,
 }
 
 /// `cheatsheet.defaults` when the daemon has it, else read from its option
@@ -1094,6 +1198,12 @@ pub fn parse_features(json: &str) -> Option<Features> {
         cheatsheet: v.get("cheatsheet").is_some_and(Value::is_object),
         sheet_defaults: sheet_defaults(v.get("cheatsheet").filter(|s| s.is_object())),
         icons: v.get("cheatsheet").and_then(|s| s.get("icons")).is_some_and(Value::is_object),
+        input_modes: v
+            .get("device")
+            .and_then(|d| d.get("inputModes"))
+            .and_then(Value::as_object)
+            .map(|m| m.iter().filter_map(|(k, d)| Some((k.clone(), d.as_str()?.to_string()))).collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -1287,7 +1397,7 @@ mod tests {
         )
         .unwrap();
         let defaults = config::SheetDefaults::default();
-        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true, cheatsheet: false, sheet_defaults: defaults, icons: false });
+        assert_eq!(f, Features { max_keys: 16, max_knobs: 3, mouse: true, cheatsheet: false, sheet_defaults: defaults, icons: false, input_modes: Vec::new() });
         let with_sheet = parse_features(r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"modes":["toggle","hold"]}}"#).unwrap();
         assert!(with_sheet.cheatsheet && !with_sheet.icons);
         let icons = r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"icons":{"set":"tabler-outline","auto":["volume"]}}}"#;
@@ -1315,6 +1425,56 @@ mod tests {
         // Requested: structured defaults win over the descriptions.
         let json = r#"{"slots":{"maxKeys":16,"maxKnobs":3},"cheatsheet":{"defaults":{"opacity":0.35,"autoHideMs":8000},"options":{"opacity":"default 0.85"}}}"#;
         assert_eq!(parse_features(json).unwrap().sheet_defaults, d(0.35, 8000));
+    }
+
+    #[test]
+    fn input_status_and_its_health_line() {
+        let mut status = Status::default();
+        apply_daemon_status(&mut status, &serde_json::json!({
+            "config": {"warnings": ["layout: the config's 12+2 has 15 slots, the firmware 18", "other"]},
+            "input": {"configured": "raw", "mode": "evdev-chords",
+                      "raw": {"events": 0, "seqGaps": 0, "lostEvents": 0, "reconciledDowns": 0},
+                      "evdev": {"events": 42, "whileRaw": 0}}}));
+        let i = status.input.clone().unwrap();
+        assert_eq!((i.configured.as_str(), i.mode.as_str(), i.keymap_events), ("raw", "evdev-chords", 42));
+        assert_eq!(i.layout_warnings.len(), 1);
+        let open = Some(("control-surface", "2.0.2"));
+        let (now, health, ok) = input_summary(Some(&i), true, open, "raw");
+        assert!(now.contains("Keymap") && health.contains("42 events") && health.contains("doesn't match"), "{health}");
+        assert!(!ok, "asked for raw, got the keymap");
+
+        let old = InputStatus { layout_warnings: Vec::new(), ..i.clone() };
+        let (_, health, _) = input_summary(Some(&old), true, Some(("control-surface", "2.0.1")), "raw");
+        assert!(health.contains("2.0.2 or newer") && health.contains("2.0.1"), "{health}");
+        let (_, health, _) = input_summary(Some(&old), true, Some(("stock", "1.0")), "raw");
+        assert!(health.contains("open control-surface firmware"), "{health}");
+        let auto = InputStatus { configured: "auto".into(), ..old.clone() };
+        let (_, health, ok) = input_summary(Some(&auto), true, open, "raw");
+        assert!(health.contains("once you save") && ok, "{health}");
+
+        let raw = InputStatus { mode: "raw".into(), raw_events: 900, ..old.clone() };
+        let (now, health, ok) = input_summary(Some(&raw), true, open, "raw");
+        assert!(now.contains("Raw") && health.contains("900 events, none lost") && ok, "{health}");
+        let restored = InputStatus { seq_gaps: 1, lost_events: 1, restored: 1, ..raw.clone() };
+        let (_, health, ok) = input_summary(Some(&restored), true, open, "raw");
+        assert!(health.contains("1 lost, 1 restored") && ok, "restored losses are fine: {health}");
+        let unrestored = InputStatus { lost_events: 2, restored: 1, ..restored.clone() };
+        assert!(!input_summary(Some(&unrestored), true, open, "raw").2);
+        let rough = InputStatus { seq_gaps: 2, lost_events: 3, restored: 3, raw_drops: 1, heartbeat_misses: 4, ..raw.clone() };
+        let (_, health, ok) = input_summary(Some(&rough), true, open, "raw");
+        assert!(health.contains("3 lost, 3 restored") && health.contains("left raw mode 1 times") && health.contains("4 late"), "{health}");
+        assert!(!ok);
+
+        assert!(input_summary(None, false, open, "auto").0.contains("isn't running"));
+        assert!(input_summary(None, true, open, "auto").0.contains("too old"));
+    }
+
+    #[test]
+    fn features_describe_the_input_modes() {
+        let json = r#"{"slots":{"maxKeys":16,"maxKnobs":3},"device":{"inputModes":{"evdev":"the pad's keymap","raw":"the firmware's events","auto":"evdev for now"}}}"#;
+        let modes = parse_features(json).unwrap().input_modes;
+        assert!(modes.contains(&("raw".to_string(), "the firmware's events".to_string())));
+        assert_eq!(modes.len(), 3);
     }
 
     #[test]

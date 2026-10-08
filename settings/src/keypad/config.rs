@@ -49,10 +49,23 @@ pub struct Binding {
     /// The binding's `"icon"`: empty for the keypad app's automatic icon,
     /// `ICON_NONE` for none, else an icon name (see `keypad::icons`).
     pub icon: String,
+    /// `"ifInstalled"`: programs or desktop ids; while one is missing the
+    /// keypad app skips the binding (the slot falls through).
+    pub needs: Vec<String>,
+    /// `"ifInstalled"` was written as a list (kept even for one name).
+    pub needs_list: bool,
 }
 
 /// `"icon": "none"`: the cheatsheet shows the label alone.
 pub const ICON_NONE: &str = "none";
+
+/// Fields any binding may carry beside its action; Settings edits them all.
+const META_FIELDS: [&str; 3] = ["label", "icon", "ifInstalled"];
+
+/// An `"ifInstalled"` name: a program or desktop id (the daemon refuses spaces).
+fn valid_need(name: &str) -> bool {
+    !name.is_empty() && !name.chars().any(char::is_whitespace)
+}
 
 /// Icon names are kebab-case (Tabler's); the renderer skips names it lacks.
 pub fn valid_icon(icon: &str) -> bool {
@@ -62,7 +75,14 @@ pub fn valid_icon(icon: &str) -> bool {
 
 impl Binding {
     pub fn new(kind: ActionKind, value: &str) -> Self {
-        Self { kind, value: value.to_string(), label: String::new(), icon: String::new() }
+        Self { kind, value: value.to_string(), label: String::new(), icon: String::new(), needs: Vec::new(), needs_list: false }
+    }
+
+    /// Sets `"ifInstalled"` from space-separated names.
+    pub fn needing(mut self, names: &str) -> Self {
+        self.needs = names.split_whitespace().map(String::from).collect();
+        self.needs_list |= self.needs.len() > 1;
+        self
     }
 
     pub fn labelled(mut self, label: &str) -> Self {
@@ -206,6 +226,86 @@ impl Default for SheetDefaults {
     fn default() -> Self {
         Self { opacity: 0.35, auto_hide_ms: 8000 }
     }
+}
+
+/// `device.input`: how the keypad app reads the keypad. Unset means "auto".
+pub const INPUT_MODES: [(&str, &str); 3] =
+    [("auto", "Automatic"), ("evdev", "Keymap (compatible)"), ("raw", "Raw (fastest, firmware 2.0.2+)")];
+
+/// The first open firmware whose raw mode is reliable (2.0.1 dropped out of
+/// raw mode every 256 ms; the keypad app refuses raw input before 2.0.2).
+pub const RAW_MIN_FIRMWARE: [u32; 3] = [2, 0, 2];
+
+/// One engine setting under `"settings"`, edited in Settings > Keypad >
+/// Advanced. Defaults are the keypad app's built-in values (control-surface
+/// `config.h`, `struct Settings`); ranges keep them sensible (the daemon
+/// itself only bounds gestureIdleMs, to 50..590).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tuning {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub help: &'static str,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub default: f64,
+    pub unit: &'static str,
+    /// Only matters to the Kdenlive API plugin.
+    pub kdenlive: bool,
+}
+
+pub const TUNINGS: [Tuning; 6] = [
+    Tuning {
+        key: "accelFactor",
+        label: "Knob acceleration",
+        help: "How much farther a fast turn moves continuous controls (Kdenlive jog, zoom, trim). 1 = off. Key and volume bindings stay one step per detent.",
+        min: 1.0, max: 8.0, step: 0.5, default: 1.0, unit: "×", kdenlive: false,
+    },
+    Tuning {
+        key: "accelWindowMs",
+        label: "Fast turn",
+        help: "Detents closer together than this count as a fast turn.",
+        min: 10.0, max: 200.0, step: 5.0, default: 40.0, unit: " ms", kdenlive: false,
+    },
+    Tuning {
+        key: "keyRateHz",
+        label: "Knob key rate",
+        help: "Most key presses per second a knob sends (queued taps beyond 48 are dropped; reversing drops the rest).",
+        min: 10.0, max: 500.0, step: 10.0, default: 120.0, unit: "/s", kdenlive: false,
+    },
+    Tuning {
+        key: "coalesceMs",
+        label: "Update spacing",
+        help: "Kdenlive: at most one update per control this often; faster turns are summed, never lost.",
+        min: 1.0, max: 100.0, step: 1.0, default: 8.0, unit: " ms", kdenlive: true,
+    },
+    Tuning {
+        key: "ackTimeoutMs",
+        label: "Answer timeout",
+        help: "Kdenlive: stop waiting for an update's acknowledgment after this long.",
+        min: 10.0, max: 1000.0, step: 10.0, default: 60.0, unit: " ms", kdenlive: true,
+    },
+    Tuning {
+        key: "gestureIdleMs",
+        label: "Edit gesture",
+        help: "Kdenlive: a pause this long ends one turning gesture, which is one undo step.",
+        min: 50.0, max: 590.0, step: 10.0, default: 500.0, unit: " ms", kdenlive: true,
+    },
+];
+
+/// `"1"`, `"2.5"`: a number token without needless decimals.
+pub fn number(v: f64) -> String {
+    let text = format!("{v:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Version strings ("2.0.2", "2.0") to compare with `RAW_MIN_FIRMWARE`.
+pub fn version_at_least(version: &str, min: [u32; 3]) -> Option<bool> {
+    let parts: Vec<u32> = version.split('.').map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+    if parts.len() < 3 {
+        return None;
+    }
+    Some(parts[..3] >= min[..])
 }
 
 /// Slots that can carry a cheatsheet binding (the daemon refuses turns).
@@ -373,8 +473,20 @@ pub fn classify(value: Option<&Json>) -> Binding {
             if !icon.is_empty() && !valid_icon(icon) {
                 return advanced();
             }
-            let labelled = |b: Binding| b.labelled(label).with_icon(icon);
-            let rest: Vec<&(String, Json)> = entries.iter().filter(|(k, _)| k != "label" && k != "icon").collect();
+            let (needs, needs_list) = match value.get("ifInstalled") {
+                None => (Vec::new(), false),
+                Some(Json::Str(n)) if valid_need(n) => (vec![n.clone()], false),
+                Some(Json::Arr(items)) if !items.is_empty() && items.iter().all(|i| i.as_str().is_some_and(valid_need)) => {
+                    (items.iter().filter_map(Json::as_str).map(String::from).collect(), true)
+                }
+                Some(_) => return advanced(),
+            };
+            let labelled = |mut b: Binding| {
+                b.needs = needs.clone();
+                b.needs_list = needs_list;
+                b.labelled(label).with_icon(icon)
+            };
+            let rest: Vec<&(String, Json)> = entries.iter().filter(|(k, _)| !META_FIELDS.contains(&k.as_str())).collect();
             let only = |key: &str| rest.len() == 1 && rest[0].0 == key;
             if only("keys") {
                 match &rest[0].1 {
@@ -423,7 +535,18 @@ pub fn to_json(binding: &Binding) -> Result<Option<Json>, String> {
     if !icon.is_empty() && !valid_icon(icon) {
         return Err(format!("'{icon}' is not an icon name"));
     }
+    if let Some(bad) = binding.needs.iter().find(|n| !valid_need(n)) {
+        return Err(format!("'{bad}' is not a program or app id"));
+    }
+    let needs = match binding.needs.as_slice() {
+        [] => None,
+        [one] if !binding.needs_list => Some(Json::str(one)),
+        many => Some(Json::Arr(many.iter().map(|n| Json::str(n)).collect())),
+    };
     let with_label = |mut entries: Vec<(String, Json)>| {
+        if let Some(needs) = &needs {
+            entries.push(("ifInstalled".into(), needs.clone()));
+        }
         if !label.is_empty() {
             entries.push(("label".into(), Json::str(label)));
         }
@@ -433,7 +556,7 @@ pub fn to_json(binding: &Binding) -> Result<Option<Json>, String> {
         Json::Obj(entries)
     };
     let keys = |text: &str| {
-        if label.is_empty() && icon.is_empty() {
+        if label.is_empty() && icon.is_empty() && needs.is_none() {
             Json::str(text)
         } else {
             with_label(vec![("keys".into(), Json::str(text))])
@@ -477,19 +600,27 @@ pub fn to_json(binding: &Binding) -> Result<Option<Json>, String> {
 }
 
 /// Keeps what Settings doesn't edit (e.g. a Kdenlive action's "fallback")
-/// when only the label or icon changed. Those fields belong to one specific
-/// action or command, so any other edit starts clean.
+/// when only the label, icon or ifInstalled changed. Those fields belong to
+/// one specific action or command, so any other edit starts clean. Keys keep
+/// the order they had in the file, so applying an unchanged binding changes
+/// nothing.
 fn merge_extras(old: Option<&Json>, new: Json) -> Json {
     const FORMS: [&str; 5] = ["keys", "action", "command", "mouse", "cheatsheet"];
-    let (Some(Json::Obj(old)), Json::Obj(mut entries)) = (old, new.clone()) else {
+    let (Some(Json::Obj(old)), Json::Obj(fresh)) = (old, &new) else {
         return new;
     };
     let main = |e: &[(String, Json)]| e.iter().find(|(k, _)| FORMS.contains(&k.as_str())).cloned();
-    if main(old).is_none() || main(old) != main(&entries) {
-        return new;
-    }
+    let same_action = main(old).is_some() && main(old) == main(fresh);
+    let mut entries: Vec<(String, Json)> = Vec::new();
     for (k, v) in old {
-        if k != "label" && k != "icon" && !FORMS.contains(&k.as_str()) && !entries.iter().any(|(e, _)| e == k) {
+        if let Some((_, value)) = fresh.iter().find(|(f, _)| f == k) {
+            entries.push((k.clone(), value.clone()));
+        } else if same_action && !META_FIELDS.contains(&k.as_str()) && !FORMS.contains(&k.as_str()) {
+            entries.push((k.clone(), v.clone()));
+        }
+    }
+    for (k, v) in fresh {
+        if !entries.iter().any(|(e, _)| e == k) {
             entries.push((k.clone(), v.clone()));
         }
     }
@@ -503,6 +634,10 @@ pub struct ProfileInfo {
     pub name: String,
     /// `match.class` regex; empty for the global (match-less) profile.
     pub class: String,
+    /// `match.title` regex; empty for any title.
+    pub title: String,
+    /// `"fallthrough"` (default true): unset controls use the Global profile.
+    pub fallthrough: bool,
     pub global: bool,
     pub kdenlive: bool,
     pub key_fallback: bool,
@@ -565,6 +700,9 @@ pub struct SheetOptions {
     /// Clicks go through the overlay (SHEET_PASSTHROUGH_WINDOW), so it can't
     /// be clicked away and must hide by itself.
     pub click_through: bool,
+    /// The keypad app draws the overlay through the bar (`cheatsheet.eww`
+    /// not false / not `{"enabled": false}`).
+    pub overlay: bool,
 }
 
 /// A literal window class that a simple `match.class` pattern matches, for
@@ -673,6 +811,8 @@ impl KeypadConfig {
                 ProfileInfo {
                     name: p.get("name").and_then(Json::as_str).map(String::from).unwrap_or(format!("profile {}", i + 1)),
                     class: class.to_string(),
+                    title: p.get("match").and_then(|m| m.get("title")).and_then(Json::as_str).unwrap_or("").to_string(),
+                    fallthrough: p.get("fallthrough").and_then(Json::as_bool).unwrap_or(true),
                     global: !has_match,
                     kdenlive: p.get("kdenlive").and_then(Json::as_bool).unwrap_or(false),
                     key_fallback: p.get("keyFallback").and_then(Json::as_bool).unwrap_or(false),
@@ -867,6 +1007,11 @@ impl KeypadConfig {
                 .and_then(|e| e.get("window"))
                 .and_then(Json::as_str)
                 == Some(SHEET_PASSTHROUGH_WINDOW),
+            overlay: match o.and_then(|o| o.get("eww")) {
+                Some(Json::Bool(on)) => *on,
+                Some(e @ Json::Obj(_)) => e.get("enabled").and_then(Json::as_bool).unwrap_or(true),
+                _ => true,
+            },
         }
     }
 
@@ -908,6 +1053,125 @@ impl KeypadConfig {
             if *eww == Json::obj() {
                 sheet.remove("eww");
             }
+        }
+        let overlay = match sheet.get("eww") {
+            Some(Json::Bool(on)) => *on,
+            Some(e @ Json::Obj(_)) => e.get("enabled").and_then(Json::as_bool).unwrap_or(true),
+            _ => true,
+        };
+        if o.overlay != overlay {
+            match sheet.get_mut("eww") {
+                Some(eww @ Json::Obj(_)) => {
+                    if o.overlay {
+                        eww.remove("enabled");
+                    } else {
+                        eww.set("enabled", Json::Bool(false));
+                    }
+                    if *eww == Json::obj() {
+                        sheet.remove("eww");
+                    }
+                }
+                // On is the unit's default (--eww-window); off is `false`.
+                _ if o.overlay => {
+                    sheet.remove("eww");
+                }
+                _ => sheet.set("eww", Json::Bool(false)),
+            }
+        }
+        Ok(())
+    }
+
+    /// `device.input`, "auto" when unset.
+    pub fn input_mode(&self) -> String {
+        self.doc.get("device").and_then(|d| d.get("input")).and_then(Json::as_str).unwrap_or("auto").to_string()
+    }
+
+    pub fn set_input_mode(&mut self, mode: &str) -> Result<(), String> {
+        if !INPUT_MODES.iter().any(|(m, _)| *m == mode) {
+            return Err(format!("unknown input mode '{mode}'"));
+        }
+        if mode == self.input_mode() {
+            return Ok(());
+        }
+        if mode == "auto" && self.doc.get("device").and_then(|d| d.get("input")).is_none() {
+            return Ok(());
+        }
+        self.doc.object_mut("device").set("input", Json::str(mode));
+        Ok(())
+    }
+
+    /// An engine setting's value in the config, if set.
+    pub fn tuning(&self, key: &str) -> Option<f64> {
+        match self.doc.get("settings").and_then(|s| s.get(key)) {
+            Some(Json::Num(n)) => n.parse().ok(),
+            _ => None,
+        }
+    }
+
+    /// Sets an engine setting (snapped to its step and range); `None` removes it.
+    pub fn set_tuning(&mut self, key: &str, value: Option<f64>) -> Result<(), String> {
+        let t = TUNINGS.iter().find(|t| t.key == key).ok_or_else(|| format!("unknown setting '{key}'"))?;
+        match value {
+            Some(v) => {
+                if !v.is_finite() {
+                    return Err(format!("{} needs a number", t.label));
+                }
+                let v = ((v.clamp(t.min, t.max) - t.min) / t.step).round() * t.step + t.min;
+                if self.tuning(key).is_some_and(|old| (old - v).abs() < 1e-9) {
+                    return Ok(());
+                }
+                self.doc.object_mut("settings").set(key, Json::Num(number(v)));
+            }
+            None => {
+                if let Some(settings) = self.doc.get_mut("settings") {
+                    settings.remove(key);
+                    if *settings == Json::obj() {
+                        self.doc.remove("settings");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Renames a profile (names show in the profile list and the cheatsheet).
+    pub fn set_profile_name(&mut self, index: usize, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a profile needs a name".into());
+        }
+        if self.profiles().iter().enumerate().any(|(i, p)| i != index && p.name == name) {
+            return Err(format!("there's already a profile named {name}"));
+        }
+        self.profile_mut(index)?.set("name", Json::str(name));
+        Ok(())
+    }
+
+    /// `match.title`: the profile applies only while the window title matches.
+    pub fn set_profile_title(&mut self, index: usize, regex: &str) -> Result<(), String> {
+        if self.profiles().get(index).is_some_and(|p| p.global) {
+            return Err("the Global profile applies to every window".into());
+        }
+        let regex = regex.trim();
+        let profile = self.profile_mut(index)?;
+        if regex.is_empty() {
+            if let Some(m) = profile.get_mut("match") {
+                m.remove("title");
+            }
+        } else {
+            profile.object_mut("match").set("title", Json::str(regex));
+        }
+        Ok(())
+    }
+
+    /// `"fallthrough"`: whether controls this profile leaves unset use Global
+    /// (the default; stored only when off).
+    pub fn set_profile_fallthrough(&mut self, index: usize, on: bool) -> Result<(), String> {
+        let profile = self.profile_mut(index)?;
+        if on {
+            profile.remove("fallthrough");
+        } else {
+            profile.set("fallthrough", Json::Bool(false));
         }
         Ok(())
     }
@@ -1197,7 +1461,8 @@ mod tests {
         c.set_binding(0, "key1", &Binding::new(ActionKind::Kdenlive, "mark_in").labelled("In")).unwrap();
         assert_eq!(
             json::to_compact(c.raw_binding(0, "key1").unwrap()),
-            r#"{ "action": "mark_in", "label": "In", "fallback": "i" }"#
+            r#"{ "action": "mark_in", "fallback": "i", "label": "In" }"#,
+            "the file's keys stay in place; new ones go last"
         );
         // The fallback "i" types mark_in's shortcut: it must not follow a new action.
         c.set_binding(0, "key1", &Binding::new(ActionKind::Kdenlive, "mark_out").labelled("Out")).unwrap();
@@ -1222,11 +1487,11 @@ mod tests {
     fn sheet_options_round_trip_and_keep_the_eww_block() {
         let d = SheetDefaults::default();
         let mut c = KeypadConfig::parse(r#"{"cheatsheet": {"eww": {"window": "pad-cheatsheet"}}, "profiles": []}"#).unwrap();
-        let unset = SheetOptions { opacity: 0.35, auto_hide_ms: 8000, position: "center".into(), click_through: false };
+        let unset = SheetOptions { opacity: 0.35, auto_hide_ms: 8000, position: "center".into(), click_through: false, overlay: true };
         assert_eq!(c.sheet_options(&d), unset, "unset options are the daemon's defaults");
         let old_daemon = SheetDefaults { opacity: 0.85, auto_hide_ms: 0 };
         assert_eq!(c.sheet_options(&old_daemon), SheetOptions { opacity: 0.85, auto_hide_ms: 0, ..unset.clone() });
-        let o = SheetOptions { opacity: 0.6, auto_hide_ms: 5000, position: "top-right".into(), click_through: false };
+        let o = SheetOptions { opacity: 0.6, auto_hide_ms: 5000, position: "top-right".into(), click_through: false, overlay: true };
         c.set_sheet_options(&o).unwrap();
         assert_eq!(c.sheet_options(&d), o);
         let out = c.render();
@@ -1284,6 +1549,139 @@ mod tests {
         }
         assert_eq!(c.doc, original.doc);
         assert_eq!(KeypadConfig::parse(&c.render()).unwrap().doc, original.doc, "the saved file reads back the same");
+    }
+
+    #[test]
+    fn if_installed_round_trips_in_its_own_form() {
+        let text = r#"{"profiles": [{"name": "global", "bindings": {
+            "key2": { "command": ["gtk-launch", "grafium"], "ifInstalled": ["gtk-launch", "grafium"], "label": "Grafium" },
+            "key6": { "command": ["terminal"], "ifInstalled": "terminal", "label": "Terminal" },
+            "key7": { "command": ["xdg-open", "~"], "ifInstalled": ["xdg-open"], "label": "Files", "icon": "folder" },
+            "key9": { "keys": "ctrl+z", "ifInstalled": "has space" }
+        }}]}"#;
+        let original = KeypadConfig::parse(text).unwrap();
+        let mut c = KeypadConfig::parse(text).unwrap();
+        let grafium = c.binding(0, "key2");
+        assert_eq!((grafium.kind, grafium.needs.clone(), grafium.label.as_str()),
+                   (ActionKind::Command, vec!["gtk-launch".to_string(), "grafium".to_string()], "Grafium"));
+        assert_eq!(c.binding(0, "key6").needs, ["terminal"]);
+        assert!(c.binding(0, "key7").needs_list, "a one-name list stays a list");
+        assert_eq!(c.binding(0, "key9").kind, ActionKind::Advanced, "the daemon refuses names with spaces");
+        for slot in ["key2", "key6", "key7"] {
+            let b = c.binding(0, slot);
+            c.set_binding(0, slot, &b).unwrap();
+        }
+        assert_eq!(c.doc, original.doc, "same keys in the same order");
+        let edited = c.binding(0, "key6").needing("terminal st");
+        c.set_binding(0, "key6", &edited).unwrap();
+        assert_eq!(json::to_compact(c.doc.get("profiles").unwrap().as_array().unwrap()[0].get("bindings").unwrap().get("key6").unwrap()),
+                   r#"{ "command": ["terminal"], "ifInstalled": ["terminal", "st"], "label": "Terminal" }"#);
+        let cleared = c.binding(0, "key6").needing("");
+        c.set_binding(0, "key6", &cleared).unwrap();
+        assert!(c.binding(0, "key6").needs.is_empty());
+        let shortcut = Binding::new(ActionKind::Shortcut, "ctrl+z").needing("gimp");
+        assert_eq!(json::to_compact(&to_json(&shortcut).unwrap().unwrap()), r#"{ "keys": "ctrl+z", "ifInstalled": "gimp" }"#);
+    }
+
+    #[test]
+    fn input_mode_is_device_input() {
+        let mut c = KeypadConfig::parse(r#"{"profiles": []}"#).unwrap();
+        assert_eq!(c.input_mode(), "auto");
+        c.set_input_mode("auto").unwrap();
+        assert!(c.doc.get("device").is_none(), "automatic needs no key");
+        c.set_input_mode("raw").unwrap();
+        assert_eq!(json::to_compact(c.doc.get("device").unwrap()), r#"{ "input": "raw" }"#);
+        c.set_input_mode("auto").unwrap();
+        assert_eq!(c.input_mode(), "auto");
+        assert!(c.set_input_mode("fast").is_err());
+        let mut live = KeypadConfig::parse(r#"{"device": { "vendor": "1189", "product": "8890", "serial": "", "input": "auto" }, "profiles": []}"#).unwrap();
+        live.set_input_mode("evdev").unwrap();
+        assert_eq!(json::to_compact(live.doc.get("device").unwrap()),
+                   r#"{ "vendor": "1189", "product": "8890", "serial": "", "input": "evdev" }"#, "the rest of device is kept, in place");
+    }
+
+    #[test]
+    fn engine_tuning_snaps_to_its_range_and_reset_removes_it() {
+        let text = r#"{"settings": { "coalesceMs": 8, "ackTimeoutMs": 60, "accelWindowMs": 35, "accelFactor": 3, "keyRateHz": 120 }, "profiles": []}"#;
+        let mut c = KeypadConfig::parse(text).unwrap();
+        assert_eq!(c.tuning("accelFactor"), Some(3.0));
+        assert_eq!(c.tuning("gestureIdleMs"), None);
+        c.set_tuning("accelFactor", Some(3.0)).unwrap();
+        assert_eq!(c.doc, KeypadConfig::parse(text).unwrap().doc, "an unchanged value isn't rewritten");
+        c.set_tuning("accelFactor", Some(2.6)).unwrap();
+        assert_eq!(c.tuning("accelFactor"), Some(2.5));
+        c.set_tuning("keyRateHz", Some(9999.0)).unwrap();
+        assert_eq!(c.tuning("keyRateHz"), Some(500.0));
+        c.set_tuning("gestureIdleMs", Some(10.0)).unwrap();
+        assert_eq!(c.tuning("gestureIdleMs"), Some(50.0), "the daemon's own bound");
+        assert!(c.set_tuning("speed", Some(1.0)).is_err());
+        let out = c.render();
+        assert!(out.contains(r#""accelFactor": 2.5"#) && out.contains(r#""keyRateHz": 500"#), "{out}");
+        for t in TUNINGS {
+            c.set_tuning(t.key, None).unwrap();
+            assert!(t.min <= t.default && t.default <= t.max, "{}", t.key);
+        }
+        assert!(c.doc.get("settings").is_none(), "an empty settings block goes away");
+    }
+
+    #[test]
+    fn profile_name_title_and_fallthrough() {
+        let mut c = KeypadConfig::parse(r#"{"profiles": [
+            {"name": "brave", "match": {"class": "^brave-browser$"}, "bindings": {}},
+            {"name": "global", "bindings": {}}]}"#).unwrap();
+        let p = &c.profiles()[0];
+        assert_eq!((p.title.as_str(), p.fallthrough), ("", true));
+        c.set_profile_title(0, " - YouTube ").unwrap();
+        c.set_profile_fallthrough(0, false).unwrap();
+        c.set_profile_name(0, "Brave video").unwrap();
+        let p = &c.profiles()[0];
+        assert_eq!((p.name.as_str(), p.title.as_str(), p.fallthrough), ("Brave video", "- YouTube", false));
+        assert_eq!(json::to_compact(c.doc.get("profiles").unwrap().as_array().unwrap()[0].get("match").unwrap()),
+                   r#"{ "class": "^brave-browser$", "title": "- YouTube" }"#);
+        c.set_profile_title(0, "").unwrap();
+        c.set_profile_fallthrough(0, true).unwrap();
+        let brave = &c.doc.get("profiles").unwrap().as_array().unwrap()[0];
+        assert!(brave.get("fallthrough").is_none() && brave.get("match").unwrap().get("title").is_none());
+        assert!(c.set_profile_name(0, "global").is_err(), "names stay unique");
+        assert!(c.set_profile_name(0, " ").is_err());
+        assert!(c.set_profile_title(1, "x").is_err(), "Global matches every window");
+    }
+
+    #[test]
+    fn the_overlay_switch_keeps_the_other_eww_fields() {
+        let d = SheetDefaults::default();
+        let eww = |c: &KeypadConfig| c.doc.get("cheatsheet").and_then(|s| s.get("eww")).map(json::to_compact);
+        let set = |text: &str, change: &dyn Fn(&mut SheetOptions)| {
+            let mut c = KeypadConfig::parse(text).unwrap();
+            let mut o = c.sheet_options(&d);
+            change(&mut o);
+            c.set_sheet_options(&o).unwrap();
+            assert_eq!(c.sheet_options(&d), o);
+            c
+        };
+        let plain = r#"{"profiles": []}"#;
+        assert!(KeypadConfig::parse(plain).unwrap().sheet_options(&d).overlay);
+        let off = set(plain, &|o| o.overlay = false);
+        assert_eq!(eww(&off).as_deref(), Some("false"));
+        assert_eq!(eww(&set(&off.render(), &|o| o.overlay = true)), None, "on is the unit's default");
+        let through = r#"{"cheatsheet": {"eww": {"window": "pad-cheatsheet-passthrough"}}, "profiles": []}"#;
+        let off = set(through, &|o| o.overlay = false);
+        assert_eq!(eww(&off).as_deref(), Some(r#"{ "window": "pad-cheatsheet-passthrough", "enabled": false }"#));
+        assert_eq!(eww(&set(&off.render(), &|o| o.overlay = true)).as_deref(), Some(r#"{ "window": "pad-cheatsheet-passthrough" }"#));
+        let both = set(plain, &|o| {
+            o.overlay = false;
+            o.click_through = true;
+        });
+        assert!(!both.sheet_options(&d).overlay && both.sheet_options(&d).click_through);
+    }
+
+    #[test]
+    fn firmware_versions_compare_for_raw_mode() {
+        assert_eq!(version_at_least("2.0.2", RAW_MIN_FIRMWARE), Some(true));
+        assert_eq!(version_at_least("2.1.0", RAW_MIN_FIRMWARE), Some(true));
+        assert_eq!(version_at_least("2.0.1", RAW_MIN_FIRMWARE), Some(false));
+        assert_eq!(version_at_least("2.0", RAW_MIN_FIRMWARE), None, "bcdDevice alone can't tell");
+        assert_eq!(version_at_least("", RAW_MIN_FIRMWARE), None);
     }
 
     #[test]

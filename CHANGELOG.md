@@ -56,6 +56,28 @@ All notable changes to smpl-apps are documented here.
   `pad-cheatsheet-passthrough`, keeping the other `eww` fields. It is never
   combined with "until hidden", because nothing could close the sheet.
 
+- **settings: keypad Advanced section, so the config needn't be hand-edited.**
+  A collapsed Advanced card holds:
+  - **Input mode:** Automatic, Keymap (compatible) or Raw (fastest, firmware
+    2.0.2+), saved as `device.input`. Under it: a check or warning mark, the
+    mode the keypad app uses right now and a health line from its counters
+    (`GetStatus().input`: events, lost and restored, drops out of raw mode,
+    late heartbeats). The line says why raw isn't on: firmware older than
+    2.0.2, not the open firmware, a layout that doesn't match, or not saved yet.
+  - **Knob tuning:** acceleration, fast-turn window and key rate.
+  - **Kdenlive timing:** update spacing, answer timeout and edit gesture.
+    These are the config's `"settings"`, shown with the keypad app's defaults,
+    with Reset to defaults.
+  - **Overlay switch:** turns the cheatsheet overlay on or off
+    (`cheatsheet.eww`).
+
+  Profiles gain a name, an optional window-title pattern and "unset controls
+  use Global" (`fallthrough`). Bindings gain "Only if installed"
+  (`ifInstalled`), which the keypad app's example config uses on every
+  launcher; those launchers were read-only before. A custom auto-hide value
+  from the file shows as itself. Applying a binding keeps the file's key
+  order, so unchanged bindings stay byte-identical.
+
 - **settings: keypad icons.** Every binding with a label can have an icon:
   "Automatic" (the keypad app picks; the row names its choice from the
   preview), "No icon", or one from a searchable grid of outline icons. The

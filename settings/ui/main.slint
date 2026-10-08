@@ -140,6 +140,19 @@ struct KeypadSheetCell {
     active: bool,
 }
 
+/// One engine setting in Keypad > Advanced (a slider).
+struct KeypadTuning {
+    key: string,
+    label: string,
+    help: string,
+    min: float,
+    max: float,
+    step: float,
+    value: float,
+    // The value with its unit ("3×", "40 ms"), and "(default)" when unset.
+    display: string,
+}
+
 /// An icon in Settings' icon picker.
 struct KeypadIcon {
     name: string,
@@ -1668,6 +1681,24 @@ export component MainWindow inherits Window {
     in property <bool> kp-dry-run: true;
     // Cheatsheet: per-binding label, options and preview.
     in-out property <string> kp-label-text;
+    // "ifInstalled" of the binding being edited (space-separated names).
+    in-out property <string> kp-needs-text;
+    in property <string> kp-needs-placeholder;
+    // Profile details.
+    in-out property <string> kp-profile-name;
+    in-out property <string> kp-profile-title;
+    in property <bool> kp-profile-fallthrough: true;
+    // Advanced: input mode (index into Automatic, Keymap, Raw) and its state.
+    in property <int> kp-input-index: 0;
+    in property <string> kp-input-help;
+    in property <string> kp-input-now;
+    in property <string> kp-input-health;
+    in property <bool> kp-input-healthy: true;
+    in property <[KeypadTuning]> kp-knob-tunings;
+    in property <[KeypadTuning]> kp-kdenlive-tunings;
+    in property <bool> kp-tunings-custom: false;
+    in property <bool> kp-sheet-overlay: true;
+    in-out property <bool> kp-advanced-open: false;
     // Icon of the binding being edited: "" automatic, "none", or a name.
     in property <string> kp-icon-name;
     in property <string> kp-icon-glyph;
@@ -1707,7 +1738,12 @@ export component MainWindow inherits Window {
     callback kp-confirm-add-profile();
     callback kp-cancel-add-profile();
     callback kp-remove-profile();
-    callback kp-apply-profile-class();
+    callback kp-apply-profile-details();
+    callback kp-set-fallthrough(bool);
+    callback kp-set-input-mode(int);
+    callback kp-set-tuning(string, float);
+    callback kp-reset-tunings();
+    callback kp-set-sheet-overlay(bool);
     callback kp-set-kdenlive(bool);
     callback kp-set-key-fallback(bool);
     callback kp-load-kdenlive-preset();
@@ -8332,6 +8368,23 @@ export component MainWindow inherits Window {
                                 KeypadButton { text: "Cancel"; clicked => { root.kp-cancel-add-profile(); } }
                             }
 
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Name";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                KeypadInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.kp-profile-name;
+                                    placeholder: "Shown in the profile list and on the cheatsheet";
+                                    accepted => { root.kp-apply-profile-details(); }
+                                }
+                                if root.kp-profile-global: KeypadButton { text: "Apply"; clicked => { root.kp-apply-profile-details(); } }
+                            }
                             if !root.kp-profile-global: HorizontalLayout {
                                 spacing: 8px;
                                 Text {
@@ -8345,9 +8398,40 @@ export component MainWindow inherits Window {
                                     horizontal-stretch: 1;
                                     text <=> root.kp-profile-class;
                                     placeholder: "Regular expression, e.g. ^firefox$";
-                                    accepted => { root.kp-apply-profile-class(); }
+                                    accepted => { root.kp-apply-profile-details(); }
                                 }
-                                KeypadButton { text: "Apply"; clicked => { root.kp-apply-profile-class(); } }
+                            }
+                            if !root.kp-profile-global: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Window title";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                KeypadInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.kp-profile-title;
+                                    placeholder: "Optional regular expression: only while the title matches, e.g. YouTube";
+                                    accepted => { root.kp-apply-profile-details(); }
+                                }
+                                KeypadButton { text: "Apply"; clicked => { root.kp-apply-profile-details(); } }
+                            }
+                            if !root.kp-profile-global: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Controls this profile leaves unset do what Global maps them to";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                KeypadToggle {
+                                    on: root.kp-profile-fallthrough;
+                                    toggled(on) => { root.kp-set-fallthrough(on); }
+                                }
                             }
 
                             HorizontalLayout {
@@ -8551,6 +8635,23 @@ export component MainWindow inherits Window {
                                 query <=> root.kp-icon-query;
                                 search(t) => { root.kp-search-icons(t); }
                                 picked(name) => { root.kp-pick-icon(name); }
+                            }
+                            if root.kp-label-enabled: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Only if installed";
+                                    width: 96px;
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                KeypadInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.kp-needs-text;
+                                    placeholder: root.kp-needs-placeholder;
+                                    accepted => { root.kp-apply-binding(); }
+                                }
                             }
                             HorizontalLayout {
                                 alignment: end;
@@ -8773,6 +8874,229 @@ export component MainWindow inherits Window {
                                     mouse-cursor: pointer;
                                     clicked => { root.kp-select-control(row.slot); }
                                 }
+                            }
+                        }
+                    }
+
+                    // ── Advanced: what would otherwise be hand-edited in the file ──
+                    if !root.kp-wizard-open: Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Advanced";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                KeypadButton {
+                                    text: root.kp-advanced-open ? "Hide" : "Show";
+                                    clicked => { root.kp-advanced-open = !root.kp-advanced-open; }
+                                }
+                            }
+                            if !root.kp-advanced-open: Text {
+                                text: "Input mode, knob and Kdenlive tuning, and the overlay switch. Saved like everything else here; no need to edit the file.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
+                            }
+
+                            if root.kp-advanced-open: Text {
+                                text: "Input mode";
+                                color: Theme.fg;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+                            if root.kp-advanced-open: HorizontalLayout {
+                                spacing: 4px;
+                                for mode[idx] in ["Automatic", "Keymap (compatible)", "Raw (fastest, firmware 2.0.2+)"]: Rectangle {
+                                    height: Typography.compact-control;
+                                    horizontal-stretch: 1;
+                                    border-radius: 4px;
+                                    background: root.kp-input-index == idx ? Theme.accent
+                                        : mode-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                    Text {
+                                        text: mode;
+                                        color: root.kp-input-index == idx ? Theme.bg : Theme.fg;
+                                        font-size: Typography.secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: parent.width;
+                                        height: parent.height;
+                                    }
+                                    mode-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.kp-set-input-mode(idx); }
+                                    }
+                                }
+                            }
+                            if root.kp-advanced-open: Text {
+                                text: root.kp-input-help;
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
+                            }
+                            if root.kp-advanced-open: HorizontalLayout {
+                                spacing: 6px;
+                                // Health by shape: a check mark or an exclamation mark.
+                                Text {
+                                    text: root.kp-input-healthy ? "\u{2713}" : "!";
+                                    width: 14px;
+                                    color: root.kp-input-healthy ? Theme.success : Theme.warning;
+                                    font-size: Typography.secondary;
+                                    font-weight: 700;
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    Text {
+                                        text: root.kp-input-now;
+                                        color: Theme.fg;
+                                        font-size: Typography.secondary;
+                                        wrap: word-wrap;
+                                    }
+                                    if root.kp-input-health != "": Text {
+                                        text: root.kp-input-health;
+                                        color: Theme.fg_dim;
+                                        font-size: Typography.caption;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+
+                            if root.kp-advanced-open: Rectangle { height: 1px; background: Theme.bg_lighter; }
+                            if root.kp-advanced-open: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Knobs";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                if root.kp-tunings-custom: KeypadButton {
+                                    text: "Reset to defaults";
+                                    clicked => { root.kp-reset-tunings(); }
+                                }
+                            }
+                            if root.kp-advanced-open: VerticalLayout {
+                                spacing: 8px;
+                            for t in root.kp-knob-tunings: VerticalLayout {
+                                spacing: 2px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: t.label;
+                                        width: 120px;
+                                        color: Theme.fg_dim;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                    ThemeSlider {
+                                        horizontal-stretch: 1;
+                                        minimum: t.min;
+                                        maximum: t.max;
+                                        step: t.step;
+                                        value: t.value;
+                                        changed(v) => { root.kp-set-tuning(t.key, v); }
+                                    }
+                                    Text {
+                                        text: t.display;
+                                        width: 110px;
+                                        color: Theme.fg;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    Rectangle { width: 128px; }
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: t.help;
+                                        color: Theme.fg_dim;
+                                        font-size: Typography.caption;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                            }
+                            if root.kp-advanced-open: Text {
+                                text: "Kdenlive (API plugin)";
+                                color: Theme.fg;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+                            if root.kp-advanced-open: VerticalLayout {
+                                spacing: 8px;
+                            for t in root.kp-kdenlive-tunings: VerticalLayout {
+                                spacing: 2px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: t.label;
+                                        width: 120px;
+                                        color: Theme.fg_dim;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                    ThemeSlider {
+                                        horizontal-stretch: 1;
+                                        minimum: t.min;
+                                        maximum: t.max;
+                                        step: t.step;
+                                        value: t.value;
+                                        changed(v) => { root.kp-set-tuning(t.key, v); }
+                                    }
+                                    Text {
+                                        text: t.display;
+                                        width: 110px;
+                                        color: Theme.fg;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    Rectangle { width: 128px; }
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: t.help;
+                                        color: Theme.fg_dim;
+                                        font-size: Typography.caption;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                            }
+
+                            if root.kp-advanced-open: Rectangle { height: 1px; background: Theme.bg_lighter; }
+                            if root.kp-advanced-open: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Draw the cheatsheet overlay through the bar (off: cheatsheet keys show nothing)";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                KeypadToggle {
+                                    on: root.kp-sheet-overlay;
+                                    toggled(on) => { root.kp-set-sheet-overlay(on); }
+                                }
+                            }
+                            if root.kp-advanced-open: Text {
+                                text: "Everything else (Kdenlive context layers and modes, per-binding speed) stays in the file: Open file below. Saving here keeps it.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
                             }
                         }
                     }
