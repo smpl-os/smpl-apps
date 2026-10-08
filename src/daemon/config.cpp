@@ -4,6 +4,7 @@
 #include <QSet>
 #include "keysink.h"
 #include "kdenlivecontract.h"
+#include "kdenlivecatalog.h"
 
 #include <QDir>
 #include <QFile>
@@ -917,6 +918,11 @@ bool checkConfig(Config &cfg, QString *error)
             if (b.kind == Binding::Request && !contract::kKnownCommands.contains(b.name)) {
                 cfg.warnings << QStringLiteral("%1: unknown command '%2' (known: %3)").arg(where, b.name, contract::kKnownCommands.join(QStringLiteral(", ")));
             }
+            if (b.kind == Binding::Control || b.kind == Binding::Request) {
+                for (const QString &problem : catalog::optionProblems(b.name, b.kind == Binding::Request, b.options)) {
+                    cfg.warnings << QStringLiteral("%1: %2").arg(where, problem);
+                }
+            }
             return true;
         };
         for (auto it = p.bindings.cbegin(); it != p.bindings.cend(); ++it) {
@@ -991,6 +997,27 @@ QVariant valueAtPath(const QVariantMap &map, const QString &dottedPath)
         cur = m.value(p);
     }
     return cur;
+}
+
+QString binTagId(const QVariantMap &context, const QString &tag)
+{
+    const QVariantList tags = valueAtPath(context, QStringLiteral("bin.tags")).toList();
+    for (const QVariant &t : tags) {
+        if (t.toMap().value(QStringLiteral("id")).toString() == tag) {
+            return tag;
+        }
+    }
+    for (const QVariant &t : tags) {
+        if (t.toMap().value(QStringLiteral("name")).toString().compare(tag, Qt::CaseInsensitive) == 0) {
+            return t.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    bool number = false;
+    const int n = tag.toInt(&number);
+    if (number && n >= 1 && n <= tags.size()) {
+        return tags.at(n - 1).toMap().value(QStringLiteral("id")).toString();
+    }
+    return tag;
 }
 
 namespace {

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // mock-kdenlive: serves org.kde.kdenlive.ControlSurface1 (contract revision 2)
 // so the daemon can be exercised without a patched Kdenlive.
-//   --stage 1|2|3   advertise MR1 (transport/zoom/actions), MR2 (+parameters,
-//                   wheels) or MR3 (+track, scroll, gain, trim). Default 3.
+//   --stage 1|2|3|4 advertise MR1 (transport/zoom/actions), MR2 (+parameters,
+//                   wheels), MR3 (+track, scroll, gain, trim), or MR1b-B.
+//                   Default 3.
 //   --off           own the service but not the object: Kdenlive's default.
 //   --tick-ms <ms>  simulate playback: advance the playhead every <ms>
 //                   (context emission stays capped at 30 Hz).
@@ -17,6 +18,13 @@
 //   grouped on|off      selection is a group: parameter edits are refused
 //   track <trk-4|trk-3|trk-7|trk-8>   focused track (MR3)
 //   clip <clip-21|clip-22|clip-31>|-  selected clip: clipGain and trim handles (MR3)
+//   nudge <clip-id>... selected group for edit.nudge (MR1b-B)
+//   route clear|<stream> <track>       audio source routing for timeline.targets (MR1b-B)
+//   bin on|off                         show/hide the bin view (MR1b-B)
+//   bin-select <bin-id>...             selected bin clips (MR1b-B)
+//   effect-stack off|<id[:builtin|:group]>...  shown effect stack (MR1b-B)
+//   effect <index>                     focused effect row (MR1b-B)
+//   effect-param <name>                focused effect parameter (MR1b-B)
 //   history <label>     an unrelated undo entry (ends gestures, new epoch)
 //   tool <select|razor|ripple|roll|slip|slide>
 //   dialog on|off       modal dialog
@@ -30,6 +38,7 @@
 #include <QDBusConnection>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSocketNotifier>
 #include <QTimer>
 #include <cstdio>
@@ -45,7 +54,7 @@ int main(int argc, char **argv)
     p.addHelpOption();
     QCommandLineOption serviceOpt(QStringLiteral("service"), QStringLiteral("bus name (default org.kde.kdenlive-<own pid>)"), QStringLiteral("name"));
     QCommandLineOption delayOpt(QStringLiteral("apply-delay"), QStringLiteral("simulated GUI cost per apply batch in ms"), QStringLiteral("ms"), QStringLiteral("0"));
-    QCommandLineOption stageOpt(QStringLiteral("stage"), QStringLiteral("advertised stage 1-3"), QStringLiteral("n"), QStringLiteral("3"));
+    QCommandLineOption stageOpt(QStringLiteral("stage"), QStringLiteral("advertised stage 1-4"), QStringLiteral("n"), QStringLiteral("3"));
     QCommandLineOption offOpt(QStringLiteral("off"), QStringLiteral("interface disabled (object absent), like Kdenlive's default"));
     QCommandLineOption tickOpt(QStringLiteral("tick-ms"), QStringLiteral("simulate playback, one frame every <ms> (0 = stopped)"), QStringLiteral("ms"), QStringLiteral("0"));
     p.addOptions({serviceOpt, delayOpt, stageOpt, offOpt, tickOpt});
@@ -101,6 +110,43 @@ int main(int argc, char **argv)
                 mock.focusTrack(arg);
             } else if (cmd == QLatin1String("clip")) {
                 mock.selectClip(arg == QLatin1String("-") || arg == QLatin1String("off") ? QString() : arg);
+            } else if (cmd == QLatin1String("nudge")) {
+                mock.selectClipGroup(arg.split(QRegularExpression(QStringLiteral("[,\\s]+")), Qt::SkipEmptyParts));
+            } else if (cmd == QLatin1String("route")) {
+                QVariantMap routes = mock.state().value(QStringLiteral("targets")).toMap().value(QStringLiteral("audio")).toMap();
+                if (arg == QLatin1String("clear")) {
+                    routes.clear();
+                } else {
+                    const QString stream = arg.section(QLatin1Char(' '), 0, 0);
+                    const QString track = arg.section(QLatin1Char(' '), 1, 1);
+                    if (!stream.isEmpty() && !track.isEmpty()) {
+                        routes.insert(stream, track);
+                    }
+                }
+                mock.setAudioRouting(routes);
+            } else if (cmd == QLatin1String("bin")) {
+                mock.showBin(on);
+            } else if (cmd == QLatin1String("bin-select")) {
+                mock.selectBinClips(arg.split(QRegularExpression(QStringLiteral("[,\\s]+")), Qt::SkipEmptyParts));
+            } else if (cmd == QLatin1String("effect-stack")) {
+                if (arg == QLatin1String("off") || arg == QLatin1String("-")) {
+                    mock.hideEffectStack();
+                } else {
+                    QList<QVariantMap> effects;
+                    for (const QString &token : arg.split(QRegularExpression(QStringLiteral("[,\\s]+")), Qt::SkipEmptyParts)) {
+                        const QString id = token.section(QLatin1Char(':'), 0, 0);
+                        const QString kind = token.section(QLatin1Char(':'), 1, 1);
+                        effects << QVariantMap{{QStringLiteral("id"), id},
+                                                {QStringLiteral("enabled"), true},
+                                                {QStringLiteral("builtin"), kind == QLatin1String("builtin")},
+                                                {QStringLiteral("group"), kind == QLatin1String("group")}};
+                    }
+                    mock.showEffectStack(effects);
+                }
+            } else if (cmd == QLatin1String("effect")) {
+                mock.focusEffect(arg.toInt());
+            } else if (cmd == QLatin1String("effect-param")) {
+                mock.focusEffectParameter(arg);
             } else if (cmd == QLatin1String("source")) {
                 mock.setSourceOpen(on);
             } else if (cmd == QLatin1String("trimming")) {

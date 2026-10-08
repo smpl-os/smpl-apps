@@ -154,6 +154,44 @@ context: delete needs timeline focus, insert/overwrite need a clip in the
 clip monitor and a target track, and the Slip tool's preview blocks playback
 and shuttle until you switch back to the Selection tool.
 
+### Controls and commands
+
+Knobs drive controls (`{"control": NAME, "options": {...}}`); keys can also
+invoke commands (`{"request": NAME, "params": {...}}`). Editing controls and
+commands find their target in Kdenlive's context by themselves (override with
+`"targetFrom"`). `check-config` warns about options Kdenlive would refuse.
+
+| Control | Options | What |
+|---|---|---|
+| `playhead.jog` | `monitor`, `scrub` | playhead, one frame per detent |
+| `playhead.shuttle` | `monitor` | shuttle speed, -7..7 |
+| `timeline.zoom` | `anchor` | timeline zoom |
+| `timeline.scroll` | | scroll by a tenth of the view |
+| `timeline.track` | | focus the next or previous track |
+| `param.focus` / `param.nudge` | `step`, `keyframe` | focus or change an effect parameter; `"targetFrom": "effect.params.rOffset.target"` changes another parameter of the same effect without moving the focus |
+| `colorwheel.nudge` | `wheel`, `axis`, `step`, `keyframe` | Lift/Gamma/Gain wheels |
+| `audio.gain` | | track (mixer) or clip gain, 0.1 dB per detent |
+| `edit.trim` | `mode`: `resize`, `slip` or `ripple` (MR1b-B), `edge`: `start`/`end` | trim the selected clip. `mode` is required; resize and ripple need `edge`. Slip moves the source in and out together (a positive turn moves them earlier, as Kdenlive's Slip tool); ripple also shifts the following clips on the clip's tracks (never guides). Only the modes Kdenlive lists in `timeline.trim.modes` work |
+| `edit.nudge` (MR1b-B) | `unit`: `frame` or `second` | move the selected clips; refuses to overwrite another clip |
+| `timeline.target` (MR1b-B) | `kind`: `video` or `audio` (required) | move the video target track, or the lowest assigned audio stream's |
+| `audio.pan` (MR1b-B) | | the focused audio track's pan, -50..50 |
+| `effect.focus` (MR1b-B) | | focus the previous or next effect of the shown stack |
+| `bin.cursor` (MR1b-B) | `extend`: true grows the selection | move through the visible bin rows |
+| `bin.rating` (MR1b-B) | | the selected bin clips' star rating, 0..5 |
+
+| Command | Params | What |
+|---|---|---|
+| `param.reset`, `colorwheel.reset` | `wheel`, `keyframe` | reset the focused parameter or a wheel |
+| `track.set` | `what`: mute/hide/lock/solo/target, `value`, `soloMode` | a track switch (`"value": "$!ctx:timeline.track.muted"` toggles) |
+| `effect.add` (MR1b-B) | exactly one of `id` (e.g. `"avfilter.gblur"`) or `preset` (a registered preset or a unique saved preset name) | add to the shown effect stack |
+| `effect.set` (MR1b-B) | `what`: `enabled`, `value` | enable or disable the focused effect (`"$!ctx:effect.enabled"` toggles) |
+| `effect.move` (MR1b-B) | `delta`: rows, -64..64 | move the focused effect up (negative) or down |
+| `effect.remove` (MR1b-B) | | remove the focused effect |
+| `effectstack.set` (MR1b-B) | `what`: `enabled` or `compare`, `value` | bypass the whole stack, or the compare split view |
+| `bin.tag` (MR1b-B) | `tag`, `value` | tag or untag the selected bin clips. `tag` is Kdenlive's colour id from `bin.tags` (`"#ff0000"`), its position (`"1"` is the first tag, like `tag_1`) or its name (`"Red"`); the daemon sends the colour id |
+| `bin.select` (MR1b-B) | `tag` (as for `bin.tag`) | select the visible clips with that tag |
+| `bin.filter` (MR1b-B) | `tag` and/or `rating` (0..5), or `clear: true` | filter the bin; clear keeps the search text. `tag` as for `bin.tag` |
+
 ### Modes that follow Kdenlive (autoModes)
 
 ```jsonc

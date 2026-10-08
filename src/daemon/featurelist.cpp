@@ -139,8 +139,13 @@ QJsonObject featuresJson()
                                                    {QStringLiteral("icons"), QJsonObject{{QStringLiteral("set"), QLatin1String(kIconSet)},
                                                                                          {QStringLiteral("version"), QLatin1String(kIconSetVersion)},
                                                                                          {QStringLiteral("auto"), QJsonArray::fromStringList(autoIconNames())}}}}},
+        // What this build can name (offline); a running Kdenlive advertises its own subset.
         {QStringLiteral("kdenlive"), QJsonObject{{QStringLiteral("interface"), cs::contract::kInterface},
-                                                 {QStringLiteral("catalog"), QStringLiteral("control-surfaced list-actions --json")}}},
+                                                 {QStringLiteral("catalog"), QStringLiteral("control-surfaced list-actions --json")},
+                                                 {QStringLiteral("contract"), QStringLiteral("K23 MR1b-B")},
+                                                 {QStringLiteral("controls"), QJsonArray::fromStringList(cs::contract::kKnownControls)},
+                                                 {QStringLiteral("commands"), QJsonArray::fromStringList(cs::contract::kKnownCommands)},
+                                                 {QStringLiteral("trimModes"), QJsonArray::fromStringList(cs::contract::kTrimModes)}}},
     };
 }
 

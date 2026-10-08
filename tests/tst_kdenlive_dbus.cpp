@@ -882,6 +882,510 @@ private Q_SLOTS:
         QCOMPARE(m_mock->state()[QStringLiteral("clips")].toMap()[QStringLiteral("clip-22")].toMap()[QStringLiteral("end")].toInt(), 203);
     }
 
+    void mr1bTypedControlsAndCommands()
+    {
+        m_mock->setStage(3);
+        RawClient gates(connectClient(), QString());
+        QVariantMap caps = gates.call(QStringLiteral("Capabilities")).value(QStringLiteral("result")).toMap();
+        QVERIFY(!caps.value(QStringLiteral("controls")).toStringList().contains(contract::kNudge));
+        QVERIFY(!caps.value(QStringLiteral("commands")).toStringList().contains(contract::kCmdEffectAdd));
+        QCOMPARE(caps.value(QStringLiteral("trimModes")).toStringList(), QStringList{QStringLiteral("resize")});
+
+        m_mock->setStage(4);
+        m_mock->selectClip(QStringLiteral("clip-22"));
+        m_mock->selectClipGroup({QStringLiteral("clip-41"), QStringLiteral("clip-42")});
+        m_mock->showEffectStack({QVariantMap{{QStringLiteral("id"), QStringLiteral("lift_gamma_gain")},
+                                             {QStringLiteral("enabled"), true},
+                                             {QStringLiteral("builtin"), false}},
+                                 QVariantMap{{QStringLiteral("id"), QStringLiteral("frei0r.sopsat")},
+                                             {QStringLiteral("enabled"), true},
+                                             {QStringLiteral("builtin"), false}},
+                                 QVariantMap{{QStringLiteral("id"), QStringLiteral("group")},
+                                             {QStringLiteral("enabled"), true},
+                                             {QStringLiteral("group"), true}}},
+                                true);
+        m_mock->showBin(true);
+        m_mock->selectBinClips({QStringLiteral("bin-1"), QStringLiteral("bin-2")});
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        auto refresh = [&] { raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap(); };
+        auto result = [&](quint64 seq) {
+            for (int i = 0; i < 200 && raw.ackFor(seq).isEmpty(); ++i) {
+                QTest::qWait(10);
+            }
+            return raw.ackFor(seq).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("result")).toMap();
+        };
+        auto controlError = [&](quint64 seq, const QString &code, const QString &message = {}) {
+            QTRY_VERIFY2(!raw.ackFor(seq).isEmpty(), qPrintable(QString::number(seq)));
+            const QVariantMap outcome = raw.ackFor(seq).value(QStringLiteral("outcome")).toMap();
+            QCOMPARE(RawClient::code(outcome), code);
+            if (!message.isEmpty()) {
+                QCOMPARE(outcome.value(QStringLiteral("error")).toMap().value(QStringLiteral("message")).toString(), message);
+            }
+        };
+        auto invoke = [&](const QString &command, QVariantMap args) {
+            args.insert(raw.common());
+            return raw.call(QStringLiteral("Invoke"), {command, QVariant::fromValue(args)});
+        };
+        caps = raw.call(QStringLiteral("Capabilities")).value(QStringLiteral("result")).toMap();
+        const QStringList controls = caps.value(QStringLiteral("controls")).toStringList();
+        for (const QString &id : {contract::kTimelineTarget, contract::kPan, contract::kNudge, contract::kEffectFocus, contract::kBinCursor, contract::kBinRating}) {
+            QVERIFY2(controls.contains(id), qPrintable(id));
+        }
+        const QStringList commands = caps.value(QStringLiteral("commands")).toStringList();
+        for (const QString &id : {contract::kCmdEffectAdd, contract::kCmdEffectSet, contract::kCmdEffectMove, contract::kCmdEffectRemove, contract::kCmdStackSet,
+                                  contract::kCmdBinTag, contract::kCmdBinSelect, contract::kCmdBinFilter}) {
+            QVERIFY2(commands.contains(id), qPrintable(id));
+        }
+        QCOMPARE(caps.value(QStringLiteral("trimModes")).toStringList(), contract::kTrimModes);
+        const QVariantMap limits = caps.value(QStringLiteral("limits")).toMap();
+        QCOMPARE(limits.value(QStringLiteral("nudgeSelectionClips")).toInt(), 64);
+        QCOMPARE(limits.value(QStringLiteral("rippleFollowingClips")).toInt(), 64);
+        QCOMPARE(limits.value(QStringLiteral("binSelectionItems")).toInt(), 256);
+        QCOMPARE(limits.value(QStringLiteral("binFilterItems")).toInt(), 2000);
+        QCOMPARE(limits.value(QStringLiteral("effectStackItems")).toInt(), 64);
+        QCOMPARE(limits.value(QStringLiteral("effectParameterHandles")).toInt(), 32);
+        QVERIFY(caps.value(QStringLiteral("contextKeys")).toStringList().contains(QStringLiteral("bin")));
+
+        QVariantMap timeline = raw.context.value(QStringLiteral("timeline")).toMap();
+        QCOMPARE(timeline.value(QStringLiteral("targets")).toMap().value(QStringLiteral("video")).toInt(), 3);
+        QCOMPARE(timeline.value(QStringLiteral("targets")).toMap().value(QStringLiteral("audio")).toMap().value(QStringLiteral("0")).toInt(), 7);
+        QCOMPARE(timeline.value(QStringLiteral("nudge")).toMap().value(QStringLiteral("units")).toStringList(), (QStringList{QStringLiteral("frame"), QStringLiteral("second")}));
+        QCOMPARE(timeline.value(QStringLiteral("trim")).toMap().value(QStringLiteral("modes")).toStringList(), contract::kTrimModes);
+        const QVariantMap rippleScope = timeline.value(QStringLiteral("trim")).toMap().value(QStringLiteral("rippleScope")).toMap();
+        QCOMPARE(rippleScope.value(QStringLiteral("clips")).toList(), (QVariantList{41, 42}));
+        QCOMPARE(rippleScope.value(QStringLiteral("tracks")).toList(), (QVariantList{3, 7}));
+        QVERIFY(!rippleScope.value(QStringLiteral("guides")).toBool());
+        QCOMPARE(timeline.value(QStringLiteral("track")).toMap().value(QStringLiteral("pan")).toMap().value(QStringLiteral("min")).toInt(), -50);
+        QCOMPARE(raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("stack")).toMap().value(QStringLiteral("count")).toInt(), 3);
+        QVERIFY(raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("params")).toMap().contains(QStringLiteral("rOffset")));
+        QCOMPARE(raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("tags")).toList().size(), 5);
+        QCOMPARE(raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("tags")).toList().at(0).toMap().value(QStringLiteral("id")).toString(), QStringLiteral("#ff0000"));
+        QCOMPARE(raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("tags")).toList().at(1).toMap().value(QStringLiteral("id")).toString(), QStringLiteral("#00ff00"));
+        QCOMPARE(raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap().value(QStringLiteral("rating")).typeId(), QMetaType::Double);
+        QCOMPARE(raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap().value(QStringLiteral("rating")).toDouble(), 3.0);
+        QCOMPARE(raw.context.value(QStringLiteral("focus")).toString(), QStringLiteral("bin"));
+
+        quint64 seq = 0;
+        QVariantMap nudge{{QStringLiteral("target"), timeline.value(QStringLiteral("nudge")).toMap().value(QStringLiteral("target"))}, {QStringLiteral("gesture"), QStringLiteral("n1")}};
+        raw.control(contract::kNudge, 1, nudge, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("frames")).toInt(), 1);
+        nudge.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kNudge, 0, nudge, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("ended")).toBool());
+        m_mock->selectClipGroup({QStringLiteral("clip-21"), QStringLiteral("clip-22")});
+        refresh();
+        nudge.insert(QStringLiteral("target"), raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("nudge")).toMap().value(QStringLiteral("target")));
+        nudge.insert(QStringLiteral("gesture"), QStringLiteral("n2"));
+        nudge.insert(QStringLiteral("phase"), QStringLiteral("update"));
+        raw.control(contract::kNudge, 60, nudge, ++seq);
+        controlError(seq, contract::err::EditFailed, QStringLiteral("The requested nudge collides with an undeclared clip."));
+
+        QVariantMap tt{{QStringLiteral("kind"), QStringLiteral("video")}};
+        raw.control(contract::kTimelineTarget, -1, tt, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("track")).toInt(), 4);
+        QVERIFY(invoke(contract::kCmdTrackSet, {{QStringLiteral("target"), QStringLiteral("trk-4")},
+                                                {QStringLiteral("what"), QStringLiteral("target")},
+                                                {QStringLiteral("value"), false}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        m_mock->focusTrack(QStringLiteral("trk-4"));
+        refresh();
+        QCOMPARE(raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("targets")).toMap().value(QStringLiteral("video")).toInt(), -1);
+        QVERIFY(!raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("track")).toMap().value(QStringLiteral("targeted")).toBool());
+        raw.control(contract::kTimelineTarget, 1, tt, ++seq);
+        controlError(seq, contract::err::TargetNotFound, QStringLiteral("Assign a target track first."));
+        QVERIFY(invoke(contract::kCmdTrackSet, {{QStringLiteral("target"), QStringLiteral("trk-3")},
+                                                {QStringLiteral("what"), QStringLiteral("target")},
+                                                {QStringLiteral("value"), true}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        m_mock->setAudioRouting({{QStringLiteral("0"), QStringLiteral("trk-7")}, {QStringLiteral("1"), QStringLiteral("trk-8")}});
+        refresh();
+        raw.control(contract::kTimelineTarget, 1, {{QStringLiteral("kind"), QStringLiteral("audio")}}, ++seq);
+        controlError(seq, contract::err::EditFailed, QStringLiteral("The destination already carries another source stream."));
+        m_mock->setAudioRouting({});
+        refresh();
+        raw.control(contract::kTimelineTarget, 1, {{QStringLiteral("kind"), QStringLiteral("audio")}}, ++seq);
+        controlError(seq, contract::err::TargetNotFound, QStringLiteral("Assign a source audio stream first."));
+        m_mock->setAudioRouting({{QStringLiteral("0"), QStringLiteral("trk-7")}});
+        m_mock->focusTrack(QStringLiteral("trk-7"));
+        refresh();
+
+        QVariantMap pan{{QStringLiteral("target"), raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("track")).toMap().value(QStringLiteral("pan")).toMap().value(QStringLiteral("target"))},
+                        {QStringLiteral("gesture"), QStringLiteral("pan")}};
+        raw.control(contract::kPan, 5, pan, ++seq);
+        QVariantMap panResult = result(seq);
+        QCOMPARE(panResult.value(QStringLiteral("pan")).toInt(), 5);
+        QVERIFY(!panResult.contains(QStringLiteral("value")));
+        pan.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kPan, 0, pan, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("ended")).toBool());
+        QVERIFY(invoke(contract::kCmdTrackSet, {{QStringLiteral("target"), QStringLiteral("trk-7")},
+                                                {QStringLiteral("what"), QStringLiteral("mute")},
+                                                {QStringLiteral("value"), true}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        pan.insert(QStringLiteral("gesture"), QStringLiteral("pan-muted"));
+        pan.insert(QStringLiteral("phase"), QStringLiteral("update"));
+        raw.control(contract::kPan, 1, pan, ++seq);
+        controlError(seq, contract::err::NotReady, QStringLiteral("The mixer is muted, monitoring or recording."));
+        QVERIFY(invoke(contract::kCmdTrackSet, {{QStringLiteral("target"), QStringLiteral("trk-7")},
+                                                {QStringLiteral("what"), QStringLiteral("mute")},
+                                                {QStringLiteral("value"), false}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        QVERIFY(invoke(contract::kCmdTrackSet, {{QStringLiteral("target"), QStringLiteral("trk-7")},
+                                                {QStringLiteral("what"), QStringLiteral("lock")},
+                                                {QStringLiteral("value"), true}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        pan.insert(QStringLiteral("gesture"), QStringLiteral("pan-locked"));
+        pan.insert(QStringLiteral("phase"), QStringLiteral("update"));
+        raw.control(contract::kPan, 1, pan, ++seq);
+        controlError(seq, contract::err::TrackLocked, QStringLiteral("An unlocked audio track in the active mixer is required."));
+        QVERIFY(invoke(contract::kCmdTrackSet, {{QStringLiteral("target"), QStringLiteral("trk-7")},
+                                                {QStringLiteral("what"), QStringLiteral("lock")},
+                                                {QStringLiteral("value"), false}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        refresh();
+
+        raw.control(contract::kEffectFocus, 1, {}, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("index")).toInt(), 1);
+        refresh();
+        QCOMPARE(raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("index")).toInt(), 1);
+        const quint64 effectEpoch = raw.epoch();
+        raw.control(contract::kEffectFocus, 1, {}, ++seq);
+        controlError(seq, contract::err::UnsupportedParameter, QStringLiteral("Nested effect groups are not focus targets."));
+        raw.control(contract::kEffectFocus, 0, {}, ++seq);
+        QVERIFY(!result(seq).value(QStringLiteral("changed")).toBool());
+        refresh();
+        QCOMPARE(raw.epoch(), effectEpoch);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdEffectMove, {{QStringLiteral("target"), QStringLiteral("eff-1")}, {QStringLiteral("delta"), 1}})), contract::err::UnsupportedParameter);
+        raw.control(contract::kBinCursor, 2, {{QStringLiteral("extend"), true}}, ++seq);
+        QVERIFY(result(seq).contains(QStringLiteral("changed")));
+        refresh();
+        QVERIFY(raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap().value(QStringLiteral("target")).toString().contains(QStringLiteral("bin-3")));
+        const quint64 cursorEpoch = raw.epoch();
+        raw.control(contract::kBinCursor, 99, {}, ++seq);
+        QVERIFY(!result(seq).value(QStringLiteral("changed")).toBool());
+        refresh();
+        QCOMPARE(raw.epoch(), cursorEpoch);
+        raw.control(contract::kBinCursor, 1, {{QStringLiteral("extend"), QStringLiteral("yes")}}, ++seq);
+        controlError(seq, contract::err::InvalidArguments, QStringLiteral("extend must be boolean."));
+
+        refresh();
+        const QString binTarget = raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap().value(QStringLiteral("target")).toString();
+        QVariantMap rating{{QStringLiteral("target"), binTarget}, {QStringLiteral("gesture"), QStringLiteral("rate")}};
+        raw.control(contract::kBinRating, 2, rating, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("changed")).toBool());
+        rating.insert(QStringLiteral("phase"), QStringLiteral("cancel"));
+        raw.control(contract::kBinRating, 0, rating, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("changed")).toBool());
+        for (const auto &c : m_mock->state().value(QStringLiteral("binClips")).toList()) {
+            if (QStringList{QStringLiteral("bin-1"), QStringLiteral("bin-2")}.contains(c.toMap().value(QStringLiteral("id")).toString())) {
+                QCOMPARE(c.toMap().value(QStringLiteral("rating")).toInt(), 6);
+            }
+        }
+
+        m_mock->selectClip(QStringLiteral("clip-22"));
+        refresh();
+        QVariantMap trim{{QStringLiteral("target"), raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap().value(QStringLiteral("target"))},
+                         {QStringLiteral("gesture"), QStringLiteral("slip")},
+                         {QStringLiteral("mode"), QStringLiteral("slip")}};
+        const QVariantMap beforeSlip = m_mock->state().value(QStringLiteral("clips")).toMap().value(QStringLiteral("clip-22")).toMap();
+        raw.control(contract::kTrim, 10, trim, ++seq);
+        QVariantMap slipResult = result(seq);
+        QCOMPARE(slipResult.value(QStringLiteral("frames")).toInt(), 10);
+        QVERIFY(!slipResult.contains(QStringLiteral("mode")));
+        QVERIFY(!slipResult.contains(QStringLiteral("duration")));
+        QVariantMap afterSlip = m_mock->state().value(QStringLiteral("clips")).toMap().value(QStringLiteral("clip-22")).toMap();
+        QCOMPARE(afterSlip.value(QStringLiteral("start")).toInt(), beforeSlip.value(QStringLiteral("start")).toInt());
+        QCOMPARE(afterSlip.value(QStringLiteral("srcIn")).toInt(), beforeSlip.value(QStringLiteral("srcIn")).toInt() - 10);
+        QCOMPARE(afterSlip.value(QStringLiteral("minStart")).toInt(), beforeSlip.value(QStringLiteral("minStart")).toInt() + 10);
+        QCOMPARE(afterSlip.value(QStringLiteral("maxEnd")).toInt(), beforeSlip.value(QStringLiteral("maxEnd")).toInt() + 10);
+        trim.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kTrim, 0, trim, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("ended")).toBool());
+        trim.insert(QStringLiteral("gesture"), QStringLiteral("slip-too-far"));
+        trim.insert(QStringLiteral("phase"), QStringLiteral("update"));
+        raw.control(contract::kTrim, 1000, trim, ++seq);
+        controlError(seq, contract::err::EditFailed, QStringLiteral("The requested slip exceeds the source interval."));
+        QVariantMap ripple = trim;
+        ripple.insert(QStringLiteral("gesture"), QStringLiteral("ripple"));
+        ripple.insert(QStringLiteral("mode"), QStringLiteral("ripple"));
+        ripple.insert(QStringLiteral("edge"), QStringLiteral("end"));
+        const int followerStart = m_mock->state().value(QStringLiteral("clips")).toMap().value(QStringLiteral("clip-41")).toMap().value(QStringLiteral("start")).toInt();
+        raw.control(contract::kTrim, 10, ripple, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("mode")).toString(), QStringLiteral("ripple"));
+        QCOMPARE(m_mock->state().value(QStringLiteral("clips")).toMap().value(QStringLiteral("clip-41")).toMap().value(QStringLiteral("start")).toInt(), followerStart + 10);
+        raw.control(contract::kTrim, 0.5, ripple, ++seq);
+        controlError(seq, contract::err::InvalidArguments);
+        ripple.remove(QStringLiteral("edge"));
+        raw.control(contract::kTrim, 1, ripple, ++seq);
+        controlError(seq, contract::err::InvalidArguments, QStringLiteral("Use an explicit edge and integral frame delta."));
+        m_mock->selectClip(QStringLiteral("clip-31"));
+        refresh();
+        const QVariantMap noFollowingTrim = raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap();
+        QCOMPARE(noFollowingTrim.value(QStringLiteral("modes")).toStringList(), contract::kTrimModes);
+        QCOMPARE(noFollowingTrim.value(QStringLiteral("rippleScope")).toMap().value(QStringLiteral("clips")).toList(), QVariantList{});
+        QCOMPARE(noFollowingTrim.value(QStringLiteral("rippleScope")).toMap().value(QStringLiteral("tracks")).toList(), QVariantList{8});
+        QVariantMap noRipple{{QStringLiteral("target"), noFollowingTrim.value(QStringLiteral("target"))},
+                             {QStringLiteral("gesture"), QStringLiteral("nr")},
+                             {QStringLiteral("mode"), QStringLiteral("roll")},
+                             {QStringLiteral("edge"), QStringLiteral("end")}};
+        raw.control(contract::kTrim, 1, noRipple, ++seq);
+        controlError(seq, contract::err::UnsupportedMode, QStringLiteral("Use an advertised trim mode."));
+
+        m_mock->showEffectStack({QVariantMap{{QStringLiteral("id"), QStringLiteral("lift_gamma_gain")},
+                                             {QStringLiteral("enabled"), true},
+                                             {QStringLiteral("builtin"), true}},
+                                 QVariantMap{{QStringLiteral("id"), QStringLiteral("frei0r.sopsat")},
+                                             {QStringLiteral("enabled"), true},
+                                             {QStringLiteral("builtin"), false}}},
+                                false);
+        refresh();
+        QCOMPARE(raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("ownerId")).toInt(), 12);
+        QVariantMap add{{QStringLiteral("target"), raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("stack")).toMap().value(QStringLiteral("target"))}};
+        QCOMPARE(RawClient::code(invoke(contract::kCmdEffectAdd, add)), contract::err::InvalidArguments);
+        add.insert(QStringLiteral("id"), QStringLiteral("frei0r.glow"));
+        add.insert(QStringLiteral("preset"), QStringLiteral("warm-look"));
+        QCOMPARE(RawClient::code(invoke(contract::kCmdEffectAdd, add)), contract::err::InvalidArguments);
+        add.remove(QStringLiteral("preset"));
+        QVERIFY(invoke(contract::kCmdEffectAdd, add).value(QStringLiteral("ok")).toBool());
+        refresh();
+        const QString added = raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("target")).toString();
+        QVERIFY(invoke(contract::kCmdEffectSet, {{QStringLiteral("target"), added}, {QStringLiteral("what"), QStringLiteral("enabled")}, {QStringLiteral("value"), false}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        QVERIFY(invoke(contract::kCmdEffectMove, {{QStringLiteral("target"), added}, {QStringLiteral("delta"), -1}}).value(QStringLiteral("ok")).toBool());
+        refresh();
+        QCOMPARE(RawClient::code(invoke(contract::kCmdEffectMove, {{QStringLiteral("target"), QStringLiteral("eff-0")}, {QStringLiteral("delta"), 1}})), contract::err::UnsupportedParameter);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdEffectRemove, {{QStringLiteral("target"), QStringLiteral("eff-0")}})), contract::err::UnsupportedParameter);
+        QVERIFY(invoke(contract::kCmdEffectRemove, {{QStringLiteral("target"), QStringLiteral("eff-1")}}).value(QStringLiteral("ok")).toBool());
+        refresh();
+        QCOMPARE(RawClient::code(invoke(contract::kCmdStackSet, {{QStringLiteral("target"), raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("stack")).toMap().value(QStringLiteral("target"))},
+                                                                 {QStringLiteral("what"), QStringLiteral("compare")},
+                                                                 {QStringLiteral("value"), true}})),
+                 contract::err::UnsupportedMode);
+        m_mock->showEffectStack({QVariantMap{{QStringLiteral("id"), QStringLiteral("frei0r.sopsat")}, {QStringLiteral("enabled"), true}}}, true);
+        refresh();
+        const QString stackTarget = raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("stack")).toMap().value(QStringLiteral("target")).toString();
+        QVERIFY(invoke(contract::kCmdStackSet, {{QStringLiteral("target"), stackTarget}, {QStringLiteral("what"), QStringLiteral("compare")}, {QStringLiteral("value"), true}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        const QString paramTarget = raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("params")).toMap().value(QStringLiteral("rOffset")).toMap().value(QStringLiteral("target")).toString();
+        raw.control(contract::kParamNudge, 2.5, {{QStringLiteral("target"), paramTarget}, {QStringLiteral("gesture"), QStringLiteral("ep")}, {QStringLiteral("step"), QStringLiteral("fine")}}, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("changed")).toBool());
+        refresh();
+        // The handle's own units: 2.5 fine steps of 0.001, at that resolution.
+        QCOMPARE(raw.context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("params")).toMap().value(QStringLiteral("rOffset")).toMap().value(QStringLiteral("value")).toDouble(), 0.003);
+
+        m_mock->showBin(true);
+        m_mock->selectBinClips({QStringLiteral("bin-1")});
+        refresh();
+        const QString currentBinTarget = raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap().value(QStringLiteral("target")).toString();
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinTag, {{QStringLiteral("target"), currentBinTarget}, {QStringLiteral("tag"), QStringLiteral("#123456")}, {QStringLiteral("value"), true}})),
+                 contract::err::InvalidArguments);
+        m_mock->selectBinClips({QStringLiteral("bin-2")});
+        refresh();
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinTag, {{QStringLiteral("target"), currentBinTarget}, {QStringLiteral("tag"), QStringLiteral("#00ff00")}, {QStringLiteral("value"), true}})),
+                 contract::err::TargetNotFound);
+        const QString freshBinTarget = raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap().value(QStringLiteral("target")).toString();
+        QVERIFY(invoke(contract::kCmdBinTag, {{QStringLiteral("target"), freshBinTarget}, {QStringLiteral("tag"), QStringLiteral("#00ff00")}, {QStringLiteral("value"), true}})
+                    .value(QStringLiteral("ok"))
+                    .toBool());
+        QVERIFY(invoke(contract::kCmdBinSelect, {{QStringLiteral("tag"), QStringLiteral("#00ff00")}}).value(QStringLiteral("ok")).toBool());
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {})), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("clear"), true}, {QStringLiteral("rating"), 3}})), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), 6}})), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), 3.0}})), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), QStringLiteral("3")}})), contract::err::InvalidArguments);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), true}})), contract::err::InvalidArguments);
+        const QVariantMap localSub = m_mock->subscribe();
+        QVariantMap int64Rating{{QStringLiteral("session"), localSub.value(QStringLiteral("result")).toMap().value(QStringLiteral("session"))},
+                                {QStringLiteral("epoch"), m_mock->context().value(QStringLiteral("epoch"))},
+                                {QStringLiteral("rating"), QVariant::fromValue<qlonglong>(3)}};
+        QCOMPARE(RawClient::code(m_mock->invoke(contract::kCmdBinFilter, int64Rating)), contract::err::InvalidArguments);
+        QVERIFY(invoke(contract::kCmdBinFilter, {{QStringLiteral("tag"), QStringLiteral("#ff0000")}, {QStringLiteral("rating"), 3}}).value(QStringLiteral("ok")).toBool());
+        refresh();
+        QCOMPARE(raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("filter")).toMap().value(QStringLiteral("usage")).typeId(), QMetaType::Int);
+        QVERIFY(invoke(contract::kCmdBinFilter, {{QStringLiteral("clear"), true}}).value(QStringLiteral("ok")).toBool());
+
+        m_mock->setBinClips({QVariantMap{{QStringLiteral("id"), QStringLiteral("bin-1")},
+                                         {QStringLiteral("name"), QStringLiteral("A001")},
+                                         {QStringLiteral("tags"), QStringList{QStringLiteral("#00ff00")}},
+                                         {QStringLiteral("rating"), 2},
+                                         {QStringLiteral("complete"), true}},
+                              QVariantMap{{QStringLiteral("id"), QStringLiteral("bin-2")},
+                                         {QStringLiteral("name"), QStringLiteral("B002")},
+                                         {QStringLiteral("tags"), QStringList{QStringLiteral("#00ff00"), QStringLiteral("#ff0000")}},
+                                         {QStringLiteral("rating"), 8},
+                                         {QStringLiteral("complete"), true}},
+                              QVariantMap{{QStringLiteral("id"), QStringLiteral("bin-3")},
+                                         {QStringLiteral("name"), QStringLiteral("C003")},
+                                         {QStringLiteral("tags"), QStringList{QStringLiteral("#ff0000")}},
+                                         {QStringLiteral("rating"), 3},
+                                         {QStringLiteral("complete"), true}}});
+        m_mock->selectBinClips({QStringLiteral("bin-1"), QStringLiteral("bin-2"), QStringLiteral("bin-3")});
+        refresh();
+        QVariantMap mixedSelection = raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap();
+        QVERIFY(mixedSelection.value(QStringLiteral("mixedRating")).toBool());
+        QVERIFY(!mixedSelection.contains(QStringLiteral("rating")));  // absent over D-Bus: there is no null
+        QVariantMap mixedRating{{QStringLiteral("target"), mixedSelection.value(QStringLiteral("target"))}, {QStringLiteral("gesture"), QStringLiteral("mixed-rate")}};
+        raw.control(contract::kBinRating, 1, mixedRating, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("changed")).toBool());
+        QVariantMap binStates;
+        for (const auto &c : m_mock->state().value(QStringLiteral("binClips")).toList()) {
+            binStates.insert(c.toMap().value(QStringLiteral("id")).toString(), c.toMap());
+        }
+        QCOMPARE(binStates.value(QStringLiteral("bin-1")).toMap().value(QStringLiteral("rating")).toInt(), 4);
+        QCOMPARE(binStates.value(QStringLiteral("bin-2")).toMap().value(QStringLiteral("rating")).toInt(), 10);
+        QCOMPARE(binStates.value(QStringLiteral("bin-3")).toMap().value(QStringLiteral("rating")).toInt(), 5);
+        mixedRating.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kBinRating, 0, mixedRating, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("ended")).toBool());
+        QVERIFY(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), 5}}).value(QStringLiteral("ok")).toBool());
+        QVERIFY(invoke(contract::kCmdBinSelect, {{QStringLiteral("tag"), QStringLiteral("#00ff00")}}).value(QStringLiteral("ok")).toBool());
+        refresh();
+        const QVariantMap filteredSelection = raw.context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap();
+        QCOMPARE(filteredSelection.value(QStringLiteral("count")).toInt(), 1);
+        QVERIFY(filteredSelection.value(QStringLiteral("target")).toString().contains(QStringLiteral("bin-2")));
+        QVERIFY(!filteredSelection.value(QStringLiteral("target")).toString().contains(QStringLiteral("bin-1")));
+        m_mock->showBin(false);
+        refresh();
+        raw.control(contract::kBinCursor, 1, {}, ++seq);
+        controlError(seq, contract::err::NotReady, QStringLiteral("No visible native bin view."));
+        raw.control(contract::kBinRating, 1, mixedRating, ++seq);
+        controlError(seq, contract::err::NotReady, QStringLiteral("No visible native bin view."));
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinFilter, {{QStringLiteral("rating"), 5}})), contract::err::NotReady);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinSelect, {{QStringLiteral("tag"), QStringLiteral("#00ff00")}})), contract::err::NotReady);
+        QCOMPARE(RawClient::code(invoke(contract::kCmdBinTag, {{QStringLiteral("target"), mixedSelection.value(QStringLiteral("target"))},
+                                                              {QStringLiteral("tag"), QStringLiteral("#00ff00")},
+                                                              {QStringLiteral("value"), true}})),
+                 contract::err::NotReady);
+    }
+
+    void mr1bRippleAndNudgeExactness()
+    {
+        m_mock->setStage(4);
+        m_mock->selectClip(QStringLiteral("clip-22"));
+        RawClient raw(connectClient(), QString());
+        raw.subscribe();
+        auto refresh = [&] { raw.context = raw.call(QStringLiteral("GetContext")).value(QStringLiteral("result")).toMap(); };
+        auto clips = [&] { return m_mock->state().value(QStringLiteral("clips")).toMap(); };
+        auto clip = [&](const QVariantMap &all, const QString &id) { return all.value(id).toMap(); };
+        auto result = [&](quint64 seq) {
+            for (int i = 0; i < 200 && raw.ackFor(seq).isEmpty(); ++i) {
+                QTest::qWait(10);
+            }
+            return raw.ackFor(seq).value(QStringLiteral("outcome")).toMap().value(QStringLiteral("result")).toMap();
+        };
+        auto controlError = [&](quint64 seq, const QString &code, const QString &message) {
+            QTRY_VERIFY2(!raw.ackFor(seq).isEmpty(), qPrintable(QString::number(seq)));
+            const QVariantMap outcome = raw.ackFor(seq).value(QStringLiteral("outcome")).toMap();
+            QCOMPARE(RawClient::code(outcome), code);
+            QCOMPARE(outcome.value(QStringLiteral("error")).toMap().value(QStringLiteral("message")).toString(), message);
+        };
+        const auto trimTarget = [&] { return raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap().value(QStringLiteral("target")).toString(); };
+
+        quint64 seq = 0;
+        const QVariantMap beforeStart = clips();
+        QVariantMap startRipple{{QStringLiteral("target"), trimTarget()},
+                                {QStringLiteral("gesture"), QStringLiteral("ripple-start")},
+                                {QStringLiteral("mode"), QStringLiteral("ripple")},
+                                {QStringLiteral("edge"), QStringLiteral("start")}};
+        raw.control(contract::kTrim, 10, startRipple, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("mode")).toString(), QStringLiteral("ripple"));
+        const QVariantMap afterStart = clips();
+        for (const QString &id : {QStringLiteral("clip-21"), QStringLiteral("clip-22")}) {
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("start")).toInt(), clip(beforeStart, id).value(QStringLiteral("start")).toInt());
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("end")).toInt(), clip(beforeStart, id).value(QStringLiteral("end")).toInt() - 10);
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("srcIn")).toInt(), clip(beforeStart, id).value(QStringLiteral("srcIn")).toInt() + 10);
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("minStart")).toInt(), clip(beforeStart, id).value(QStringLiteral("minStart")).toInt() - 10);
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("maxEnd")).toInt(), clip(beforeStart, id).value(QStringLiteral("maxEnd")).toInt() - 10);
+        }
+        for (const QString &id : {QStringLiteral("clip-41"), QStringLiteral("clip-42")}) {
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("start")).toInt(), clip(beforeStart, id).value(QStringLiteral("start")).toInt() - 10);
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("end")).toInt(), clip(beforeStart, id).value(QStringLiteral("end")).toInt() - 10);
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("minStart")).toInt(), clip(beforeStart, id).value(QStringLiteral("minStart")).toInt() - 10);
+            QCOMPARE(clip(afterStart, id).value(QStringLiteral("maxEnd")).toInt(), clip(beforeStart, id).value(QStringLiteral("maxEnd")).toInt() - 10);
+        }
+        startRipple.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kTrim, 0, startRipple, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("ended")).toBool());
+
+        refresh();
+        QVariantMap endRipple{{QStringLiteral("target"), trimTarget()},
+                              {QStringLiteral("gesture"), QStringLiteral("ripple-end")},
+                              {QStringLiteral("mode"), QStringLiteral("ripple")},
+                              {QStringLiteral("edge"), QStringLiteral("end")}};
+        raw.control(contract::kTrim, 7, endRipple, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("mode")).toString(), QStringLiteral("ripple"));
+        const QVariantMap afterEnd = clips();
+        for (const QString &id : {QStringLiteral("clip-21"), QStringLiteral("clip-22")}) {
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("start")).toInt(), clip(afterStart, id).value(QStringLiteral("start")).toInt());
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("end")).toInt(), clip(afterStart, id).value(QStringLiteral("end")).toInt() + 7);
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("srcOut")).toInt(), clip(afterStart, id).value(QStringLiteral("srcOut")).toInt() + 7);
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("minStart")).toInt(), clip(afterStart, id).value(QStringLiteral("minStart")).toInt());
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("maxEnd")).toInt(), clip(afterStart, id).value(QStringLiteral("maxEnd")).toInt());
+        }
+        for (const QString &id : {QStringLiteral("clip-41"), QStringLiteral("clip-42")}) {
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("start")).toInt(), clip(afterStart, id).value(QStringLiteral("start")).toInt() + 7);
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("end")).toInt(), clip(afterStart, id).value(QStringLiteral("end")).toInt() + 7);
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("minStart")).toInt(), clip(afterStart, id).value(QStringLiteral("minStart")).toInt() + 7);
+            QCOMPARE(clip(afterEnd, id).value(QStringLiteral("maxEnd")).toInt(), clip(afterStart, id).value(QStringLiteral("maxEnd")).toInt() + 7);
+        }
+        endRipple.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kTrim, 0, endRipple, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("ended")).toBool());
+
+        refresh();
+        const QVariantMap beforeFail = clips();
+        QVariantMap tooFar{{QStringLiteral("target"), trimTarget()},
+                           {QStringLiteral("gesture"), QStringLiteral("ripple-too-far")},
+                           {QStringLiteral("mode"), QStringLiteral("ripple")},
+                           {QStringLiteral("edge"), QStringLiteral("end")}};
+        raw.control(contract::kTrim, 1000, tooFar, ++seq);
+        controlError(seq, contract::err::EditFailed, QStringLiteral("The exact group resize was refused; original members were restored."));
+        QCOMPARE(clips(), beforeFail);
+
+        m_mock->selectClipGroup({QStringLiteral("clip-31")});
+        refresh();
+        const QVariantMap beforeNudge = clips();
+        QVariantMap nudge{{QStringLiteral("target"), raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("nudge")).toMap().value(QStringLiteral("target"))},
+                          {QStringLiteral("gesture"), QStringLiteral("nudge-before-source")}};
+        raw.control(contract::kNudge, -250, nudge, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("frames")).toInt(), -250);
+        QVariantMap afterNudge = clips();
+        QCOMPARE(clip(afterNudge, QStringLiteral("clip-31")).value(QStringLiteral("start")).toInt(), 50);
+        QCOMPARE(clip(afterNudge, QStringLiteral("clip-31")).value(QStringLiteral("end")).toInt(), 110);
+        QCOMPARE(clip(afterNudge, QStringLiteral("clip-31")).value(QStringLiteral("minStart")).toInt(), clip(beforeNudge, QStringLiteral("clip-31")).value(QStringLiteral("minStart")).toInt() - 250);
+        QCOMPARE(clip(afterNudge, QStringLiteral("clip-31")).value(QStringLiteral("maxEnd")).toInt(), clip(beforeNudge, QStringLiteral("clip-31")).value(QStringLiteral("maxEnd")).toInt() - 250);
+        m_mock->setContextValue(QStringLiteral("fps"), QVariantMap{{QStringLiteral("num"), 30000}, {QStringLiteral("den"), 1001}});
+        refresh();
+        nudge.insert(QStringLiteral("gesture"), QStringLiteral("nudge-second"));
+        nudge.insert(QStringLiteral("unit"), QStringLiteral("second"));
+        raw.control(contract::kNudge, 1, nudge, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("frames")).toInt(), 30);
+        afterNudge = clips();
+        QCOMPARE(clip(afterNudge, QStringLiteral("clip-31")).value(QStringLiteral("start")).toInt(), 80);
+        QCOMPARE(clip(afterNudge, QStringLiteral("clip-31")).value(QStringLiteral("minStart")).toInt(), clip(beforeNudge, QStringLiteral("clip-31")).value(QStringLiteral("minStart")).toInt() - 220);
+        nudge.insert(QStringLiteral("phase"), QStringLiteral("end"));
+        raw.control(contract::kNudge, 0, nudge, ++seq);
+        QVERIFY(result(seq).value(QStringLiteral("ended")).toBool());
+
+        m_mock->setTrimGestureSteps(1);
+        refresh();
+        QVariantMap limited{{QStringLiteral("target"), raw.context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("nudge")).toMap().value(QStringLiteral("target"))},
+                            {QStringLiteral("gesture"), QStringLiteral("nudge-limit")}};
+        raw.control(contract::kNudge, 1, limited, ++seq);
+        QCOMPARE(result(seq).value(QStringLiteral("frames")).toInt(), 1);
+        raw.control(contract::kNudge, 1, limited, ++seq);
+        controlError(seq, contract::err::ResourceLimit, QStringLiteral("End this gesture before starting more native edit steps."));
+    }
+
     // Engine + client + mock: the three knobs edit the three wheels of the
     // focused widget; another caller's gesture is a domain refusal (never keys).
     void daemonThreeWheelKnobs()

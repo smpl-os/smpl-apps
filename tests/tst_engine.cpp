@@ -1268,6 +1268,37 @@ private Q_SLOTS:
         QVERIFY(keys.taps.isEmpty());
     }
 
+    // MR1b-B: effect.focus, bin.cursor and timeline.target start a new epoch in
+    // Kdenlive when they change something, so they wait like timeline.track.
+    void mr1bNavigationWaitsForItsOwnEpochChange()
+    {
+        for (const char *control : {"effect.focus", "bin.cursor", "timeline.target"}) {
+            RecordingKeySink keys;
+            FakeKdenliveClient kd;
+            kd.setAutoAck(false);
+            Engine e(&keys, &kd);
+            QString err;
+            auto c = parseConfig(QByteArray("{\"profiles\":[{\"name\":\"kd\",\"match\":{\"class\":\"^kd$\"},\"kdenlive\":true,\"bindings\":{"
+                                            "\"knob1\":{\"turn\":{\"control\":\"") + control + "\",\"options\":{\"kind\":\"video\"}}}}}]}",
+                                 {}, &err);
+            QVERIFY2(c, qPrintable(err));
+            c->settings.accelFactor = 1.0;
+            e.setConfig(*c);
+            e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+            kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)}});
+            e.handle(turn(1, 1));
+            e.handle(turn(1, 1));
+            e.handle(turn(1, 1));
+            QCOMPARE(kd.controlDeltas.size(), 1);
+            kd.ackAll({{QStringLiteral("ok"), true}, {QStringLiteral("result"), QVariantMap{{QStringLiteral("changed"), true}}}});
+            QTest::qWait(30);
+            QVERIFY2(kd.controlDeltas.size() == 1, control);  // held for the new epoch
+            kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(2)}});
+            QTRY_COMPARE(kd.controlDeltas.size(), 2);
+            QCOMPARE(kd.controlDeltas.at(1), 2.0);
+        }
+    }
+
     // limits.trimGestureSteps: the daemon ends a trim gesture before the host's
     // bound and continues with a fresh one.
     void trimGestureRespectsStepLimit()
@@ -1297,6 +1328,96 @@ private Q_SLOTS:
             }
         }
         QCOMPARE(total, 8.0);  // nothing lost
+        QVERIFY2(steps.size() >= 3, qPrintable(QString::number(steps.size())));
+        for (auto it = steps.cbegin(); it != steps.cend(); ++it) {
+            QVERIFY2(it.value() <= 3, qPrintable(it.key() + QLatin1Char('=') + QString::number(it.value())));
+        }
+    }
+
+    // K23 MR1b-B: editing controls and commands take their targets from the
+    // context paths Kdenlive publishes; effect.add, bin.select/filter take none.
+    static QVariantMap tagEntry(const char *id, const char *name)
+    {
+        return {{QStringLiteral("id"), QString::fromLatin1(id)}, {QStringLiteral("name"), QString::fromLatin1(name)}};
+    }
+
+    void mr1bTargetsAndNudgeSteps()
+    {
+        RecordingKeySink keys;
+        FakeKdenliveClient kd;
+        kd.setLimits({{QStringLiteral("trimGestureSteps"), 3}});
+        Engine e(&keys, &kd);
+        QString err;
+        auto c = parseConfig(R"({"profiles": [{"name": "kd", "match": {"class": "^kd$"}, "kdenlive": true, "bindings": {
+            "key1": {"request": "effect.move", "params": {"delta": -1}},
+            "key2": {"request": "effect.add", "params": {"id": "avfilter.gblur"}},
+            "key3": {"request": "bin.tag", "params": {"tag": "red", "value": true}},
+            "key4": {"request": "effectstack.set", "params": {"what": "compare", "value": true}},
+            "key5": {"request": "bin.filter", "params": {"clear": true}},
+            "key6": {"request": "effect.set", "params": {"what": "enabled", "value": "$!ctx:effect.enabled"}},
+            "key7": {"request": "bin.select", "params": {"tag": "2"}},
+            "key8": {"request": "bin.filter", "params": {"tag": "yellow", "rating": 3}},
+            "knob1.turn": {"control": "edit.nudge"},
+            "knob2.turn": {"control": "audio.pan"},
+            "knob3.turn": {"control": "bin.rating"}}}]})",
+                             {}, &err);
+        QVERIFY2(c, qPrintable(err));
+        QVERIFY2(c->warnings.isEmpty(), qPrintable(c->warnings.join(QLatin1Char('\n'))));
+        c->settings.coalesceMs = 1;
+        c->settings.accelFactor = 1;
+        e.setConfig(*c);
+        e.setActiveWindow(WindowInfo{QStringLiteral("kd"), {}, 5, QStringLiteral("0x5")});
+        kd.setContext({{QStringLiteral("epoch"), QVariant::fromValue<qulonglong>(1)},
+                       {QStringLiteral("focus"), QStringLiteral("effectStack")},
+                       {QStringLiteral("effect"), QVariantMap{{QStringLiteral("target"), QStringLiteral("fx-1")}, {QStringLiteral("enabled"), true},
+                                                              {QStringLiteral("stack"), QVariantMap{{QStringLiteral("target"), QStringLiteral("stack-1")}}}}},
+                       {QStringLiteral("bin"), QVariantMap{{QStringLiteral("selection"), QVariantMap{{QStringLiteral("target"), QStringLiteral("sel-1")}}},
+                                                           {QStringLiteral("tags"), QVariantList{tagEntry("#ff0000", "Red"), tagEntry("#00ff00", "Green"), tagEntry("#ffff00", "Yellow")}}}},
+                       {QStringLiteral("timeline"), QVariantMap{{QStringLiteral("nudge"), QVariantMap{{QStringLiteral("target"), QStringLiteral("nudge-1")}}},
+                                                                {QStringLiteral("track"), QVariantMap{{QStringLiteral("pan"), QVariantMap{{QStringLiteral("target"), QStringLiteral("pan-1")}}}}}}}});
+        for (int k = 1; k <= 8; ++k) {
+            e.handle(key(k));
+            e.handle(PadEvent{QStringLiteral("key%1").arg(k), PadEvent::KeyUp, 0, 0});
+        }
+        QTRY_COMPARE(kd.calls.size(), 8);
+        QCOMPARE(kd.calls, (QStringList{QStringLiteral(R"(invoke effect.move {"delta":-1,"target":"fx-1"})"),
+                                        QStringLiteral(R"(invoke effect.add {"id":"avfilter.gblur"})"),
+                                        QStringLiteral("invoke bin.tag {\"tag\":\"#ff0000\",\"target\":\"sel-1\",\"value\":true}"),
+                                        QStringLiteral(R"(invoke effectstack.set {"target":"stack-1","value":true,"what":"compare"})"),
+                                        QStringLiteral(R"(invoke bin.filter {"clear":true})"),
+                                        QStringLiteral(R"(invoke effect.set {"target":"fx-1","value":false,"what":"enabled"})"),
+                                        // a tag position or name becomes Kdenlive's colour id
+                                        QStringLiteral("invoke bin.select {\"tag\":\"#00ff00\"}"),
+                                        QStringLiteral("invoke bin.filter {\"rating\":3,\"tag\":\"#ffff00\"}")}));
+        // Kdenlive accepts only an int32 rating (JSON numbers parse as int64).
+        QCOMPARE(kd.invokeArgs.last().value(QStringLiteral("rating")).typeId(), int(QMetaType::Int));
+        kd.calls.clear();
+        for (int knob = 2; knob <= 3; ++knob) {
+            e.handle(turn(knob, 1));
+            QTRY_VERIFY(!kd.controlOptions.isEmpty());
+            QCOMPARE(kd.controlOptions.last().value(QStringLiteral("target")).toString(), knob == 2 ? QStringLiteral("pan-1") : QStringLiteral("sel-1"));
+            QVERIFY(!kd.controlOptions.last().value(QStringLiteral("gesture")).toString().isEmpty());
+            e.endAllGestures(false);
+            kd.controlOptions.clear();
+            kd.controlDeltas.clear();
+        }
+        // Nudge shares trim's step bound: the daemon rolls over to a new gesture.
+        for (int i = 0; i < 8; ++i) {
+            e.handle(turn(1, 1));
+            QTest::qWait(5);
+        }
+        e.endAllGestures(false);
+        QTRY_VERIFY(!kd.controlOptions.isEmpty() && kd.controlOptions.last().value(QStringLiteral("phase")).toString() == QStringLiteral("end"));
+        QHash<QString, int> steps;
+        double total = 0;
+        for (int i = 0; i < kd.controlOptions.size(); ++i) {
+            QCOMPARE(kd.controlOptions.at(i).value(QStringLiteral("target")).toString(), QStringLiteral("nudge-1"));
+            total += kd.controlDeltas.at(i);
+            if (kd.controlDeltas.at(i) != 0) {
+                ++steps[kd.controlOptions.at(i).value(QStringLiteral("gesture")).toString()];
+            }
+        }
+        QCOMPARE(total, 8.0);
         QVERIFY2(steps.size() >= 3, qPrintable(QString::number(steps.size())));
         for (auto it = steps.cbegin(); it != steps.cend(); ++it) {
             QVERIFY2(it.value() <= 3, qPrintable(it.key() + QLatin1Char('=') + QString::number(it.value())));

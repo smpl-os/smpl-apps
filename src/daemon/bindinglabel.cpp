@@ -5,6 +5,7 @@
 
 #include <QFileInfo>
 #include <QHash>
+#include <QRegularExpression>
 #include <QSet>
 #include <linux/input-event-codes.h>
 
@@ -34,6 +35,23 @@ QString opt(const Binding &b, const char *key, const LabelEnv &env)
 QString capitalized(const QString &s)
 {
     return s.isEmpty() ? s : s.left(1).toUpper() + s.mid(1);
+}
+
+// A bin tag's label from the context's bin.tags (ids are native colours).
+QString tagName(const QString &tag, const LabelEnv &env)
+{
+    const QString id = binTagId(env.context, tag);
+    for (const QVariant &t : valueAtPath(env.context, QStringLiteral("bin.tags")).toList()) {
+        if (t.toMap().value(QStringLiteral("id")).toString() == id) {
+            return t.toMap().value(QStringLiteral("name")).toString();
+        }
+    }
+    return tag;
+}
+
+bool optTrue(const Binding &b, const char *key, const LabelEnv &env)
+{
+    return opt(b, key, env) == QLatin1String("true");
 }
 
 QString axisName(const QString &axis)
@@ -243,7 +261,10 @@ QString autoLabel(const Binding &b, const LabelEnv &env)
         } else if (name == kParamFocus) {
             label = QStringLiteral("Select parameter");
         } else if (name == kParamNudge) {
-            const QString param = valueAtPath(env.context, QStringLiteral("param.name")).toString();
+            // A per-parameter handle (effect.params.<name>.target) names its parameter.
+            static const QRegularExpression handle(QStringLiteral("^effect\\.params\\.([^.]+)\\.target$"));
+            const auto m = handle.match(b.targetFrom);
+            const QString param = m.hasMatch() ? m.captured(1) : valueAtPath(env.context, QStringLiteral("param.name")).toString();
             label = param.isEmpty() ? QStringLiteral("Parameter") : prettyIdentifier(param);
             if (opt(b, "keyframe", env) == QLatin1String("create")) {
                 label += QStringLiteral(" (+key)");
@@ -263,7 +284,25 @@ QString autoLabel(const Binding &b, const LabelEnv &env)
             label = QStringLiteral("Gain");
         } else if (name == kTrim) {
             const QString edge = opt(b, "edge", env);
-            label = edge == QLatin1String("start") ? QStringLiteral("Trim in") : edge == QLatin1String("end") ? QStringLiteral("Trim out") : QStringLiteral("Trim");
+            const QString mode = opt(b, "mode", env);
+            const QString what = mode == QLatin1String("slip") ? QStringLiteral("Slip") : mode == QLatin1String("ripple") ? QStringLiteral("Ripple") : QStringLiteral("Trim");
+            label = mode == QLatin1String("slip") ? what
+                  : edge == QLatin1String("start") ? what + QStringLiteral(" in")
+                  : edge == QLatin1String("end")   ? what + QStringLiteral(" out")
+                                                   : what;
+        } else if (name == kNudge) {
+            label = opt(b, "unit", env) == QLatin1String("second") ? QStringLiteral("Nudge (seconds)") : QStringLiteral("Nudge");
+        } else if (name == kTimelineTarget) {
+            const QString kind = opt(b, "kind", env);
+            label = kind == QLatin1String("video") ? QStringLiteral("Video target") : kind == QLatin1String("audio") ? QStringLiteral("Audio target") : QStringLiteral("Target track");
+        } else if (name == kPan) {
+            label = QStringLiteral("Pan");
+        } else if (name == kEffectFocus) {
+            label = QStringLiteral("Select effect");
+        } else if (name == kBinCursor) {
+            label = optTrue(b, "extend", env) ? QStringLiteral("Extend selection") : QStringLiteral("Bin cursor");
+        } else if (name == kBinRating) {
+            label = QStringLiteral("Rating");
         } else {
             label = prettyIdentifier(name);
         }
@@ -280,6 +319,52 @@ QString autoLabel(const Binding &b, const LabelEnv &env)
         if (b.name == kCmdTrackSet) {
             const QString what = opt(b, "what", env);
             return what.isEmpty() ? QStringLiteral("Track") : capitalized(what) + QStringLiteral(" track");
+        }
+        if (b.name == kCmdEffectAdd) {
+            const QString id = opt(b, "id", env), preset = opt(b, "preset", env);
+            if (!preset.isEmpty()) {
+                return QStringLiteral("Add ") + preset;
+            }
+            return id.isEmpty() ? QStringLiteral("Add effect") : QStringLiteral("Add ") + prettyIdentifier(id.section(QLatin1Char('.'), -1)).toLower();
+        }
+        if (b.name == kCmdEffectSet) {
+            const QString v = opt(b, "value", env);
+            return v == QLatin1String("true") ? QStringLiteral("Enable effect") : v == QLatin1String("false") ? QStringLiteral("Disable effect") : QStringLiteral("Effect on/off");
+        }
+        if (b.name == kCmdEffectMove) {
+            const double d = b.options.value(QStringLiteral("delta")).toDouble();
+            return d < 0 ? QStringLiteral("Move effect up") : d > 0 ? QStringLiteral("Move effect down") : QStringLiteral("Move effect");
+        }
+        if (b.name == kCmdEffectRemove) {
+            return QStringLiteral("Remove effect");
+        }
+        if (b.name == kCmdStackSet) {
+            const QString v = opt(b, "value", env);
+            if (opt(b, "what", env) == QLatin1String("compare")) {
+                return v == QLatin1String("false") ? QStringLiteral("Compare off") : QStringLiteral("Compare");
+            }
+            return v == QLatin1String("true") ? QStringLiteral("Effects on") : v == QLatin1String("false") ? QStringLiteral("Bypass effects") : QStringLiteral("Effects on/off");
+        }
+        if (b.name == kCmdBinTag) {
+            const QString tag = tagName(opt(b, "tag", env), env);
+            return (opt(b, "value", env) == QLatin1String("false") ? QStringLiteral("Untag ") : QStringLiteral("Tag ")) + tag;
+        }
+        if (b.name == kCmdBinSelect) {
+            return QStringLiteral("Select ") + tagName(opt(b, "tag", env), env);
+        }
+        if (b.name == kCmdBinFilter) {
+            if (optTrue(b, "clear", env)) {
+                return QStringLiteral("Clear filter");
+            }
+            QStringList what;
+            if (b.options.contains(QStringLiteral("tag"))) {
+                what << tagName(opt(b, "tag", env), env);
+            }
+            if (b.options.contains(QStringLiteral("rating"))) {
+                const int r = b.options.value(QStringLiteral("rating")).toInt();
+                what << (r == 1 ? QStringLiteral("1 star") : QStringLiteral("%1 stars").arg(r));
+            }
+            return QStringLiteral("Filter ") + what.join(QStringLiteral(", "));
         }
         return prettyIdentifier(b.name);
     case Binding::Cycle:
@@ -521,6 +606,34 @@ const QHash<QString, QString> &controlIcons()
         {kTrim, QStringLiteral("arrows-move-horizontal")},
         {kParamNudge, QStringLiteral("adjustments-horizontal")},
         {kParamFocus, QStringLiteral("list-details")},
+        {kNudge, QStringLiteral("arrows-left-right")},
+        {kTimelineTarget, QStringLiteral("target")},
+        {kPan, QStringLiteral("scale")},  // a balance
+        {kEffectFocus, QStringLiteral("list-details")},
+        {kBinCursor, QStringLiteral("list-check")},
+        {kBinRating, QStringLiteral("star")},
+    };
+    return m;
+}
+
+// MR1b-B variants chosen by an option ("trim:slip", "effect.set:false", ...).
+const QHash<QString, QString> &variantIcons()
+{
+    static const QHash<QString, QString> m{
+        {QStringLiteral("trim:slip"), QStringLiteral("switch-horizontal")},
+        {QStringLiteral("trim:ripple"), QStringLiteral("ripple")},
+        {QStringLiteral("bin.cursor:extend"), QStringLiteral("select-all")},
+        {QStringLiteral("effect.add"), QStringLiteral("wand")},
+        {QStringLiteral("toggle:on"), QStringLiteral("toggle-right")},
+        {QStringLiteral("toggle:off"), QStringLiteral("toggle-left")},
+        {QStringLiteral("effect.move:up"), QStringLiteral("arrow-up")},
+        {QStringLiteral("effect.move:down"), QStringLiteral("arrow-down")},
+        {QStringLiteral("effect.remove"), QStringLiteral("trash")},
+        {QStringLiteral("effectstack.set:compare"), QStringLiteral("layout-columns")},
+        {QStringLiteral("bin.tag"), QStringLiteral("tag")},
+        {QStringLiteral("bin.select"), QStringLiteral("select-all")},
+        {QStringLiteral("bin.filter"), QStringLiteral("filter")},
+        {QStringLiteral("bin.filter:clear"), QStringLiteral("filter-off")},
     };
     return m;
 }
@@ -605,6 +718,12 @@ QString autoIcon(const Binding &b, const LabelEnv &env)
         if (name.startsWith(QLatin1String("colorwheel."))) {
             return kColorIcon;
         }
+        if (name == kTrim && (opt(b, "mode", env) == QLatin1String("slip") || opt(b, "mode", env) == QLatin1String("ripple"))) {
+            return variantIcons().value(QStringLiteral("trim:") + opt(b, "mode", env));
+        }
+        if (name == kBinCursor && optTrue(b, "extend", env)) {
+            return variantIcons().value(QStringLiteral("bin.cursor:extend"));
+        }
         return controlIcons().value(name);
     }
     case Binding::Request:
@@ -617,7 +736,19 @@ QString autoIcon(const Binding &b, const LabelEnv &env)
         if (b.name == kCmdTrackSet) {
             return trackIcons().value(opt(b, "what", env));
         }
-        return {};
+        if (b.name == kCmdEffectSet || b.name == kCmdStackSet) {
+            if (opt(b, "what", env) == QLatin1String("compare")) {
+                return variantIcons().value(QStringLiteral("effectstack.set:compare"));
+            }
+            return variantIcons().value(opt(b, "value", env) == QLatin1String("false") ? QStringLiteral("toggle:off") : QStringLiteral("toggle:on"));
+        }
+        if (b.name == kCmdEffectMove) {
+            return variantIcons().value(b.options.value(QStringLiteral("delta")).toDouble() < 0 ? QStringLiteral("effect.move:up") : QStringLiteral("effect.move:down"));
+        }
+        if (b.name == kCmdBinFilter && optTrue(b, "clear", env)) {
+            return variantIcons().value(QStringLiteral("bin.filter:clear"));
+        }
+        return variantIcons().value(b.name);
     case Binding::Cycle:
     case Binding::Mode:
         return kCycleIcon;
@@ -652,7 +783,7 @@ QStringList autoIconNames()
     for (const QString &v : shortcutIcons()) {
         all.insert(v);
     }
-    for (const auto *table : {&mouseIcons(), &commandIcons(), &actionIcons(), &controlIcons(), &trackIcons()}) {
+    for (const auto *table : {&mouseIcons(), &commandIcons(), &actionIcons(), &controlIcons(), &trackIcons(), &variantIcons()}) {
         for (const QString &v : *table) {
             all.insert(v);
         }

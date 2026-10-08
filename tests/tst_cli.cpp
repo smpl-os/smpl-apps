@@ -204,9 +204,28 @@ private Q_SLOTS:
         QVERIFY(!ids.contains(QStringLiteral("send_sequence")) && !ids.contains(QStringLiteral("add_sequence_marker")) && !ids.contains(QStringLiteral("disable_timeline_effects")));
         QCOMPARE(j.value(QStringLiteral("families")).toArray().size(), 4);
         QVERIFY(j.value(QStringLiteral("excluded")).toArray().contains(QStringLiteral("send_sequence")));
-        QCOMPARE(j.value(QStringLiteral("contract")).toObject().value(QStringLiteral("implementation")).toString(), QStringLiteral("Kdenlive K23 MR1b-A"));
-        QCOMPARE(j.value(QStringLiteral("controls")).toArray().size(), 10);
-        QCOMPARE(j.value(QStringLiteral("commands")).toArray().size(), 3);
+        QCOMPARE(j.value(QStringLiteral("contract")).toObject().value(QStringLiteral("implementation")).toString(), QStringLiteral("Kdenlive K23 MR1b-B"));
+        QCOMPARE(j.value(QStringLiteral("controls")).toArray().size(), 16);  // MR1-MR3 10 + MR1b-B 6
+        QCOMPARE(j.value(QStringLiteral("commands")).toArray().size(), 11);  // MR2-MR3 3 + MR1b-B 8
+        // Options exactly as Kdenlive's optionsFor (session/epoch implied).
+        QHash<QString, QStringList> options;
+        for (const char *list : {"controls", "commands"}) {
+            for (const auto &v : j.value(QLatin1String(list)).toArray()) {
+                const QJsonObject o = v.toObject();
+                QStringList l;
+                for (const auto &x : o.value(QStringLiteral("options")).toArray()) {
+                    l << x.toString();
+                }
+                options.insert(o.value(QStringLiteral("name")).toString(), l);
+            }
+        }
+        QCOMPARE(options.value(QStringLiteral("edit.nudge")), (QStringList{QStringLiteral("target"), QStringLiteral("gesture"), QStringLiteral("phase"), QStringLiteral("unit")}));
+        QCOMPARE(options.value(QStringLiteral("timeline.target")), QStringList{QStringLiteral("kind")});
+        QCOMPARE(options.value(QStringLiteral("effect.focus")), QStringList{});
+        QCOMPARE(options.value(QStringLiteral("bin.cursor")), QStringList{QStringLiteral("extend")});
+        QCOMPARE(options.value(QStringLiteral("effect.move")), (QStringList{QStringLiteral("target"), QStringLiteral("delta")}));
+        QCOMPARE(options.value(QStringLiteral("bin.filter")), (QStringList{QStringLiteral("tag"), QStringLiteral("rating"), QStringLiteral("clear")}));
+        QCOMPARE(options.value(QStringLiteral("edit.trim")), (QStringList{QStringLiteral("target"), QStringLiteral("gesture"), QStringLiteral("phase"), QStringLiteral("edge"), QStringLiteral("mode")}));
         QCOMPARE(j.value(QStringLiteral("contract")).toObject().value(QStringLiteral("interface")).toString(), QStringLiteral("org.kde.kdenlive.ControlSurface1"));
         r = run({QStringLiteral("list-actions")}, m_home.path());
         QCOMPARE(r.code, 0);

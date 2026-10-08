@@ -210,5 +210,9 @@ ConfigIssue describeConfigIssue(const QString &text);
 // Dotted-path condition matching used for Kdenlive context layers.
 bool conditionMatches(const QVariantMap &when, const QVariantMap &context);
 QVariant valueAtPath(const QVariantMap &map, const QString &dottedPath);
+// A bin tag for bin.tag/select/filter: Kdenlive wants the native colour id from
+// the context's bin.tags; a 1-based position ("1" = the first tag, as tag_1) or
+// a tag name (any case) is turned into it. Anything else is returned unchanged.
+QString binTagId(const QVariantMap &context, const QString &tag);
 
 } // namespace cs

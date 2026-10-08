@@ -27,16 +27,18 @@ struct Action {
 
 struct Control {
     QString name;
-    QString stage;    // MR1 | MR2 | MR3
+    QString stage;    // MR1 | MR2 | MR3 | MR1b-B
     QString unit;     // what one detent means
     bool editing = false;  // needs target + gesture (undoable)
     QString description;
+    QStringList options;  // accepted options besides session/epoch (Kdenlive's optionsFor)
 };
 
 struct Command {
     QString name;
     QString stage;
     QString description;
+    QStringList options;
 };
 
 const QList<Action> &actions();
@@ -51,6 +53,10 @@ bool isEditingAction(const QString &id);  // fixed editing ids and the camera, t
 bool isOffered(const QString &id);        // a fixed id or a family member
 QStringList excludedActionIds();          // named and refused by MR1b-A (dialogs, no undo, recording)
 QJsonArray families();
+// Problems Kdenlive would refuse for a control (command = false) or command
+// binding's options: unknown option names and impossible fixed values
+// ("$mode" and "$ctx:" values are not checked). Empty when fine or unknown.
+QStringList optionProblems(const QString &name, bool command, const QVariantMap &options);
 QJsonObject toJson();  // {contract, actions[], controls[], commands[]}
 
 } // namespace cs::catalog

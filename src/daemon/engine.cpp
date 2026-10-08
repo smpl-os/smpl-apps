@@ -38,6 +38,22 @@ QString defaultTargetPath(const QString &name)
     if (name == contract::kCmdTrackSet) {
         return QStringLiteral("timeline.track.target");
     }
+    // MR1b-B. effect.add needs none: Kdenlive uses the shown stack.
+    if (name == contract::kNudge) {
+        return QStringLiteral("timeline.nudge.target");
+    }
+    if (name == contract::kPan) {
+        return QStringLiteral("timeline.track.pan.target");
+    }
+    if (name == contract::kBinRating || name == contract::kCmdBinTag) {
+        return QStringLiteral("bin.selection.target");
+    }
+    if (name == contract::kCmdEffectSet || name == contract::kCmdEffectMove || name == contract::kCmdEffectRemove) {
+        return QStringLiteral("effect.target");
+    }
+    if (name == contract::kCmdStackSet) {
+        return QStringLiteral("effect.stack.target");
+    }
     return {};
 }
 // The descriptor (a map with this "target") anywhere in the context.
@@ -936,6 +952,18 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
                 sayOnce(QStringLiteral("ctx|") + b.name + missing, QStringLiteral("%1: %2 is not in Kdenlive's context; nothing sent").arg(b.name, missing));
                 return;
             }
+            if ((b.name == contract::kCmdBinTag || b.name == contract::kCmdBinSelect || b.name == contract::kCmdBinFilter) && args.contains(QStringLiteral("tag"))) {
+                args.insert(QStringLiteral("tag"), binTagId(m_kd->context(), args.value(QStringLiteral("tag")).toString()));
+            }
+            if (b.name == contract::kCmdBinFilter && args.contains(QStringLiteral("rating"))) {
+                // Kdenlive takes only an int32 rating; JSON numbers arrive as int64/double.
+                const QVariant r = args.value(QStringLiteral("rating"));
+                bool ok = false;
+                const double stars = r.toDouble(&ok);
+                if (ok && r.typeId() != QMetaType::Bool && stars == std::trunc(stars) && std::abs(stars) <= 1000) {
+                    args.insert(QStringLiteral("rating"), int(stars));
+                }
+            }
             const QString path = b.targetFrom.isEmpty() ? defaultTargetPath(b.name) : b.targetFrom;
             if (!path.isEmpty() && !args.contains(contract::kOptTarget)) {
                 const QString target = resolveTarget(b, b.name, args);
@@ -1004,9 +1032,10 @@ void Engine::executeControl(const Binding &b, const QString &slot, const QString
             endGesture(bindingId, false);
             it = m_gestures.end();
         }
-        if (it != m_gestures.end() && b.name == contract::kTrim && it->batches >= m_kd->limit(QStringLiteral("trimGestureSteps"), 128) - 1) {
-            // The host retains every resize step of a gesture: end this one (its
-            // end barrier may carry one last step) before starting a new one.
+        if (it != m_gestures.end() && (b.name == contract::kTrim || b.name == contract::kNudge)
+            && it->batches >= m_kd->limit(QStringLiteral("trimGestureSteps"), 128) - 1) {
+            // The host retains every trim/nudge step of a gesture: end this one
+            // (its end barrier may carry one last step) before starting a new one.
             endGesture(bindingId, false);
             it = m_gestures.end();
         }
@@ -1097,7 +1126,10 @@ void Engine::onFlush(const QString &key, double delta, int merged, const QVarian
         return;
     }
     const QString control = payload.value(QStringLiteral("name")).toString();
-    if (control == contract::kTrackFocus || control == contract::kParamFocus) {
+    // Navigation whose change starts a new epoch in Kdenlive: its queued steps
+    // wait for that epoch instead of going out stale.
+    if (control == contract::kTrackFocus || control == contract::kParamFocus || control == contract::kEffectFocus || control == contract::kBinCursor
+        || control == contract::kTimelineTarget) {
         m_navInFlight.insert(key, m_kd->epoch());
     }
     if (!isEnd && options.contains(contract::kOptGesture)) {

@@ -68,6 +68,11 @@ pause, loop zone, switch monitor, zoom fit, and zoom in/out. On an older build,
 the keys for marks, edits and undo/redo do nothing, and `list-capabilities`
 lists them under "not offered".
 
+K23 MR1b-B adds knob controls for slip and ripple trims, clip nudge, the
+target track, track pan, the effect stack and the bin (cursor, rating), and
+commands for effects (add, enable, move, remove, compare) and bin tags and
+filters. `docs/config-reference.md` lists them all with their options.
+
 Some actions only work in the right place. If one does nothing, the log
 says why:
 

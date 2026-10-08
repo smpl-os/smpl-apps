@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "kdenlivecatalog.h"
+
+#include <cmath>
 #include "kdenlivecontract.h"
 
 #include <QJsonArray>
@@ -255,17 +257,31 @@ const QList<Action> &actions()
 const QList<Control> &controls()
 {
     using namespace cs::contract;
+    const QString t = QStringLiteral("target"), g = QStringLiteral("gesture"), ph = QStringLiteral("phase");
     static const QList<Control> list{
-        {kJog, QStringLiteral("MR1"), QStringLiteral("frame"), false, QStringLiteral("Move the playhead frame by frame")},
-        {kShuttle, QStringLiteral("MR1"), QStringLiteral("speed step (-7..7, 0 pauses)"), false, QStringLiteral("Shuttle playback speed")},
-        {kZoom, QStringLiteral("MR1"), QStringLiteral("zoom step (+ zooms in)"), false, QStringLiteral("Timeline zoom")},
-        {kParamFocus, QStringLiteral("MR2"), QStringLiteral("parameter"), false, QStringLiteral("Focus the next or previous effect parameter")},
-        {kParamNudge, QStringLiteral("MR2"), QStringLiteral("parameter step"), true, QStringLiteral("Change the focused effect parameter")},
-        {kColorWheel, QStringLiteral("MR2"), QStringLiteral("wheel step"), true, QStringLiteral("Lift/Gamma/Gain wheel value or R/G/B")},
-        {kTrackFocus, QStringLiteral("MR3"), QStringLiteral("track"), false, QStringLiteral("Move the track focus up or down")},
-        {kScroll, QStringLiteral("MR3"), QStringLiteral("tenth of the visible width"), false, QStringLiteral("Scroll the timeline")},
-        {kAudioGain, QStringLiteral("MR3"), QStringLiteral("0.1 dB"), true, QStringLiteral("Track or clip gain")},
-        {kTrim, QStringLiteral("MR3"), QStringLiteral("frame"), true, QStringLiteral("Trim (resize) the selected clip edge, no ripple")},
+        {kJog, QStringLiteral("MR1"), QStringLiteral("frame"), false, QStringLiteral("Move the playhead frame by frame"), {QStringLiteral("monitor"), QStringLiteral("scrub")}},
+        {kShuttle, QStringLiteral("MR1"), QStringLiteral("speed step (-7..7, 0 pauses)"), false, QStringLiteral("Shuttle playback speed"), {QStringLiteral("monitor")}},
+        {kZoom, QStringLiteral("MR1"), QStringLiteral("zoom step (+ zooms in)"), false, QStringLiteral("Timeline zoom"), {QStringLiteral("anchor")}},
+        {kParamFocus, QStringLiteral("MR2"), QStringLiteral("parameter"), false, QStringLiteral("Focus the next or previous effect parameter"), {}},
+        {kParamNudge, QStringLiteral("MR2"), QStringLiteral("parameter step"), true, QStringLiteral("Change the focused effect parameter (or any effect.params.<name>.target)"),
+         {t, g, ph, QStringLiteral("step"), QStringLiteral("keyframe")}},
+        {kColorWheel, QStringLiteral("MR2"), QStringLiteral("wheel step"), true, QStringLiteral("Lift/Gamma/Gain wheel value or R/G/B"),
+         {t, g, ph, QStringLiteral("step"), QStringLiteral("keyframe"), QStringLiteral("wheel"), QStringLiteral("axis")}},
+        {kTrackFocus, QStringLiteral("MR3"), QStringLiteral("track"), false, QStringLiteral("Move the track focus up or down"), {}},
+        {kScroll, QStringLiteral("MR3"), QStringLiteral("tenth of the visible width"), false, QStringLiteral("Scroll the timeline"), {}},
+        {kAudioGain, QStringLiteral("MR3"), QStringLiteral("0.1 dB"), true, QStringLiteral("Track or clip gain"), {t, g, ph}},
+        {kTrim, QStringLiteral("MR3"), QStringLiteral("frame"), true,
+         QStringLiteral("Trim the selected clip: mode resize (MR3); slip and ripple from MR1b-B, as advertised in timeline.trim.modes"),
+         {t, g, ph, QStringLiteral("edge"), QStringLiteral("mode")}},
+        {kTimelineTarget, QStringLiteral("MR1b-B"), QStringLiteral("track"), false,
+         QStringLiteral("Move the video target track or the lowest assigned audio stream's target (kind video|audio)"), {QStringLiteral("kind")}},
+        {kPan, QStringLiteral("MR1b-B"), QStringLiteral("pan unit (-50..50)"), true, QStringLiteral("Pan of the active mixer's audio track"), {t, g, ph}},
+        {kNudge, QStringLiteral("MR1b-B"), QStringLiteral("frame (unit second: one second)"), true,
+         QStringLiteral("Move the selected clips on their tracks; refuses collisions"), {t, g, ph, QStringLiteral("unit")}},
+        {kEffectFocus, QStringLiteral("MR1b-B"), QStringLiteral("effect"), false, QStringLiteral("Focus the next or previous effect of the shown stack"), {}},
+        {kBinCursor, QStringLiteral("MR1b-B"), QStringLiteral("row"), false, QStringLiteral("Move the bin cursor through the visible rows (extend: grow the selection)"),
+         {QStringLiteral("extend")}},
+        {kBinRating, QStringLiteral("MR1b-B"), QStringLiteral("star (0..5)"), true, QStringLiteral("Rating of the selected bin clips"), {t, g, ph}},
     };
     return list;
 }
@@ -273,12 +289,132 @@ const QList<Control> &controls()
 const QList<Command> &commands()
 {
     using namespace cs::contract;
+    const QString t = QStringLiteral("target"), w = QStringLiteral("what"), v = QStringLiteral("value");
     static const QList<Command> list{
-        {kCmdParamReset, QStringLiteral("MR2"), QStringLiteral("Reset the focused parameter")},
-        {kCmdWheelReset, QStringLiteral("MR2"), QStringLiteral("Reset a colour wheel")},
-        {kCmdTrackSet, QStringLiteral("MR3"), QStringLiteral("Set a track's mute, hide, lock, solo or target")},
+        {kCmdParamReset, QStringLiteral("MR2"), QStringLiteral("Reset the focused parameter"), {t, QStringLiteral("keyframe")}},
+        {kCmdWheelReset, QStringLiteral("MR2"), QStringLiteral("Reset a colour wheel"), {t, QStringLiteral("wheel"), QStringLiteral("keyframe")}},
+        {kCmdTrackSet, QStringLiteral("MR3"), QStringLiteral("Set a track's mute, hide, lock, solo or target"), {t, w, v, QStringLiteral("soloMode")}},
+        {kCmdEffectAdd, QStringLiteral("MR1b-B"), QStringLiteral("Add an effect (id) or a registered or saved preset (preset) to the shown stack"),
+         {t, QStringLiteral("id"), QStringLiteral("preset")}},
+        {kCmdEffectSet, QStringLiteral("MR1b-B"), QStringLiteral("Enable or disable an effect (what: enabled)"), {t, w, v}},
+        {kCmdEffectMove, QStringLiteral("MR1b-B"), QStringLiteral("Move an effect up or down the stack (delta rows, |delta| <= 64)"), {t, QStringLiteral("delta")}},
+        {kCmdEffectRemove, QStringLiteral("MR1b-B"), QStringLiteral("Remove an effect (not built-ins)"), {t}},
+        {kCmdStackSet, QStringLiteral("MR1b-B"), QStringLiteral("Enable or bypass the whole stack, or the compare split view (what: enabled|compare)"), {t, w, v}},
+        {kCmdBinTag, QStringLiteral("MR1b-B"), QStringLiteral("Set or clear a tag colour (an id from bin.tags) on the selected bin clips"), {t, QStringLiteral("tag"), v}},
+        {kCmdBinSelect, QStringLiteral("MR1b-B"), QStringLiteral("Select the visible bin clips with a tag"), {QStringLiteral("tag")}},
+        {kCmdBinFilter, QStringLiteral("MR1b-B"), QStringLiteral("Filter the bin by tag and/or rating, or clear the filters (keeps the search text)"),
+         {QStringLiteral("tag"), QStringLiteral("rating"), QStringLiteral("clear")}},
     };
     return list;
+}
+
+QStringList optionProblems(const QString &name, bool command, const QVariantMap &options)
+{
+    using namespace cs::contract;
+    const QStringList *accepted = nullptr;
+    if (command) {
+        for (const Command &c : commands()) {
+            if (c.name == name) {
+                accepted = &c.options;
+            }
+        }
+    } else {
+        for (const Control &c : controls()) {
+            if (c.name == name) {
+                accepted = &c.options;
+            }
+        }
+    }
+    if (!accepted) {
+        return {};
+    }
+    QStringList problems;
+    for (auto it = options.cbegin(); it != options.cend(); ++it) {
+        if (!accepted->contains(it.key()) && it.key() != kOptSession && it.key() != QLatin1String("epoch")) {
+            problems << QStringLiteral("%1 does not accept option \"%2\" (accepted: %3)")
+                            .arg(name, it.key(), accepted->isEmpty() ? QStringLiteral("none") : accepted->join(QStringLiteral(", ")));
+        }
+    }
+    auto fixed = [&](const char *key, QString *out) {
+        const QVariant v = options.value(QLatin1String(key));
+        if (!v.isValid()) {
+            return false;
+        }
+        *out = v.toString();
+        return !(v.typeId() == QMetaType::QString && out->startsWith(QLatin1Char('$')));  // a mode or context value
+    };
+    auto oneOf = [&](const char *key, const QStringList &values) {
+        QString v;
+        if (fixed(key, &v) && !values.contains(v)) {
+            problems << QStringLiteral("%1 option \"%2\" must be %3").arg(name, QLatin1String(key), values.join(QLatin1Char('|')));
+        }
+    };
+    auto boolean = [&](const char *key) {
+        const QVariant v = options.value(QLatin1String(key));
+        if (v.isValid() && v.typeId() != QMetaType::Bool && !(v.typeId() == QMetaType::QString && v.toString().startsWith(QLatin1Char('$')))) {
+            problems << QStringLiteral("%1 option \"%2\" must be true or false").arg(name, QLatin1String(key));
+        }
+    };
+    if (name == kTrim) {
+        // Kdenlive has no default mode; resize and ripple need an edge.
+        const QString mode = options.value(QStringLiteral("mode")).toString();
+        oneOf("mode", kTrimModes);
+        oneOf("edge", {QStringLiteral("start"), QStringLiteral("end")});
+        if (!options.contains(QStringLiteral("mode"))) {
+            problems << QStringLiteral("%1 needs \"mode\": %2").arg(name, kTrimModes.join(QLatin1Char('|')));
+        } else if (mode != QLatin1String("slip") && !options.contains(QStringLiteral("edge"))) {
+            problems << QStringLiteral("%1 mode %2 needs \"edge\": start|end").arg(name, mode);
+        }
+    } else if (name == kNudge) {
+        oneOf("unit", {QStringLiteral("frame"), QStringLiteral("second")});
+    } else if (name == kTimelineTarget) {
+        oneOf("kind", {QStringLiteral("video"), QStringLiteral("audio")});
+        if (!options.contains(QStringLiteral("kind"))) {
+            problems << QStringLiteral("%1 needs \"kind\": video|audio").arg(name);
+        }
+    } else if (name == kBinCursor) {
+        boolean("extend");
+    } else if (name == kCmdEffectAdd) {
+        if (options.contains(QStringLiteral("id")) == options.contains(QStringLiteral("preset"))) {
+            problems << QStringLiteral("%1 needs exactly one of \"id\" or \"preset\"").arg(name);
+        }
+    } else if (name == kCmdEffectSet) {
+        oneOf("what", {QStringLiteral("enabled")});
+        boolean("value");
+    } else if (name == kCmdStackSet) {
+        oneOf("what", {QStringLiteral("enabled"), QStringLiteral("compare")});
+        boolean("value");
+    } else if (name == kCmdEffectMove) {
+        const QVariant d = options.value(QStringLiteral("delta"));
+        const double v = d.toDouble();
+        if (!d.isValid() || d.typeId() == QMetaType::Bool || (d.typeId() != QMetaType::QString && (v != std::trunc(v) || std::abs(v) > 64 || v == 0))) {
+            problems << QStringLiteral("%1 needs \"delta\": a whole number of rows, -64..64").arg(name);
+        }
+    } else if (name == kCmdBinTag) {
+        boolean("value");
+        if (!options.contains(QStringLiteral("tag"))) {
+            problems << QStringLiteral("%1 needs \"tag\": a colour id from bin.tags").arg(name);
+        }
+    } else if (name == kCmdBinSelect) {
+        if (!options.contains(QStringLiteral("tag"))) {
+            problems << QStringLiteral("%1 needs \"tag\": a colour id from bin.tags").arg(name);
+        }
+    } else if (name == kCmdBinFilter) {
+        boolean("clear");
+        const bool clear = options.value(QStringLiteral("clear")).toBool();
+        const bool filter = options.contains(QStringLiteral("tag")) || options.contains(QStringLiteral("rating"));
+        if (clear && filter) {
+            problems << QStringLiteral("%1: \"clear\" cannot be combined with tag or rating").arg(name);
+        } else if (!clear && !filter) {
+            problems << QStringLiteral("%1 needs \"tag\", \"rating\" (0..5) or \"clear\": true").arg(name);
+        }
+        const QVariant r = options.value(QStringLiteral("rating"));
+        const double rv = r.toDouble();
+        if (r.isValid() && r.typeId() != QMetaType::QString && (r.typeId() == QMetaType::Bool || rv != std::trunc(rv) || rv < 0 || rv > 5)) {
+            problems << QStringLiteral("%1 option \"rating\" is a whole number of stars, 0..5").arg(name);
+        }
+    }
+    return problems;
 }
 
 QJsonObject toJson()
@@ -299,15 +435,19 @@ QJsonObject toJson()
                              {QStringLiteral("stage"), x.stage},
                              {QStringLiteral("unit"), x.unit},
                              {QStringLiteral("editing"), x.editing},
-                             {QStringLiteral("description"), x.description}});
+                             {QStringLiteral("description"), x.description},
+                             {QStringLiteral("options"), QJsonArray::fromStringList(x.options)}});
     }
     for (const Command &x : commands()) {
-        m.append(QJsonObject{{QStringLiteral("name"), x.name}, {QStringLiteral("stage"), x.stage}, {QStringLiteral("description"), x.description}});
+        m.append(QJsonObject{{QStringLiteral("name"), x.name},
+                             {QStringLiteral("stage"), x.stage},
+                             {QStringLiteral("description"), x.description},
+                             {QStringLiteral("options"), QJsonArray::fromStringList(x.options)}});
     }
     return QJsonObject{{QStringLiteral("contract"), QJsonObject{{QStringLiteral("interface"), cs::contract::kInterface},
                                                                 {QStringLiteral("version"), int(cs::contract::kVersion)},
                                                                 {QStringLiteral("revision"), int(cs::contract::kRevision)},
-                                                                {QStringLiteral("implementation"), QStringLiteral("Kdenlive K23 MR1b-A")},
+                                                                {QStringLiteral("implementation"), QStringLiteral("Kdenlive K23 MR1b-B")},
                                                                 {QStringLiteral("actionsSource"), QStringLiteral("K23 MR1a (71) + MR1b-A (29): 100 fixed ids, plus the families")}}},
                        {QStringLiteral("actions"), a},
                        {QStringLiteral("families"), families()},

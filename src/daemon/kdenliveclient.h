@@ -104,6 +104,7 @@ public:
     QStringList unackedKeys() const { return m_unacked; }
 
     QStringList calls;
+    QList<QVariantMap> invokeArgs;
     QList<double> controlDeltas;
     QList<QVariantMap> controlOptions;
     QStringList controlKeys;

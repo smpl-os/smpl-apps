@@ -717,6 +717,53 @@ private Q_SLOTS:
     }
 
     // DESIGN.md §7 extras: mode set, reverse cycle, notify, negative scale, "do", autoModes.
+    void kdenliveOptionChecks()
+    {
+        // check-config warns about what Kdenlive would refuse (MR1b-B options).
+        auto warnings = [](const char *bindings) {
+            QString err;
+            const auto c = parseConfig(QByteArray(R"({"profiles": [{"name": "k", "kdenlive": true, "modes": {"m": ["slip"]}, "bindings": )") + bindings + "}]}", {}, &err);
+            return c ? c->warnings.join(QLatin1Char('\n')) : QStringLiteral("PARSE ERROR ") + err;
+        };
+        QCOMPARE(warnings(R"({"knob1.turn": {"control": "edit.trim", "options": {"mode": "slip"}},
+                              "knob2.turn": {"control": "edit.trim", "options": {"mode": "ripple", "edge": "end"}},
+                              "knob3.turn": {"control": "edit.nudge", "options": {"unit": "second"}},
+                              "key2": {"control": "timeline.target", "options": {"kind": "audio"}},
+                              "key3": {"control": "bin.cursor", "options": {"extend": true}},
+                              "key4": {"request": "effect.add", "params": {"id": "avfilter.gblur"}},
+                              "key5": {"request": "effect.move", "params": {"delta": -1}},
+                              "key6": {"request": "effectstack.set", "params": {"what": "compare", "value": true}},
+                              "key7": {"request": "bin.filter", "params": {"tag": "#ff0000", "rating": 3}},
+                              "key8": {"request": "bin.filter", "params": {"clear": true}},
+                              "key9": {"request": "bin.tag", "params": {"tag": "#ff0000", "value": "$!ctx:bin.selection.x"}},
+                              "key10": {"control": "edit.trim", "options": {"mode": "$m", "edge": "start"}},
+                              "key11": {"control": "playhead.jog", "options": {"monitor": "clip", "scrub": true, "session": "x"}}})"),
+                 QString());
+        const std::pair<const char *, const char *> bad[] = {
+            {R"({"knob1.turn": {"control": "edit.trim", "options": {"edge": "end"}}})", "edit.trim needs \"mode\": resize|slip|ripple"},
+            {R"({"knob1.turn": {"control": "edit.trim", "options": {"mode": "ripple"}}})", "edit.trim mode ripple needs \"edge\""},
+            {R"({"knob1.turn": {"control": "edit.trim", "options": {"mode": "roll", "edge": "end"}}})", "option \"mode\" must be resize|slip|ripple"},
+            {R"({"knob1.turn": {"control": "edit.nudge", "options": {"unit": "beat"}}})", "option \"unit\" must be frame|second"},
+            {R"({"knob1.turn": {"control": "timeline.target"}})", "timeline.target needs \"kind\""},
+            {R"({"knob1.turn": {"control": "effect.focus", "options": {"wrap": true}}})", "effect.focus does not accept option \"wrap\" (accepted: none)"},
+            {R"({"knob1.turn": {"control": "param.nudge", "options": {"axis": "value"}}})", "param.nudge does not accept option \"axis\""},
+            {R"({"knob1.turn": {"control": "bin.cursor", "options": {"extend": "yes"}}})", "option \"extend\" must be true or false"},
+            {R"({"key1": {"request": "effect.add"}})", "exactly one of \"id\" or \"preset\""},
+            {R"({"key1": {"request": "effect.add", "params": {"id": "a", "preset": "b"}}})", "exactly one of"},
+            {R"({"key1": {"request": "effect.set", "params": {"what": "compare", "value": true}}})", "option \"what\" must be enabled"},
+            {R"({"key1": {"request": "effect.move", "params": {"delta": 1.5}}})", "\"delta\": a whole number"},
+            {R"({"key1": {"request": "effect.move"}})", "\"delta\": a whole number"},
+            {R"({"key1": {"request": "bin.tag", "params": {"value": true}}})", "bin.tag needs \"tag\""},
+            {R"({"key1": {"request": "bin.filter", "params": {"clear": true, "rating": 2}}})", "cannot be combined"},
+            {R"({"key1": {"request": "bin.filter", "params": {}}})", "bin.filter needs"},
+            {R"({"key1": {"request": "bin.filter", "params": {"rating": 6}}})", "0..5"},
+        };
+        for (const auto &[bindings, want] : bad) {
+            const QString w = warnings(bindings);
+            QVERIFY2(w.contains(QLatin1String(want)), qPrintable(QStringLiteral("%1 -> %2").arg(QLatin1String(bindings), w)));
+        }
+    }
+
     void modesSequencesAndRules()
     {
         QString err;

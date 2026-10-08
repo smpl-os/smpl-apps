@@ -77,6 +77,7 @@ void FakeKdenliveClient::ackAll(const QVariantMap &outcome)
 
 void FakeKdenliveClient::invoke(const QString &command, const QVariantMap &args)
 {
+    invokeArgs << args;
     record(QStringLiteral("invoke %1%2").arg(command, compact(args)));
 }
 

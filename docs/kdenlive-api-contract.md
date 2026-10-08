@@ -686,6 +686,63 @@ reacquire context and fresh gesture state after the action, not reuse the old
 epoch. No-op/non-history actions need not advance epoch unless they otherwise
 change the context fence.
 
+### 4.11 K23 MR1b: more actions, typed controls and commands
+
+Same wire (version 1, revision 2). Discover every name from Capabilities and
+ListActions; never infer support from a version.
+
+**MR1b-A** (`Kdenlive K23 MR1b-A`) adds 29 fixed action ids to MR1a's 71 and
+four families: `activate_video_1..9` (Multicam cameras), `load_layout1..9`,
+`tag_<n>` and `effect_<id>`. It excludes `send_sequence`,
+`add_sequence_marker`, `disable_timeline_effects` and `audio_record`. The
+offline list is `control-surfaced list-actions --json`.
+
+**MR1b-B** (`Kdenlive K23 MR1b-B`; contract `k23-mr1b-b-contract.md`, SHA-256
+`28a05651773393f4bccbc60ebf29b4bc7fed6057f20d6f46269d9687f07f33a3`) adds:
+
+* controls `edit.nudge` (`unit` frame|second; target
+  `timeline.nudge.target`), `timeline.target` (`kind` video|audio, no undo),
+  `audio.pan` (`timeline.track.pan.target`, -50..50), `effect.focus` (no
+  options), `bin.cursor` (`extend`), `bin.rating` (`bin.selection.target`,
+  stars 0..5, native value twice the stars). `edit.nudge`, `audio.pan` and
+  `bin.rating` are editing controls: target, gesture and phase;
+* `edit.trim` modes `slip` (edge optional; a positive delta moves the source
+  in/out earlier, the native Slip direction) and `ripple` (edge required;
+  shifts only `timeline.trim.rippleScope.clips` on its `tracks`, never
+  guides). `timeline.trim.modes` lists what the current target supports;
+  `Capabilities.trimModes` is `["resize","slip","ripple"]`;
+* commands `effect.add` (exactly one of `id` or `preset`; optional `target`,
+  default the shown `effect.stack.target`), `effect.set` (`what: enabled`),
+  `effect.move` (`delta`, |delta| <= 64), `effect.remove`, `effectstack.set`
+  (`what: enabled|compare`; compare needs `effect.stack.compareAvailable`),
+  `bin.tag` (`tag` from `bin.tags`, `value`), `bin.select` (`tag`),
+  `bin.filter` (`tag`/`rating` 0..5, or `clear: true`, which keeps the search
+  text). Results are `{state: "applied", changed}`;
+* context `effect` {ownerId, sequence, stack {target, count, enabled,
+  compare, compareAvailable}, and for a focused effect target, id, index,
+  enabled; `params` keyed by native parameter name, each with its own
+  target for the unchanged `param.nudge`}; `bin` {selection {count,
+  available, target?, tags?, rating?, mixedRating?, reason?}, tags [{id,
+  name}], filter {tags, ratings, types, usage}} while the bin is shown. The
+  contract's "mixed ratings are null" cannot cross D-Bus (an invalid QVariant
+  aborts libdbus; reported to MAIN), so clients treat a missing `rating` with
+  `mixedRating: true` as mixed;
+  `timeline.targets` {video, audio {stream: track}} (route changes bump the
+  epoch), `timeline.nudge` and `timeline.trim.rippleScope`; focus `bin`;
+* limits `nudgeSelectionClips` 64, `rippleFollowingClips` 64,
+  `binSelectionItems` 256, `binFilterItems` 2000, `effectStackItems` 64,
+  `effectParameterHandles` 32.
+
+Refusals keep the common codes: an unadvertised trim mode is
+`unsupported_mode`; a missing edge or fractional delta `invalid_arguments`; a
+slip outside the source or a colliding nudge `edit_failed`; built-in effect
+move/remove and nested groups `unsupported_parameter`; compare without a
+visible clip stack `unsupported_mode`; a stale bin selection or no shown
+effect `target_not_found`; pan on a locked or non-mixer track `track_locked`,
+without a native mixer pan `not_ready`.
+Roll and slide stay unavailable. The daemon's engine fills each editing
+target from these context paths unless a binding sets `"targetFrom"`.
+
 ---
 
 ## 5. How the daemon uses it (client policy)
@@ -917,7 +974,7 @@ exactly:
 * directed `ControlAck`, `ContextChanged` and `ActionFinished` (targeted signals
   on the bus, connection-scoped on peers); a 34 ms monotonic context limiter
   that is idle without subscribers;
-* staged capabilities (`--stage 1|2|3`) and `--off`, which owns the service
+* staged capabilities (`--stage 1|2|3|4`; 4 is K23 MR1b-B) and `--off`, which owns the service
   but not the object; `--tick-ms N` simulates playback; console commands
   (`wheel`, `hover`, `param`, `keyframes`, `play`, `track`, `clip`, `grouped`,
   `history`, `tool`, `dialog`, `position`, `state`, …);
@@ -960,6 +1017,29 @@ MR1a (§4.9) in the mock:
   `unknown_action`.
 
 §4.10 settled the mock's earlier assumptions (§7 E–H).
+
+MR1b-B (§4.11) in the mock (`--stage 4`), modelled on Kdenlive's
+`timelinecontrol.cpp`, `effectcontrol.cpp` and `bincontrol.cpp`:
+
+* Capabilities with the MR1b-B controls, commands, limits, `trimModes`
+  `["resize","slip","ripple"]` and the `bin` context key; Kdenlive's option
+  sets per control and command, with its refusal codes and messages;
+* `timeline.targets` with native integer track ids (route changes start a new
+  epoch), `timeline.nudge`, `timeline.track.pan`, and `timeline.trim` with
+  per-target `modes` and an always-published `rippleScope` (the clips at or
+  after the first member's end on the members' tracks; ripple is offered
+  without following clips too, and withdrawn above 64);
+* exact nudge (only position < 0 and collisions refuse; `unit: second` uses
+  the context fps), slip (a positive delta moves the source in/out earlier;
+  out of source → `edit_failed`) and ripple (an anchored start for the start
+  edge; never clamped; refusals change nothing);
+* `effect` (integer `ownerId`, `stack`, the focused effect and `params`
+  handles that `param.nudge` accepts without moving focus) and `bin`
+  (`selection` with intersected tags and a double star rating, absent when
+  mixed (`mixedRating: true`; D-Bus has no null),
+  `tags` with Kdenlive's default colour ids, `filter`);
+* console commands `nudge`, `route`, `bin`, `bin-select`, `effect-stack`,
+  `effect` and `effect-param`.
 
 Tests:
 

@@ -144,7 +144,7 @@ For line-level error locations, use `control-surfaced check-config -c FILE
 | Method | Returns |
 |---|---|
 | `ListPlugins() → s` | `{ok, plugins: [{id, name, tier, status, detail, apps[], ...}]}` |
-| `GetCatalog(s pluginId) → s` | for `kdenlive`: `{ok, contract, actions: [{id, text, shortcut, checkable, group, editing, playback, family}], families: [{family, pattern, members, editing, rule}], excluded: [...], controls: [{name, stage, unit, editing, description}], commands: [...]}`, offline. Actions: K23 MR1a's 71 and MR1b-A's 29 fixed ids, plus the family members every Kdenlive has (`activate_video_1..9` = cameras in the Multicam tool, `load_layout1..9`, `tag_1..5` = the default project tags; `family` names them). `effect_<id>` exists for every installed effect and is described in `families` only. `excluded` lists ids Kdenlive refuses on purpose (`send_sequence`, `add_sequence_marker`, `disable_timeline_effects`, `audio_record`). 10 controls, 3 commands. A running Kdenlive's `ListActions` stays authoritative (`list-capabilities`). Other ids: `unknown-plugin`. |
+| `GetCatalog(s pluginId) → s` | for `kdenlive`: `{ok, contract, actions: [{id, text, shortcut, checkable, group, editing, playback, family}], families: [{family, pattern, members, editing, rule}], excluded: [...], controls: [{name, stage, unit, editing, description, options}], commands: [{name, stage, description, options}]}`, offline. Actions: K23 MR1a's 71 and MR1b-A's 29 fixed ids, plus the family members every Kdenlive has (`activate_video_1..9` = cameras in the Multicam tool, `load_layout1..9`, `tag_1..5` = the default project tags; `family` names them). `effect_<id>` exists for every installed effect and is described in `families` only. `excluded` lists ids Kdenlive refuses on purpose (`send_sequence`, `add_sequence_marker`, `disable_timeline_effects`, `audio_record`). 10 controls, 3 commands. A running Kdenlive's `ListActions` stays authoritative (`list-capabilities`). Other ids: `unknown-plugin`. |
 | `GetFeatures() → s` | binding kinds with examples, `keyNames`, `modifierNames`, `mouseNames`, slot grammar and limits (16 keys, 3 knobs), layouts, device options |
 
 Plugins today:
@@ -274,7 +274,15 @@ held layer live. `layers` and `title` name the layer.
   curated Kdenlive action, control and command (e.g. `mark_in`
   `brackets-contain-start`, `razor_tool` `blade`, `playhead.jog`
   `arrows-horizontal`, `colorwheel.*` `color-filter`, `*.reset` `rotate`,
-  track mute/solo/lock/target/hide `volume-3`/`headphones`/`lock`/`target`/`eye-off`);
+  track mute/solo/lock/target/hide `volume-3`/`headphones`/`lock`/`target`/`eye-off`;
+  MR1b-B: trim resize `arrows-move-horizontal`, slip `switch-horizontal`,
+  ripple `ripple`, `edit.nudge` `arrows-left-right`, `timeline.target`
+  `target`, `audio.pan` `scale`, `effect.focus` `list-details`, `bin.cursor`
+  `list-check` (extend `select-all`), `bin.rating` `star`, `effect.add`
+  `wand`, `effect.set`/`effectstack.set` enabled `toggle-right`/`toggle-left`,
+  compare `layout-columns`, `effect.move` `arrow-up`/`arrow-down`,
+  `effect.remove` `trash`, `bin.tag` `tag`, `bin.select` `select-all`,
+  `bin.filter` `filter` (clear `filter-off`));
   cycles `stack-2`.
 
 * `label` is the binding's own `"label"` (`custom: true`), or a readable name

@@ -35,7 +35,7 @@ press) into a per-application control surface on Hyprland.
   save, held-key layers (hold a key and the other keys and knobs do
   something else), press + turn ("shift") bindings for pads that can do it
   (this one cannot: docs/hardware-ch552.md), and per-binding acceleration.
-* Dry-run and simulate modes, a mock Kdenlive (`--stage 1|2|3`, `--off`,
+* Dry-run and simulate modes, a mock Kdenlive (`--stage 1|2|3|4`, `--off`,
   `--tick-ms`), and
   11 test suites, including one on a private D-Bus session bus.
 

@@ -33,7 +33,8 @@ bool isEditingAction(const QString &id)
     return catalog::isEditingAction(id);  // the fixed ids plus the camera, tag and effect families (MR1b-A)
 }
 // effect_<id> exists for every installed effect; the mock offers these common
-// ones (all present in a standard Kdenlive install).
+// ones (all present in a standard Kdenlive install; avfilter.acompressor is
+// on Kdenlive's excluded_effects.txt, so the compressor is avfilter.compand).
 const QStringList kMockEffects{
     QStringLiteral("lift_gamma_gain"), QStringLiteral("volume"), QStringLiteral("fadein"), QStringLiteral("fadeout"), QStringLiteral("fade_from_black"),
     QStringLiteral("fade_to_black"), QStringLiteral("qtcrop"), QStringLiteral("qtblend"), QStringLiteral("avfilter.gblur"), QStringLiteral("frei0r.vignette"),
@@ -42,7 +43,7 @@ const QStringList kMockEffects{
     QStringLiteral("chroma"), QStringLiteral("avfilter.hsvkey"), QStringLiteral("lumakey"), QStringLiteral("avfilter.despill"), QStringLiteral("mask_start-shape"),
     QStringLiteral("mask_start-rotoscoping"), QStringLiteral("mask_apply"), QStringLiteral("freeze"), QStringLiteral("dynamictext"), QStringLiteral("timer"),
     QStringLiteral("obscure"), QStringLiteral("frei0r.pixeliz0r"), QStringLiteral("audiopan"), QStringLiteral("avfilter.equalizer"),
-    QStringLiteral("avfilter.acompressor"), QStringLiteral("dynamic_loudness"), QStringLiteral("avfilter.highpass"), QStringLiteral("dropshadow"),
+    QStringLiteral("avfilter.compand"), QStringLiteral("dynamic_loudness"), QStringLiteral("avfilter.highpass"), QStringLiteral("dropshadow"),
     QStringLiteral("frei0r.glow"), QStringLiteral("avfilter.hflip"), QStringLiteral("frei0r.select0r")};
 constexpr int kMockLayoutSlots = 5;  // Kdenlive's default layouts: Logging, Editing, Audio, Effects, Color
 constexpr int kMockProjectTags = 5;  // a new project's tags: Red, Green, Blue, Yellow, Cyan
@@ -73,6 +74,12 @@ const QList<Descriptor> &descriptors()
         {kScroll, QStringLiteral("tenths of visible width"), 3, 10000, false, false, false, {}},
         {kAudioGain, QStringLiteral("0.1 dB"), 3, 10000, false, true, false, {}},
         {kTrim, QStringLiteral("frames"), 3, 10000, true, true, false, {QStringLiteral("edge"), QStringLiteral("mode")}},
+        {kTimelineTarget, QStringLiteral("tracks"), 4, 10000, true, false, false, {QStringLiteral("kind")}},
+        {kPan, QStringLiteral("balance units"), 4, 10000, true, true, false, {}},
+        {kNudge, QStringLiteral("frames"), 4, 10000, true, true, false, {QStringLiteral("unit")}},
+        {kEffectFocus, QStringLiteral("effects"), 4, 10000, true, false, false, {}},
+        {kBinCursor, QStringLiteral("bin rows"), 4, 10000, true, false, false, {QStringLiteral("extend")}},
+        {kBinRating, QStringLiteral("stars"), 4, 10000, true, true, false, {}},
     };
     return d;
 }
@@ -104,6 +111,42 @@ QStringList optionsFor(const QString &id)
     }
     if (id == kCmdTrackSet) {
         return {t, QStringLiteral("what"), QStringLiteral("value"), QStringLiteral("soloMode")};
+    }
+    if (id == kNudge) {
+        return {t, g, ph, QStringLiteral("unit")};
+    }
+    if (id == kTimelineTarget) {
+        return {QStringLiteral("kind")};
+    }
+    if (id == kPan || id == kBinRating) {
+        return {t, g, ph};
+    }
+    if (id == kEffectFocus) {
+        return {};
+    }
+    if (id == kBinCursor) {
+        return {QStringLiteral("extend")};
+    }
+    if (id == kCmdEffectAdd) {
+        return {t, QStringLiteral("id"), QStringLiteral("preset")};
+    }
+    if (id == kCmdEffectSet || id == kCmdStackSet) {
+        return {t, QStringLiteral("what"), QStringLiteral("value")};
+    }
+    if (id == kCmdEffectMove) {
+        return {t, QStringLiteral("delta")};
+    }
+    if (id == kCmdEffectRemove) {
+        return {t};
+    }
+    if (id == kCmdBinTag) {
+        return {t, QStringLiteral("tag"), QStringLiteral("value")};
+    }
+    if (id == kCmdBinSelect) {
+        return {QStringLiteral("tag")};
+    }
+    if (id == kCmdBinFilter) {
+        return {QStringLiteral("tag"), QStringLiteral("rating"), QStringLiteral("clear")};
     }
     if (id == kZoom) {
         return {QStringLiteral("anchor")};
@@ -164,24 +207,37 @@ int stringSize(const QVariant &v)
 
 const QStringList kTargetKeys{QStringLiteral("focus"), QStringLiteral("project"), QStringLiteral("sequence"), QStringLiteral("activeMonitor"),
                               QStringLiteral("tool"), QStringLiteral("effect"), QStringLiteral("param"), QStringLiteral("colorWheel"),
-                              QStringLiteral("timeline")};
+                              QStringLiteral("timeline"), QStringLiteral("bin")};
 constexpr int kMaxGestureId = 128;
 const QStringList kQualifiedTrimModes{QStringLiteral("resize")};
+const QStringList kStage4TrimModes{QStringLiteral("resize"), QStringLiteral("slip"), QStringLiteral("ripple")};
 QVariantMap track(int id, const QString &type, const QString &label, bool targeted)
 {
     return {{QStringLiteral("id"), id},           {QStringLiteral("type"), type},   {QStringLiteral("label"), label},
             {QStringLiteral("mute"), false},      {QStringLiteral("hide"), false},  {QStringLiteral("lock"), false},
-            {QStringLiteral("solo"), false},      {QStringLiteral("target"), targeted}, {QStringLiteral("gainDb"), 0.0}};
+            {QStringLiteral("solo"), false},      {QStringLiteral("target"), targeted}, {QStringLiteral("gainDb"), 0.0},
+            {QStringLiteral("pan"), 0}};
 }
 QVariantMap clip(const QString &trk, int start, int end, int minStart, int maxEnd, const QString &linked, bool audio, double volumeDb, bool staticVolume)
 {
+    const int srcIn = start - minStart;
     return {{QStringLiteral("track"), trk},        {QStringLiteral("start"), start},   {QStringLiteral("end"), end},
             {QStringLiteral("minStart"), minStart}, {QStringLiteral("maxEnd"), maxEnd}, {QStringLiteral("linked"), linked},
-            {QStringLiteral("audio"), audio},       {QStringLiteral("volumeDb"), volumeDb}, {QStringLiteral("staticVolume"), staticVolume}};
+            {QStringLiteral("audio"), audio},       {QStringLiteral("volumeDb"), volumeDb}, {QStringLiteral("staticVolume"), staticVolume},
+            {QStringLiteral("srcIn"), srcIn},        {QStringLiteral("srcOut"), srcIn + (end - start)}, {QStringLiteral("sourceLength"), maxEnd - minStart},
+            {QStringLiteral("mixed"), false}};
 }
-double tenth(double v)
+QVariantMap binClip(const QString &id, const QString &name, const QStringList &tags, int rating)
 {
-    return std::round(v * 10.0) / 10.0;
+    return {{QStringLiteral("id"), id}, {QStringLiteral("name"), name}, {QStringLiteral("tags"), tags}, {QStringLiteral("rating"), rating * 2}, {QStringLiteral("complete"), true}};
+}
+QVariantMap effect(const QString &id, bool enabled = true, bool builtin = false, bool group = false)
+{
+    return {{QStringLiteral("id"), id}, {QStringLiteral("enabled"), enabled}, {QStringLiteral("builtin"), builtin}, {QStringLiteral("group"), group}};
+}
+int nativeId(const QString &key)
+{
+    return key.section(QLatin1Char('-'), 1).toInt();
 }
 } // namespace
 
@@ -224,7 +280,8 @@ MockKdenlive::MockKdenlive(QObject *parent)
     connect(m_gestureTimer, &QTimer::timeout, this, &MockKdenlive::checkGestureIdle);
     m_wheels = {{QStringLiteral("lift"), rgb(0.0)}, {QStringLiteral("gamma"), rgb(1.0)}, {QStringLiteral("gain"), rgb(1.0)}};
     m_paramOrder = {QStringLiteral("level"), QStringLiteral("opacity")};
-    m_params = {{QStringLiteral("level"), 50.0}, {QStringLiteral("opacity"), 100.0}};
+    m_params = {{QStringLiteral("level"), 50.0},       {QStringLiteral("opacity"), 100.0}, {QStringLiteral("rOffset"), 0.0},
+                {QStringLiteral("gOffset"), 0.0},     {QStringLiteral("bOffset"), 0.0},   {QStringLiteral("saturation"), 1.0}};
     m_trackOrder = {QStringLiteral("trk-4"), QStringLiteral("trk-3"), QStringLiteral("trk-7"), QStringLiteral("trk-8")};
     m_tracks = {{QStringLiteral("trk-4"), track(4, QStringLiteral("video"), QStringLiteral("V2"), false)},
                 {QStringLiteral("trk-3"), track(3, QStringLiteral("video"), QStringLiteral("V1"), true)},
@@ -232,7 +289,15 @@ MockKdenlive::MockKdenlive(QObject *parent)
                 {QStringLiteral("trk-8"), track(8, QStringLiteral("audio"), QStringLiteral("A2"), false)}};
     m_clips = {{QStringLiteral("clip-21"), clip(QStringLiteral("trk-3"), 100, 200, 50, 400, QStringLiteral("clip-22"), false, 0, false)},
                {QStringLiteral("clip-22"), clip(QStringLiteral("trk-7"), 100, 200, 50, 400, QStringLiteral("clip-21"), true, 0, true)},
-               {QStringLiteral("clip-31"), clip(QStringLiteral("trk-8"), 300, 360, 300, 360, QString(), true, -3, false)}};
+               {QStringLiteral("clip-31"), clip(QStringLiteral("trk-8"), 300, 360, 300, 360, QString(), true, -3, false)},
+               {QStringLiteral("clip-41"), clip(QStringLiteral("trk-3"), 250, 310, 200, 520, QStringLiteral("clip-42"), false, 0, false)},
+               {QStringLiteral("clip-42"), clip(QStringLiteral("trk-7"), 250, 310, 200, 520, QStringLiteral("clip-41"), true, 0, true)}};
+    m_videoTarget = QStringLiteral("trk-3");
+    m_audioTargets = {{QStringLiteral("0"), QStringLiteral("trk-7")}};
+    m_binClips = {binClip(QStringLiteral("bin-1"), QStringLiteral("A001"), {QStringLiteral("#ff0000")}, 3),
+                  binClip(QStringLiteral("bin-2"), QStringLiteral("B002"), {QStringLiteral("#0000ff"), QStringLiteral("#ff0000")}, 3),
+                  binClip(QStringLiteral("bin-3"), QStringLiteral("C003"), {}, 0)};
+    m_effectStack = {effect(QStringLiteral("lift_gamma_gain"))};
     m_context = {{kCtxSerial, u64(0)},
                  {kCtxEpoch, u64(m_epoch)},
                  {QStringLiteral("ready"), true},
@@ -253,8 +318,8 @@ MockKdenlive::MockKdenlive(QObject *parent)
 
 void MockKdenlive::setStage(int stage)
 {
-    m_stage = qBound(1, stage, 3);
-    m_context.insert(QStringLiteral("timeline"), timelineDescriptor());
+    m_stage = qBound(1, stage, 4);
+    refreshDescriptors();
 }
 
 QVariantMap MockKdenlive::timelineDescriptor() const
@@ -277,15 +342,28 @@ QVariantMap MockKdenlive::timelineDescriptor() const
     trackDesc.insert(QStringLiteral("locked"), t.value(QStringLiteral("lock")));
     trackDesc.insert(QStringLiteral("muted"), audio && t.value(QStringLiteral("mute")).toBool());
     trackDesc.insert(QStringLiteral("hidden"), !audio && t.value(QStringLiteral("hide")).toBool());
-    trackDesc.insert(QStringLiteral("targeted"), t.value(QStringLiteral("target")));
+    const bool routed = m_stage >= 4 ? (audio ? m_audioTargets.values().contains(trackId) : m_videoTarget == trackId) : t.value(QStringLiteral("target")).toBool();
+    trackDesc.insert(QStringLiteral("targeted"), routed);
     trackDesc.insert(QStringLiteral("solo"), audio && t.value(QStringLiteral("solo")).toBool());
     if (audio) {
         // Only for an available audio mixer; the same handle as the track.
         trackDesc.insert(QStringLiteral("gain"), QVariantMap{{kOptTarget, trackId}, {QStringLiteral("value"), t.value(QStringLiteral("gainDb"))},
                                                              {QStringLiteral("min"), -60.0}, {QStringLiteral("max"), 12.0}, {QStringLiteral("enabled"), true}});
+        if (m_stage >= 4) {
+            trackDesc.insert(QStringLiteral("pan"), QVariantMap{{kOptTarget, trackId}, {QStringLiteral("value"), t.value(QStringLiteral("pan"))},
+                                                                {QStringLiteral("min"), -50}, {QStringLiteral("max"), 50}, {QStringLiteral("enabled"), true}});
+        }
     }
     timeline.insert(QStringLiteral("track"), trackDesc);
-    auto nativeId = [](const QString &key) { return key.section(QLatin1Char('-'), 1).toInt(); };
+    if (m_stage >= 4) {
+        QVariantMap audioTargets;
+        for (auto it = m_audioTargets.cbegin(); it != m_audioTargets.cend(); ++it) {
+            const QString track = it.value().toString();
+            audioTargets.insert(it.key(), track.isEmpty() ? -1 : nativeId(track));
+        }
+        timeline.insert(QStringLiteral("targets"), QVariantMap{{QStringLiteral("video"), m_videoTarget.isEmpty() ? -1 : nativeId(m_videoTarget)},
+                                                               {QStringLiteral("audio"), audioTargets}});
+    }
     QVariantList selection;
     if (!m_selectedClip.isEmpty()) {
         selection << nativeId(m_selectedClip);
@@ -310,13 +388,39 @@ QVariantMap MockKdenlive::timelineDescriptor() const
                 gainClip = m;
             }
         }
-        timeline.insert(QStringLiteral("trim"), QVariantMap{{kOptTarget, QStringLiteral("trim-") + m_selectedClip}, {QStringLiteral("clip"), nativeId(m_selectedClip)},
-                                                            {QStringLiteral("clips"), clips}, {QStringLiteral("tracks"), tracks},
-                                                            {QStringLiteral("modes"), kQualifiedTrimModes}});
+        QVariantMap trim{{kOptTarget, QStringLiteral("trim-") + m_selectedClip},
+                         {QStringLiteral("clip"), nativeId(m_selectedClip)},
+                         {QStringLiteral("clips"), clips},
+                         {QStringLiteral("tracks"), tracks},
+                         {QStringLiteral("modes"), kQualifiedTrimModes}};
+        if (m_stage >= 4) {
+            const QStringList following = rippleScopeClips();
+            QVariantList rippleClips;
+            for (const auto &f : following) {
+                rippleClips << nativeId(f);
+            }
+            trim.insert(QStringLiteral("modes"), rippleAvailable() ? kStage4TrimModes : QStringList{QStringLiteral("resize"), QStringLiteral("slip")});
+            trim.insert(QStringLiteral("rippleScope"), QVariantMap{{QStringLiteral("clips"), rippleClips},
+                                                                   {QStringLiteral("tracks"), tracks},
+                                                                   {QStringLiteral("guides"), false}});
+        }
+        timeline.insert(QStringLiteral("trim"), trim);
         if (gainTargets == 1) {
             timeline.insert(QStringLiteral("clipGain"), QVariantMap{{kOptTarget, QStringLiteral("gain-") + gainClip}, {QStringLiteral("clip"), nativeId(gainClip)},
                                                                     {QStringLiteral("unit"), QStringLiteral("dB")},
                                                                     {QStringLiteral("policy"), QStringLiteral("single_keyframe_existing_effect")}});
+        }
+    }
+    if (m_stage >= 4) {
+        const QStringList nudge = nudgeClips();
+        if (!nudge.isEmpty() && nudge.size() <= 64) {
+            QVariantList clips;
+            for (const auto &id : nudge) {
+                clips << nativeId(id);
+            }
+            timeline.insert(QStringLiteral("nudge"), QVariantMap{{kOptTarget, QStringLiteral("nudge-") + nudge.join(QLatin1Char('-'))},
+                                                                 {QStringLiteral("clips"), clips},
+                                                                 {QStringLiteral("units"), QStringList{QStringLiteral("frame"), QStringLiteral("second")}}});
         }
     }
     return timeline;
@@ -399,6 +503,9 @@ QStringList MockKdenlive::commandsForStage() const
     if (m_stage >= 3) {
         l << kCmdTrackSet;
     }
+    if (m_stage >= 4) {
+        l << kCmdEffectAdd << kCmdEffectSet << kCmdEffectMove << kCmdEffectRemove << kCmdStackSet << kCmdBinTag << kCmdBinSelect << kCmdBinFilter;
+    }
     return l;
 }
 
@@ -413,11 +520,22 @@ QVariantMap MockKdenlive::capabilities() const
         contextKeys << QStringLiteral("effect") << QStringLiteral("param") << QStringLiteral("colorWheel") << QStringLiteral("colorWheels")
                     << QStringLiteral("hoveredColorWheel");
     }
+    if (m_stage >= 4) {
+        contextKeys << QStringLiteral("bin");
+    }
     QVariantMap limits{{QStringLiteral("subscriptions"), kMaxLeases}, {QStringLiteral("pendingKeys"), kMaxPendingKeys},
                        {QStringLiteral("queuedActions"), kMaxQueuedActions}, {QStringLiteral("contextHz"), 30},
                        {QStringLiteral("maximumDelta"), 10000}, {QStringLiteral("editingWriters"), 1}};
     if (m_stage >= 3) {
         limits.insert(QStringLiteral("trimGestureSteps"), m_trimGestureSteps);
+    }
+    if (m_stage >= 4) {
+        limits.insert(QStringLiteral("nudgeSelectionClips"), 64);
+        limits.insert(QStringLiteral("rippleFollowingClips"), 64);
+        limits.insert(QStringLiteral("binSelectionItems"), 256);
+        limits.insert(QStringLiteral("binFilterItems"), 2000);
+        limits.insert(QStringLiteral("effectStackItems"), 64);
+        limits.insert(QStringLiteral("effectParameterHandles"), 32);
     }
     return ok({{QStringLiteral("version"), uint(kVersion)},
                {QStringLiteral("revision"), uint(kRevision)},
@@ -426,7 +544,7 @@ QVariantMap MockKdenlive::capabilities() const
                {QStringLiteral("commands"), commandsForStage()},
                {QStringLiteral("contextKeys"), contextKeys},
                {QStringLiteral("limits"), limits},
-               {QStringLiteral("trimModes"), m_stage >= 3 ? kQualifiedTrimModes : QStringList{}}});
+               {QStringLiteral("trimModes"), m_stage >= 4 ? kStage4TrimModes : m_stage >= 3 ? kQualifiedTrimModes : QStringList{}}});
     // controlDescriptors is optional and absent in Kdenlive's qualified host.
 }
 
@@ -798,6 +916,15 @@ QString MockKdenlive::targetFor(const QString &control) const
     if (control == kCmdTrackSet) {
         return timeline.value(QStringLiteral("track")).toMap().value(kOptTarget).toString();
     }
+    if (control == kNudge) {
+        return timeline.value(QStringLiteral("nudge")).toMap().value(kOptTarget).toString();
+    }
+    if (control == kPan) {
+        return timeline.value(QStringLiteral("track")).toMap().value(QStringLiteral("pan")).toMap().value(kOptTarget).toString();
+    }
+    if (control == kBinRating || control == kCmdBinTag) {
+        return m_context.value(QStringLiteral("bin")).toMap().value(QStringLiteral("selection")).toMap().value(kOptTarget).toString();
+    }
     return {};
 }
 
@@ -808,9 +935,33 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
         return fail(err::InvalidArguments, QStringLiteral("delta must be finite"), QStringLiteral("delta"));
     }
     if (d->integral && delta != std::trunc(delta)) {
+        if (control == kTimelineTarget) {
+            return fail(err::InvalidArguments, QStringLiteral("Use integral steps and explicit video/audio kind."), QStringLiteral("delta"));
+        }
+        if (control == kPan) {
+            return fail(err::InvalidArguments, QStringLiteral("Pan requires integral steps."), QStringLiteral("delta"));
+        }
+        if (control == kNudge) {
+            return fail(err::InvalidArguments, QStringLiteral("Nudge requires integral frame/second steps and its selection target."), QStringLiteral("delta"));
+        }
+        if (control == kEffectFocus) {
+            return fail(err::InvalidArguments, QStringLiteral("Effect focus requires bounded integral steps."), QStringLiteral("delta"));
+        }
+        if (control == kBinCursor) {
+            return fail(err::InvalidArguments, QStringLiteral("Bin controls require bounded integral steps."), QStringLiteral("delta"));
+        }
+        if (control == kTrim) {
+            return fail(err::InvalidArguments, QStringLiteral("Use an explicit edge and integral frame delta."), QStringLiteral("delta"));
+        }
         return fail(err::InvalidArguments, QStringLiteral("delta must be integral"), QStringLiteral("delta"));
     }
     if (std::abs(delta) > d->maxDelta) {
+        if (control == kEffectFocus) {
+            return fail(err::InvalidArguments, QStringLiteral("Effect focus requires bounded integral steps."), QStringLiteral("delta"));
+        }
+        if (control == kBinCursor) {
+            return fail(err::InvalidArguments, QStringLiteral("Bin controls require bounded integral steps."), QStringLiteral("delta"));
+        }
         return fail(err::InvalidArguments, QStringLiteral("delta out of range"), QStringLiteral("delta"));
     }
     auto oneOf = [&](const QString &key, const QStringList &values, QVariantMap *err) {
@@ -827,11 +978,19 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
         || !oneOf(QStringLiteral("keyframe"), {QStringLiteral("existing"), QStringLiteral("create")}, &e)
         || !oneOf(QStringLiteral("wheel"), {QStringLiteral("lift"), QStringLiteral("gamma"), QStringLiteral("gain")}, &e)
         || !oneOf(QStringLiteral("edge"), {QStringLiteral("start"), QStringLiteral("end")}, &e)
+        || !oneOf(QStringLiteral("unit"), {QStringLiteral("frame"), QStringLiteral("second")}, &e)
+        || !oneOf(QStringLiteral("kind"), {QStringLiteral("video"), QStringLiteral("audio")}, &e)
         || !oneOf(kOptPhase, {QStringLiteral("update"), QStringLiteral("end"), QStringLiteral("cancel")}, &e)) {
         return e;
     }
     if (options.contains(QStringLiteral("scrub")) && options.value(QStringLiteral("scrub")).typeId() != QMetaType::Bool) {
         return fail(err::InvalidArguments, QStringLiteral("scrub must be boolean"), QStringLiteral("scrub"));
+    }
+    if (options.contains(QStringLiteral("extend")) && options.value(QStringLiteral("extend")).typeId() != QMetaType::Bool) {
+        return fail(err::InvalidArguments, QStringLiteral("extend must be boolean."), QStringLiteral("extend"));
+    }
+    if (control == kTimelineTarget && !QStringList{QStringLiteral("video"), QStringLiteral("audio")}.contains(options.value(QStringLiteral("kind")).toString())) {
+        return fail(err::InvalidArguments, QStringLiteral("Use integral steps and explicit video/audio kind."), QStringLiteral("kind"));
     }
     if (control == kColorWheel) {
         const QString axis = options.value(QStringLiteral("axis"), QStringLiteral("value")).toString();
@@ -865,9 +1024,30 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
                 return fail(err::UnsupportedParameter, QStringLiteral("the control does not match the bound wheel"), QStringLiteral("wheel"));
             }
             semantic->insert(QStringLiteral("wheel"), wheel.value(QStringLiteral("wheel")));
+        } else if (control == kParamNudge) {
+            const QVariantMap param = findParamTarget(target);
+            if (target.isEmpty() || param.isEmpty()) {
+                return fail(err::TargetNotFound, QStringLiteral("unknown or stale target"), kOptTarget);
+            }
+            semantic->insert(QStringLiteral("paramName"), param.value(QStringLiteral("name")));
         } else if (control == kAudioGain) {
             if (target.isEmpty() || gainTrack(target).isEmpty()) {
                 return fail(err::TargetNotFound, QStringLiteral("unknown or stale gain target"), kOptTarget);
+            }
+        } else if (control == kPan) {
+            if (target.isEmpty() || target != targetFor(control)) {
+                return fail(err::TargetNotFound, QStringLiteral("unknown or stale target"), kOptTarget);
+            }
+        } else if (control == kNudge) {
+            if (target.isEmpty() || target != targetFor(control)) {
+                return fail(err::InvalidArguments, QStringLiteral("Nudge requires integral frame/second steps and its selection target."), kOptTarget);
+            }
+        } else if (control == kBinRating) {
+            if (!m_binVisible) {
+                return fail(err::NotReady, QStringLiteral("No visible native bin view."));
+            }
+            if (target.isEmpty() || target != targetFor(control)) {
+                return fail(err::TargetNotFound, QStringLiteral("Use the current explicit bin selection target."), kOptTarget);
             }
         } else if (target.isEmpty() || target != targetFor(control)) {
             return fail(err::TargetNotFound, QStringLiteral("unknown or stale target"), kOptTarget);
@@ -875,11 +1055,12 @@ QVariantMap MockKdenlive::validateControl(const QString &control, double delta, 
         if (control == kTrim) {
             // mode is required; only the scope's advertised modes are qualified.
             const QStringList modes = m_context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap().value(QStringLiteral("modes")).toStringList();
-            if (!modes.contains(options.value(QStringLiteral("mode")).toString())) {
-                return fail(err::UnsupportedMode, QStringLiteral("only the advertised trim modes are qualified"), QStringLiteral("mode"));
+            const QString mode = options.value(QStringLiteral("mode")).toString();
+            if (!modes.contains(mode)) {
+                return fail(err::UnsupportedMode, QStringLiteral("Use an advertised trim mode."), QStringLiteral("mode"));
             }
-            if (!QStringList{QStringLiteral("start"), QStringLiteral("end")}.contains(options.value(QStringLiteral("edge")).toString())) {
-                return fail(err::InvalidArguments, QStringLiteral("an explicit edge (start/end) is required"), QStringLiteral("edge"));
+            if (mode != QLatin1String("slip") && !QStringList{QStringLiteral("start"), QStringLiteral("end")}.contains(options.value(QStringLiteral("edge")).toString())) {
+                return fail(err::InvalidArguments, QStringLiteral("Use an explicit edge and integral frame delta."), QStringLiteral("edge"));
             }
         }
         if (m_grouped && (control == kParamNudge || control == kColorWheel)) {
@@ -1014,13 +1195,31 @@ QVariant MockKdenlive::gestureValue(const Gesture &g) const
         return g.param.startsWith(QLatin1String("track:")) ? m_tracks.value(id).toMap().value(QStringLiteral("gainDb"))
                                                            : m_clips.value(id).toMap().value(QStringLiteral("volumeDb"));
     }
-    if (g.control == kTrim) {
+    if (g.control == kPan) {
+        const QString id = g.param.section(QLatin1Char(':'), 1);
+        return m_tracks.value(id).toMap().value(QStringLiteral("pan"));
+    }
+    if (g.control == kTrim || g.control == kNudge) {
         QVariantMap bounds;
-        for (const auto &id : g.param.split(QLatin1Char(','))) {
+        for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
+            const QString id = it.key();
             const QVariantMap c = m_clips.value(id).toMap();
-            bounds.insert(id, QVariantList{c.value(QStringLiteral("start")), c.value(QStringLiteral("end"))});
+            bounds.insert(id, QVariantList{c.value(QStringLiteral("start")), c.value(QStringLiteral("end")), c.value(QStringLiteral("srcIn")),
+                                           c.value(QStringLiteral("srcOut")), c.value(QStringLiteral("minStart")), c.value(QStringLiteral("maxEnd"))});
         }
         return bounds;
+    }
+    if (g.control == kBinRating) {
+        QVariantMap ratings;
+        for (const QString &id : m_binSelection) {
+            for (const auto &v : m_binClips) {
+                const QVariantMap c = v.toMap();
+                if (c.value(QStringLiteral("id")).toString() == id) {
+                    ratings.insert(id, c.value(QStringLiteral("rating")));
+                }
+            }
+        }
+        return ratings;
     }
     return {};
 }
@@ -1046,13 +1245,32 @@ void MockKdenlive::restoreGestureValue(const Gesture &g, const QVariant &v)
         QVariantMap item = store.value(id).toMap();
         item.insert(isTrack ? QStringLiteral("gainDb") : QStringLiteral("volumeDb"), v);
         store.insert(id, item);
-    } else if (g.control == kTrim) {
+    } else if (g.control == kPan) {
+        const QString id = g.param.section(QLatin1Char(':'), 1);
+        QVariantMap item = m_tracks.value(id).toMap();
+        item.insert(QStringLiteral("pan"), v);
+        m_tracks.insert(id, item);
+    } else if (g.control == kTrim || g.control == kNudge) {
         const QVariantMap bounds = v.toMap();
         for (auto it = bounds.cbegin(); it != bounds.cend(); ++it) {
             QVariantMap c = m_clips.value(it.key()).toMap();
             c.insert(QStringLiteral("start"), it.value().toList().value(0));
             c.insert(QStringLiteral("end"), it.value().toList().value(1));
+            c.insert(QStringLiteral("srcIn"), it.value().toList().value(2));
+            c.insert(QStringLiteral("srcOut"), it.value().toList().value(3));
+            c.insert(QStringLiteral("minStart"), it.value().toList().value(4));
+            c.insert(QStringLiteral("maxEnd"), it.value().toList().value(5));
             m_clips.insert(it.key(), c);
+        }
+    } else if (g.control == kBinRating) {
+        const QVariantMap ratings = v.toMap();
+        for (int i = 0; i < m_binClips.size(); ++i) {
+            QVariantMap c = m_binClips.at(i).toMap();
+            const QString id = c.value(QStringLiteral("id")).toString();
+            if (ratings.contains(id)) {
+                c.insert(QStringLiteral("rating"), ratings.value(id));
+                m_binClips[i] = c;
+            }
         }
     }
 }
@@ -1075,10 +1293,17 @@ QString MockKdenlive::gainTrack(const QString &target, QString *clipOut) const
     return {};
 }
 
+QString MockKdenlive::panTrack(const QString &target) const
+{
+    const QVariantMap timeline = m_context.value(QStringLiteral("timeline")).toMap();
+    const QVariantMap pan = timeline.value(QStringLiteral("track")).toMap().value(QStringLiteral("pan")).toMap();
+    return !target.isEmpty() && pan.value(kOptTarget).toString() == target ? target : QString();
+}
+
 QString MockKdenlive::gestureSubject(const Pending &p) const
 {
     if (p.control == kParamNudge) {
-        return m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString();
+        return p.semantic.value(QStringLiteral("paramName"), m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name"))).toString();
     }
     if (p.control == kColorWheel) {
         return p.semantic.value(QStringLiteral("wheel")).toString();
@@ -1088,12 +1313,21 @@ QString MockKdenlive::gestureSubject(const Pending &p) const
         const QString track = gainTrack(p.target, &clip);
         return clip.isEmpty() ? QStringLiteral("track:") + track : QStringLiteral("clip:") + clip;
     }
+    if (p.control == kPan) {
+        return QStringLiteral("track:") + panTrack(p.target);
+    }
     if (p.control == kTrim) {
         QStringList clips;
         for (const auto &id : m_context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap().value(QStringLiteral("clips")).toList()) {
             clips << QStringLiteral("clip-%1").arg(id.toInt());
         }
         return clips.join(QLatin1Char(','));
+    }
+    if (p.control == kNudge) {
+        return nudgeClips().join(QLatin1Char(','));
+    }
+    if (p.control == kBinRating) {
+        return m_binSelection.join(QLatin1Char(','));
     }
     return {};
 }
@@ -1104,8 +1338,8 @@ QVariantMap MockKdenlive::preflightEdit(const Pending &p, int *frame) const
     const bool playing = m_context.value(QStringLiteral("playing")).toBool();
     const bool create = p.semantic.value(QStringLiteral("keyframe")).toString() == QLatin1String("create");
     if (p.control == kParamNudge) {
-        const QVariantMap param = m_context.value(QStringLiteral("param")).toMap();
-        const QString name = param.value(QStringLiteral("name")).toString();
+        const QVariantMap param = findParamTarget(p.target);
+        const QString name = p.semantic.value(QStringLiteral("paramName"), param.value(QStringLiteral("name"))).toString();
         if (param.value(QStringLiteral("managed")).toBool()) {
             return refuse(err::ManagedParameter, QStringLiteral("managed automation channel"));
         }
@@ -1145,12 +1379,41 @@ QVariantMap MockKdenlive::preflightEdit(const Pending &p, int *frame) const
         if (!clip.isEmpty() && !m_clips.value(clip).toMap().value(QStringLiteral("staticVolume")).toBool()) {
             return refuse(err::UnsupportedParameter, QStringLiteral("clip gain requires an unmanaged single-key volume effect"));
         }
+    } else if (p.control == kPan) {
+        const QString track = panTrack(p.target);
+        const QVariantMap t = m_tracks.value(track).toMap();
+        if (track.isEmpty() || t.value(QStringLiteral("type")).toString() != QLatin1String("audio") || t.value(QStringLiteral("lock")).toBool()) {
+            return refuse(err::TrackLocked, QStringLiteral("An unlocked audio track in the active mixer is required."));
+        }
+        if (t.value(QStringLiteral("mute")).toBool()) {
+            return refuse(err::NotReady, QStringLiteral("The mixer is muted, monitoring or recording."));
+        }
     } else if (p.control == kTrim) {
         const QVariantList tracks = m_context.value(QStringLiteral("timeline")).toMap().value(QStringLiteral("trim")).toMap().value(QStringLiteral("tracks")).toList();
         for (const auto &t : tracks) {
             if (m_tracks.value(QStringLiteral("trk-%1").arg(t.toInt())).toMap().value(QStringLiteral("lock")).toBool()) {
                 return refuse(err::TrackLocked, QStringLiteral("a track of the edit scope is locked"));
             }
+        }
+    } else if (p.control == kNudge) {
+        const QStringList clips = nudgeClips();
+        if (clips.isEmpty() || clips.size() > 64) {
+            return refuse(err::ResourceLimit, QStringLiteral("Nudge requires1..64 explicit clip members."));
+        }
+        for (const auto &id : clips) {
+            if (!m_clips.contains(id)) {
+                return refuse(err::TargetNotFound, QStringLiteral("A declared clip was removed."));
+            }
+            if (m_clips.value(id).toMap().value(QStringLiteral("mixed")).toBool()) {
+                return refuse(err::UnsupportedMode, QStringLiteral("Nudging mixed clips is not qualified."));
+            }
+        }
+    } else if (p.control == kBinRating) {
+        if (!m_binVisible) {
+            return refuse(err::NotReady, QStringLiteral("No visible native bin view."));
+        }
+        if (!validBinSelection() || p.target != binSelectionTarget()) {
+            return refuse(err::TargetNotFound, QStringLiteral("Use the current explicit bin selection target."));
         }
     }
     return {};
@@ -1319,6 +1582,57 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
             refreshDescriptors();
             bumpSerial(true);  // a new track handle: new epoch, gestures end
         }
+    } else if (p.control == kTimelineTarget) {
+        const QString kind = p.semantic.value(QStringLiteral("kind")).toString();
+        QString stream;
+        QString current;
+        QStringList order;
+        for (const auto &id : m_trackOrder) {
+            const bool audio = m_tracks.value(id).toMap().value(QStringLiteral("type")).toString() == QLatin1String("audio");
+            if ((kind == QLatin1String("audio")) == audio) {
+                order << id;
+            }
+        }
+        if (kind == QLatin1String("video")) {
+            current = m_videoTarget;
+            if (current.isEmpty()) {
+                return error(err::TargetNotFound, QStringLiteral("Assign a target track first."));
+            }
+        } else {
+            QStringList streams = m_audioTargets.keys();
+            streams.sort();
+            if (streams.isEmpty()) {
+                return error(err::TargetNotFound, QStringLiteral("Assign a source audio stream first."));
+            }
+            stream = streams.first();
+            current = m_audioTargets.value(stream).toString();
+            if (current.isEmpty()) {
+                return error(err::TargetNotFound, QStringLiteral("Assign a target track first."));
+            }
+        }
+        const int idx = order.indexOf(current);
+        if (idx < 0) {
+            return error(err::TargetNotFound, QStringLiteral("Assign a target track first."));
+        }
+        const QString dest = order.value(qBound(0, idx + steps, int(order.size()) - 1));
+        if (kind == QLatin1String("audio") && dest != current) {
+            for (auto it = m_audioTargets.cbegin(); it != m_audioTargets.cend(); ++it) {
+                if (it.key() != stream && it.value().toString() == dest) {
+                    return error(err::EditFailed, QStringLiteral("The destination already carries another source stream."));
+                }
+            }
+        }
+        *changed = dest != current;
+        if (*changed) {
+            if (kind == QLatin1String("video")) {
+                m_videoTarget = dest;
+            } else {
+                m_audioTargets.insert(stream, dest);
+            }
+            refreshDescriptors();
+            bumpSerial(true);
+        }
+        st = {{QStringLiteral("track"), nativeId(dest)}, {QStringLiteral("kind"), kind}};
     } else if (p.control == kParamFocus) {
         const QString cur = m_context.value(QStringLiteral("param")).toMap().value(QStringLiteral("name")).toString();
         const int idx = qBound(0, int(m_paramOrder.indexOf(cur)) + steps, int(m_paramOrder.size()) - 1);
@@ -1328,10 +1642,56 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
             setContextValue(QStringLiteral("param"), paramDescriptor(m_paramOrder.at(idx)));
         }
         st = {{QStringLiteral("param"), m_paramOrder.value(idx)}};
+    } else if (p.control == kEffectFocus) {
+        if (!m_effectStackShown || m_effectStack.isEmpty() || m_focusedEffect < 0) {
+            return error(err::TargetNotFound, QStringLiteral("No effect is shown."));
+        }
+        const int idx = qBound(0, m_focusedEffect + steps, int(m_effectStack.size()) - 1);
+        const QVariantMap item = m_effectStack.value(idx).toMap();
+        if (item.value(QStringLiteral("group")).toBool()) {
+            return error(err::UnsupportedParameter, QStringLiteral("Nested effect groups are not focus targets."));
+        }
+        *changed = idx != m_focusedEffect;
+        if (*changed) {
+            m_focusedEffect = idx;
+            m_focusedEffectParam = QStringLiteral("rOffset");
+            refreshDescriptors();
+            bumpSerial(true);
+        }
+        st = {{QStringLiteral("index"), m_focusedEffect}};
+    } else if (p.control == kBinCursor) {
+        if (!m_binVisible) {
+            return error(err::NotReady, QStringLiteral("No visible native bin view."));
+        }
+        const QStringList visible = visibleBinClipIds();
+        if (visible.isEmpty()) {
+            return error(err::TargetNotFound, QStringLiteral("The bin view is empty."));
+        }
+        const int before = m_binCursor;
+        m_binCursor = qBound(0, m_binCursor + steps, int(visible.size()) - 1);
+        *changed = before != m_binCursor;
+        if (*changed) {
+            const QString id = visible.value(m_binCursor);
+            if (p.semantic.value(QStringLiteral("extend")).toBool()) {
+                if (!m_binSelection.contains(id)) {
+                    m_binSelection << id;
+                }
+            } else {
+                m_binSelection = {id};
+            }
+            refreshDescriptors();
+            bumpSerial(true);
+        }
+        st = {};
     } else if (p.control == kParamNudge) {
         const Gesture &g = m_gestures[gk];
         const QString name = g.param;
-        const double step = p.semantic.value(QStringLiteral("step")).toString() == QLatin1String("fine") ? 0.1 : 1.0;
+        // The bound handle's native units: MR2's focused param (0..100, step 1,
+        // fine 0.1) or an effect.params handle (e.g. an offset, -1..1 by 0.01).
+        const QVariantMap desc = findParamTarget(p.target);
+        const double fine = desc.value(QStringLiteral("fineStep"), 0.1).toDouble();
+        const double step = p.semantic.value(QStringLiteral("step")).toString() == QLatin1String("fine") ? fine : desc.value(QStringLiteral("step"), 1.0).toDouble();
+        const double lo = desc.value(QStringLiteral("min"), 0.0).toDouble(), hi = desc.value(QStringLiteral("max"), 100.0).toDouble();
         double before = m_params.value(name).toDouble();
         bool created = false;
         if (g.frame >= 0) {
@@ -1342,7 +1702,8 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
             }
             before = keys.value(g.frame);
         }
-        const double v = qBound(0.0, tenth(before + p.delta * step), 100.0);
+        const double scale = std::round(1.0 / fine);  // round to the fine step (10 for 0.1)
+        const double v = qBound(lo, std::round((before + p.delta * step) * scale) / scale, hi);
         if (g.frame >= 0) {
             m_keys[name].insert(g.frame, v);
         } else {
@@ -1387,36 +1748,199 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
         st = {{isTrack ? QStringLiteral("track") : QStringLiteral("clip"), id}, {QStringLiteral("gainDb"), v}};
         refreshDescriptors();
         bumpSerial(false);
-    } else if (p.control == kTrim) {
+    } else if (p.control == kPan) {
+        const QString id = m_gestures[gk].param.section(QLatin1Char(':'), 1);
+        QVariantMap item = m_tracks.value(id).toMap();
+        const int before = item.value(QStringLiteral("pan")).toInt();
+        const int v = qBound(-50, before + steps, 50);
+        item.insert(QStringLiteral("pan"), v);
+        m_tracks.insert(id, item);
+        *changed = v != before;
+        st = {{QStringLiteral("pan"), v}};
+        refreshDescriptors();
+        bumpSerial(false);
+    } else if (p.control == kNudge) {
         Gesture &g = m_gestures[gk];
         if (steps != 0 && g.steps >= m_trimGestureSteps) {
-            return error(err::ResourceLimit, QStringLiteral("trim gesture step limit reached: end it before starting a new gesture"));
+            return error(err::ResourceLimit, QStringLiteral("End this gesture before starting more native edit steps."));
         }
-        // Resize only: the declared clip(s) change; nothing downstream moves.
-        const QStringList clips = g.param.split(QLatin1Char(','));
-        const bool atEnd = p.semantic.value(QStringLiteral("edge")).toString() == QLatin1String("end");
-        int applied = steps;
+        const QStringList clips = m_gestures[gk].param.split(QLatin1Char(','), Qt::SkipEmptyParts);
+        const QVariantMap fps = m_context.value(QStringLiteral("fps")).toMap();
+        const double fpsValue = fps.value(QStringLiteral("den")).toDouble() == 0.0 ? 25.0 : fps.value(QStringLiteral("num")).toDouble() / fps.value(QStringLiteral("den")).toDouble();
+        const int frames = p.semantic.value(QStringLiteral("unit")).toString() == QLatin1String("second") ? int(std::llround(p.delta * fpsValue)) : steps;
         for (const auto &id : clips) {
             const QVariantMap c = m_clips.value(id).toMap();
-            const int start = c.value(QStringLiteral("start")).toInt(), end = c.value(QStringLiteral("end")).toInt();
-            applied = atEnd ? qBound(start + 1 - end, applied, c.value(QStringLiteral("maxEnd")).toInt() - end)
-                            : qBound(c.value(QStringLiteral("minStart")).toInt() - start, applied, end - 1 - start);
+            const int start = c.value(QStringLiteral("start")).toInt() + frames;
+            const int end = c.value(QStringLiteral("end")).toInt() + frames;
+            if (start < 0) {
+                return error(err::EditFailed, QStringLiteral("The requested frame range is outside the native bounds."));
+            }
+            for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
+                if (clips.contains(it.key())) {
+                    continue;
+                }
+                const QVariantMap other = it.value().toMap();
+                if (other.value(QStringLiteral("track")).toString() == c.value(QStringLiteral("track")).toString()
+                    && start < other.value(QStringLiteral("end")).toInt() && end > other.value(QStringLiteral("start")).toInt()) {
+                    return error(err::EditFailed, QStringLiteral("The requested nudge collides with an undeclared clip."));
+                }
+            }
         }
         for (const auto &id : clips) {
             QVariantMap c = m_clips.value(id).toMap();
-            const QString field = atEnd ? QStringLiteral("end") : QStringLiteral("start");
-            c.insert(field, c.value(field).toInt() + applied);
+            c.insert(QStringLiteral("start"), c.value(QStringLiteral("start")).toInt() + frames);
+            c.insert(QStringLiteral("end"), c.value(QStringLiteral("end")).toInt() + frames);
+            c.insert(QStringLiteral("minStart"), c.value(QStringLiteral("minStart")).toInt() + frames);
+            c.insert(QStringLiteral("maxEnd"), c.value(QStringLiteral("maxEnd")).toInt() + frames);
             m_clips.insert(id, c);
+        }
+        *changed = frames != 0;
+        if (*changed) {
+            ++g.steps;
+        }
+        st = {{QStringLiteral("frames"), frames}};
+        refreshDescriptors();
+        bumpSerial(false);
+    } else if (p.control == kTrim) {
+        Gesture &g = m_gestures[gk];
+        if (steps != 0 && g.steps >= m_trimGestureSteps) {
+            return error(err::ResourceLimit, QStringLiteral("End this gesture before starting more native edit steps."));
+        }
+        const QStringList clips = selectedTrimClips();
+        const QString mode = p.semantic.value(QStringLiteral("mode")).toString();
+        const bool atEnd = p.semantic.value(QStringLiteral("edge")).toString() == QLatin1String("end");
+        int applied = steps;
+        if (mode == QLatin1String("slip")) {
+            for (const auto &id : clips) {
+                const QVariantMap c = m_clips.value(id).toMap();
+                const int in = c.value(QStringLiteral("srcIn")).toInt() - steps;
+                const int out = c.value(QStringLiteral("srcOut")).toInt() - steps;
+                if (in < 0 || out > c.value(QStringLiteral("sourceLength")).toInt()) {
+                    return error(err::EditFailed, QStringLiteral("The requested slip exceeds the source interval."));
+                }
+            }
+            for (const auto &id : clips) {
+                QVariantMap c = m_clips.value(id).toMap();
+                c.insert(QStringLiteral("srcIn"), c.value(QStringLiteral("srcIn")).toInt() - steps);
+                c.insert(QStringLiteral("srcOut"), c.value(QStringLiteral("srcOut")).toInt() - steps);
+                c.insert(QStringLiteral("minStart"), c.value(QStringLiteral("minStart")).toInt() + steps);
+                c.insert(QStringLiteral("maxEnd"), c.value(QStringLiteral("maxEnd")).toInt() + steps);
+                m_clips.insert(id, c);
+            }
+        } else if (mode == QLatin1String("ripple")) {
+            const int growth = atEnd ? steps : -steps;
+            for (const auto &id : clips) {
+                const QVariantMap c = m_clips.value(id).toMap();
+                if (c.value(QStringLiteral("end")).toInt() - c.value(QStringLiteral("start")).toInt() + growth < 1) {
+                    return error(err::InvalidArguments, QStringLiteral("The requested duration is outside the native frame range."));
+                }
+                if ((atEnd && c.value(QStringLiteral("end")).toInt() + steps > c.value(QStringLiteral("maxEnd")).toInt())
+                    || (!atEnd && c.value(QStringLiteral("start")).toInt() + steps < c.value(QStringLiteral("minStart")).toInt())) {
+                    return error(err::EditFailed, QStringLiteral("The exact group resize was refused; original members were restored."));
+                }
+            }
+            const QStringList following = rippleScopeClips();
+            QVariantMap next = m_clips;
+            for (const auto &id : clips) {
+                QVariantMap c = next.value(id).toMap();
+                if (atEnd) {
+                    c.insert(QStringLiteral("end"), c.value(QStringLiteral("end")).toInt() + steps);
+                    c.insert(QStringLiteral("srcOut"), c.value(QStringLiteral("srcOut")).toInt() + steps);
+                } else {
+                    c.insert(QStringLiteral("end"), c.value(QStringLiteral("end")).toInt() + growth);
+                    c.insert(QStringLiteral("srcIn"), c.value(QStringLiteral("srcIn")).toInt() + steps);
+                    c.insert(QStringLiteral("minStart"), c.value(QStringLiteral("minStart")).toInt() + growth);
+                    c.insert(QStringLiteral("maxEnd"), c.value(QStringLiteral("maxEnd")).toInt() + growth);
+                }
+                next.insert(id, c);
+            }
+            for (const auto &id : following) {
+                QVariantMap c = next.value(id).toMap();
+                c.insert(QStringLiteral("start"), c.value(QStringLiteral("start")).toInt() + growth);
+                c.insert(QStringLiteral("end"), c.value(QStringLiteral("end")).toInt() + growth);
+                c.insert(QStringLiteral("minStart"), c.value(QStringLiteral("minStart")).toInt() + growth);
+                c.insert(QStringLiteral("maxEnd"), c.value(QStringLiteral("maxEnd")).toInt() + growth);
+                next.insert(id, c);
+            }
+            QStringList changedClips = clips + following;
+            changedClips.removeDuplicates();
+            for (const auto &id : changedClips) {
+                const QVariantMap c = next.value(id).toMap();
+                if (c.value(QStringLiteral("start")).toInt() < 0) {
+                    return error(err::EditFailed, QStringLiteral("The exact group resize was refused; original members were restored."));
+                }
+                for (auto it = next.cbegin(); it != next.cend(); ++it) {
+                    if (changedClips.contains(it.key())) {
+                        continue;
+                    }
+                    const QVariantMap other = it.value().toMap();
+                    if (other.value(QStringLiteral("track")).toString() == c.value(QStringLiteral("track")).toString()
+                        && c.value(QStringLiteral("start")).toInt() < other.value(QStringLiteral("end")).toInt()
+                        && c.value(QStringLiteral("end")).toInt() > other.value(QStringLiteral("start")).toInt()) {
+                        return error(err::EditFailed, QStringLiteral("The exact group resize was refused; original members were restored."));
+                    }
+                }
+            }
+            m_clips = next;
+            applied = growth;
+        } else {
+            for (const auto &id : clips) {
+                const QVariantMap c = m_clips.value(id).toMap();
+                const int start = c.value(QStringLiteral("start")).toInt(), end = c.value(QStringLiteral("end")).toInt();
+                applied = atEnd ? qBound(start + 1 - end, applied, c.value(QStringLiteral("maxEnd")).toInt() - end)
+                                : qBound(c.value(QStringLiteral("minStart")).toInt() - start, applied, end - 1 - start);
+            }
+            QVariantMap next = m_clips;
+            for (const auto &id : clips) {
+                QVariantMap c = next.value(id).toMap();
+                const QString field = atEnd ? QStringLiteral("end") : QStringLiteral("start");
+                c.insert(field, c.value(field).toInt() + applied);
+                const QString sourceField = atEnd ? QStringLiteral("srcOut") : QStringLiteral("srcIn");
+                c.insert(sourceField, c.value(sourceField).toInt() + applied);
+                next.insert(id, c);
+            }
+            for (const auto &id : clips) {
+                const QVariantMap c = next.value(id).toMap();
+                for (auto it = next.cbegin(); it != next.cend(); ++it) {
+                    if (clips.contains(it.key())) {
+                        continue;
+                    }
+                    const QVariantMap other = it.value().toMap();
+                    if (other.value(QStringLiteral("track")).toString() == c.value(QStringLiteral("track")).toString()
+                        && c.value(QStringLiteral("start")).toInt() < other.value(QStringLiteral("end")).toInt()
+                        && c.value(QStringLiteral("end")).toInt() > other.value(QStringLiteral("start")).toInt()) {
+                        return error(err::EditFailed, QStringLiteral("The exact group resize was refused; original members were restored."));
+                    }
+                }
+            }
+            m_clips = next;
         }
         *changed = applied != 0;
         if (*changed) {
             ++g.steps;
         }
         const QVariantMap first = m_clips.value(clips.value(0)).toMap();
-        st = {{QStringLiteral("clip"), clips.value(0)},
-              {QStringLiteral("start"), first.value(QStringLiteral("start"))},
-              {QStringLiteral("end"), first.value(QStringLiteral("end"))},
-              {QStringLiteral("mode"), p.semantic.value(QStringLiteral("mode"))}};
+        if (mode == QLatin1String("slip")) {
+            st = {{QStringLiteral("frames"), steps}};
+        } else {
+            st = {{QStringLiteral("clip"), clips.value(0)},
+                  {QStringLiteral("start"), first.value(QStringLiteral("start"))},
+                  {QStringLiteral("end"), first.value(QStringLiteral("end"))},
+                  {QStringLiteral("duration"), first.value(QStringLiteral("end")).toInt() - first.value(QStringLiteral("start")).toInt()},
+                  {QStringLiteral("mode"), mode}};
+        }
+        refreshDescriptors();
+        bumpSerial(false);
+    } else if (p.control == kBinRating) {
+        for (int i = 0; i < m_binClips.size(); ++i) {
+            QVariantMap c = m_binClips.at(i).toMap();
+            if (m_binSelection.contains(c.value(QStringLiteral("id")).toString())) {
+                const int nativeRating = qBound(0, c.value(QStringLiteral("rating")).toInt() + 2 * steps, 10);
+                *changed = *changed || c.value(QStringLiteral("rating")).toInt() != nativeRating;
+                c.insert(QStringLiteral("rating"), nativeRating);
+                m_binClips[i] = c;
+            }
+        }
         refreshDescriptors();
         bumpSerial(false);
     }
@@ -1442,11 +1966,16 @@ QVariantMap MockKdenlive::applyOne(const Pending &p, bool *changed)
                     const QString track = st.value(QStringLiteral("track")).toString();
                     st.insert(QStringLiteral("gainDb"), track.isEmpty() ? m_clips.value(st.value(QStringLiteral("clip")).toString()).toMap().value(QStringLiteral("volumeDb"))
                                                                         : m_tracks.value(track).toMap().value(QStringLiteral("gainDb")));
+                } else if (p.control == kPan) {
+                    st.insert(QStringLiteral("pan"), m_tracks.value(p.target).toMap().value(QStringLiteral("pan")));
                 } else if (p.control == kTrim) {
-                    const QVariantMap c = m_clips.value(st.value(QStringLiteral("clip")).toString()).toMap();
-                    st.insert(QStringLiteral("start"), c.value(QStringLiteral("start")));
-                    st.insert(QStringLiteral("end"), c.value(QStringLiteral("end")));
-                }
+                    if (st.contains(QStringLiteral("clip"))) {
+                        const QVariantMap c = m_clips.value(st.value(QStringLiteral("clip")).toString()).toMap();
+                        st.insert(QStringLiteral("start"), c.value(QStringLiteral("start")));
+                        st.insert(QStringLiteral("end"), c.value(QStringLiteral("end")));
+                        st.insert(QStringLiteral("duration"), c.value(QStringLiteral("end")).toInt() - c.value(QStringLiteral("start")).toInt());
+                    }
+                }  // bin.rating: {state, changed} only, as Kdenlive
             }
             st.insert(QStringLiteral("ended"), true);
         }
@@ -1664,9 +2193,257 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
         }
         return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
     }
+    auto stackTargetOk = [&] {
+        const QString stackTarget = m_context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("stack")).toMap().value(kOptTarget).toString();
+        const QString requested = args.value(kOptTarget, stackTarget).toString();
+        return m_effectStackShown && !stackTarget.isEmpty() && requested == stackTarget;
+    };
+    auto effectTargetIndex = [&]() { return effectIndexForTarget(target); };
+    if (command == kCmdEffectAdd) {
+        const bool hasId = args.contains(QStringLiteral("id"));
+        const bool hasPreset = args.contains(QStringLiteral("preset"));
+        if (hasId == hasPreset) {
+            return fail(err::InvalidArguments, QStringLiteral("Supply exactly one effect id or registered preset."), hasId ? QStringLiteral("preset") : QStringLiteral("id"));
+        }
+        const QString key = hasId ? QStringLiteral("id") : QStringLiteral("preset");
+        if (args.value(key).typeId() != QMetaType::QString) {
+            return fail(err::InvalidArguments, QStringLiteral("The repository identifier must be a string."), key);
+        }
+        const QString id = args.value(key).toString();
+        if (id.isEmpty() || id.size() > 128) {
+            return fail(err::InvalidArguments, QStringLiteral("Use a bounded repository identifier."), key);
+        }
+        if (!stackTargetOk()) {
+            return fail(err::TargetNotFound, QStringLiteral("The explicit effect/stack handle is stale."), kOptTarget);
+        }
+        if (!kMockEffects.contains(id) && id != QLatin1String("warm-look")) {
+            return fail(err::UnsupportedParameter, hasPreset ? QStringLiteral("The saved preset name is absent or ambiguous.") : QStringLiteral("The effect/preset is not installed."));
+        }
+        if (m_effectStack.size() >= 64) {
+            return fail(err::ResourceLimit, QStringLiteral("The interactive stack limit is64 effects."));
+        }
+        m_effectStack << effect(hasPreset ? QStringLiteral("preset:") + id : id);
+        m_focusedEffect = m_effectStack.size() - 1;
+        m_history << QStringLiteral("effect add %1").arg(id);
+        refreshDescriptors();
+        bumpSerial(true);
+        return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), true}});
+    }
+    if (command == kCmdEffectSet || command == kCmdEffectMove || command == kCmdEffectRemove) {
+        const int idx = effectTargetIndex();
+        if (idx < 0) {
+            return fail(err::TargetNotFound, QStringLiteral("The explicit effect/stack handle is stale."), kOptTarget);
+        }
+        QVariantMap item = m_effectStack.at(idx).toMap();
+        if (command == kCmdEffectSet) {
+            if (args.value(QStringLiteral("value")).typeId() != QMetaType::Bool) {
+                return fail(err::InvalidArguments, QStringLiteral("value must be boolean."), QStringLiteral("value"));
+            }
+            if (args.value(QStringLiteral("what")).toString() != QLatin1String("enabled")) {
+                return fail(err::UnsupportedMode, QStringLiteral("Use an advertised effect property."), QStringLiteral("what"));
+            }
+            const bool value = args.value(QStringLiteral("value")).toBool();
+            const bool changed = item.value(QStringLiteral("enabled"), true).toBool() != value;
+            item.insert(QStringLiteral("enabled"), value);
+            m_effectStack[idx] = item;
+            if (changed) {
+                m_history << QStringLiteral("effect set %1").arg(target);
+                refreshDescriptors();
+                bumpSerial(false);
+            }
+            return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
+        }
+        if (command == kCmdEffectMove) {
+            if (!args.contains(QStringLiteral("delta")) || args.value(QStringLiteral("delta")).typeId() == QMetaType::Bool
+                || !args.value(QStringLiteral("delta")).canConvert<double>()) {
+                return fail(err::InvalidArguments, QStringLiteral("delta must be numeric."), QStringLiteral("delta"));
+            }
+            const double d = args.value(QStringLiteral("delta")).toDouble();
+            if (!std::isfinite(d) || d != std::trunc(d) || std::abs(d) > 64) {
+                return fail(err::InvalidArguments, QStringLiteral("Move requires integral steps within64 rows."), QStringLiteral("delta"));
+            }
+            if (item.value(QStringLiteral("builtin")).toBool()) {
+                return fail(err::UnsupportedParameter, QStringLiteral("Built-in effects and nested groups cannot be reordered here."));
+            }
+            const int dest = qBound(0, idx + int(d), int(m_effectStack.size()) - 1);
+            if (m_effectStack.value(dest).toMap().value(QStringLiteral("builtin")).toBool() || m_effectStack.value(dest).toMap().value(QStringLiteral("group")).toBool()) {
+                return fail(err::UnsupportedParameter, QStringLiteral("Built-in effects and nested groups cannot be reordered here."));
+            }
+            const bool changed = dest != idx;
+            if (changed) {
+                m_effectStack.removeAt(idx);
+                m_effectStack.insert(dest, item);
+                m_focusedEffect = dest;
+                m_history << QStringLiteral("effect move %1").arg(target);
+                refreshDescriptors();
+                bumpSerial(true);
+            }
+            return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
+        }
+        if (item.value(QStringLiteral("builtin")).toBool()) {
+            return fail(err::UnsupportedParameter, QStringLiteral("Built-in effects cannot be removed."));
+        }
+        m_effectStack.removeAt(idx);
+        m_focusedEffect = m_effectStack.isEmpty() ? -1 : qBound(0, idx, int(m_effectStack.size()) - 1);
+        m_history << QStringLiteral("effect remove %1").arg(target);
+        refreshDescriptors();
+        bumpSerial(true);
+        return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), true}});
+    }
+    if (command == kCmdStackSet) {
+        if (!stackTargetOk()) {
+            return fail(err::TargetNotFound, QStringLiteral("The explicit effect/stack handle is stale."), kOptTarget);
+        }
+        if (args.value(QStringLiteral("value")).typeId() != QMetaType::Bool) {
+            return fail(err::InvalidArguments, QStringLiteral("value must be boolean."), QStringLiteral("value"));
+        }
+        const QString what = args.value(QStringLiteral("what")).toString();
+        if (what != QLatin1String("enabled") && what != QLatin1String("compare")) {
+            return fail(err::UnsupportedMode, QStringLiteral("Use an advertised effect property."), QStringLiteral("what"));
+        }
+        if (what == QLatin1String("compare") && !m_effectCompareAvailable) {
+            return fail(err::UnsupportedMode, QStringLiteral("Compare requires a visible native clip effect stack."));
+        }
+        const bool value = args.value(QStringLiteral("value")).toBool();
+        bool changed = false;
+        if (what == QLatin1String("enabled")) {
+            changed = m_effectStackEnabled != value;
+            m_effectStackEnabled = value;
+            if (changed) {
+                m_history << QStringLiteral("effect stack enabled");
+            }
+        } else {
+            changed = m_effectCompare != value;
+            m_effectCompare = value;
+        }
+        if (changed) {
+            refreshDescriptors();
+            bumpSerial(false);
+        }
+        return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
+    }
+    if (command == kCmdBinTag) {
+        if (!m_binVisible) {
+            return fail(err::NotReady, QStringLiteral("No visible native bin view."));
+        }
+        const QString tag = args.value(QStringLiteral("tag")).toString();
+        if (!binTagIds().contains(tag)) {
+            return fail(err::InvalidArguments, QStringLiteral("Use a current native tag color from bin.tags."), QStringLiteral("tag"));
+        }
+        if (target.isEmpty() || target != binSelectionTarget()) {
+            return fail(err::TargetNotFound, QStringLiteral("The bin selection handle is stale."), kOptTarget);
+        }
+        if (args.value(QStringLiteral("value")).typeId() != QMetaType::Bool) {
+            return fail(err::InvalidArguments, QStringLiteral("A tag and boolean value are required."), QStringLiteral("value"));
+        }
+        const bool value = args.value(QStringLiteral("value")).toBool();
+        bool changed = false;
+        for (int i = 0; i < m_binClips.size(); ++i) {
+            QVariantMap c = m_binClips.at(i).toMap();
+            if (!m_binSelection.contains(c.value(QStringLiteral("id")).toString())) {
+                continue;
+            }
+            QStringList tags = c.value(QStringLiteral("tags")).toStringList();
+            if (value && !tags.contains(tag)) {
+                tags << tag;
+                changed = true;
+            } else if (!value && tags.removeAll(tag) > 0) {
+                changed = true;
+            }
+            c.insert(QStringLiteral("tags"), tags);
+            m_binClips[i] = c;
+        }
+        if (changed) {
+            m_history << QStringLiteral("bin tag %1").arg(tag);
+            refreshDescriptors();
+            bumpSerial(false);
+        }
+        return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
+    }
+    if (command == kCmdBinSelect) {
+        if (!m_binVisible) {
+            return fail(err::NotReady, QStringLiteral("No visible native bin view."));
+        }
+        const QString tag = args.value(QStringLiteral("tag")).toString();
+        if (tag.isEmpty()) {
+            return fail(err::InvalidArguments, QStringLiteral("An explicit tag is required."), QStringLiteral("tag"));
+        }
+        if (!binTagIds().contains(tag)) {
+            return fail(err::InvalidArguments, QStringLiteral("Use a current native tag color from bin.tags."), QStringLiteral("tag"));
+        }
+        if (m_binClips.size() > 2000) {
+            return fail(err::ResourceLimit, QStringLiteral("Interactive bin filtering is bounded to2000 clips."));
+        }
+        QStringList selected;
+        const QStringList visible = visibleBinClipIds();
+        for (const auto &v : m_binClips) {
+            const QVariantMap c = v.toMap();
+            const QString id = c.value(QStringLiteral("id")).toString();
+            if (visible.contains(id) && c.value(QStringLiteral("tags")).toStringList().contains(tag)) {
+                selected << c.value(QStringLiteral("id")).toString();
+            }
+        }
+        const bool changed = selected != m_binSelection;
+        m_binSelection = selected;
+        if (changed) {
+            refreshDescriptors();
+            bumpSerial(true);
+        }
+        return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
+    }
+    if (command == kCmdBinFilter) {
+        if (!m_binVisible) {
+            return fail(err::NotReady, QStringLiteral("No visible native bin view."));
+        }
+        if (m_binClips.size() > 2000) {
+            return fail(err::ResourceLimit, QStringLiteral("Interactive bin filtering is bounded to2000 clips."));
+        }
+        if (args.contains(QStringLiteral("clear")) && args.value(QStringLiteral("clear")).typeId() != QMetaType::Bool) {
+            return fail(err::InvalidArguments, QStringLiteral("clear must be boolean."), QStringLiteral("clear"));
+        }
+        const bool clear = args.value(QStringLiteral("clear")).toBool();
+        if (clear && (args.contains(QStringLiteral("tag")) || args.contains(QStringLiteral("rating")))) {
+            return fail(err::InvalidArguments, QStringLiteral("clear cannot be combined with filters."), QStringLiteral("clear"));
+        }
+        if (args.contains(QStringLiteral("rating"))) {
+            const int type = args.value(QStringLiteral("rating")).typeId();
+            if ((type != QMetaType::Int && type != QMetaType::UInt) || args.value(QStringLiteral("rating")).toInt() < 0 || args.value(QStringLiteral("rating")).toInt() > 5) {
+                return fail(err::InvalidArguments, QStringLiteral("rating is an integer in0..5 stars."), QStringLiteral("rating"));
+            }
+        }
+        const QString tag = args.value(QStringLiteral("tag")).toString();
+        if (!tag.isEmpty() && !binTagIds().contains(tag)) {
+            return fail(err::InvalidArguments, QStringLiteral("Use a current native tag color from bin.tags."), QStringLiteral("tag"));
+        }
+        if (!clear && tag.isEmpty() && !args.contains(QStringLiteral("rating"))) {
+            return fail(err::InvalidArguments, QStringLiteral("Supply a tag/rating filter or clear."));
+        }
+        const QStringList oldTags = m_binFilterTags;
+        const QVariantList oldRatings = m_binFilterRatings;
+        const QVariantList oldTypes = m_binFilterTypes;
+        const int oldUsage = m_binFilterUsage;
+        if (clear) {
+            m_binFilterTags.clear();
+            m_binFilterRatings.clear();
+            m_binFilterTypes.clear();
+            m_binFilterUsage = 0;
+        } else {
+            m_binFilterTags = tag.isEmpty() ? QStringList{} : QStringList{tag};
+            m_binFilterRatings = args.contains(QStringLiteral("rating")) ? QVariantList{args.value(QStringLiteral("rating")).toInt()} : QVariantList{};
+        }
+        const bool changed = oldTags != m_binFilterTags || oldRatings != m_binFilterRatings || oldTypes != m_binFilterTypes || oldUsage != m_binFilterUsage;
+        if (changed) {
+            refreshDescriptors();
+            bumpSerial(false);
+        }
+        return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
+    }
     // track.set, validated in Kdenlive's order: a current track handle (any
     // track's issued handle), a boolean value, soloMode only with solo, then
     // what and its applicability.
+    if (command != kCmdTrackSet) {
+        return fail(err::UnsupportedControl, QStringLiteral("command not offered"));
+    }
     if (target.isEmpty() || !m_tracks.contains(target)) {
         return fail(err::TargetNotFound, QStringLiteral("an explicit current native track target is required"), kOptTarget);
     }
@@ -1690,9 +2467,26 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
         return fail(err::UnsupportedMode, QStringLiteral("use an audio mixer track and an explicit solo policy"), QStringLiteral("soloMode"));
     }
     const bool value = args.value(QStringLiteral("value")).toBool();
-    bool changed = t.value(what).toBool() != value;
+    const bool routeTarget = m_stage >= 4 && what == QLatin1String("target");
+    bool changed = routeTarget ? (audio ? m_audioTargets.values().contains(target) : m_videoTarget == target) != value : t.value(what).toBool() != value;
     t.insert(what, value);
     m_tracks.insert(target, t);
+    if (routeTarget && changed) {
+        if (audio) {
+            for (auto it = m_audioTargets.begin(); it != m_audioTargets.end();) {
+                if (it.value().toString() == target) {
+                    it = m_audioTargets.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (value) {
+                m_audioTargets.insert(QStringLiteral("0"), target);
+            }
+        } else {
+            m_videoTarget = value ? target : QString();
+        }
+    }
     if (what == QLatin1String("solo") && value && soloMode == QLatin1String("exclusive")) {
         for (auto it = m_tracks.begin(); it != m_tracks.end(); ++it) {
             QVariantMap other = it.value().toMap();
@@ -1707,7 +2501,7 @@ QVariantMap MockKdenlive::invoke(const QString &command, const QVariantMap &args
         m_history << QStringLiteral("track %1 %2=%3").arg(target, what, value ? QStringLiteral("on") : QStringLiteral("off"));
         scheduleActionsCheck();
         refreshDescriptors();
-        bumpSerial(false);
+        bumpSerial(routeTarget);
     }
     return ok({{QStringLiteral("state"), QStringLiteral("applied")}, {QStringLiteral("changed"), changed}});
 }
@@ -1798,6 +2592,122 @@ void MockKdenlive::selectClip(const QString &clipId)
         return;
     }
     m_selectedClip = clipId;
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::selectClipGroup(const QStringList &clipIds)
+{
+    for (const auto &id : clipIds) {
+        if (!m_clips.contains(id)) {
+            return;
+        }
+    }
+    m_nudgeSelection = clipIds;
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::setAudioRouting(const QVariantMap &routing)
+{
+    m_audioTargets = routing;
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::showBin(bool on)
+{
+    m_binVisible = on;
+    if (on) {
+        m_context.insert(QStringLiteral("focus"), QStringLiteral("bin"));
+    } else if (m_context.value(QStringLiteral("focus")).toString() == QLatin1String("bin")) {
+        m_context.insert(QStringLiteral("focus"), QStringLiteral("timeline"));
+    }
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::setBinClips(const QList<QVariantMap> &clips)
+{
+    m_binClips.clear();
+    int i = 0;
+    for (QVariantMap c : clips) {
+        if (!c.contains(QStringLiteral("id"))) {
+            c.insert(QStringLiteral("id"), QStringLiteral("bin-%1").arg(++i));
+        }
+        if (!c.contains(QStringLiteral("complete"))) {
+            c.insert(QStringLiteral("complete"), true);
+        }
+        m_binClips << c;
+    }
+    m_binCursor = qBound(0, m_binCursor, qMax(0, m_binClips.size() - 1));
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::selectBinClips(const QStringList &clipIds)
+{
+    m_binSelection = clipIds;
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::showEffectStack(const QList<QVariantMap> &effects, bool compareAvailable)
+{
+    m_effectStack.clear();
+    for (QVariantMap e : effects) {
+        if (!e.contains(QStringLiteral("enabled"))) {
+            e.insert(QStringLiteral("enabled"), true);
+        }
+        if (!e.contains(QStringLiteral("builtin"))) {
+            e.insert(QStringLiteral("builtin"), false);
+        }
+        if (!e.contains(QStringLiteral("group"))) {
+            e.insert(QStringLiteral("group"), false);
+        }
+        m_effectStack << e;
+    }
+    if (m_effectStack.isEmpty()) {
+        m_effectStack << effect(QStringLiteral("lift_gamma_gain"));
+    }
+    m_effectStackShown = true;
+    m_effectCompareAvailable = compareAvailable;
+    m_focusedEffect = 0;
+    m_focusedEffectParam = QStringLiteral("rOffset");
+    m_context.insert(QStringLiteral("focus"), QStringLiteral("effectStack"));
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::hideEffectStack()
+{
+    m_effectStackShown = false;
+    m_context.remove(QStringLiteral("effect"));
+    if (m_context.value(QStringLiteral("focus")).toString() == QLatin1String("effectStack")) {
+        m_context.insert(QStringLiteral("focus"), QStringLiteral("timeline"));
+    }
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::focusEffect(int index)
+{
+    if (index < 0 || index >= m_effectStack.size()) {
+        return;
+    }
+    m_effectStackShown = true;
+    m_focusedEffect = index;
+    m_focusedEffectParam = QStringLiteral("rOffset");
+    refreshDescriptors();
+    bumpSerial(true);
+}
+
+void MockKdenlive::focusEffectParameter(const QString &name)
+{
+    if (name.isEmpty() || !m_params.contains(name)) {
+        return;
+    }
+    m_focusedEffectParam = name;
     refreshDescriptors();
     bumpSerial(true);
 }
@@ -1918,9 +2828,310 @@ QVariantMap MockKdenlive::findWheelTarget(const QString &target) const
     return {};
 }
 
+QVariantMap MockKdenlive::effectParamDescriptor(const QString &name, int effectIndex) const
+{
+    return {{kOptTarget, QStringLiteral("eff-%1-par-%2").arg(effectIndex).arg(name)},
+            {QStringLiteral("name"), name},
+            {QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("value"), m_params.value(name)},
+            {QStringLiteral("min"), name == QLatin1String("saturation") ? 0.0 : -1.0},
+            {QStringLiteral("max"), name == QLatin1String("saturation") ? 2.0 : 1.0},
+            {QStringLiteral("step"), 0.01},
+            {QStringLiteral("fineStep"), 0.001},
+            {QStringLiteral("unit"), QString()},
+            {QStringLiteral("frame"), -1},
+            {QStringLiteral("keyframed"), false},
+            {QStringLiteral("liveGrading"), true},
+            {QStringLiteral("enabled"), true}};
+}
+
+QVariantMap MockKdenlive::effectDescriptor() const
+{
+    if (!m_effectStackShown) {
+        return {};
+    }
+    QVariantMap e{{QStringLiteral("ownerId"), 12},
+                  {QStringLiteral("sequence"), QStringLiteral("seq-1")},
+                  {QStringLiteral("stack"), QVariantMap{{kOptTarget, QStringLiteral("stack-owner-1")},
+                                                        {QStringLiteral("count"), m_effectStack.size()},
+                                                        {QStringLiteral("enabled"), m_effectStackEnabled},
+                                                        {QStringLiteral("compare"), m_effectCompare},
+                                                        {QStringLiteral("compareAvailable"), m_effectCompareAvailable}}}};
+    if (m_focusedEffect >= 0 && m_focusedEffect < m_effectStack.size()) {
+        const QVariantMap item = m_effectStack.at(m_focusedEffect).toMap();
+        e.insert(kOptTarget, QStringLiteral("eff-%1").arg(m_focusedEffect));
+        e.insert(QStringLiteral("id"), item.value(QStringLiteral("id")));
+        e.insert(QStringLiteral("index"), m_focusedEffect);
+        e.insert(QStringLiteral("enabled"), item.value(QStringLiteral("enabled")));
+        QVariantMap params;
+        int n = 0;
+        for (const QString &name : {QStringLiteral("rOffset"), QStringLiteral("gOffset"), QStringLiteral("bOffset"), QStringLiteral("saturation")}) {
+            if (++n > 32) {
+                break;
+            }
+            params.insert(name, effectParamDescriptor(name, m_focusedEffect));
+        }
+        if (!params.isEmpty()) {
+            e.insert(QStringLiteral("params"), params);
+        }
+    }
+    return e;
+}
+
+QVariantMap MockKdenlive::findParamTarget(const QString &target) const
+{
+    const QVariantMap p = m_context.value(QStringLiteral("param")).toMap();
+    if (!target.isEmpty() && p.value(kOptTarget).toString() == target) {
+        return p;
+    }
+    const QVariantMap params = m_context.value(QStringLiteral("effect")).toMap().value(QStringLiteral("params")).toMap();
+    for (auto it = params.cbegin(); it != params.cend(); ++it) {
+        const QVariantMap d = it.value().toMap();
+        if (d.value(kOptTarget).toString() == target) {
+            return d;
+        }
+    }
+    return {};
+}
+
+QStringList MockKdenlive::selectedTrimClips() const
+{
+    QStringList clips;
+    if (m_selectedClip.isEmpty() || !m_clips.contains(m_selectedClip)) {
+        return clips;
+    }
+    clips << m_selectedClip;
+    const QString linked = m_clips.value(m_selectedClip).toMap().value(QStringLiteral("linked")).toString();
+    if (!linked.isEmpty() && m_clips.contains(linked)) {
+        clips << linked;
+    }
+    clips.removeDuplicates();
+    std::sort(clips.begin(), clips.end());
+    return clips;
+}
+
+QStringList MockKdenlive::rippleScopeClips() const
+{
+    const QStringList selected = selectedTrimClips();
+    if (selected.isEmpty()) {
+        return {};
+    }
+    QStringList selectedTracks;
+    const int boundary = m_clips.value(selected.first()).toMap().value(QStringLiteral("end")).toInt();
+    for (const auto &id : selected) {
+        const QVariantMap c = m_clips.value(id).toMap();
+        selectedTracks << c.value(QStringLiteral("track")).toString();
+    }
+    selectedTracks.removeDuplicates();
+    QStringList out;
+    for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
+        if (selected.contains(it.key())) {
+            continue;
+        }
+        const QVariantMap c = it.value().toMap();
+        if (selectedTracks.contains(c.value(QStringLiteral("track")).toString()) && c.value(QStringLiteral("start")).toInt() >= boundary) {
+            out << it.key();
+        }
+    }
+    std::sort(out.begin(), out.end());
+    if (!rippleAvailable()) {
+        out.clear();
+    }
+    return out;
+}
+
+bool MockKdenlive::rippleAvailable() const
+{
+    const QStringList selected = selectedTrimClips();
+    if (selected.isEmpty() || m_clips.size() > 2000) {
+        return false;
+    }
+    QStringList selectedTracks;
+    const int boundary = m_clips.value(selected.first()).toMap().value(QStringLiteral("end")).toInt();
+    for (const auto &id : selected) {
+        selectedTracks << m_clips.value(id).toMap().value(QStringLiteral("track")).toString();
+    }
+    selectedTracks.removeDuplicates();
+    QStringList following;
+    for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
+        if (selected.contains(it.key())) {
+            continue;
+        }
+        const QVariantMap c = it.value().toMap();
+        if (!selectedTracks.contains(c.value(QStringLiteral("track")).toString())) {
+            continue;
+        }
+        if (c.value(QStringLiteral("end")).toInt() > boundary && c.value(QStringLiteral("start")).toInt() < boundary) {
+            return false;
+        }
+        if (c.value(QStringLiteral("start")).toInt() >= boundary) {
+            following << it.key();
+        }
+    }
+    if (following.size() > 64) {
+        return false;
+    }
+    for (const auto &id : following) {
+        const QString linked = m_clips.value(id).toMap().value(QStringLiteral("linked")).toString();
+        if (!linked.isEmpty() && !following.contains(linked) && !selected.contains(linked)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QStringList MockKdenlive::nudgeClips() const
+{
+    QStringList clips = m_nudgeSelection;
+    if (clips.isEmpty()) {
+        clips = selectedTrimClips();
+    }
+    clips.removeDuplicates();
+    std::sort(clips.begin(), clips.end());
+    return clips;
+}
+
+QStringList MockKdenlive::visibleBinClipIds() const
+{
+    if (!m_binVisible) {
+        return {};
+    }
+    QStringList ids;
+    for (const auto &v : m_binClips) {
+        const QVariantMap c = v.toMap();
+        const QStringList tags = c.value(QStringLiteral("tags")).toStringList();
+        bool visible = true;
+        for (const auto &tag : m_binFilterTags) {
+            visible = visible && tags.contains(tag);
+        }
+        if (!m_binFilterRatings.isEmpty()) {
+            const int nativeRating = c.value(QStringLiteral("rating")).toInt();
+            visible = visible && nativeRating % 2 == 0 && m_binFilterRatings.contains(nativeRating / 2);
+        }
+        if (visible) {
+            ids << c.value(QStringLiteral("id")).toString();
+        }
+    }
+    return ids;
+}
+
+QStringList MockKdenlive::binTagIds() const
+{
+    return {QStringLiteral("#ff0000"), QStringLiteral("#00ff00"), QStringLiteral("#0000ff"), QStringLiteral("#ffff00"), QStringLiteral("#00ffff")};
+}
+
+bool MockKdenlive::validBinSelection() const
+{
+    if (!m_binVisible || m_binSelection.isEmpty() || m_binSelection.size() > 256) {
+        return false;
+    }
+    for (const QString &id : m_binSelection) {
+        bool found = false;
+        for (const auto &v : m_binClips) {
+            const QVariantMap c = v.toMap();
+            if (c.value(QStringLiteral("id")).toString() == id && c.value(QStringLiteral("complete"), true).toBool()) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QString MockKdenlive::binSelectionTarget() const
+{
+    return validBinSelection() ? QStringLiteral("bin-sel-") + m_binSelection.join(QLatin1Char('-')) : QString();
+}
+
+QVariantMap MockKdenlive::binDescriptor() const
+{
+    if (!m_binVisible) {
+        return {};
+    }
+    QVariantMap selection{{QStringLiteral("count"), m_binSelection.size()}, {QStringLiteral("available"), validBinSelection()}};
+    if (validBinSelection()) {
+        selection.insert(kOptTarget, binSelectionTarget());
+        QStringList tags = binTagIds();
+        bool first = true;
+        int rating = -1;
+        bool mixedRating = false;
+        for (const auto &id : m_binSelection) {
+            for (const auto &v : m_binClips) {
+                const QVariantMap c = v.toMap();
+                if (c.value(QStringLiteral("id")).toString() != id) {
+                    continue;
+                }
+                const QStringList clipTags = c.value(QStringLiteral("tags")).toStringList();
+                if (first) {
+                    tags = clipTags;
+                    rating = c.value(QStringLiteral("rating")).toInt();
+                    first = false;
+                } else {
+                    tags.erase(std::remove_if(tags.begin(), tags.end(), [&](const QString &t) { return !clipTags.contains(t); }), tags.end());
+                    mixedRating = mixedRating || rating != c.value(QStringLiteral("rating")).toInt();
+                }
+            }
+        }
+        selection.insert(QStringLiteral("tags"), tags);
+        // Kdenlive's QVariant() "null" aborts libdbus (reported to MAIN); a typed
+        // null double would read as 0 stars. Mixed ratings omit the key instead.
+        if (!mixedRating) {
+            selection.insert(QStringLiteral("rating"), double(rating) / 2.0);
+        }
+        selection.insert(QStringLiteral("mixedRating"), mixedRating);
+    } else if (!m_binSelection.isEmpty()) {
+        selection.insert(QStringLiteral("reason"), QStringLiteral("Only selections of1..256 complete bin clips support these metadata controls."));
+    }
+    QVariantList tags;
+    const QStringList names{QStringLiteral("Red"), QStringLiteral("Green"), QStringLiteral("Blue"), QStringLiteral("Yellow"), QStringLiteral("Cyan")};
+    const QStringList ids = binTagIds();
+    for (int i = 0; i < ids.size(); ++i) {
+        tags << QVariantMap{{QStringLiteral("id"), ids.at(i)}, {QStringLiteral("name"), names.at(i)}};
+    }
+    return {{QStringLiteral("selection"), selection},
+            {QStringLiteral("tags"), tags},
+            {QStringLiteral("filter"), QVariantMap{{QStringLiteral("tags"), m_binFilterTags},
+                                                   {QStringLiteral("ratings"), m_binFilterRatings},
+                                                   {QStringLiteral("types"), m_binFilterTypes},
+                                                   {QStringLiteral("usage"), m_binFilterUsage}}}};
+}
+
+int MockKdenlive::effectIndexForTarget(const QString &target) const
+{
+    if (!target.startsWith(QLatin1String("eff-"))) {
+        return -1;
+    }
+    bool ok = false;
+    const int idx = target.mid(4).toInt(&ok);
+    return ok && idx >= 0 && idx < m_effectStack.size() ? idx : -1;
+}
+
 void MockKdenlive::refreshDescriptors()
 {
     m_context.insert(QStringLiteral("timeline"), timelineDescriptor());
+    if (m_effectStackShown) {
+        if (m_stage >= 4) {
+            m_context.insert(QStringLiteral("effect"), effectDescriptor());
+        } else if (m_context.contains(QStringLiteral("colorWheel"))) {
+            m_context.insert(QStringLiteral("effect"), QVariantMap{{QStringLiteral("id"), QStringLiteral("lift_gamma_gain")},
+                                                                   {QStringLiteral("ownerId"), 12},
+                                                                   {QStringLiteral("sequence"), QStringLiteral("seq-1")}});
+        } else if (m_context.contains(QStringLiteral("param"))) {
+            m_context.insert(QStringLiteral("effect"), QVariantMap{{QStringLiteral("id"), QStringLiteral("brightness")},
+                                                                   {QStringLiteral("ownerId"), 12},
+                                                                   {QStringLiteral("sequence"), QStringLiteral("seq-1")}});
+        }
+    } else if (!m_context.contains(QStringLiteral("colorWheel")) && !m_context.contains(QStringLiteral("param"))) {
+        m_context.remove(QStringLiteral("effect"));
+    }
+    if (m_binVisible) {
+        m_context.insert(QStringLiteral("bin"), binDescriptor());
+    } else {
+        m_context.remove(QStringLiteral("bin"));
+    }
     // Values change without changing identities: serial only, never the epoch.
     if (m_context.contains(QStringLiteral("colorWheels"))) {
         QVariantList list;
@@ -1956,12 +3167,16 @@ void MockKdenlive::focusWheels(const QString &focusedWheel)
     if (focusedWheel.isEmpty()) {
         m_context.remove(QStringLiteral("colorWheel"));
         m_context.remove(QStringLiteral("colorWheels"));
+        m_effectStackShown = false;
         m_context.remove(QStringLiteral("effect"));
         m_context.insert(QStringLiteral("focus"), QStringLiteral("timeline"));
     } else {
         m_context.remove(QStringLiteral("param"));
+        m_effectStackShown = true;
+        m_effectStack = {effect(QStringLiteral("lift_gamma_gain"))};
+        m_focusedEffect = 0;
+        m_focusedEffectParam = QStringLiteral("rOffset");
         m_context.insert(QStringLiteral("focus"), QStringLiteral("effectStack"));
-        m_context.insert(QStringLiteral("effect"), QVariantMap{{QStringLiteral("id"), QStringLiteral("lift_gamma_gain")}, {QStringLiteral("ownerId"), 12}, {QStringLiteral("sequence"), QStringLiteral("seq-1")}});
         m_context.insert(QStringLiteral("colorWheel"), wheelDescriptor(focusedWheel));
         m_context.insert(QStringLiteral("colorWheels"), QVariantList{});
         refreshDescriptors();
@@ -1987,14 +3202,19 @@ void MockKdenlive::focusParam(const QString &name)
 {
     if (name.isEmpty()) {
         m_context.remove(QStringLiteral("param"));
+        m_effectStackShown = false;
         m_context.remove(QStringLiteral("effect"));
         m_context.insert(QStringLiteral("focus"), QStringLiteral("timeline"));
     } else {
         m_context.remove(QStringLiteral("colorWheel"));
         m_context.remove(QStringLiteral("colorWheels"));
+        m_effectStackShown = true;
+        m_effectStack = {effect(QStringLiteral("brightness"))};
+        m_focusedEffect = 0;
+        m_focusedEffectParam = name;
         m_context.insert(QStringLiteral("focus"), QStringLiteral("effectStack"));
-        m_context.insert(QStringLiteral("effect"), QVariantMap{{QStringLiteral("id"), QStringLiteral("brightness")}, {QStringLiteral("ownerId"), 12}, {QStringLiteral("sequence"), QStringLiteral("seq-1")}});
         m_context.insert(QStringLiteral("param"), paramDescriptor(name));
+        refreshDescriptors();
     }
     bumpSerial(true);
 }
@@ -2030,6 +3250,12 @@ QVariantMap MockKdenlive::state() const
             {QStringLiteral("params"), m_params},
             {QStringLiteral("keys"), keyState},
             {QStringLiteral("tracks"), m_tracks},
+            {QStringLiteral("targets"), QVariantMap{{QStringLiteral("video"), m_videoTarget}, {QStringLiteral("audio"), m_audioTargets}}},
+            {QStringLiteral("binClips"), m_binClips},
+            {QStringLiteral("binSelection"), m_binSelection},
+            {QStringLiteral("binCursor"), m_binCursor},
+            {QStringLiteral("effectStack"), m_effectStack},
+            {QStringLiteral("focusedEffect"), m_focusedEffect},
             {QStringLiteral("triggered"), m_triggered},
             {QStringLiteral("history"), m_history},
             {QStringLiteral("redo"), m_redo},

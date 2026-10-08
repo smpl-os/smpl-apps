@@ -136,6 +136,34 @@ private Q_SLOTS:
         QCOMPARE(lbl(R"({"control": "param.nudge", "options": {"keyframe": "create"}})"), QStringLiteral("Brightness level (+key)"));
         QCOMPARE(lbl(R"({"control": "edit.trim", "options": {"edge": "end"}})"), QStringLiteral("Trim out"));
         QCOMPARE(lbl(R"({"control": "$page"})"), QStringLiteral("Trim"));  // a mode picks the control
+        // MR1b-B
+        QCOMPARE(lbl(R"({"control": "edit.trim", "options": {"mode": "slip"}})"), QStringLiteral("Slip"));
+        QCOMPARE(lbl(R"({"control": "edit.trim", "options": {"mode": "ripple", "edge": "start"}})"), QStringLiteral("Ripple in"));
+        QCOMPARE(lbl(R"({"control": "edit.trim", "options": {"mode": "resize", "edge": "end"}})"), QStringLiteral("Trim out"));
+        QCOMPARE(lbl(R"({"control": "edit.nudge"})"), QStringLiteral("Nudge"));
+        QCOMPARE(lbl(R"({"control": "edit.nudge", "options": {"unit": "second"}})"), QStringLiteral("Nudge (seconds)"));
+        QCOMPARE(lbl(R"({"control": "timeline.target", "options": {"kind": "audio"}})"), QStringLiteral("Audio target"));
+        QCOMPARE(lbl(R"({"control": "audio.pan"})"), QStringLiteral("Pan"));
+        QCOMPARE(lbl(R"({"control": "effect.focus"})"), QStringLiteral("Select effect"));
+        QCOMPARE(lbl(R"({"control": "bin.cursor", "options": {"extend": true}})"), QStringLiteral("Extend selection"));
+        QCOMPARE(lbl(R"({"control": "bin.rating"})"), QStringLiteral("Rating"));
+        QCOMPARE(lbl(R"({"control": "param.nudge", "targetFrom": "effect.params.rOffset.target"})"), QStringLiteral("R offset"));
+        QCOMPARE(lbl(R"({"request": "effect.add", "params": {"id": "avfilter.gblur"}})"), QStringLiteral("Add gblur"));
+        QCOMPARE(lbl(R"({"request": "effect.add", "params": {"preset": "Warm look"}})"), QStringLiteral("Add Warm look"));
+        QCOMPARE(lbl(R"({"request": "effect.set", "params": {"what": "enabled", "value": false}})"), QStringLiteral("Disable effect"));
+        QCOMPARE(lbl(R"({"request": "effect.move", "params": {"delta": -1}})"), QStringLiteral("Move effect up"));
+        QCOMPARE(lbl(R"({"request": "effect.remove"})"), QStringLiteral("Remove effect"));
+        QCOMPARE(lbl(R"({"request": "effectstack.set", "params": {"what": "enabled", "value": false}})"), QStringLiteral("Bypass effects"));
+        QCOMPARE(lbl(R"({"request": "effectstack.set", "params": {"what": "compare", "value": true}})"), QStringLiteral("Compare"));
+        QCOMPARE(lbl(R"({"request": "bin.filter", "params": {"clear": true}})"), QStringLiteral("Clear filter"));
+        QCOMPARE(lbl(R"({"request": "bin.filter", "params": {"rating": 4}})"), QStringLiteral("Filter 4 stars"));
+        env.context.insert(QStringLiteral("bin"), QVariantMap{{QStringLiteral("tags"), QVariantList{QVariantMap{{QStringLiteral("id"), QStringLiteral("#ff0000")}, {QStringLiteral("name"), QStringLiteral("Red")}}}}});
+        QCOMPARE(lbl("{\"request\": \"bin.tag\", \"params\": {\"tag\": \"#ff0000\", \"value\": true}}"), QStringLiteral("Tag Red"));
+        QCOMPARE(lbl("{\"request\": \"bin.tag\", \"params\": {\"tag\": \"#ff0000\", \"value\": false}}"), QStringLiteral("Untag Red"));
+        QCOMPARE(lbl("{\"request\": \"bin.select\", \"params\": {\"tag\": \"#ff0000\"}}"), QStringLiteral("Select Red"));
+        QCOMPARE(lbl(R"({"request": "bin.select", "params": {"tag": "1"}})"), QStringLiteral("Select Red"));    // a position
+        QCOMPARE(lbl(R"({"request": "bin.filter", "params": {"tag": "red"}})"), QStringLiteral("Filter Red"));   // a name
+        QCOMPARE(lbl("{\"request\": \"bin.filter\", \"params\": {\"tag\": \"#ff0000\", \"rating\": 1}}"), QStringLiteral("Filter Red, 1 star"));
         QCOMPARE(lbl(R"({"request": "colorwheel.reset", "params": {"wheel": "Gamma"}})"), QStringLiteral("Reset gamma"));
         QCOMPARE(lbl(R"({"request": "track.set", "params": {"what": "mute", "value": "$!ctx:timeline.track.muted"}})"), QStringLiteral("Mute track"));
         QCOMPARE(lbl(R"({"request": "param.reset"})"), QStringLiteral("Reset parameter"));
@@ -278,6 +306,27 @@ private Q_SLOTS:
             {R"({"request": "track.set", "params": {"what": "hide"}})", "eye-off"},
             {R"({"request": "param.reset"})", "rotate"},
             {R"({"request": "colorwheel.reset", "params": {"wheel": "lift"}})", "rotate"},
+            // MR1b-B
+            {R"({"control": "edit.trim", "options": {"mode": "resize", "edge": "end"}})", "arrows-move-horizontal"},
+            {R"({"control": "edit.trim", "options": {"mode": "slip"}})", "switch-horizontal"},
+            {R"({"control": "edit.trim", "options": {"mode": "ripple", "edge": "start"}})", "ripple"},
+            {R"({"control": "edit.nudge"})", "arrows-left-right"},
+            {R"({"control": "timeline.target", "options": {"kind": "video"}})", "target"},
+            {R"({"control": "audio.pan"})", "scale"},
+            {R"({"control": "bin.rating"})", "star"},
+            {R"({"control": "bin.cursor", "options": {"extend": true}})", "select-all"},
+            {R"({"request": "effect.add", "params": {"id": "avfilter.gblur"}})", "wand"},
+            {R"({"request": "effect.set", "params": {"what": "enabled", "value": true}})", "toggle-right"},
+            {R"({"request": "effect.set", "params": {"what": "enabled", "value": false}})", "toggle-left"},
+            {R"({"request": "effect.move", "params": {"delta": -1}})", "arrow-up"},
+            {R"({"request": "effect.move", "params": {"delta": 1}})", "arrow-down"},
+            {R"({"request": "effect.remove"})", "trash"},
+            {R"({"request": "effectstack.set", "params": {"what": "compare", "value": true}})", "layout-columns"},
+            {R"({"request": "effectstack.set", "params": {"what": "enabled", "value": false}})", "toggle-left"},
+            {"{\"request\": \"bin.tag\", \"params\": {\"tag\": \"#ff0000\", \"value\": true}}", "tag"},
+            {"{\"request\": \"bin.select\", \"params\": {\"tag\": \"#ff0000\"}}", "select-all"},
+            {R"({"request": "bin.filter", "params": {"rating": 3}})", "filter"},
+            {R"({"request": "bin.filter", "params": {"clear": true}})", "filter-off"},
             // the binding's own icon wins; "none" is none
             {R"({"keys": "ctrl+z", "icon": "history"})", "history"},
             {R"({"keys": "space", "icon": "player-play"})", "player-play"},
@@ -299,6 +348,11 @@ private Q_SLOTS:
         }
         for (const auto &c : catalog::controls()) {
             const QString i = icon(QStringLiteral(R"({"control": "%1"})").arg(c.name).toUtf8());
+            QVERIFY2(!i.isEmpty() && known.contains(i), qPrintable(c.name));
+        }
+        for (const auto &c : catalog::commands()) {
+            const QString params = c.name == QLatin1String("track.set") ? QStringLiteral(R"(, "params": {"what": "lock"})") : QString();  // its icon is per "what"
+            const QString i = icon(QStringLiteral(R"({"request": "%1"%2})").arg(c.name, params).toUtf8());
             QVERIFY2(!i.isEmpty() && known.contains(i), qPrintable(c.name));
         }
         // The list itself: sorted, unique, valid names.

@@ -26,21 +26,40 @@ inline const QString kColorWheel = QStringLiteral("colorwheel.nudge"); // editin
 inline const QString kTrackFocus = QStringLiteral("timeline.track");  // integral visual steps
 inline const QString kScroll = QStringLiteral("timeline.scroll");     // tenths of visible width
 inline const QString kAudioGain = QStringLiteral("audio.gain");       // editing, 0.1 dB
-inline const QString kTrim = QStringLiteral("edit.trim");             // editing, integral frames
+inline const QString kTrim = QStringLiteral("edit.trim");             // editing, integral frames; mode resize|slip|ripple (MR1b-B)
+// K23 MR1b-B (k23-mr1b-b-contract.md): typed timeline, effect and bin controls.
+inline const QString kNudge = QStringLiteral("edit.nudge");             // editing, frames (unit: frame|second); timeline.nudge.target
+inline const QString kTimelineTarget = QStringLiteral("timeline.target");  // kind: video|audio, integral track steps, no undo
+inline const QString kPan = QStringLiteral("audio.pan");                // editing, balance -50..50; timeline.track.pan.target
+inline const QString kEffectFocus = QStringLiteral("effect.focus");     // previous/next effect of the shown stack, no undo
+inline const QString kBinCursor = QStringLiteral("bin.cursor");         // visible bin rows (extend: bool), no undo
+inline const QString kBinRating = QStringLiteral("bin.rating");         // editing, stars 0..5; bin.selection.target
+inline const QStringList kTrimModes{QStringLiteral("resize"), QStringLiteral("slip"), QStringLiteral("ripple")};
 
 // Commands (Invoke).
 inline const QString kCmdParamReset = QStringLiteral("param.reset");
 inline const QString kCmdWheelReset = QStringLiteral("colorwheel.reset");
 inline const QString kCmdTrackSet = QStringLiteral("track.set");
+// MR1b-B commands.
+inline const QString kCmdEffectAdd = QStringLiteral("effect.add");          // id | preset, target?
+inline const QString kCmdEffectSet = QStringLiteral("effect.set");          // target, what: enabled, value
+inline const QString kCmdEffectMove = QStringLiteral("effect.move");        // target, delta
+inline const QString kCmdEffectRemove = QStringLiteral("effect.remove");    // target
+inline const QString kCmdStackSet = QStringLiteral("effectstack.set");      // target, what: enabled|compare, value
+inline const QString kCmdBinTag = QStringLiteral("bin.tag");                // target, tag, value
+inline const QString kCmdBinSelect = QStringLiteral("bin.select");          // tag
+inline const QString kCmdBinFilter = QStringLiteral("bin.filter");          // tag? rating? | clear
 
-// Every control and command of contract revision 2 (MR1-MR3), for config checks.
-inline const QStringList kKnownControls{kJog, kShuttle, kZoom, kParamFocus, kParamNudge, kColorWheel, kTrackFocus, kScroll, kAudioGain, kTrim};
-inline const QStringList kKnownCommands{kCmdParamReset, kCmdWheelReset, kCmdTrackSet};
+// Every control and command of contract revision 2 (MR1-MR3, K23 MR1b-B), for config checks.
+inline const QStringList kKnownControls{kJog,       kShuttle,    kZoom,           kParamFocus, kParamNudge,  kColorWheel, kTrackFocus, kScroll, kAudioGain,
+                                        kTrim,      kNudge,      kTimelineTarget, kPan,        kEffectFocus, kBinCursor,  kBinRating};
+inline const QStringList kKnownCommands{kCmdParamReset, kCmdWheelReset, kCmdTrackSet,  kCmdEffectAdd, kCmdEffectSet,
+                                        kCmdEffectMove, kCmdEffectRemove, kCmdStackSet, kCmdBinTag,    kCmdBinSelect, kCmdBinFilter};
 
 // Editing controls carry target + gesture (+ phase); the others only the common options.
 inline bool isEditingControl(const QString &c)
 {
-    return c == kParamNudge || c == kColorWheel || c == kAudioGain || c == kTrim;
+    return c == kParamNudge || c == kColorWheel || c == kAudioGain || c == kTrim || c == kNudge || c == kPan || c == kBinRating;
 }
 
 // Options.

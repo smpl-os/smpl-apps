@@ -10,6 +10,7 @@
 #include "featurelist.h"
 #include "inputmonitor.h"
 #include "kdenlivecatalog.h"
+#include "kdenlivecontract.h"
 #include "kdenlivedbusclient.h"
 #include "learn.h"
 #include "paddevice.h"
@@ -201,7 +202,7 @@ void check(SimEnv &env, bool ok, const QString &what)
 // simulate: "window CLASS [TITLE]" | "pid N" | "key3" | "knob1 +3" | "knob1 -1" |
 //           "knob2 press" (down + up) | "knob2 hold" | "knob2 release" |
 //           "wait MS" | "# comment"
-// Fake client only:   "context {json}" | "kdenlive on|off|pending" | "stage 1|2|3"
+// Fake client only:   "context {json}" | "kdenlive on|off|pending" | "stage 1|2|3|4"
 // Any client:         "await available|absent [MS]" | "await ctx PATH VALUE [MS]" |
 //                     "print ctx [PATH]" | "expect refused CODE [MS]" |
 //                     "expect no-refusal" | "expect no-keys" | "expect keys K1 K2 ..." |
@@ -257,6 +258,11 @@ int simulate(SimEnv &env, QIODevice &in)
                 if (n >= 3) {
                     controls << QStringLiteral("timeline.track") << QStringLiteral("timeline.scroll") << QStringLiteral("audio.gain") << QStringLiteral("edit.trim");
                     commands << QStringLiteral("track.set");
+                }
+                if (n >= 4) {  // K23 MR1b-B
+                    controls << contract::kTimelineTarget << contract::kPan << contract::kNudge << contract::kEffectFocus << contract::kBinCursor << contract::kBinRating;
+                    commands << contract::kCmdEffectAdd << contract::kCmdEffectSet << contract::kCmdEffectMove << contract::kCmdEffectRemove << contract::kCmdStackSet
+                             << contract::kCmdBinTag << contract::kCmdBinSelect << contract::kCmdBinFilter;
                 }
                 env.fake->setControlCapabilities(controls, commands);
             }

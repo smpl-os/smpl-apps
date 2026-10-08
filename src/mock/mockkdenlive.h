@@ -81,7 +81,17 @@ public:
     // clip-31 with a multi-key volume). "" clears the selection.
     void focusTrack(const QString &trackId);
     void selectClip(const QString &clipId);
+    void selectClipGroup(const QStringList &clipIds);
+    void setAudioRouting(const QVariantMap &routing);
     void setTrimGestureSteps(int n) { m_trimGestureSteps = n; }  // limits.trimGestureSteps (default 128)
+    // K23 MR1b-B effect and bin helpers.
+    void showBin(bool on = true);
+    void setBinClips(const QList<QVariantMap> &clips);
+    void selectBinClips(const QStringList &clipIds);
+    void showEffectStack(const QList<QVariantMap> &effects, bool compareAvailable = true);
+    void hideEffectStack();
+    void focusEffect(int index);
+    void focusEffectParameter(const QString &name);
     // MR1a action context: an open clip-monitor source (insert/overwrite and
     // clip markers need one) and a native drag in progress (editing actions busy).
     void setSourceOpen(bool on);
@@ -191,7 +201,21 @@ private:
     QVariantMap preflightEdit(const Pending &p, int *frame) const;  // {code, message} or empty
     QString gestureSubject(const Pending &p) const;
     QString gainTrack(const QString &target, QString *clip = nullptr) const;  // owning track of a gain handle
+    QString panTrack(const QString &target) const;
     QVariantMap timelineDescriptor() const;
+    QVariantMap effectDescriptor() const;
+    QVariantMap binDescriptor() const;
+    QVariantMap effectParamDescriptor(const QString &name, int effectIndex) const;
+    QVariantMap findParamTarget(const QString &target) const;
+    QStringList selectedTrimClips() const;
+    QStringList rippleScopeClips() const;
+    bool rippleAvailable() const;
+    QStringList nudgeClips() const;
+    QStringList visibleBinClipIds() const;
+    QString binSelectionTarget() const;
+    bool validBinSelection() const;
+    QStringList binTagIds() const;
+    int effectIndexForTarget(const QString &target) const;
     void finishFrameBoundGestures();
     QVariantMap stateCheck() const;  // ready/closing/active/modal, at admission and at dispatch
     // MR1a: host context restrictions (no caller: the descriptor's "enabled"),
@@ -243,7 +267,25 @@ private:
     QVariantMap m_tracks;  // id -> {id, type, label, mute, hide, lock, solo, target, gainDb}
     QVariantMap m_clips;   // id -> {track, start, end, minStart, maxEnd, linked, audio, volumeDb, staticVolume}
     QString m_selectedClip;
+    QStringList m_nudgeSelection;
+    QString m_videoTarget;
+    QVariantMap m_audioTargets;  // physical stream id -> track id
     int m_trimGestureSteps = 128;
+    bool m_binVisible = false;
+    QVariantList m_binClips;
+    QStringList m_binSelection;
+    int m_binCursor = 0;
+    QStringList m_binFilterTags;
+    QVariantList m_binFilterRatings;
+    QVariantList m_binFilterTypes;
+    int m_binFilterUsage = 0;
+    QVariantList m_effectStack;
+    bool m_effectStackShown = false;
+    bool m_effectStackEnabled = true;
+    bool m_effectCompare = false;
+    bool m_effectCompareAvailable = true;
+    int m_focusedEffect = -1;
+    QString m_focusedEffectParam;
     bool m_sourceOpen = true;
     bool m_dragging = false;
     bool m_trimming = false;
