@@ -59,6 +59,9 @@ cmake --build target/control-surface
 ctest --test-dir target/control-surface --output-on-failure -E '^uinput$'
 ```
 
+Run the tests as a regular user (CI uses an unprivileged account): as root,
+the checks that a file can't be written would pass.
+
 `./check.sh` runs this too when CMake and Qt6 are installed; CI always does.
 
 ## Native themes and transparency

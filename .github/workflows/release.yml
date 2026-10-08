@@ -100,8 +100,12 @@ jobs:
           cmake -S control-surface -B build-control-surface -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=ON
           cmake --build build-control-surface
-          # tst_uinput creates a real virtual keyboard on the build host; skip it.
-          ctest --test-dir build-control-surface --output-on-failure -E '^uinput$'
+          # Tests run unprivileged, like makepkg (as root, checks that a file
+          # can't be written would pass). tst_uinput creates a real virtual
+          # keyboard on the build host; skip it.
+          useradd -m tester
+          chown -R tester build-control-surface
+          runuser -u tester -- ctest --test-dir build-control-surface --output-on-failure -E '^uinput$'
           DESTDIR="$PWD/control-surface-install" cmake --install build-control-surface
           CS_ASSET="control-surface-${{ steps.version.outputs.new }}-x86_64.tar.gz"
           python scripts/release_assets.py control-surface control-surface-install "$CS_ASSET"

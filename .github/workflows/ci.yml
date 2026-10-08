@@ -281,5 +281,10 @@ jobs:
           cmake --build build-control-surface
 
       - name: Test
-        # tst_uinput creates a real virtual keyboard on the build host; skip it.
-        run: ctest --test-dir build-control-surface --output-on-failure -E '^uinput$'
+        # As an unprivileged user, like makepkg: as root, checks that a file
+        # can't be written would pass. tst_uinput creates a real virtual
+        # keyboard on the build host; skip it.
+        run: |
+          useradd -m tester
+          chown -R tester build-control-surface
+          runuser -u tester -- ctest --test-dir build-control-surface --output-on-failure -E '^uinput$'
