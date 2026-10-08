@@ -348,6 +348,60 @@ private Q_SLOTS:
         QVERIFY(!r.sheet.isVisible());
     }
 
+    void autoHideDefault()
+    {
+        // Nobody gets stuck with it: unset, a sheet that nothing holds goes after 8 s.
+        Rig r;
+        Config cfg = m_cfg;
+        cfg.cheatsheet.autoHideMs.reset();
+        r.engine.setConfig(cfg);
+        r.engine.setActiveWindow(kBrave);
+        r.engine.handle(PadEvent{QStringLiteral("key15"), PadEvent::KeyDown, 0, 0});  // the toggle key
+        r.engine.handle(PadEvent{QStringLiteral("key15"), PadEvent::KeyUp, 0, 0});
+        QVERIFY(r.sheet.isVisible());
+        QVERIFY(r.sheet.autoHideActive());
+        QCOMPARE(r.sheet.autoHideIntervalMs(), 8000);
+        r.sheet.hide();
+        r.sheet.show();  // ShowCheatsheet / ToggleCheatsheet
+        QVERIFY(r.sheet.autoHideActive());
+        QCOMPARE(r.sheet.autoHideIntervalMs(), 8000);
+        r.sheet.forceHide();
+        QVERIFY(!r.sheet.autoHideActive());
+        // A held "hold" key keeps it while held, without a timer.
+        r.engine.handle(PadEvent{QStringLiteral("key14"), PadEvent::KeyDown, 0, 0});
+        QVERIFY(r.sheet.isVisible());
+        QVERIFY(!r.sheet.autoHideActive());
+        r.engine.handle(PadEvent{QStringLiteral("key14"), PadEvent::KeyUp, 0, 0});
+        QVERIFY(!r.sheet.isVisible());
+        // Explicitly 0: until hidden.
+        cfg.cheatsheet.autoHideMs = 0;
+        r.engine.setConfig(cfg);
+        r.sheet.toggle();
+        QVERIFY(r.sheet.isVisible());
+        QVERIFY(!r.sheet.autoHideActive());
+        QCOMPARE(r.sheet.content().value(QStringLiteral("options")).toObject().value(QStringLiteral("autoHideMs")).toInt(), 0);
+        cfg.cheatsheet.autoHideMs.reset();
+        r.engine.setConfig(cfg);
+        QCOMPARE(r.sheet.content().value(QStringLiteral("options")).toObject().value(QStringLiteral("autoHideMs")).toInt(), 8000);
+    }
+
+    void forceHideIsIdempotent()
+    {
+        Rig r;
+        r.engine.setConfig(m_cfg);
+        QSignalSpy visible(&r.sheet, &Cheatsheet::visibilityChanged);
+        QSignalSpy forced(&r.sheet, &Cheatsheet::hideForced);
+        r.sheet.forceHide();  // hidden already: still tells the renderer
+        r.sheet.forceHide();
+        QCOMPARE(forced.count(), 2);
+        QCOMPARE(visible.count(), 0);
+        r.sheet.show();
+        r.sheet.forceHide();
+        QVERIFY(!r.sheet.isVisible());
+        QCOMPARE(visible.count(), 2);
+        QCOMPARE(forced.count(), 3);
+    }
+
     void previews()
     {
         // Any window and context, from a config alone; Kdenlive assumed to answer.

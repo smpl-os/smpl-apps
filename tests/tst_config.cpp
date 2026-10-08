@@ -443,7 +443,8 @@ private Q_SLOTS:
         QVERIFY(c->warnings.isEmpty());
         // Defaults.
         QCOMPARE(c->cheatsheet.opacity, 0.85);
-        QCOMPARE(c->cheatsheet.autoHideMs, 0);
+        QVERIFY(!c->cheatsheet.autoHideMs);  // unset: hides itself after 8 s
+        QCOMPARE(c->cheatsheet.effectiveAutoHideMs(), 8000);
         QCOMPARE(c->cheatsheet.position, QStringLiteral("center"));
 
         QVERIFY(!parseConfig(R"({"profiles":[{"name":"g","bindings":{"key1":{"cheatsheet":"always"}}}]})", {}, &err));
@@ -467,10 +468,17 @@ private Q_SLOTS:
         c = parseConfig(R"({"cheatsheet":{"opacity":0.5,"autoHideMs":4000,"position":"top-right"},"profiles":[]})", {}, &err);
         QVERIFY2(c, qPrintable(err));
         QCOMPARE(c->cheatsheet.opacity, 0.5);
-        QCOMPARE(c->cheatsheet.autoHideMs, 4000);
+        QCOMPARE(c->cheatsheet.autoHideMs, std::optional<int>(4000));
+        QCOMPARE(c->cheatsheet.effectiveAutoHideMs(), 4000);
         QCOMPARE(c->cheatsheet.position, QStringLiteral("top-right"));
+        c = parseConfig(R"({"cheatsheet":{"autoHideMs":0},"profiles":[]})", {}, &err);  // explicitly: until hidden
+        QVERIFY2(c, qPrintable(err));
+        QCOMPARE(c->cheatsheet.autoHideMs, std::optional<int>(0));
+        QCOMPARE(c->cheatsheet.effectiveAutoHideMs(), 0);
         for (const char *bad : {R"({"cheatsheet":{"opacity":0},"profiles":[]})", R"({"cheatsheet":{"opacity":1.5},"profiles":[]})",
                                 R"({"cheatsheet":{"autoHideMs":-1},"profiles":[]})", R"({"cheatsheet":{"position":"middle"},"profiles":[]})",
+                                R"({"cheatsheet":{"autoHideMs":"8s"},"profiles":[]})", R"({"cheatsheet":{"autoHideMs":600001},"profiles":[]})",
+                                R"({"cheatsheet":{"autoHideMs":null},"profiles":[]})",
                                 R"({"cheatsheet":{"color":"red"},"profiles":[]})", R"({"cheatsheet":true,"profiles":[]})"}) {
             QVERIFY2(!parseConfig(bad, {}, &err), bad);
             QVERIFY(err.startsWith(QStringLiteral("cheatsheet")));

@@ -54,6 +54,8 @@ private:
         QStringList args;
     };
     void push(const QJsonObject &content, bool visible);
+    void forceHide();
+    bool pending(int kind) const;
     void plan();
     void startNext();
     void done(QProcess *p, bool ok, const QString &output);
@@ -72,6 +74,9 @@ private:
     bool m_windowOpen = false;
     QString m_openAnchor;
     bool m_lastUpdateOk = true;
+    // Cheatsheet::forceHide(): close and send hidden whatever eww was told.
+    bool m_forceClose = false;
+    bool m_forceUpdate = false;
     QList<Step> m_steps;
     QProcess *m_proc = nullptr;
     Step m_running;

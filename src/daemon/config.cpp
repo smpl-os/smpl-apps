@@ -464,12 +464,14 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
             return std::nullopt;
         }
         cfg.cheatsheet.opacity = o.value(QStringLiteral("opacity")).toDouble(cfg.cheatsheet.opacity);
-        cfg.cheatsheet.autoHideMs = o.value(QStringLiteral("autoHideMs")).toInt(cfg.cheatsheet.autoHideMs);
+        if (o.contains(QStringLiteral("autoHideMs"))) {
+            cfg.cheatsheet.autoHideMs = o.value(QStringLiteral("autoHideMs")).toInt(-1);
+        }
         cfg.cheatsheet.position = o.value(QStringLiteral("position")).toString(cfg.cheatsheet.position);
-        if (!(cfg.cheatsheet.opacity >= 0.05 && cfg.cheatsheet.opacity <= 1.0) || cfg.cheatsheet.autoHideMs < 0 || cfg.cheatsheet.autoHideMs > 600000
+        if (!(cfg.cheatsheet.opacity >= 0.05 && cfg.cheatsheet.opacity <= 1.0) || (cfg.cheatsheet.autoHideMs && (*cfg.cheatsheet.autoHideMs < 0 || *cfg.cheatsheet.autoHideMs > 600000))
             || !CheatsheetOptions::positions().contains(cfg.cheatsheet.position)) {
             if (error) {
-                *error = QStringLiteral("cheatsheet: opacity 0.05..1, autoHideMs 0..600000, position one of %1").arg(CheatsheetOptions::positions().join(QStringLiteral(", ")));
+                *error = QStringLiteral("cheatsheet: opacity 0.05..1, autoHideMs 0..600000 (0 = until hidden; unset = %1), position one of %2").arg(CheatsheetOptions::kDefaultAutoHideMs).arg(CheatsheetOptions::positions().join(QStringLiteral(", ")));
             }
             return std::nullopt;
         }

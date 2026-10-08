@@ -336,6 +336,78 @@ private Q_SLOTS:
         QCOMPARE(calls().size(), 10);
     }
 
+    void forceHideAlwaysClosesTheWindow()
+    {
+        // HideCheatsheet (a click on the overlay) when the daemon already
+        // thinks it is hidden: eww is told again, every time.
+        Rig r(sheetConfig("center"));
+        r.sink.setOptions(hook());
+        QTRY_VERIFY(!r.sink.isBusy());
+        QCOMPARE(calls().size(), 2);
+        r.sheet.forceHide();
+        QTRY_VERIFY(!r.sink.isBusy());
+        QCOMPARE(calls().mid(2), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+        r.sheet.forceHide();
+        QTRY_VERIFY(!r.sink.isBusy());
+        QCOMPARE(calls().mid(4), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+        QVERIFY(!r.sheet.isVisible());
+
+        // Shown: one close and one hidden update, not two of each.
+        r.sheet.show();
+        QTRY_VERIFY(!r.sink.isBusy());
+        QCOMPARE(calls().size(), 8);
+        r.sheet.forceHide();
+        QTRY_VERIFY(!r.sink.isBusy());
+        QTest::qWait(100);
+        QCOMPARE(calls().mid(8), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+
+        // While a show is still on its way (slow eww): it ends hidden and closed.
+        flag("slow", true);
+        r.sheet.show();
+        QVERIFY(r.sink.isBusy());
+        r.sheet.forceHide();
+        QTRY_VERIFY_WITH_TIMEOUT(!r.sink.isBusy(), 5000);
+        const QStringList tail = calls().mid(10);
+        QCOMPARE(tail.mid(tail.size() - 2), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+        QCOMPARE(tail.count(QStringLiteral("close pad-cheatsheet")), 1);
+    }
+
+    void forceHideAfterASkippedOpen()
+    {
+        // The daemon's view of the window can be wrong (an update failed, so
+        // no open was sent, but a window is up anyway): the click still closes it.
+        flag("fail-update", true);
+        Rig r(sheetConfig("center"));
+        r.sink.setOptions(hook());
+        r.sheet.show();
+        QTRY_VERIFY(!r.sink.isBusy());
+        QVERIFY(!calls().contains(QStringLiteral("open pad-cheatsheet @center")));
+        flag("fail-update", false);
+        const int before = calls().size();
+        r.sheet.forceHide();
+        QTRY_VERIFY(!r.sink.isBusy());
+        const QStringList tail = calls().mid(before);
+        QCOMPARE(tail.size(), 2);
+        QVERIFY(tail.contains(QStringLiteral("close pad-cheatsheet")));
+        QVERIFY(tail.contains(QStringLiteral("update pad_sheet visible=false")));
+    }
+
+    void forceHideVariableOnly()
+    {
+        Rig r(sheetConfig("center"));
+        EwwHook h;
+        h.enabled = true;
+        r.sink.setOptions(h);
+        QTRY_VERIFY(!r.sink.isBusy());
+        r.sheet.forceHide();
+        QTRY_VERIFY(!r.sink.isBusy());
+        QCOMPARE(calls(), (QStringList{QStringLiteral("update pad_sheet visible=false"), QStringLiteral("update pad_sheet visible=false")}));
+        r.sink.setOptions(EwwHook{});  // off: a click changes nothing in eww
+        r.sheet.forceHide();
+        QTest::qWait(100);
+        QCOMPARE(calls().size(), 2);
+    }
+
     void finishHidesWithoutEventLoop()
     {
         Rig r(sheetConfig("center"));

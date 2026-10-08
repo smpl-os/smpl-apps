@@ -1154,9 +1154,31 @@ private Q_SLOTS:
             const QJsonObject eww = obj(mock.settings().GetStatus()).value(QStringLiteral("cheatsheet")).toObject().value(QStringLiteral("eww")).toObject();
             QCOMPARE(eww.value(QStringLiteral("enabled")).toBool(), true);
             QCOMPARE(eww.value(QStringLiteral("calls")).toInt(), 4);
+            // Shown by a toggle key with autoHideMs unset: it goes by itself after 8 s.
+            QVERIFY(mock.cheatsheet().autoHideActive());
+            QCOMPARE(mock.cheatsheet().autoHideIntervalMs(), 8000);
+            // A click on the overlay: HideCheatsheet, idempotent, and the
+            // window is closed every time.
+            QSignalSpy visible(&mock.settings(), &SettingsService::CheatsheetVisibilityChanged);
+            mock.settings().HideCheatsheet();
+            QTRY_VERIFY(!mock.eww().isBusy());
+            QCOMPARE(ewwmock::summaries(log).mid(4), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+            mock.settings().HideCheatsheet();
+            QTRY_VERIFY(!mock.eww().isBusy());
+            QCOMPARE(ewwmock::summaries(log).mid(6), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+            QCOMPARE(visible.count(), 1);  // one real change
+            QVERIFY(!mock.cheatsheet().isVisible());
+            // ShowCheatsheet (the bar, Settings) also gets the default auto-hide.
+            mock.settings().ShowCheatsheet();
+            QVERIFY(mock.cheatsheet().autoHideActive());
+            QTRY_VERIFY(!mock.eww().isBusy());
+            mock.settings().HideCheatsheet();
+            QTRY_VERIFY(!mock.eww().isBusy());
+            QCOMPARE(ewwmock::summaries(log).size(), 12);
         }
-        // Quitting the mock hides it.
-        QCOMPARE(ewwmock::summaries(log).mid(4), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
+        // Quitting the mock: already hidden, nothing more to do.
+        QCOMPARE(ewwmock::summaries(log).size(), 12);
+        QCOMPARE(ewwmock::summaries(log).mid(10), (QStringList{QStringLiteral("close pad-cheatsheet"), QStringLiteral("update pad_sheet visible=false")}));
         qputenv("PATH", oldPath);
     }
 };

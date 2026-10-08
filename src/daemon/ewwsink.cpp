@@ -3,6 +3,7 @@
 #include "cheatsheet.h"
 
 #include <QElapsedTimer>
+#include <algorithm>
 #include <QJsonDocument>
 #include <QTimer>
 
@@ -44,6 +45,28 @@ EwwSink::EwwSink(Cheatsheet *sheet, QObject *parent)
             push(m_sheet->content(), false);
         }
     });
+    connect(sheet, &Cheatsheet::hideForced, this, &EwwSink::forceHide);
+}
+
+bool EwwSink::pending(int kind) const
+{
+    if (m_proc && m_running.kind == kind) {
+        return true;
+    }
+    return std::any_of(m_steps.cbegin(), m_steps.cend(), [kind](const Step &s) { return s.kind == kind; });
+}
+
+void EwwSink::forceHide()
+{
+    if (!m_opts.enabled || !m_sheet) {
+        return;
+    }
+    // Whatever eww was told (a window left open, a variable out of step):
+    // close the window and send the hidden state, unless the hide that just
+    // happened already has them on their way.
+    m_forceClose = !m_opts.window.isEmpty() && !pending(Step::Close);
+    m_forceUpdate = !pending(Step::Update);
+    push(m_sheet->content(), false);
 }
 
 EwwSink::~EwwSink()
@@ -141,6 +164,7 @@ void EwwSink::plan()
         return true;
     };
     if (m_wantVisible) {
+        m_forceClose = m_forceUpdate = false;
         if (!m_opts.window.isEmpty() && m_windowOpen && m_openAnchor != m_wantAnchor) {
             // eww anchors a window when it opens: a new position needs a reopen.
             m_steps.append(Step{Step::Close, m_opts.binary, base + QStringList{QStringLiteral("close"), m_opts.window}});
@@ -154,13 +178,14 @@ void EwwSink::plan()
             m_openAnchor = m_wantAnchor;
         }
     } else {
-        if (!m_opts.window.isEmpty() && m_windowOpen) {
+        if (!m_opts.window.isEmpty() && (m_windowOpen || m_forceClose)) {
             m_steps.append(Step{Step::Close, m_opts.binary, base + QStringList{QStringLiteral("close"), m_opts.window}});
             m_windowOpen = false;
         }
-        if (changed) {
+        if (changed || m_forceUpdate) {
             update();
         }
+        m_forceClose = m_forceUpdate = false;
     }
 }
 

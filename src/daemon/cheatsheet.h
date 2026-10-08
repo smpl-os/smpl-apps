@@ -42,8 +42,15 @@ public:
                                const QVariantMap &kdenliveContext);
 
     bool isVisible() const { return m_visible; }
+    // Shown by anything but a held "hold" key, it hides itself after the
+    // config's autoHideMs without pad input (unset: 8 s; 0: until hidden).
     void show(bool byHold = false);
     void hide();
+    // hide(), and tell the renderer to hide even if it already is (the user
+    // clicked the overlay: whatever is on screen goes). Always safe to call.
+    void forceHide();
+    bool autoHideActive() const;
+    int autoHideIntervalMs() const;
     void toggle();
     void request(const QString &op);  // toggle | show | hide (from the engine)
     void noteInput();                 // pad input: restarts the auto-hide timer
@@ -51,6 +58,7 @@ public:
 
 Q_SIGNALS:
     void visibilityChanged(bool visible);
+    void hideForced();  // after forceHide(), also when it was hidden already
     // While visible: once when shown, then whenever the content changes.
     void changed(const QJsonObject &content);
 

@@ -382,7 +382,7 @@ void SettingsService::ShowCheatsheet()
 void SettingsService::HideCheatsheet()
 {
     if (m_cheatsheet) {
-        m_cheatsheet->hide();
+        m_cheatsheet->forceHide();  // e.g. a click on the overlay: always gone, also from eww
     }
 }
 

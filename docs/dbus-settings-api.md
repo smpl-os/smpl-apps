@@ -197,11 +197,14 @@ extra process is involved.
 |---|---|
 | `GetCheatsheet() → s` | the content below, for the focused window (also while hidden) |
 | `GetCheatsheetFor(s windowClass, s title, s kdenliveContextJson) → s` | the same for any app and Kdenlive context (`""` or e.g. `{"colorWheels": true}`), for editors. Kdenlive is assumed to answer. Changes nothing. |
-| `ShowCheatsheet()`, `HideCheatsheet()`, `ToggleCheatsheet()` | for the bar, hotkeys or Settings |
+| `ShowCheatsheet()`, `HideCheatsheet()`, `ToggleCheatsheet()` | for the bar, hotkeys or Settings. `HideCheatsheet` is what a click on the overlay calls: always safe, and with the eww push it always closes the window and sends the hidden state, even when the daemon already thinks it is hidden. |
 
 Shown and hidden by a binding (`{"cheatsheet": "toggle"}`, or `"hold"`: shown
-while held; keys and knob presses only), by these methods, or hidden by
-`autoHideMs` without pad input. Unplugging the pad hides it.
+while held; keys and knob presses only) or by these methods. Shown by
+anything but a held `"hold"` key (a toggle key, `ShowCheatsheet`,
+`ToggleCheatsheet`), it hides itself after `autoHideMs` without pad input:
+8 s when the config does not set it, never with `0`. Unplugging the pad
+hides it.
 
 Content:
 
@@ -209,7 +212,7 @@ Content:
 {"ok": true, "visible": true, "title": "Kdenlive · Wheels", "profile": "Kdenlive",
  "layers": ["Wheels"], "window": {"class": "org.kde.kdenlive", "title": "…"},
  "context": {"focus": "effectStack"}, "notice": "",
- "options": {"opacity": 0.85, "autoHideMs": 0, "position": "center"},
+ "options": {"opacity": 0.85, "autoHideMs": 8000, "position": "center"},
  "layout": {"id": "sy181-15k3e", "name": "…", "rows": 3, "columns": 6, "source": "firmware"},
  "keys":  [{"control": "key1", "row": 0, "column": 0, <entry>}, …],
  "knobs": [{"control": "knob1", "row": 0, "column": 5,
@@ -233,8 +236,8 @@ Content:
 * `notice` explains inactive Kdenlive bindings (interface off, or not
   answered yet).
 
-Config: `"cheatsheet": {"opacity": 0.05..1, "autoHideMs": 0..600000 (0 = until
-hidden; restarted by pad input), "position": "center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right",
+Config: `"cheatsheet": {"opacity": 0.05..1, "autoHideMs": 0..600000 (unset = 8000;
+0 = until hidden; restarted by pad input), "position": "center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right",
 "eww": see below}`.
 
 #### Pushed into eww (no listener process)

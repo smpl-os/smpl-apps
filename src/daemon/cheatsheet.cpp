@@ -60,7 +60,7 @@ void Cheatsheet::refresh()
 
 void Cheatsheet::show(bool byHold)
 {
-    const int autoHide = m_engine->config().cheatsheet.autoHideMs;
+    const int autoHide = m_engine->config().cheatsheet.effectiveAutoHideMs();
     if (!byHold && autoHide > 0) {
         m_autoHide->start(autoHide);
     } else {
@@ -85,6 +85,22 @@ void Cheatsheet::hide()
     }
     m_visible = false;
     Q_EMIT visibilityChanged(false);
+}
+
+void Cheatsheet::forceHide()
+{
+    hide();
+    Q_EMIT hideForced();
+}
+
+bool Cheatsheet::autoHideActive() const
+{
+    return m_autoHide->isActive();
+}
+
+int Cheatsheet::autoHideIntervalMs() const
+{
+    return m_autoHide->interval();
 }
 
 void Cheatsheet::toggle()
@@ -214,7 +230,7 @@ QJsonObject Cheatsheet::content() const
                     {QStringLiteral("window"), QJsonObject{{QStringLiteral("class"), w.cls}, {QStringLiteral("title"), w.title}}},
                     {QStringLiteral("notice"), notice},
                     {QStringLiteral("options"), QJsonObject{{QStringLiteral("opacity"), o.opacity},
-                                                            {QStringLiteral("autoHideMs"), o.autoHideMs},
+                                                            {QStringLiteral("autoHideMs"), o.effectiveAutoHideMs()},
                                                             {QStringLiteral("position"), o.position}}},
                     {QStringLiteral("layout"), QJsonObject{{QStringLiteral("id"), layout.id},
                                                            {QStringLiteral("name"), layout.name},

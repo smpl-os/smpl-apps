@@ -66,7 +66,7 @@ QJsonObject featuresJson()
         {QStringLiteral("cheatsheet"), QJsonObject{{QStringLiteral("modes"), QJsonArray{QStringLiteral("toggle"), QStringLiteral("hold")}},
                                                    {QStringLiteral("slots"), QStringLiteral("keyN or knobN.press")},
                                                    {QStringLiteral("options"), QJsonObject{{QStringLiteral("opacity"), QStringLiteral("0.05..1, default 0.85")},
-                                                                                           {QStringLiteral("autoHideMs"), QStringLiteral("0..600000, 0 = until hidden; restarted by pad input")},
+                                                                                           {QStringLiteral("autoHideMs"), QStringLiteral("0..600000; unset = 8000, 0 = until hidden; restarted by pad input; not while a hold key holds it")},
                                                                                            {QStringLiteral("position"), QJsonArray::fromStringList(CheatsheetOptions::positions())},
                                                                                            {QStringLiteral("eww"), QStringLiteral(R"(true | false | {"enabled", "variable": "pad_sheet", "window", "binary": "eww", "config"}; over run --eww / --eww-window NAME / --eww-config DIR)")}}},
                                                    {QStringLiteral("eww"), QJsonObject{{QStringLiteral("update"), QStringLiteral("eww [--config DIR] update VARIABLE=<GetCheatsheet JSON>: on show, change and hide, and hidden at start and exit")},
