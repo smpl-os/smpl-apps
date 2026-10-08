@@ -109,8 +109,11 @@ struct KeypadControl {
     glyph: string,
     // Held for the layer being edited ("while holding key 1").
     held: bool,
-    // Holding it applies a layer of this profile (shown on the normal layout).
+    // Holding it applies a layer of this profile (shown on the normal layout);
+    // while picking the key to hold, the one to prefer.
     holds: bool,
+    // Can't fire while the layer's key is held (the pad reads it one at a time).
+    blocked: bool,
 }
 
 /// A keypad variant (board profile) with what its schematic needs.
@@ -838,7 +841,8 @@ component KeypadCanvas inherits Rectangle {
             y: parent.height - self.height - (control.knob ? 9px : 4px);
             width: parent.width - 8px;
             text: control.summary;
-            color: control.active ? Theme.bg : Theme.fg;
+            color: control.active ? Theme.bg : control.blocked ? Theme.fg_dim : Theme.fg;
+            font-italic: control.blocked;
             font-size: Typography.caption;
             horizontal-alignment: center;
             overflow: elide;
@@ -1729,8 +1733,10 @@ export component MainWindow inherits Window {
     in property <[string]> kp-layer-names;
     in property <int> kp-layer-index: 0;
     in property <bool> kp-layer-held: false;
+    in property <bool> kp-layer-movable: false;
     in property <bool> kp-picking-held: false;
     in property <string> kp-layer-note;
+    in property <string> kp-picking-note;
     // The control selected is the one held for the layer: nothing to map.
     in property <bool> kp-editor-locked: false;
     in property <string> kp-bindings-title: "Mapped in this profile";
@@ -1793,6 +1799,7 @@ export component MainWindow inherits Window {
     callback kp-start-held-layer();
     callback kp-cancel-held-layer();
     callback kp-remove-layer();
+    callback kp-move-layer-first();
     callback kp-set-input-mode(int);
     callback kp-set-tuning(string, float);
     callback kp-reset-tunings();
@@ -8619,6 +8626,10 @@ export component MainWindow inherits Window {
                                     text: "Hold a key…";
                                     clicked => { root.kp-start-held-layer(); }
                                 }
+                                if root.kp-layer-movable && !root.kp-picking-held: KeypadButton {
+                                    text: "Move first";
+                                    clicked => { root.kp-move-layer-first(); }
+                                }
                                 if root.kp-layer-held && !root.kp-picking-held: KeypadButton {
                                     text: "Remove layer";
                                     clicked => { root.kp-remove-layer(); }
@@ -8634,7 +8645,7 @@ export component MainWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                                 Text {
-                                    text: "Click the key (or knob) to hold on the layout above. While you hold it, the other keys and knobs do what you map in its layer.";
+                                    text: root.kp-picking-note;
                                     color: Theme.fg;
                                     font-size: Typography.secondary;
                                     vertical-alignment: center;

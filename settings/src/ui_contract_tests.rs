@@ -475,14 +475,22 @@ fn keypad_advanced_reaches_what_was_hand_edited() {
         "text: root.kp-bindings-title;",
         "text: root.kp-sheet-preview-caption;",
         "hold-glyph: root.kp-hold-glyph;",
+        "clicked => { root.kp-move-layer-first(); }",
+        "text: root.kp-picking-note;",
     ] {
         assert!(keypad.contains(needle), "held layers: {needle}");
     }
     let canvas = UI.split("component KeypadCanvas").nth(1).unwrap().split("\ncomponent ").next().unwrap();
-    for needle in ["if control.held: Text {", r#"text: "held";"#, "if control.holds && !control.seen: Text {"] {
+    for needle in ["if control.held: Text {", r#"text: "held";"#, "if control.holds && !control.seen: Text {", "font-italic: control.blocked;"] {
         assert!(canvas.contains(needle), "canvas: {needle}");
     }
     let advanced_rs = include_str!("keypad/ui.rs");
+    // "held" is a condition like any other (control-surface d78e2bf): nothing
+    // may tell the user a held layer wins regardless of order.
+    for claim in ["own held layers win", "win over every other", "always win"] {
+        assert!(!advanced_rs.contains(claim), "{claim}");
+    }
+    assert!(advanced_rs.contains("Layers apply in list order"));
     for needle in ["fn direct_route(", "super::set_option(k, v)", "wizard_input_begin(st)", "wizard_input_end(st, w.restore_input.take())"] {
         assert!(advanced_rs.contains(needle), "{needle}");
     }

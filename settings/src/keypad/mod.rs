@@ -72,6 +72,9 @@ pub struct DaemonLayout {
     pub keys: usize,
     pub knobs: usize,
     pub columns: usize,
+    /// Controls the pad reads one at a time (`oneAtATime`; sy181: keys 2–15
+    /// and the knob presses): pressing one reports another held one released.
+    pub one_at_a_time: Vec<String>,
 }
 
 /// How the running keypad app reads the keypad (`GetStatus().input`).
@@ -522,7 +525,62 @@ pub fn parse_daemon_layout(json: &str) -> Option<DaemonLayout> {
         keys: keys.len(),
         knobs,
         columns,
+        one_at_a_time: strings_at(l, "oneAtATime"),
     })
+}
+
+fn strings_at(v: &Value, key: &str) -> Vec<String> {
+    v.get(key).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect()
+}
+
+/// A warning `check-config --json` gives about one place in the config.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LintWarning {
+    pub profile: String,
+    /// Empty for the profile's own bindings.
+    pub layer: String,
+    /// Empty for the layer (or profile) as a whole.
+    pub slot: String,
+    pub message: String,
+}
+
+/// What the keypad app says about an (unsaved) config.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Lint {
+    /// Controls of the layout in effect read one at a time.
+    pub one_at_a_time: Vec<String>,
+    pub warnings: Vec<LintWarning>,
+}
+
+pub fn parse_lint(json: &str) -> Option<Lint> {
+    let v: Value = serde_json::from_str(json.trim()).ok()?;
+    if !v.is_object() {
+        return None;
+    }
+    let warnings = v
+        .get("warningDetails")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|w| LintWarning { profile: text(w, "profile"), layer: text(w, "layer"), slot: text(w, "slot"), message: text(w, "message") })
+        .filter(|w| !w.message.is_empty())
+        .collect();
+    Some(Lint { one_at_a_time: v.get("layout").map(|l| strings_at(l, "oneAtATime")).unwrap_or_default(), warnings })
+}
+
+/// `control-surfaced check-config --json` on a temporary copy of `config_text`
+/// next to the config (relative paths resolve the same). `None` without a
+/// keypad app or for one that predates `--json`.
+pub fn lint(daemon: Option<&Path>, scratch: &Path, config_text: &str) -> Option<Lint> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let daemon = daemon?;
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file = scratch.join(format!(".config.jsonc.check-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(scratch).ok()?;
+    std::fs::write(&file, config_text).ok()?;
+    let out = Command::new(daemon).args(["check-config", "--json", "-c"]).arg(&file).output();
+    let _ = std::fs::remove_file(&file);
+    parse_lint(&String::from_utf8_lossy(&out.ok()?.stdout))
 }
 
 fn daemon_layout() -> Option<DaemonLayout> {
@@ -1558,6 +1616,22 @@ mod tests {
 
         assert!(input_summary(None, false, open, "auto").0.contains("isn't running"));
         assert!(input_summary(None, true, open, "auto").0.contains("too old"));
+    }
+
+    #[test]
+    fn check_config_json_gives_the_pads_limits_and_where_warnings_are() {
+        let json = r#"{"ok":true,"layout":{"id":"sy181-15k3e","oneAtATime":["key2","key3","knob1"]},
+            "warnings":["x"],"warningDetails":[
+              {"profile":"global","layer":"hold-key5","slot":"key2","message":"profile global layer hold-key5: key2: never fires"},
+              {"profile":"global","layer":"","slot":"knob1.shift.cw","message":"shift"},
+              {"profile":"g","message":""}]}"#;
+        let lint = parse_lint(json).unwrap();
+        assert_eq!(lint.one_at_a_time, ["key2", "key3", "knob1"]);
+        assert_eq!(lint.warnings.len(), 2, "empty messages are dropped");
+        assert_eq!((lint.warnings[0].layer.as_str(), lint.warnings[0].slot.as_str()), ("hold-key5", "key2"));
+        assert_eq!(parse_lint("not json"), None);
+        let layout = parse_daemon_layout(r#"{"ok":true,"layout":{"id":"sy181-15k3e","keys":[{"column":4}],"knobs":[],"oneAtATime":["key2"]}}"#).unwrap();
+        assert_eq!(layout.one_at_a_time, ["key2"]);
     }
 
     #[test]

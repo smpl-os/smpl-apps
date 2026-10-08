@@ -632,7 +632,8 @@ fn merge_extras(old: Option<&Json>, new: Json) -> Json {
 
 /// A layer that applies while pad controls are held down
 /// (`"when": {"held": "key1" | ["key1", "key13"] | "key1+knob3"}`, control-
-/// surface's held layers). While held it wins over every other binding.
+/// surface's held layers). "held" is a condition like any other: layers apply
+/// in list order, the first matching one that binds an input wins.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HeldLayer {
     /// Index in the profile's `"layers"`.
@@ -1331,8 +1332,11 @@ impl KeypadConfig {
 
     /// Finds or adds the layer that applies while `control` is held
     /// (`extra`: further `"when"` conditions, e.g. a Kdenlive layer's).
-    /// Layers with conditions go first, so they win over the plain one;
-    /// plain ones go after the other held layers. Returns its index.
+    /// Layers apply in list order, so a new one goes before the profile's
+    /// context layers, to win over them while held: one with conditions goes
+    /// first of all (it is the more specific), a plain one after the held
+    /// layers already at the top (a "key1+knob3" chord stays ahead of
+    /// "key1"). Returns its index.
     fn held_layer_for(&mut self, profile: usize, control: &str, extra: &[(String, Json)], name: &str) -> Result<usize, String> {
         if !held_control(control) {
             return Err(format!("'{control}' is not a key or knob"));
@@ -1363,6 +1367,28 @@ impl KeypadConfig {
     /// returns its index in `"layers"`.
     pub fn add_held_layer(&mut self, profile: usize, control: &str) -> Result<usize, String> {
         self.held_layer_for(profile, control, &[], &format!("hold-{control}"))
+    }
+
+    /// The layers of a profile, by name, in the order they apply.
+    pub fn layer_names(&self, profile: usize) -> Vec<String> {
+        self.profile_list()
+            .get(profile)
+            .and_then(|p| p.get("layers"))
+            .and_then(Json::as_array)
+            .map(|ls| ls.iter().enumerate().map(|(i, l)| l.get("name").and_then(Json::as_str).map_or(format!("layer {}", i + 1), String::from)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Moves a layer to the top of the list (layers apply in list order, so it
+    /// then wins wherever it binds an input). Returns its new index (0).
+    pub fn move_layer_first(&mut self, profile: usize, index: usize) -> Result<usize, String> {
+        let layers = self.layers_mut(profile)?;
+        if index >= layers.len() {
+            return Err("no such layer".into());
+        }
+        let layer = layers.remove(index);
+        layers.insert(0, layer);
+        Ok(0)
     }
 
     pub fn remove_layer(&mut self, profile: usize, index: usize) -> Result<(), String> {
@@ -2126,6 +2152,23 @@ mod tests {
         c.remove_layer(0, i).unwrap();
         assert_eq!(c.held_layers(0).len(), 0);
         assert_eq!(c.context_layer_count(0), 1);
+    }
+
+    #[test]
+    fn held_layers_go_before_context_layers_and_can_move_first() {
+        // Layers apply in list order ("held" is a condition like any other).
+        let mut c = KeypadConfig::parse(r#"{"profiles": [{"name": "global", "layers": [
+            {"name": "chord", "when": {"held": "key1+knob3"}, "bindings": {}},
+            {"name": "workspace", "when": {"$mode.ws": "1"}, "bindings": {}},
+            {"name": "hub", "when": {"held": "key15"}, "bindings": {}}],
+            "bindings": {}}]}"#).unwrap();
+        let i = c.add_held_layer(0, "key1").unwrap();
+        assert_eq!(c.layer_names(0), ["chord", "hold-key1", "workspace", "hub"], "after the chord, before the context layer");
+        assert_eq!(i, 1);
+        assert_eq!(c.add_held_layer(0, "key15").unwrap(), 3, "a hand-placed held layer stays where it is");
+        assert_eq!(c.move_layer_first(0, 3).unwrap(), 0);
+        assert_eq!(c.layer_names(0), ["hub", "chord", "hold-key1", "workspace"]);
+        assert!(c.move_layer_first(0, 9).is_err());
     }
 
     #[test]

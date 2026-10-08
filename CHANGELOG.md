@@ -64,13 +64,25 @@ All notable changes to smpl-apps are documented here.
     `"when": {"held": "keyN"}` layer, or opens the existing one.
   - **Editing it:** the editor, binding list, layout and cheatsheet preview
     show that layer. The preview passes `"$held"` to the keypad app; unset
-    controls keep their normal binding. The held control is marked "held"
-    and can't be mapped in its own layer. On the normal layout, controls
-    that have layers carry a small hand. Remove layer deletes it.
+    controls do what the next layer or their normal binding says. The held
+    control is marked "held" and can't be mapped in its own layer. On the
+    normal layout, controls that have layers carry a small hand (an app
+    profile's layout also marks Global's held keys). Remove layer deletes it.
+  - **Order:** layers apply in list order ("held" is a condition like any
+    other, control-surface d78e2bf). A new held layer goes before the
+    profile's context layers, and the layer note names any layer listed
+    before it, with **Move first**.
+  - **What this pad can hold:** key 1 has its own pin; keys 2–15 and the
+    knob presses are read one at a time (the layout's `oneAtATime`). So
+    "Hold a key…" marks and recommends key 1. In a layer held on another
+    key, the keys it can't combine with read "can't, held", the editor says
+    why, and the layer note explains it. The keypad app's own `check-config
+    --json` warnings on the edited config appear on the binding rows and
+    layer.
   - **Shift conversion:** turn-while-pressed (`shift`) bindings can be
     converted to "turn while holding key N" (Key 1 by default). A context
-    layer's go to a held layer with the same conditions, placed first so it
-    wins; knobs the target already maps keep theirs.
+    layer's go to a held layer with the same conditions, listed first;
+    knobs the target already maps keep theirs.
 
   Held layers written by hand (alternatives, key+knob chords, extra
   conditions) are shown and kept as written. Kdenlive context layers are
