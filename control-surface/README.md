@@ -95,6 +95,11 @@ The uinput test grabs its own virtual keyboard and pointer before emitting, so
 no key or click ever reaches the desktop. The settings, CLI and Kdenlive bus
 tests run on a private D-Bus (`dbus-run-session`).
 
+Released binaries use the system Qt with Qt's version tags, so they run on the
+Qt minor they were built with and later ones only. smpl-apps releases build
+them on the supported baseline, Qt 6.11 and glibc 2.44 (see the smpl-apps
+README, "Building"). Never define `QT_NO_VERSION_TAGGING` to get around it.
+
 ## Documents
 
 * `docs/hardware-ch552.md`: protocol research, what was flashed, how to verify and restore.

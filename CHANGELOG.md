@@ -180,6 +180,15 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **control-surface: the release asset runs on smplOS's Qt again.** v0.8.27's
+  `control-surface-0.8.27-x86_64.tar.gz` was built on rolling Arch with Qt
+  6.12, so smplOS's qt6-base 6.11.2 refused to start it (`version 'Qt_6.12'
+  not found`). Releases now build, test and package it in a separate job on
+  an Arch Linux Archive snapshot with qt6-base 6.11.2-3 and glibc 2.44, run
+  the packaged `control-surfaced features --json` there as a regular user,
+  and check every binary's Qt/glibc version needs, Qt version tag and RPATH
+  before publishing. The daemon itself is unchanged.
+
 - **settings: Dictation says when its model isn't downloaded and how to get it.**
   voxtype loads whisper.cpp model files from `~/.local/share/voxtype/models`.
   Setup and Reconfigure looked instead for smplOS's faster-whisper copies in the

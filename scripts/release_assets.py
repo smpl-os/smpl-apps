@@ -4,17 +4,22 @@
 Also stages control-surface (the keypad daemon, built by CMake) as its own
 release asset, laid out under usr/ for packages: smplOS installs it with
 pacman rather than copying its binary into /usr/local/bin with the apps.
+The asset links the system Qt, so it must be built against the oldest Qt it
+supports: `control-surface-check` enforces that runtime contract on the ELF
+files and `control-surface-smoke` runs them on the baseline system.
 """
 
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 
 
 BINARIES = (
@@ -28,6 +33,15 @@ SERVICE_SOURCE = Path(__file__).resolve().parents[1] / "calendar/systemd" / SERV
 CONTROL_SURFACE_SOURCE = Path(__file__).resolve().parents[1] / "control-surface"
 CONTROL_SURFACE_BINARIES = ("control-surfaced", "ch552-padprog")
 FIRMWARE_DIR = "usr/share/control-surface/firmware"
+# Runtime baseline of the control-surface asset: the oldest Qt and glibc it
+# must run on (smplOS's installed qt6-base 6.11.2 and glibc 2.44). A Qt
+# binary needs its build's Qt minor or later (the qt_version_tag ABI guard),
+# so release.yml builds and smoke-tests it in the Arch Linux Archive snapshot
+# that has exactly this Qt. Raise both together, with that snapshot, only
+# when every supported smplOS has the newer Qt.
+CONTROL_SURFACE_MAX_QT = (6, 11)
+CONTROL_SURFACE_MAX_GLIBC = (2, 44)
+SMOKE_TIMEOUT = 30
 # (source path, archive path); all mandatory.
 CONTROL_SURFACE_DATA = (
     ("data/config.example.jsonc", "usr/share/control-surface/config.example.jsonc"),
@@ -190,6 +204,137 @@ def verify_control_surface(tarball):
                 raise ValueError(f"Firmware image does not match its manifest: {name}")
 
 
+def version_tuple(text):
+    return tuple(int(part) for part in text.split("."))
+
+
+def parse_dynamic(text):
+    """(DT_NEEDED names, RPATH/RUNPATH values) from `readelf -d -W`."""
+    needed = re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", text)
+    paths = re.findall(r"\((?:RPATH|RUNPATH)\)\s+Library (?:rpath|runpath): \[([^\]]*)\]", text)
+    return needed, paths
+
+
+def parse_version_needs(text):
+    """[(library, version name)] from the version needs in `readelf -V -W`."""
+    needs = []
+    library = None
+    for line in text.splitlines():
+        if match := re.search(r"\bFile: (\S+)", line):
+            library = match[1]
+        elif (match := re.search(r"\bName: (\S+)", line)) and library:
+            needs.append((library, match[1]))
+    return needs
+
+
+def runtime_problems(name, needed, paths, needs):
+    """Why a binary would not run on the control-surface baseline, plus its
+    highest Qt/glibc/libstdc++ needs (for the release record)."""
+    problems = []
+    if paths:
+        problems.append(f"{name}: has an RPATH/RUNPATH ({', '.join(paths)}); it must use the system libraries")
+    summary = {}
+    qt = [version_tuple(m[1]) for library, version in needs
+          if library.startswith("libQt6") and (m := re.fullmatch(r"Qt_(6\.\d+)", version))]
+    if any(library.startswith("libQt6") for library in needed):
+        if not qt:
+            problems.append(f"{name}: links Qt 6 without a Qt_6.N version tag; Qt version tagging must stay enabled")
+        if any(version == "Qt_6_PRIVATE_API" for _, version in needs):
+            problems.append(f"{name}: uses Qt private API, which ties it to one exact Qt build")
+    if qt:
+        summary["qt"] = max(qt)
+        if max(qt) > CONTROL_SURFACE_MAX_QT:
+            problems.append(f"{name}: needs Qt {'.'.join(map(str, max(qt)))}, newer than the supported "
+                            f"Qt {'.'.join(map(str, CONTROL_SURFACE_MAX_QT))} (rebuild it on the baseline)")
+    glibc = [version_tuple(m[1]) for _, version in needs if (m := re.fullmatch(r"GLIBC_(\d+\.\d+(?:\.\d+)?)", version))]
+    if glibc:
+        summary["glibc"] = max(glibc)
+        if max(glibc)[:2] > CONTROL_SURFACE_MAX_GLIBC:
+            problems.append(f"{name}: needs glibc {'.'.join(map(str, max(glibc)))}, newer than the supported "
+                            f"glibc {'.'.join(map(str, CONTROL_SURFACE_MAX_GLIBC))}")
+    glibcxx = [version_tuple(m[1]) for _, version in needs if (m := re.fullmatch(r"GLIBCXX_(\d+(?:\.\d+)+)", version))]
+    if glibcxx:
+        summary["glibcxx"] = max(glibcxx)
+    return problems, summary
+
+
+def elf_runtime(path, name):
+    def readelf(*options):
+        return subprocess.run(["readelf", *options, "-W", str(path)], check=True,
+                              capture_output=True, text=True).stdout
+    needed, paths = parse_dynamic(readelf("-d"))
+    return runtime_problems(name, needed, paths, parse_version_needs(readelf("-V")))
+
+
+def extract_control_surface(tarball, destination):
+    with tarfile.open(tarball, "r:gz") as archive:
+        archive.extractall(destination, filter="data")
+
+
+def check_control_surface(tarball):
+    """The asset's layout and its binaries' runtime contract (Qt and glibc no
+    newer than the baseline, Qt version tags kept, no RPATH)."""
+    verify_control_surface(tarball)
+    summaries = {}
+    with tempfile.TemporaryDirectory(prefix="control-surface-check-") as scratch:
+        extract_control_surface(tarball, scratch)
+        problems = []
+        for name in CONTROL_SURFACE_BINARIES:
+            found, summaries[name] = elf_runtime(Path(scratch) / "usr/bin" / name, name)
+            problems += found
+    if problems:
+        raise ValueError("; ".join(problems))
+    return summaries
+
+
+def describe(summaries):
+    for name, summary in summaries.items():
+        needs = ", ".join(f"{key} {'.'.join(map(str, value))}" for key, value in sorted(summary.items()))
+        print(f"{name}: needs {needs}")
+
+
+def smoke_control_surface(tarball):
+    """Run the packaged binaries on this (baseline) system, without a device,
+    a D-Bus session, a config or the network: `control-surfaced features
+    --json` and `ch552-padprog --help`. Returns the Qt library they loaded."""
+    if os.geteuid() == 0:
+        raise ValueError("run the control-surface smoke test as a regular user, as smplOS does")
+    summaries = check_control_surface(tarball)
+    with tempfile.TemporaryDirectory(prefix="control-surface-smoke-") as scratch:
+        root = Path(scratch) / "root"
+        home = Path(scratch) / "home"
+        home.mkdir()
+        extract_control_surface(tarball, root)
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "LANG": "C.UTF-8",
+               "XDG_CONFIG_HOME": str(home / ".config"), "XDG_RUNTIME_DIR": str(home / "run"),
+               "DBUS_SESSION_BUS_ADDRESS": "disabled:"}
+        (home / "run").mkdir(mode=0o700)
+        daemon = root / "usr/bin/control-surfaced"
+        libraries = subprocess.run(["ldd", str(daemon)], check=True, capture_output=True,
+                                   text=True, env=env, timeout=SMOKE_TIMEOUT).stdout
+        if "not found" in libraries:
+            raise ValueError(f"control-surfaced has unresolved libraries:\n{libraries}")
+        qt = re.search(r"libQt6Core\.so\.6 => (\S+)", libraries)
+        if not qt or not qt[1].startswith(("/usr/lib/", "/lib/")):
+            raise ValueError("control-surfaced does not load the system libQt6Core")
+        run = subprocess.run([str(daemon), "features", "--json"], capture_output=True,
+                             text=True, env=env, timeout=SMOKE_TIMEOUT)
+        if run.returncode:
+            raise ValueError(f"control-surfaced features --json failed ({run.returncode}): {run.stderr.strip()}")
+        features = json.loads(run.stdout)
+        for key in ("apiVersion", "bindingKinds", "kdenlive", "device"):
+            if key not in features:
+                raise ValueError(f"control-surfaced features --json lacks {key}")
+        run = subprocess.run([str(root / "usr/bin/ch552-padprog"), "--help"], capture_output=True,
+                             text=True, env=env, timeout=SMOKE_TIMEOUT)
+        if run.returncode or "list | plan | flash | blank" not in run.stdout:
+            raise ValueError(f"ch552-padprog --help failed ({run.returncode}): {run.stderr.strip()}")
+    describe(summaries)
+    runtime = Path(qt[1]).resolve().name
+    print(f"control-surfaced ran with {runtime}")
+    return runtime
+
+
 def verify_uploaded(directory, bundle, metadata_path, extra=()):
     verify_bundle(directory, bundle)
     files = required_files(directory)
@@ -233,6 +378,8 @@ def main():
     stage_args = commands.add_parser("control-surface")
     stage_args.add_argument("install_root", type=Path)
     stage_args.add_argument("tarball", type=Path)
+    for command in ("control-surface-check", "control-surface-smoke"):
+        commands.add_parser(command).add_argument("tarball", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "collect":
@@ -241,9 +388,13 @@ def main():
             verify_bundle(args.directory, args.bundle)
         elif args.command == "control-surface":
             stage_control_surface(args.install_root, args.tarball)
+        elif args.command == "control-surface-check":
+            describe(check_control_surface(args.tarball))
+        elif args.command == "control-surface-smoke":
+            smoke_control_surface(args.tarball)
         else:
             verify_uploaded(args.directory, args.bundle, args.metadata, args.asset)
-    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error:
         print(f"Release asset validation failed: {error}", file=sys.stderr)
         return 1
     print(f"Release assets: {args.command} passed")

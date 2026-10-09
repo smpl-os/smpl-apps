@@ -62,6 +62,20 @@ ctest --test-dir target/control-surface --output-on-failure -E '^uinput$'
 Run the tests as a regular user (CI uses an unprivileged account): as root,
 the checks that a file can't be written would pass.
 
+Releases build control-surface on its runtime baseline, not on rolling Arch:
+it links the system Qt, and a Qt program needs the Qt minor it was built
+with or later. The supported baseline is **Qt 6.11 (smplOS's qt6-base
+6.11.2) and glibc 2.44**. The release workflow's `control-surface` job pins
+the Arch Linux Archive snapshot `2026/09/30` (qt6-base 6.11.2-3, glibc 2.44,
+gcc 16.2.1), builds and tests there, then runs the packaged
+`control-surfaced features --json` and `ch552-padprog --help` as a regular
+user. `scripts/release_assets.py control-surface-check ASSET` rejects an
+asset that needs a newer Qt or glibc, has no Qt version tag, uses Qt private
+API or carries an RPATH; `control-surface-smoke ASSET` runs the binaries on
+the current system. Raise the snapshot, `CONTROL_SURFACE_QT_PACKAGE` and
+`CONTROL_SURFACE_MAX_QT` together, only once every supported smplOS has the
+newer Qt.
+
 `./check.sh` runs this too when CMake and Qt6 are installed; CI always does.
 
 ## Native themes and transparency

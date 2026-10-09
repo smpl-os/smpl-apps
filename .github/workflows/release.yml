@@ -15,8 +15,89 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  control-surface:
+    # The keypad daemon links the system Qt, and a Qt binary needs the Qt
+    # minor it was built with or later. smplOS installs Arch's qt6-base, so
+    # this job builds against the oldest Qt smplOS supports, from a dated Arch
+    # Linux Archive snapshot instead of rolling Arch, and runs the packaged
+    # binaries there. Bump ARCH_SNAPSHOT, CONTROL_SURFACE_QT_PACKAGE and
+    # CONTROL_SURFACE_MAX_QT (scripts/release_assets.py) together.
+    name: Build and smoke-test control-surface on its Qt baseline
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --privileged
+    env:
+      ARCH_SNAPSHOT: "2026/09/30"
+      CONTROL_SURFACE_QT_PACKAGE: "qt6-base 6.11.2-3"
+    outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
+
+    steps:
+      - name: Require main branch
+        run: |
+          test "$GITHUB_REF" = refs/heads/main || {
+            echo "::error::Release must be dispatched from main"
+            exit 1
+          }
+
+      - name: Pin Arch to the baseline snapshot and install build dependencies
+        run: |
+          printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$ARCH_SNAPSHOT" \
+            > /etc/pacman.d/mirrorlist
+          # -uu also downgrades the image's newer packages to the snapshot.
+          pacman -Syyuu --noconfirm --needed \
+            base-devel git python dbus \
+            cmake ninja qt6-base systemd-libs
+          test "$(pacman -Q qt6-base)" = "$CONTROL_SURFACE_QT_PACKAGE" || {
+            echo "::error::expected $CONTROL_SURFACE_QT_PACKAGE, got $(pacman -Q qt6-base)"
+            exit 1
+          }
+          pacman -Q glibc gcc qt6-base
+
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Record the source commit
+        id: source
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build, test and package control-surface (keypad daemon)
+        # Its own asset (a usr/ tree): smplOS installs it as a package, not
+        # into /usr/local/bin with the apps, so it is not in the app bundle.
+        run: |
+          cmake -S control-surface -B build-control-surface -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=ON
+          cmake --build build-control-surface
+          # Tests run unprivileged, like makepkg (as root, checks that a file
+          # can't be written would pass). tst_uinput creates a real virtual
+          # keyboard on the build host; skip it.
+          useradd -m tester
+          chown -R tester build-control-surface
+          runuser -u tester -- ctest --test-dir build-control-surface --output-on-failure -E '^uinput$'
+          DESTDIR="$PWD/control-surface-install" cmake --install build-control-surface
+          # The release job names it after the version it releases.
+          python scripts/release_assets.py control-surface control-surface-install control-surface-x86_64.tar.gz
+
+      - name: Smoke-test the packaged binaries on the Qt baseline
+        # Unpacks the asset and runs control-surfaced features --json and
+        # ch552-padprog --help as a regular user on this baseline system: no
+        # device, D-Bus session, config or network.
+        run: runuser -u tester -- python scripts/release_assets.py control-surface-smoke control-surface-x86_64.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: control-surface
+          path: control-surface-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
   bump-and-release:
     name: Bump version, build, release
+    needs: control-surface
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -35,7 +116,9 @@ jobs:
 
       - uses: actions/checkout@v5
         with:
-          ref: main
+          # The commit the control-surface job built; the release fails below
+          # if main moved on meanwhile.
+          ref: ${{ needs.control-surface.outputs.source-sha }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -72,8 +155,7 @@ jobs:
             pixman libglvnd mesa \
             gtk4 gtk4-layer-shell libadwaita \
             glib2 gobject-introspection \
-            dbus python github-cli \
-            cmake ninja qt6-base systemd-libs
+            dbus python github-cli
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -93,22 +175,18 @@ jobs:
           export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
           cargo build --release --workspace
 
-      - name: Build, test and package control-surface (keypad daemon)
-        # Its own asset (a usr/ tree): smplOS installs it as a package, not
-        # into /usr/local/bin with the apps, so it is not in the app bundle.
+      - uses: actions/download-artifact@v4
+        with:
+          name: control-surface
+
+      - name: Name and re-check the control-surface asset
+        # Built, tested and smoke-tested on its Qt baseline by the
+        # control-surface job; this rolling-Arch job must not rebuild it.
         run: |
-          cmake -S control-surface -B build-control-surface -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=ON
-          cmake --build build-control-surface
-          # Tests run unprivileged, like makepkg (as root, checks that a file
-          # can't be written would pass). tst_uinput creates a real virtual
-          # keyboard on the build host; skip it.
-          useradd -m tester
-          chown -R tester build-control-surface
-          runuser -u tester -- ctest --test-dir build-control-surface --output-on-failure -E '^uinput$'
-          DESTDIR="$PWD/control-surface-install" cmake --install build-control-surface
           CS_ASSET="control-surface-${{ steps.version.outputs.new }}-x86_64.tar.gz"
-          python scripts/release_assets.py control-surface control-surface-install "$CS_ASSET"
+          mv control-surface-x86_64.tar.gz "$CS_ASSET"
+          python scripts/release_assets.py control-surface-check "$CS_ASSET"
+          sha256sum "$CS_ASSET"
           echo "CS_ASSET=$CS_ASSET" >> "$GITHUB_ENV"
 
       - name: Strip and collect binaries
