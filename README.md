@@ -595,6 +595,35 @@ text or making controls unreachable. The Display page also scrolls as a whole.
 Wi-Fi, Bluetooth, and Hints sidebar icons use matching theme-tinted outline
 assets; connection/status glyphs elsewhere keep their existing meanings.
 
+### Keypad cheatsheet theme intensity
+
+Settings' keypad preview follows the active smplOS popup palette, including
+theme changes, independently of the Settings window's application background.
+**Theme intensity** scales only the popup background; text and icons remain
+opaque. At **100%** the preview uses the theme's popup opacity capped at
+35%: Matrix, Grafium and Frosted all have a 35% background. Themes with
+lower popup opacity retain that lower baseline. Higher intensity can reach
+fully opaque; the result never exceeds full opacity.
+
+The existing `cheatsheet.opacity` config/D-Bus value and slider range remain
+unchanged: `[0.05, 1.0]`, with `0.35` as the neutral default. To match the OS
+overlay, the preview rounds the saved value times 20 to the nearest integer
+(exact halfway cases round to even), divides that class by 7 for intensity,
+and multiplies the lesser of the theme's popup opacity and 0.35 by that
+intensity, capped at 1.
+The readout rounds intensity times 100, not absolute background opacity:
+saved `0.10`, `0.35`, `0.70` and `1.0` show **29%**, **100%**, **200%**
+and **286%**, respectively. No saved preferences or payloads are migrated.
+Ship the matching smplOS theme-relative overlay update before these Settings
+semantics. Compositor blur is managed by the OS overlay, not this embedded
+preview.
+
+Focused headless checks:
+`cargo test -p settings --bin settings ui_contract_tests::keypad` and
+`cargo test -p settings --bin settings keypad::`.
+The preview checks enforce source wiring and numeric contracts, not compositor
+pixels or blur.
+
 ### Taskbar workspace preferences
 
 Settings and the OS taskbar helpers share `~/.config/smplos/bar.conf` (the

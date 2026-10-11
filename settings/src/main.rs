@@ -698,6 +698,14 @@ fn main() -> Result<(), slint::PlatformError> {
             apply_theme(&ui, palette);
         }
     });
+    let popup_theme_ui = ui.as_weak();
+    let _popup_theme_timer = theme::watch(ThemeRole::Popup, move |palette| {
+        if let Some(ui) = popup_theme_ui.upgrade() {
+            let theme = Theme::get(&ui);
+            theme.set_popup_bg(palette.bg);
+            theme.set_popup_opacity(palette.opacity);
+        }
+    });
     ui.set_active_tab(initial_tab);
     if !initial_highlight.is_empty() {
         ui.set_highlight_setting(slint::SharedString::from(&initial_highlight));

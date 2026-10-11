@@ -1152,7 +1152,7 @@ impl KeypadConfig {
     /// including the other "eww" fields.
     pub fn set_sheet_options(&mut self, o: &SheetOptions) -> Result<(), String> {
         if !(0.05..=1.0).contains(&o.opacity) {
-            return Err("opacity is 5% to 100%".into());
+            return Err("theme intensity uses a stored value from 0.05 to 1.0 (0.35 is the frosted baseline)".into());
         }
         if o.auto_hide_ms > 600_000 {
             return Err("hide after at most 10 minutes".into());

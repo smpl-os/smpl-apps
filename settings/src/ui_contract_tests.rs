@@ -519,9 +519,9 @@ fn keypad_cheatsheet_card_label_and_preview_are_wired() {
     ] {
         assert!(keypad.contains(needle), "missing: {needle}");
     }
-    assert!(UI.contains("in property <float> kp-sheet-opacity: 0.35;"), "see-through by default");
+    assert!(UI.contains("in property <float> kp-sheet-opacity: 0.35;"), "the default uses the theme-colored frosted baseline");
     let preview = UI.split("component KeypadSheetPreview").nth(1).unwrap().split("\ncomponent ").next().unwrap();
-    assert!(preview.contains("background: Theme.bg.transparentize(1 - root.sheet-opacity);"), "opacity on the background only");
+    assert!(preview.contains("background: Theme.popup-bg.transparentize(1 - min(1, min(Theme.popup-opacity, 0.35) * root.intensity));"), "frosted popup-role alpha on the background only");
     assert!(preview.contains("font-italic: c.bound && !c.active;"), "inactive is shown by shape, not color alone");
     assert!(keypad.contains("viewport-width: max(self.width, 640px, tab11-content.min-width);"), "wide previews scroll");
     let ui_rs = include_str!("keypad/ui.rs");
@@ -551,4 +551,84 @@ fn keypad_cheatsheet_card_label_and_preview_are_wired() {
     let show = ui_rs.split("ui.on_kp_show_sheet(").nth(1).unwrap().split("\n    let weak").next().unwrap();
     assert!(show.contains("super::hide_sheet()"), "Show on screen never leaves a sheet up for good");
     assert!(ui_rs.contains("o.click_through &= *ms > 0;"), "until hidden needs a clickable sheet");
+}
+
+#[test]
+fn keypad_theme_intensity_preserves_storage_and_uses_popup_theme_updates() {
+    let keypad = keypad_page();
+    for needle in [
+        r#"text: "Theme intensity";"#,
+        r#"text: round(KeypadSheetStyle.intensity(root.kp-sheet-opacity) * 100) + "%";"#,
+        "100% uses the theme's popup opacity capped at 35%; text stays opaque. Higher intensity can reach fully opaque.",
+        "minimum: 0.05;",
+        "maximum: 1.0;",
+        "step: 0.05;",
+        "value: root.kp-sheet-opacity;",
+        "sheet-opacity: root.kp-sheet-opacity;",
+    ] {
+        assert!(keypad.contains(needle), "missing: {needle}");
+    }
+    assert!(!keypad.contains(r#"text: "Opacity";"#));
+    let preview = UI.split("component KeypadSheetPreview").nth(1).unwrap().split("\ncomponent ").next().unwrap();
+    assert!(preview.contains("property <float> intensity: KeypadSheetStyle.intensity(root.sheet-opacity);"));
+    assert!(!preview.contains("Theme.opacity"), "Settings' application alpha is not popup alpha");
+    assert!(!preview.contains("Theme.bg."), "the popup uses the unmodified theme background");
+    let main = include_str!("main.rs");
+    let popup = main.split("theme::watch(ThemeRole::Popup,").nth(1).unwrap().split("ui.set_active_tab").next().unwrap();
+    assert!(popup.contains("theme.set_popup_bg(palette.bg);"));
+    assert!(popup.contains("theme.set_popup_opacity(palette.opacity);"));
+    assert!(main.contains("theme::watch(ThemeRole::Application,"), "Settings keeps its existing window theme role");
+    let ui_rs = include_str!("keypad/ui.rs");
+    assert!(ui_rs.contains(r#""cheatsheet.opacity" => "Cheatsheet theme intensity".into(),"#));
+    assert!(ui_rs.contains(r#"out.push(("cheatsheet.opacity".to_string(), config::number(after.opacity)));"#));
+    assert!(include_str!("keypad/config.rs").contains("theme intensity uses a stored value from 0.05 to 1.0 (0.35 is the frosted baseline)"));
+}
+
+#[test]
+fn keypad_theme_intensity_contract_covers_quantization_and_theme_relative_alpha() {
+    use smpl_common::theme::{parse_theme, ThemeRole};
+
+    // Guard the actual Slint expressions before checking their numeric contract.
+    assert!(UI.contains("let scaled = saved * 20;"));
+    assert!(UI.contains("let lower = floor(scaled);"));
+    assert!(UI.contains("let class = scaled - lower == 0.5 ? round(lower / 2) * 2 : round(scaled);"));
+    assert!(UI.contains("return class / 7;"));
+    assert!(UI.contains("min(1, min(Theme.popup-opacity, 0.35) * root.intensity)"));
+    assert!(UI.contains("round(KeypadSheetStyle.intensity(root.kp-sheet-opacity) * 100)"));
+    let core = "$theme-bg: #1e1e2e;\n$theme-fg: #cdd6f4;\n$theme-accent: #89b4fa;\n";
+    for (popup, application) in [(1.0_f32, 0.4_f32), (0.35, 1.0), (0.20, 1.0), (0.0, 1.0)] {
+        let palette = parse_theme(
+            &format!("{core}$theme-popup-opacity: {popup};\n$theme-app-background-opacity: {application};"),
+            ThemeRole::Popup,
+        ).unwrap();
+        for (saved, class, percent, frosted) in [
+            (0.05_f32, 1.0_f32, 14.0_f32, 0.05_f32),
+            (0.10, 2.0, 29.0, 0.10),
+            (0.12499, 2.0, 29.0, 0.10),
+            (0.125, 2.0, 29.0, 0.10),
+            (0.12501, 3.0, 43.0, 0.15),
+            (0.35, 7.0, 100.0, 0.35),
+            (0.375, 8.0, 114.0, 0.40),
+            (0.70, 14.0, 200.0, 0.70),
+            (1.0, 20.0, 286.0, 1.0),
+        ] {
+            let scaled = saved * 20.0;
+            let lower = scaled.floor();
+            let actual_class = if scaled - lower == 0.5 {
+                (lower / 2.0).round() * 2.0
+            } else {
+                scaled.round()
+            };
+            let intensity = actual_class / 7.0;
+            let alpha = (palette.opacity.min(0.35) * intensity).min(1.0);
+            assert_eq!(actual_class, scaled.round_ties_even(), "EWW rounding: saved={saved}");
+            assert_eq!(actual_class, class, "saved={saved}");
+            assert_eq!((intensity * 100.0).round(), percent, "saved={saved}");
+            let expected = if popup >= 0.35 { frosted } else { popup * class / 7.0 };
+            assert!((alpha - expected).abs() < 0.000001, "popup={popup}, saved={saved}");
+            if saved == 0.35 {
+                assert_eq!(alpha, popup.min(0.35), "neutral is frosted even for an opaque theme");
+            }
+        }
+    }
 }

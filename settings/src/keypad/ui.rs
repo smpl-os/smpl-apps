@@ -775,7 +775,7 @@ fn flush_options(ui: &MainWindow) {
 fn option_label(key: &str) -> String {
     match key {
         "input" => "Input mode".into(),
-        "cheatsheet.opacity" => "Cheatsheet opacity".into(),
+        "cheatsheet.opacity" => "Cheatsheet theme intensity".into(),
         "cheatsheet.autoHideMs" => "Cheatsheet hiding".into(),
         "cheatsheet.position" => "Cheatsheet position".into(),
         "cheatsheet.eww" => "Cheatsheet overlay".into(),

@@ -183,6 +183,16 @@ global KeypadIcons {
     out property <string> family: "smplOS Keypad Icons";
 }
 
+global KeypadSheetStyle {
+    public pure function intensity(saved: float) -> float {
+        let scaled = saved * 20;
+        let lower = floor(scaled);
+        // EWW round(..., 0) uses nearest-even at exact halves.
+        let class = scaled - lower == 0.5 ? round(lower / 2) * 2 : round(scaled);
+        return class / 7;
+    }
+}
+
 // ── Theme ────────────────────────────────────────────────────────────────────
 
 global Typography {
@@ -209,6 +219,8 @@ export global Theme {
     in property <color> warning: #f9e2af;
     in property <color> info: #94e2d5;
     in property <float> opacity: 1.0;
+    in property <color> popup-bg: #1e1e2e;
+    in property <float> popup-opacity: 1.0;
     out property <color> panel: bg_light.transparentize(88%);
     out property <color> hover: bg_lighter.transparentize(80%);
 }
@@ -1074,12 +1086,12 @@ component KeypadSheetPreview inherits Rectangle {
     property <length> gap: 6px;
     property <length> pitch: max(root.key-h, root.knob-h) + root.gap;
     property <length> header: root.notice != "" ? 44px : 26px;
+    property <float> intensity: KeypadSheetStyle.intensity(root.sheet-opacity);
 
     border-radius: 8px;
     border-width: 1px;
     border-color: Theme.bg_lighter;
-    // Opacity applies to the background only, as on screen.
-    background: Theme.bg.transparentize(1 - root.sheet-opacity);
+    background: Theme.popup-bg.transparentize(1 - min(1, min(Theme.popup-opacity, 0.35) * root.intensity));
     min-width: root.cols * (root.key-w + root.gap) + root.knob-w + 20px;
     height: root.header + root.rows * root.pitch + 8px;
 
@@ -8874,11 +8886,12 @@ export component MainWindow inherits Window {
                             if root.kp-sheet-supported: HorizontalLayout {
                                 spacing: 8px;
                                 Text {
-                                    text: "Opacity";
+                                    text: "Theme intensity";
                                     width: 96px;
                                     color: Theme.fg_dim;
                                     font-size: Typography.secondary;
                                     vertical-alignment: center;
+                                    wrap: word-wrap;
                                 }
                                 ThemeSlider {
                                     horizontal-stretch: 1;
@@ -8889,12 +8902,18 @@ export component MainWindow inherits Window {
                                     changed(v) => { root.kp-set-sheet-opacity(v); }
                                 }
                                 Text {
-                                    text: round(root.kp-sheet-opacity * 100) + "%";
+                                    text: round(KeypadSheetStyle.intensity(root.kp-sheet-opacity) * 100) + "%";
                                     width: 44px;
                                     color: Theme.fg;
                                     font-size: Typography.secondary;
                                     vertical-alignment: center;
                                 }
+                            }
+                            if root.kp-sheet-supported: Text {
+                                text: "Scales a theme-colored frosted background. 100% uses the theme's popup opacity capped at 35%; text stays opaque. Higher intensity can reach fully opaque.";
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
                             }
                             if root.kp-sheet-supported: HorizontalLayout {
                                 spacing: 8px;
