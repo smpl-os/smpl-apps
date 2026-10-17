@@ -432,7 +432,9 @@ mod tests {
         }
 
         fn command(&self) -> Command {
-            let mut command = Command::new(self.0.join("bin/yay"));
+            // Interpret fixtures directly to avoid ETXTBSY during parallel spawns.
+            let mut command = Command::new("/bin/bash");
+            command.arg(self.0.join("bin/yay"));
             command.env("CALLS", self.0.join("calls"));
             command
         }
