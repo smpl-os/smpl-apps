@@ -311,6 +311,7 @@ export component MainWindow inherits Window {
     // Installed apps state
     in-out property <[AppItem]> installed-apps;
     in-out property <bool> checking-for-updates: false;
+    in-out property <string> installed-update-error: "";
     in-out property <int> apps-with-updates: 0;
     in-out property <string> installed-search-text: "";
     in-out property <bool> installed-updates-only: false;
@@ -938,6 +939,13 @@ export component MainWindow inherits Window {
         Rectangle {
             height: 1px;
             background: Theme.bg_light;
+        }
+
+        if root.current-tab == 0 && !root.show-detail && !root.checking-for-updates && root.installed-update-error != "": Text {
+            text: root.installed-update-error;
+            color: Theme.warning;
+            font-size: 12px;
+            wrap: word-wrap;
         }
 
         // == Results list or detail view ==

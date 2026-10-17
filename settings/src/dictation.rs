@@ -697,6 +697,24 @@ fn spawn_script(script: &str, model_id: &str) -> bool {
     false
 }
 
+macro_rules! dictation_package_functions {
+    () => {
+        concat!(
+            "require_yay() {\n",
+            "    if ! command -v yay || ! yay --version || ! yay -Q pacman; then\n",
+            "        echo '0|Error: Yay is unavailable. Run Update OS in App Center, then retry dictation setup.' > \"$PROG\"\n",
+            "        echo '  ERROR: Yay is missing or cannot access libalpm. Run Update OS in App Center, then retry dictation setup.' >&2\n",
+            "        return 1\n",
+            "    fi\n",
+            "}\n",
+            "install_pkg() {\n",
+            "    echo \"  Using yay for $1...\"\n",
+            "    yay -S --needed --noconfirm --sudoloop=false --sudo sudo --sudoflags=-n \"$1\" 2>&1\n",
+            "}\n",
+        )
+    };
+}
+
 pub fn launch_install(model_id: &str) -> bool {
     if INSTALL_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         debug_log!("[settings] install already in progress, ignoring");
@@ -709,6 +727,7 @@ pub fn launch_install(model_id: &str) -> bool {
         "cleanup() { echo \"0|Error: Interrupted\" > \"$PROG\"; exit 1; }\n",
         "trap cleanup INT TERM\n",
         model_download_functions!(),
+        dictation_package_functions!(),
         "echo ''\n",
         "echo '  Setting up dictation...'\n",
         "\n",
@@ -726,38 +745,13 @@ pub fn launch_install(model_id: &str) -> bool {
         "    echo '  Installing dictation packages...'\n",
         "    echo '  You may be prompted for your password once.'\n",
         "    echo ''\n",
+        "    require_yay || { echo '  Press Enter to close.'; read -r; exit 1; }\n",
         "    sudo -v || { echo '0|Error: Authentication failed' > \"$PROG\"; exit 1; }\n",
         "    while sudo -vn 2>/dev/null; do sleep 50; done &\n",
         "    SUDO_KEEPALIVE=$!\n",
+        "    trap 'kill \"$SUDO_KEEPALIVE\" 2>/dev/null || true' EXIT\n",
         "    trap 'kill $SUDO_KEEPALIVE 2>/dev/null; cleanup' INT TERM\n",
         "    echo '5|Installing packages...' > \"$PROG\"\n",
-        "\n",
-        "    install_pkg() {\n",
-        "        local pkg=\"$1\"\n",
-        "        if command -v paru &>/dev/null && paru --version &>/dev/null 2>&1; then\n",
-        "            echo \"  Using paru for $pkg...\"\n",
-        "            paru -S --needed --noconfirm \"$pkg\" 2>&1 && return 0\n",
-        "        fi\n",
-        "        if command -v yay &>/dev/null && yay --version &>/dev/null 2>&1; then\n",
-        "            echo \"  Using yay for $pkg...\"\n",
-        "            yay -S --needed --noconfirm \"$pkg\" 2>&1 && return 0\n",
-        "        fi\n",
-        "        if pacman -Si \"$pkg\" &>/dev/null; then\n",
-        "            echo \"  Using pacman for $pkg...\"\n",
-        "            sudo pacman -S --needed --noconfirm \"$pkg\" 2>&1 && return 0\n",
-        "        fi\n",
-        "        echo \"  Building $pkg from AUR manually...\"\n",
-        "        local tmp\n",
-        "        tmp=$(mktemp -d)\n",
-        "        if git clone --depth 1 \"https://aur.archlinux.org/${pkg}.git\" \"$tmp\" 2>/dev/null; then\n",
-        "            (cd \"$tmp\" && makepkg -si --noconfirm 2>&1)\n",
-        "            local rc=$?\n",
-        "            rm -rf \"$tmp\"\n",
-        "            return $rc\n",
-        "        fi\n",
-        "        rm -rf \"$tmp\"\n",
-        "        return 1\n",
-        "    }\n",
         "\n",
         "    echo '10|Installing wtype...' > \"$PROG\"\n",
         "    if ! install_pkg wtype; then\n",
@@ -780,7 +774,8 @@ pub fn launch_install(model_id: &str) -> bool {
         "        echo '  The package may have failed to build.'\n",
         "        echo '  Press Enter to close.'; read -r; exit 1\n",
         "    fi\n",
-        "    kill $SUDO_KEEPALIVE 2>/dev/null || true\n",
+        "    kill \"$SUDO_KEEPALIVE\" 2>/dev/null || true\n",
+        "    trap - EXIT\n",
         "fi\n",
         "\n",
         "download_model 40\n",
@@ -1057,6 +1052,71 @@ mod tests {
         assert_eq!(cfg.primary_code, "fr");
         assert!(cfg.also_english);
         assert!(cfg.uses_local_model());
+    }
+
+    fn run_package_step(fx: &Fixture, stub: Option<&str>) -> std::process::Output {
+        fs::create_dir_all(fx.0.join("bin")).unwrap();
+        if let Some(stub) = stub {
+            let path = fx.write("bin/yay", format!(
+                "#!/bin/bash\nprintf '<%s>' \"$@\" >> \"$CALLS\"\nprintf '\\n' >> \"$CALLS\"\n{stub}\n"
+            ).as_bytes());
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Command::new("/bin/bash")
+            .args(["-c", concat!(
+                "PROG=\"$PROGRESS\"\n",
+                dictation_package_functions!(),
+                "require_yay && install_pkg wtype && install_pkg voxtype-bin\n",
+            )])
+            .env("PATH", fx.0.join("bin"))
+            .env("HOME", &fx.0)
+            .env("PROGRESS", fx.0.join("progress"))
+            .env("CALLS", fx.0.join("calls"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn package_setup_uses_yay_with_cached_sudo_and_no_helper_rebuild() {
+        let fx = Fixture::new();
+        let output = run_package_step(&fx, Some("exit 0"));
+        assert!(output.status.success());
+        assert_eq!(
+            fs::read_to_string(fx.0.join("calls")).unwrap(),
+            "<--version>\n<-Q><pacman>\n\
+             <-S><--needed><--noconfirm><--sudoloop=false><--sudo><sudo><--sudoflags=-n><wtype>\n\
+             <-S><--needed><--noconfirm><--sudoloop=false><--sudo><sudo><--sudoflags=-n><voxtype-bin>\n"
+        );
+    }
+
+    #[test]
+    fn package_setup_rejects_missing_yay_and_version_only_readiness() {
+        for stub in [
+            None,
+            Some("exit 1"),
+            Some("case \"$1\" in --version) exit 0;; *) echo 'libalpm unavailable' >&2; exit 1;; esac"),
+        ] {
+            let fx = Fixture::new();
+            let output = run_package_step(&fx, stub);
+            assert!(!output.status.success());
+            assert!(fx.progress().contains("Run Update OS in App Center"));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("Run Update OS"));
+            let calls = fs::read_to_string(fx.0.join("calls")).unwrap_or_default();
+            assert!(!calls.contains("<-S>"));
+        }
+    }
+
+    #[test]
+    fn package_setup_preserves_yay_install_errors() {
+        let fx = Fixture::new();
+        let output = run_package_step(
+            &fx,
+            Some("case \"$1\" in -S) echo 'package install failed' >&2; exit 42;; esac"),
+        );
+        assert_eq!(output.status.code(), Some(42));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("package install failed"));
+        assert!(!fs::read_to_string(fx.0.join("calls")).unwrap().contains("<voxtype-bin>"));
     }
 
     /// Runs the setup scripts' `download_model` step for base.en with a stub

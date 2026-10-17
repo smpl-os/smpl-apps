@@ -154,7 +154,7 @@ fn pkginfos_to_items(pkgs: Vec<PkgInfo>) -> Vec<AppItem> {
 /// package is included only if it owns a `.desktop` file. This hides CLI tools,
 /// libraries and system/dependency packages — leaving real apps like Blender,
 /// VSCode, GIMP, etc. All Flatpak apps are GUI apps and are always included.
-fn get_installed_packages() -> Vec<PkgInfo> {
+fn get_installed_packages() -> (Vec<PkgInfo>, String) {
     let mut apps = Vec::new();
 
     // Build the set of explicitly-installed packages that own a .desktop file.
@@ -205,17 +205,13 @@ fn get_installed_packages() -> Vec<PkgInfo> {
     }
 
     // --- AUR / manually-installed apps (explicit, foreign, with launcher) ---
-    let mut aur_updates = HashSet::new();
-    if let Ok(output) = std::process::Command::new("paru")
-        .args(["-Qua"])
-        .output()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if let Some(name) = line.split_whitespace().next() {
-                aur_updates.insert(name.to_string());
-            }
+    let (aur_updates, update_error) = match installer::aur_updates() {
+        Ok(updates) => (updates.into_iter().collect::<HashSet<_>>(), String::new()),
+        Err(error) => {
+            eprintln!("[app-center] {error}");
+            (HashSet::new(), error)
         }
-    }
+    };
 
     if let Ok(output) = std::process::Command::new("pacman")
         .args(["-Qem"])
@@ -274,7 +270,7 @@ fn get_installed_packages() -> Vec<PkgInfo> {
         }
     }
 
-    apps
+    (apps, update_error)
 }
 
 /// Map explicitly-installed GUI packages -> resolved icon path (may be empty).
@@ -482,7 +478,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let ui_weak_clone = ui_weak.clone();
                     let installed_master = installed_master.clone();
                     std::thread::spawn(move || {
-                        let apps = get_installed_packages();
+                        let (apps, update_error) = get_installed_packages();
                         let apps_with_updates =
                             apps.iter().filter(|a| a.has_update).count() as i32;
                         let _ = ui_weak_clone.upgrade_in_event_loop(move |ui| {
@@ -490,6 +486,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             let model = Rc::new(VecModel::<AppItem>::from(pkginfos_to_items(apps)));
                             ui.set_installed_apps(ModelRc::from(model));
                             ui.set_apps_with_updates(apps_with_updates);
+                            ui.set_installed_update_error(update_error.into());
                             ui.set_checking_for_updates(false);
                         });
                     });
@@ -833,7 +830,8 @@ fn main() -> Result<(), slint::PlatformError> {
                             if installed_id.is_empty() {
                                 // Batch update finished: re-query installed apps.
                                 let master = installed_master_poll.clone();
-                                let new = get_installed_packages();
+                                let (new, update_error) = get_installed_packages();
+                                ui.set_installed_update_error(update_error.into());
                                 *master.lock().unwrap() = new.clone();
                                 ui.set_apps_with_updates(
                                     new.iter().filter(|a| a.has_update).count() as i32,
@@ -917,7 +915,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let ui_weak_clone = ui_weak.clone();
             let installed_master = installed_master.clone();
             std::thread::spawn(move || {
-                let apps = get_installed_packages();
+                let (apps, update_error) = get_installed_packages();
                 let apps_with_updates = apps.iter().filter(|a| a.has_update).count() as i32;
 
                 let _ = ui_weak_clone.upgrade_in_event_loop(move |ui| {
@@ -925,6 +923,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let model = Rc::new(VecModel::<AppItem>::from(pkginfos_to_items(apps)));
                     ui.set_installed_apps(ModelRc::from(model));
                     ui.set_apps_with_updates(apps_with_updates);
+                    ui.set_installed_update_error(update_error.into());
                     ui.set_checking_for_updates(false);
                 });
             });
@@ -1012,6 +1011,7 @@ fn main() -> Result<(), slint::PlatformError> {
             if ui.get_installing() { return; }
 
             let mut pacman_ids: Vec<String> = Vec::new();
+            let mut aur_ids: Vec<String> = Vec::new();
             let mut flatpak_ids: Vec<String> = Vec::new();
             let apps = ui.get_installed_apps();
             for i in 0..apps.row_count() {
@@ -1019,27 +1019,29 @@ fn main() -> Result<(), slint::PlatformError> {
                     if item.has_update && item.selected {
                         match item.source.as_str() {
                             "Flatpak" => flatpak_ids.push(item.id.to_string()),
-                            "Pacman" | "AUR" => pacman_ids.push(item.id.to_string()),
+                            "Pacman" => pacman_ids.push(item.id.to_string()),
+                            "AUR" => aur_ids.push(item.id.to_string()),
                             _ => {}
                         }
                     }
                 }
             }
             // If nothing is explicitly selected, update everything that has an update.
-            if pacman_ids.is_empty() && flatpak_ids.is_empty() {
+            if pacman_ids.is_empty() && aur_ids.is_empty() && flatpak_ids.is_empty() {
                 for i in 0..apps.row_count() {
                     if let Some(item) = apps.row_data(i) {
                         if item.has_update {
                             match item.source.as_str() {
                                 "Flatpak" => flatpak_ids.push(item.id.to_string()),
-                                "Pacman" | "AUR" => pacman_ids.push(item.id.to_string()),
+                                "Pacman" => pacman_ids.push(item.id.to_string()),
+                                "AUR" => aur_ids.push(item.id.to_string()),
                                 _ => {}
                             }
                         }
                     }
                 }
             }
-            if pacman_ids.is_empty() && flatpak_ids.is_empty() {
+            if pacman_ids.is_empty() && aur_ids.is_empty() && flatpak_ids.is_empty() {
                 return;
             }
 
@@ -1049,7 +1051,7 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_process_finished(false);
             ui.set_process_success(false);
 
-            match installer::spawn_update(&pacman_ids, &flatpak_ids) {
+            match installer::spawn_update(&pacman_ids, &aur_ids, &flatpak_ids) {
                 installer::SpawnResult::Streaming(process) => {
                     *active.borrow_mut() = Some(ActiveInstall {
                         idx: 0,
@@ -1174,13 +1176,14 @@ fn main() -> Result<(), slint::PlatformError> {
         let installed_master = installed_master.clone();
         ui.set_checking_for_updates(true);
         std::thread::spawn(move || {
-            let apps = get_installed_packages();
+            let (apps, update_error) = get_installed_packages();
             let apps_with_updates = apps.iter().filter(|a| a.has_update).count() as i32;
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                 *installed_master.lock().unwrap() = apps.clone();
                 let model = Rc::new(VecModel::<AppItem>::from(pkginfos_to_items(apps)));
                 ui.set_installed_apps(ModelRc::from(model));
                 ui.set_apps_with_updates(apps_with_updates);
+                ui.set_installed_update_error(update_error.into());
                 ui.set_checking_for_updates(false);
             });
         });

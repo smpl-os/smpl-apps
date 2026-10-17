@@ -20,6 +20,11 @@ if ! command -v pacman >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! yay --version || ! yay -Q pacman; then
+  echo "Error: Yay is missing or cannot access libalpm. Run Update OS in App Center, then retry." >&2
+  exit 1
+fi
+
 ARCH_PKGS=(
   base-devel
   rust
@@ -37,7 +42,6 @@ ARCH_PKGS=(
 
 RUNTIME_PKGS=(
   flatpak
-  paru
 )
 
 install_missing_pkgs() {

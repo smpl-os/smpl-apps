@@ -740,6 +740,29 @@ reports it when it loads the model.
 Headless checks, using temporary directories and a stub `voxtype`:
 `cargo test -p settings --bin settings dictation`.
 
+### AUR helper
+
+App Center and Settings dictation setup use the OS-provided Yay, not Paru.
+Readiness checks run both `yay --version` and `yay -Q pacman`: Yay loads
+libalpm dynamically, so a version check alone does not prove it works.
+Missing or incompatible Yay produces an actionable **Run Update OS** error;
+the apps do not rebuild or bootstrap an AUR helper. App Center retains its
+pacman fallback for official packages and removals, and displays failed AUR
+update checks without hiding the installed apps list.
+Selected AUR updates (including `brave-bin`) use Yay's full `-Syu` path;
+mixed repo/AUR selections are handled together to avoid a partial base upgrade.
+Repo-only and Flatpak update routing is unchanged.
+
+Publish the Yay-capable native release before the matching smplOS migration.
+That migration must install the new apps and provision the verified prebuilt
+Yay package before removing Paru. Pushing source alone does not update installed
+apps. Dictation's existing terminal authentication is retained; Yay uses the
+cached sudo authorization without starting its own sudo loop.
+
+Focused headless checks (stub commands, no package installation):
+`cargo test -p app-center --bin app-center installer::tests` and
+`cargo test -p settings --bin settings dictation`.
+
 ### Publishing
 
 Pre-built binaries are published to [Releases](../../releases) and consumed by the smplOS ISO builder.
