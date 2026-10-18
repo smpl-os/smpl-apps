@@ -22,8 +22,12 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
+    /// Settings can't safely make this change. The timer status shows the
+    /// reason to the user, so keep it plain and never put raw output in it.
     Unsupported(String),
     Conflict,
+    /// A command or diagnostic failed; the message may hold raw output and is
+    /// only logged.
     Command(String),
 }
 
@@ -140,6 +144,27 @@ fn dpms_command(command: &str, state: &str) -> bool {
     command == format!("{HELPER} {state}")
         || command == format!("hyprctl dispatch dpms {state}")
         || command == format!("hyprctl dispatch \"hl.dsp.dpms({{state='{state}'}})\"")
+}
+
+fn sleep_step(step: &str) -> bool {
+    step.strip_prefix("sleep ").is_some_and(|seconds| {
+        seconds.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && seconds.parse::<f32>().is_ok_and(f32::is_finite)
+    })
+}
+
+// The wake-up sequence smplOS and earlier Settings versions write: DPMS on,
+// numeric sleeps and a compositor reload. Any other step is a custom hook.
+fn wake_chain(command: &str) -> bool {
+    let mut dpms = false;
+    for step in command.split(';').map(str::trim) {
+        if dpms_command(step, "on") {
+            dpms = true;
+        } else if step != "hyprctl reload" && !sleep_step(step) {
+            return false;
+        }
+    }
+    dpms
 }
 
 fn classify(command: &str) -> Result<Action> {
@@ -300,7 +325,7 @@ impl Config {
             let wake = value
                 .strip_prefix("loginctl lock-session; sleep 0.5; ")
                 .unwrap_or(value);
-            if !wake.is_empty() && !dpms_command(wake, "on") {
+            if !wake.is_empty() && !wake_chain(wake) {
                 return Err(unsupported(
                     "Custom after_sleep_cmd would change lock behavior; edit it manually",
                 ));
@@ -446,7 +471,7 @@ fn atomic_save(path: &Path, expected: &str, text: &str) -> Result<()> {
         fs::File::open(parent)
             .and_then(|dir| dir.sync_all())
             .map_err(|error| {
-                unsupported(format!(
+                Error::Command(format!(
                     "File replaced, but directory sync failed; application not attempted: {error}"
                 ))
             })?;
@@ -540,7 +565,7 @@ impl Runtime for System {
             }
             let out = output(&mut command)?;
             if out.code != Some(1) {
-                return Err(unsupported(format!(
+                return Err(Error::Command(format!(
                     "Hypridle validation did not exit at the isolated connection check: {} {}",
                     out.stdout, out.stderr
                 )));
@@ -629,7 +654,7 @@ fn validate_diagnostics(diagnostics: &str, no_rules: bool) -> Result<()> {
         }
     }
     if !errors.is_empty() || !diagnostics.contains("Couldn't connect to a wayland compositor") {
-        return Err(unsupported(format!(
+        return Err(Error::Command(format!(
             "Hypridle validation failed: {diagnostics}"
         )));
     }

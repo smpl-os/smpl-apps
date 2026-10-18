@@ -10,6 +10,7 @@ type SharedScheduler = Arc<Mutex<Scheduler>>;
 const WORKER_FAILURE: &str =
     "Couldn't finish changing power settings. Please select your settings again.";
 const HYPRLAND_REQUIRED: &str = "Sign in to a Hyprland session to change idle settings.";
+const CHECK_CONFIG: &str = "Check hypr/hypridle.conf and your smplOS updates, then try again.";
 
 fn config_failure(error: &Error) -> &'static str {
     match error {
@@ -44,7 +45,13 @@ fn timer_status(result: Result<SaveOutcome>) -> String {
                 Error::Io(_) => {
                     "Couldn't save idle settings. Check file access and available disk space, then try again.".into()
                 }
-                _ => "Couldn't save this timeout. Check hypr/hypridle.conf and your smplOS updates, then try again.".into(),
+                // Settings' own refusals are written for the user; raw command
+                // output is `Error::Command` and stays in the log.
+                Error::Unsupported(reason) => format!(
+                    "Couldn't save this timeout. {}. Check hypr/hypridle.conf, then try again.",
+                    reason.trim_end_matches('.')
+                ),
+                _ => format!("Couldn't save this timeout. {CHECK_CONFIG}"),
             }
         }
     }
@@ -317,9 +324,14 @@ mod tests {
         assert!(unconfirmed.starts_with("Saved, but application is unconfirmed."));
         assert!(unconfirmed.contains("select your timeout again"));
         assert!(!unconfirmed.contains(detail));
+        let validation = validate_diagnostics(
+            &format!("[ERR] Config has errors:\n{detail}\nProceeding ignoring faulty entries"),
+            false,
+        )
+        .unwrap_err();
         for error in [
             Error::Command(detail.into()),
-            unsupported(detail),
+            validation,
             Error::Io(std::io::Error::other(detail)),
             Error::Conflict,
         ] {
@@ -329,6 +341,17 @@ mod tests {
             assert!(!message.starts_with("Saved"));
             assert!(message.contains("again"));
         }
+    }
+
+    #[test]
+    fn refused_edits_say_why_instead_of_a_generic_failure() {
+        let message = timer_status(Err(unsupported(
+            "Custom after_sleep_cmd would change lock behavior; edit it manually",
+        )));
+        assert!(message.starts_with("Couldn't save this timeout. Custom after_sleep_cmd"));
+        assert!(message.contains("edit it manually. "));
+        assert!(message.ends_with("Check hypr/hypridle.conf, then try again."));
+        assert!(!message.contains("smplOS updates"));
     }
 
     #[test]

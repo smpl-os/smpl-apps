@@ -24,6 +24,21 @@ listener {\n\
     on-timeout = systemd-detect-virt -q || systemctl suspend\n\
 }\n";
 
+// The hypridle.conf smplOS ships, verbatim. Refresh it with
+// `scripts/check-smplos-stock-hypridle.sh --update`.
+const SMPLOS_STOCK: &str = include_str!("fixtures/smplos-hypridle.conf");
+
+const ACTIONS: [Action; 4] = [
+    Action::Lock,
+    Action::Dpms,
+    Action::Suspend,
+    Action::Shutdown,
+];
+const LOCK_PREFIX: &str = "loginctl lock-session; sleep 0.5; ";
+const LUA_DPMS_ON: &str = "hyprctl dispatch \"hl.dsp.dpms({state='on'})\"";
+const HELPER_WAKE_CHAIN: &str =
+    "smplos-hypr-dpms on; sleep 0.2; hyprctl reload; sleep 0.2; smplos-hypr-dpms on";
+
 struct Temp(PathBuf);
 
 impl Temp {
@@ -130,7 +145,7 @@ impl Runtime for Mock {
             fs::write(path, "# concurrent edit\n").unwrap();
         }
         if self.invalid {
-            Err(unsupported("native parse error"))
+            Err(Error::Command("native parse error".into()))
         } else {
             Ok(())
         }
@@ -312,6 +327,411 @@ fn custom_general_sleep_hooks_are_preserved_or_explicitly_refused() {
         .change(Action::Shutdown, 60, false)
         .unwrap();
     assert!(changed.contains("before_sleep_cmd = custom-sleep"));
+}
+
+fn replace_once(text: &str, from: &str, to: &str) -> String {
+    assert_eq!(
+        text.matches(from).count(),
+        1,
+        "expected exactly one {from:?}"
+    );
+    text.replacen(from, to, 1)
+}
+
+fn with_after_sleep(base: &str, command: &str) -> String {
+    let line = base
+        .lines()
+        .find(|line| line.trim_start().starts_with("after_sleep_cmd"))
+        .expect("after_sleep_cmd in the base config");
+    replace_once(base, line, &format!("    after_sleep_cmd = {command}"))
+}
+
+// A general-block hook as hypridle reads it, without comments.
+fn hook<'a>(config: &'a str, key: &str) -> Option<&'a str> {
+    config.lines().find_map(|line| {
+        let (name, value) = line.split_once('=')?;
+        let value = value.split('#').next().unwrap_or_default();
+        (name.trim() == key).then_some(value.trim())
+    })
+}
+
+fn assert_every_change_succeeds(config: &str, label: &str) {
+    let before = Config::parse(config)
+        .unwrap_or_else(|e| panic!("{label}: {e}"))
+        .seconds;
+    for helper in [false, true] {
+        for action in ACTIONS {
+            for &seconds in PRESETS {
+                let step = format!("{label}: {action:?} -> {seconds} s (helper {helper})");
+                let changed = Config::parse(config)
+                    .unwrap()
+                    .change(action, seconds, helper)
+                    .unwrap_or_else(|e| panic!("{step}: {e}"));
+                let mut expected = before;
+                expected[action as usize] = seconds;
+                assert_eq!(Config::parse(&changed).unwrap().seconds, expected, "{step}");
+            }
+        }
+    }
+}
+
+// What must hold for every hypridle.conf smplOS or Settings has produced.
+fn check_hypridle_conf(config: &str, label: &str) {
+    assert_every_change_succeeds(config, label);
+
+    let parsed = Config::parse(config).unwrap_or_else(|e| panic!("{label}: {e}"));
+    let lock = parsed.seconds[0];
+    let never = parsed
+        .change(Action::Lock, 0, false)
+        .unwrap_or_else(|e| panic!("{label}: Lock -> Never failed: {e}"));
+    assert_eq!(Config::parse(&never).unwrap().seconds[0], 0, "{label}");
+    if hook(config, "before_sleep_cmd").is_some() {
+        assert_eq!(hook(&never, "before_sleep_cmd"), Some(""), "{label}");
+    }
+    let wake = hook(config, "after_sleep_cmd");
+    assert_eq!(
+        hook(&never, "after_sleep_cmd"),
+        wake.map(|wake| wake.strip_prefix(LOCK_PREFIX).unwrap_or(wake)),
+        "{label}: Never may only drop the lock step of after_sleep_cmd"
+    );
+    assert_every_change_succeeds(&never, &format!("{label} with lock set to Never"));
+
+    let restored = Config::parse(&never)
+        .unwrap()
+        .change(Action::Lock, if lock == 0 { 300 } else { lock }, false)
+        .unwrap_or_else(|e| panic!("{label}: turning the lock timer back on failed: {e}"));
+    assert_eq!(
+        hook(&restored, "before_sleep_cmd"),
+        Some("loginctl lock-session"),
+        "{label}"
+    );
+    if let Some(wake) = hook(&restored, "after_sleep_cmd").filter(|wake| !wake.is_empty()) {
+        assert!(wake.starts_with(LOCK_PREFIX), "{label}: {wake}");
+    }
+    let stock_hooks = hook(config, "before_sleep_cmd") == Some("loginctl lock-session")
+        && wake.is_none_or(|wake| wake.starts_with(LOCK_PREFIX));
+    if lock != 0 && stock_hooks {
+        assert_eq!(restored, config, "{label}: Never and back changed the file");
+    }
+}
+
+// Every wake-up command smplOS or an earlier Settings version has written.
+fn accepted_wake_commands() -> Vec<(&'static str, String)> {
+    vec![
+        ("legacy dispatch", "hyprctl dispatch dpms on".into()),
+        ("lua dispatch", LUA_DPMS_ON.into()),
+        (
+            "lua wake chain",
+            format!("{LUA_DPMS_ON}; sleep 0.2; hyprctl reload; sleep 0.2; {LUA_DPMS_ON}"),
+        ),
+        ("helper", "smplos-hypr-dpms on".into()),
+        ("helper wake chain", HELPER_WAKE_CHAIN.into()),
+    ]
+}
+
+fn accepted_configs() -> Vec<(String, String)> {
+    let mut configs = Vec::new();
+    for (name, wake) in accepted_wake_commands() {
+        for (prefix, how) in [(LOCK_PREFIX, "with"), ("", "without")] {
+            configs.push((
+                format!("{name}, {how} lock prefix"),
+                with_after_sleep(SMPLOS_STOCK, &format!("{prefix}{wake}")),
+            ));
+        }
+    }
+    configs
+}
+
+fn fixtures(dir: &str) -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/power/fixtures")
+        .join(dir);
+    let mut paths: Vec<_> = fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    paths.sort();
+    assert!(!paths.is_empty(), "{} holds no fixtures", dir.display());
+    paths
+        .into_iter()
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            (name, fs::read_to_string(&path).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn smplos_stock_file_supports_every_timer_change() {
+    check_hypridle_conf(SMPLOS_STOCK, "smplOS stock");
+    check_hypridle_conf(&SMPLOS_STOCK.replace('\n', "\r\n"), "smplOS stock, CRLF");
+}
+
+// The stock file with the lock timer off, written out by hand so the tests that
+// use it do not depend on the editor they check.
+fn stock_with_lock_never() -> String {
+    let never = replace_once(
+        SMPLOS_STOCK,
+        "    before_sleep_cmd = loginctl lock-session\n    after_sleep_cmd = loginctl lock-session; sleep 0.5; smplos-hypr-dpms on",
+        "    before_sleep_cmd = \n    after_sleep_cmd = smplos-hypr-dpms on",
+    );
+    replace_once(
+        &never,
+        "listener {\n    timeout = 300\n    on-timeout = loginctl lock-session\n    ignore_inhibit = true\n}\n",
+        "# smpl-settings-disabled: listener {\n\
+         # smpl-settings-disabled:     timeout = 300\n\
+         # smpl-settings-disabled:     on-timeout = loginctl lock-session\n\
+         # smpl-settings-disabled:     ignore_inhibit = true\n\
+         # smpl-settings-disabled: }\n",
+    )
+}
+
+#[test]
+fn lock_never_on_the_stock_file_drops_only_the_lock_step_and_disables_the_listener() {
+    let changed = Config::parse(SMPLOS_STOCK)
+        .unwrap()
+        .change(Action::Lock, 0, false)
+        .unwrap();
+    assert_eq!(hook(&changed, "before_sleep_cmd"), Some(""));
+    assert_eq!(hook(&changed, "after_sleep_cmd"), Some(HELPER_WAKE_CHAIN));
+    assert_eq!(changed, stock_with_lock_never());
+    assert_eq!(Config::parse(&changed).unwrap().seconds, [0, 330, 600, 0]);
+    for helper in [false, true] {
+        let restored = Config::parse(&changed)
+            .unwrap()
+            .change(Action::Lock, 300, helper)
+            .unwrap();
+        assert_eq!(restored, SMPLOS_STOCK, "helper {helper}");
+    }
+}
+
+#[test]
+fn timer_edits_on_the_stock_file_preserve_every_other_byte() {
+    for helper in [false, true] {
+        for (action, seconds, from, to) in [
+            (Action::Lock, 1800, "timeout = 300\n", "timeout = 1800\n"),
+            (Action::Dpms, 345, "timeout = 330\n", "timeout = 345\n"),
+            (Action::Suspend, 601, "timeout = 600\n", "timeout = 601\n"),
+        ] {
+            let changed = Config::parse(SMPLOS_STOCK)
+                .unwrap()
+                .change(action, seconds, helper)
+                .unwrap();
+            assert_eq!(
+                changed,
+                replace_once(SMPLOS_STOCK, from, to),
+                "{action:?} (helper {helper})"
+            );
+        }
+    }
+    let added = Config::parse(SMPLOS_STOCK)
+        .unwrap()
+        .change(Action::Shutdown, 900, true)
+        .unwrap();
+    assert!(added.starts_with(SMPLOS_STOCK));
+    assert_eq!(Config::parse(&added).unwrap().seconds, [300, 330, 600, 900]);
+}
+
+#[test]
+fn pressing_never_on_the_stock_file_saves_and_the_lock_timer_comes_back() {
+    let temp = Temp::new();
+    let path = temp.config(SMPLOS_STOCK);
+    let runtime = || Mock {
+        helper: true,
+        ..Mock::default()
+    };
+    let outcome = save_timer(&path, &runtime(), Action::Lock, 0).unwrap();
+    assert!(matches!(outcome, SaveOutcome::Restarted), "{outcome:?}");
+    let saved = read(&path).unwrap();
+    assert_eq!(Config::parse(&saved).unwrap().seconds, [0, 330, 600, 0]);
+    assert_eq!(hook(&saved, "before_sleep_cmd"), Some(""));
+    assert_eq!(hook(&saved, "after_sleep_cmd"), Some(HELPER_WAKE_CHAIN));
+    let outcome = save_timer(&path, &runtime(), Action::Lock, 300).unwrap();
+    assert!(matches!(outcome, SaveOutcome::Restarted), "{outcome:?}");
+    assert_eq!(read(&path).unwrap(), SMPLOS_STOCK);
+}
+
+#[test]
+fn every_accepted_after_sleep_cmd_shape_supports_every_timer_change() {
+    for (label, config) in accepted_configs() {
+        check_hypridle_conf(&config, &label);
+    }
+}
+
+#[test]
+fn lock_never_and_back_keep_every_accepted_wake_command_verbatim() {
+    for (name, wake) in accepted_wake_commands() {
+        let locked = format!("{LOCK_PREFIX}{wake}");
+        for command in [locked.as_str(), wake.as_str()] {
+            let label = format!("{name}: after_sleep_cmd = {command}");
+            let start = with_after_sleep(SMPLOS_STOCK, command);
+            let never = Config::parse(&start)
+                .unwrap()
+                .change(Action::Lock, 0, false)
+                .unwrap_or_else(|e| panic!("{label}: Lock -> Never failed: {e}"));
+            assert_eq!(hook(&never, "before_sleep_cmd"), Some(""), "{label}");
+            assert_eq!(
+                hook(&never, "after_sleep_cmd"),
+                Some(wake.as_str()),
+                "{label}"
+            );
+            assert_eq!(Config::parse(&never).unwrap().seconds[0], 0, "{label}");
+            let restored = Config::parse(&never)
+                .unwrap()
+                .change(Action::Lock, 300, false)
+                .unwrap_or_else(|e| panic!("{label}: turning lock back on failed: {e}"));
+            assert_eq!(restored, with_after_sleep(SMPLOS_STOCK, &locked), "{label}");
+        }
+    }
+}
+
+#[test]
+fn lock_changes_with_the_helper_migrate_single_wake_commands_but_keep_chains() {
+    let lua_chain = format!("{LUA_DPMS_ON}; sleep 0.2; hyprctl reload; sleep 0.2; {LUA_DPMS_ON}");
+    for (wake, migrated) in [
+        ("hyprctl dispatch dpms on", "smplos-hypr-dpms on"),
+        (LUA_DPMS_ON, "smplos-hypr-dpms on"),
+        (lua_chain.as_str(), lua_chain.as_str()),
+        ("smplos-hypr-dpms on", "smplos-hypr-dpms on"),
+        (HELPER_WAKE_CHAIN, HELPER_WAKE_CHAIN),
+    ] {
+        let start = with_after_sleep(SMPLOS_STOCK, &format!("{LOCK_PREFIX}{wake}"));
+        let never = Config::parse(&start)
+            .unwrap()
+            .change(Action::Lock, 0, true)
+            .unwrap();
+        assert_eq!(hook(&never, "after_sleep_cmd"), Some(migrated), "{wake}");
+        let restored = Config::parse(&never)
+            .unwrap()
+            .change(Action::Lock, 300, true)
+            .unwrap();
+        assert_eq!(
+            restored,
+            with_after_sleep(SMPLOS_STOCK, &format!("{LOCK_PREFIX}{migrated}")),
+            "{wake}"
+        );
+    }
+}
+
+#[test]
+fn custom_after_sleep_cmd_is_still_refused_with_and_without_the_lock_prefix() {
+    let never = stock_with_lock_never();
+    for wake in [
+        "notify-send hi; smplos-hypr-dpms on",
+        "hyprctl reload",
+        "smplos-hypr-dpms on;",
+        "smplos-hypr-dpms on; sleep abc",
+        "smplos-hypr-dpms on && reboot",
+        "smplos-hypr-dpms on; sleep $(reboot)",
+    ] {
+        for command in [format!("{LOCK_PREFIX}{wake}"), wake.to_owned()] {
+            let locked = with_after_sleep(SMPLOS_STOCK, &command);
+            let unlocked = with_after_sleep(&never, &command);
+            for (config, seconds) in [(&locked, 0), (&unlocked, 300)] {
+                let result = Config::parse(config)
+                    .unwrap()
+                    .change(Action::Lock, seconds, false);
+                match result {
+                    Err(Error::Unsupported(reason)) => {
+                        assert!(reason.contains("after_sleep_cmd"), "{command}: {reason}")
+                    }
+                    other => panic!("{command}: expected a refusal, got {other:?}"),
+                }
+            }
+            // Timers that leave the sleep hooks alone keep working.
+            for (action, seconds) in [
+                (Action::Lock, 600),
+                (Action::Dpms, 120),
+                (Action::Suspend, 1200),
+                (Action::Shutdown, 900),
+            ] {
+                Config::parse(&locked)
+                    .unwrap()
+                    .change(action, seconds, false)
+                    .unwrap_or_else(|e| panic!("{command}: {action:?} -> {seconds} s: {e}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn wake_chain_accepts_only_dpms_on_numeric_sleeps_and_reload() {
+    for command in [
+        "smplos-hypr-dpms on",
+        "hyprctl dispatch dpms on",
+        LUA_DPMS_ON,
+        HELPER_WAKE_CHAIN,
+        "hyprctl dispatch dpms on; sleep 0.2; hyprctl reload; sleep 0.2; hyprctl dispatch dpms on",
+        "sleep 1; smplos-hypr-dpms on",
+        "smplos-hypr-dpms on;sleep .5;hyprctl reload; sleep 1.",
+    ] {
+        assert!(wake_chain(command), "{command}");
+    }
+    let huge = format!("smplos-hypr-dpms on; sleep {}", "9".repeat(50));
+    for command in [
+        "",
+        " ",
+        ";",
+        "hyprctl reload",
+        "sleep 0.2",
+        "smplos-hypr-dpms off",
+        "hyprctl dispatch dpms off",
+        "notify-send hi; smplos-hypr-dpms on",
+        "smplos-hypr-dpms on; notify-send hi",
+        "smplos-hypr-dpms on;",
+        ";smplos-hypr-dpms on",
+        "smplos-hypr-dpms on;; hyprctl reload",
+        "smplos-hypr-dpms on && reboot",
+        "smplos-hypr-dpms on || reboot",
+        "smplos-hypr-dpms on | cat",
+        "smplos-hypr-dpms on &",
+        "smplos-hypr-dpms on > /tmp/log",
+        "smplos-hypr-dpms on; sleep $(reboot)",
+        "smplos-hypr-dpms on; sleep `reboot`",
+        "smplos-hypr-dpms on; sleep abc",
+        "smplos-hypr-dpms on; sleep",
+        "smplos-hypr-dpms on; sleep -1",
+        "smplos-hypr-dpms on; sleep +1",
+        "smplos-hypr-dpms on; sleep 1e3",
+        "smplos-hypr-dpms on; sleep 1.2.3",
+        "smplos-hypr-dpms on; sleep .",
+        "smplos-hypr-dpms on; sleep 1s",
+        "smplos-hypr-dpms on; sleep 1 2",
+        "smplos-hypr-dpms on; sleep  1",
+        huge.as_str(),
+    ] {
+        assert!(!wake_chain(command), "{command}");
+    }
+}
+
+#[test]
+fn every_hypridle_conf_smplos_shipped_earlier_supports_every_timer_change() {
+    for (name, config) in fixtures("shipped") {
+        check_hypridle_conf(&config, &format!("shipped/{name}"));
+    }
+}
+
+#[test]
+fn every_hypridle_conf_earlier_settings_versions_generated_supports_every_timer_change() {
+    for (name, config) in fixtures("generated") {
+        let label = format!("generated/{name}");
+        let lock = Config::parse(&config).unwrap().seconds[0];
+        assert_eq!(
+            lock,
+            if name.contains("lock-never") { 0 } else { 300 },
+            "{label}"
+        );
+        check_hypridle_conf(&config, &label);
+    }
+}
+
+#[test]
+#[ignore = "fetches smplOS's current file: run scripts/check-smplos-stock-hypridle.sh"]
+fn upstream_stock_hypridle_conf_supports_every_timer_change() {
+    let path = std::env::var_os("SMPLOS_STOCK_HYPRIDLE_CONF")
+        .expect("SMPLOS_STOCK_HYPRIDLE_CONF names a copy of the hypridle.conf smplOS ships");
+    let config = fs::read_to_string(&path).unwrap();
+    check_hypridle_conf(&config, "smplOS stock hypridle.conf (upstream)");
 }
 
 #[test]
@@ -547,4 +967,23 @@ fn native_parser_isolated_from_real_session() {
             false
         )
         .is_err());
+
+    // The file smplOS ships, and what the editor leaves after Lock -> Never.
+    System.validate(SMPLOS_STOCK, false).unwrap();
+    let never = Config::parse(SMPLOS_STOCK)
+        .unwrap()
+        .change(Action::Lock, 0, false)
+        .unwrap();
+    System.validate(&never, false).unwrap();
+    assert!(System
+        .validate(&never.replace("timeout = 330", "timeout = broken"), false)
+        .is_err());
+    let mut text = never;
+    for action in [Action::Dpms, Action::Suspend] {
+        text = Config::parse(&text)
+            .unwrap()
+            .change(action, 0, false)
+            .unwrap();
+    }
+    System.validate(&text, true).unwrap();
 }

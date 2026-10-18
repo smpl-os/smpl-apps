@@ -533,8 +533,16 @@ unsupported syntax and custom timeout commands with a visible error rather
 than dropping them or guessing. The smplOS updater preserves these custom
 and source-included configurations even though the Settings UI cannot edit
 them; this is not support for editing arbitrary Hypridle configurations.
-Custom sleep hooks cannot be changed through
-the lock timer. Symlinked/hardlinked configs require manual editing. Edits
+Custom sleep hooks cannot be changed through the lock timer, except for the
+ones smplOS and earlier Settings versions write: `before_sleep_cmd =
+loginctl lock-session` and an `after_sleep_cmd` that wakes the screen with
+`smplos-hypr-dpms on` or `hyprctl dispatch` (plain or Lua form), optionally
+chained with numeric `sleep`s and `hyprctl reload` as in smplOS's wake-up
+chain, and optionally preceded by `loginctl lock-session; sleep 0.5; `. Never
+removes only that lock step and keeps the wake-up chain verbatim; choosing a
+lock time puts it back. Any other `before_sleep_cmd`/`after_sleep_cmd` is
+refused, and the page names the setting to edit by hand.
+Symlinked/hardlinked configs require manual editing. Edits
 are atomically replaced after a conflict check and isolated native Hypridle
 parser validation. A non-cooperating editor can still race between the final
 comparison and rename; do not edit the same file simultaneously in two tools.
@@ -580,7 +588,23 @@ cargo test -p settings --bin settings power
 cargo check -p settings --bin settings
 # Optional installed-hypridle parser check; isolated HOME/runtime/Wayland/D-Bus:
 cargo test -p settings --bin settings power::tests::native_parser_isolated_from_real_session -- --ignored
+# Download the hypridle.conf smplOS ships today and run the timer-change checks on it (CI runs this):
+scripts/check-smplos-stock-hypridle.sh
+# After smplOS changes that file, refresh the committed copy and review the diff:
+scripts/check-smplos-stock-hypridle.sh --update
 ```
+
+The Power tests run on real files, not hand-written lookalikes, so the editor
+and the OS cannot drift apart unnoticed. `settings/src/power/fixtures/` holds
+the `hypridle.conf` smplOS ships (`smplos-hypridle.conf`), every earlier
+version of it (`shipped/`, named by date and smplos commit) and the exact
+output of each earlier Settings generator (`generated/`). Each must accept all
+four timer changes at every preset, and Lock → Never must round-trip. The
+smplOS file from the first alpha (`systemd-detect-virt -q && exit 0 || …`
+listeners) is not editable at all and is not included. CI also runs
+`scripts/check-smplos-stock-hypridle.sh`, which downloads the file smplOS ships
+today and runs the same checks on it; it fails if the editor cannot handle that
+file, and only warns if the committed copy is merely out of date.
 
 ### Settings readability
 

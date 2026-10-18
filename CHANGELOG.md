@@ -189,6 +189,22 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **settings: Never on "Lock screen after" saves again, and a refused edit
+  says why.** Since v0.8.23, pressing Never showed "Couldn't save this
+  timeout" on smplOS's stock `hypridle.conf` and on files earlier Settings
+  versions generated. Turning the lock timer off also takes the lock step out
+  of `after_sleep_cmd`, and the editor only accepted a single screen-on
+  command there, so it refused smplOS's wake-up chain (`smplos-hypr-dpms on;
+  sleep 0.2; hyprctl reload; sleep 0.2; smplos-hypr-dpms on`) and the Lua
+  form of the same chain. Settings now accepts a chain made only of screen-on
+  commands, numeric `sleep`s and `hyprctl reload`, keeps it verbatim, and puts
+  the lock step back when you choose a lock time again. Any other custom
+  `after_sleep_cmd` is still refused, and the message now names it instead of
+  blaming "your smplOS updates". The Power tests now run on the real stock
+  file, every earlier smplOS stock file and the exact output of every earlier
+  Settings generator, and CI runs `scripts/check-smplos-stock-hypridle.sh`
+  against the file smplOS ships today, so the two can't drift apart unnoticed.
+
 - **control-surface: the release asset runs on smplOS's Qt again.** v0.8.27's
   `control-surface-0.8.27-x86_64.tar.gz` was built on rolling Arch with Qt
   6.12, so smplOS's qt6-base 6.11.2 refused to start it (`version 'Qt_6.12'

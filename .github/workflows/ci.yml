@@ -33,7 +33,7 @@ jobs:
             fontconfig freetype2 \
             libxkbcommon wayland wayland-protocols \
             pixman libglvnd mesa \
-            gtk4 gtk4-layer-shell libadwaita python
+            gtk4 gtk4-layer-shell libadwaita python curl
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -256,6 +256,13 @@ jobs:
         # (e.g. MainWindow, which is only in scope after slint::include_modules!()).
         # Unit tests in #[cfg(test)] modules are fully covered by --lib.
         run: cargo test --workspace --lib --bins --tests --no-fail-fast 2>&1
+
+      - name: Check the hypridle.conf smplOS ships
+        # Downloads smplOS's current stock hypridle.conf and runs the Settings
+        # Power timer-change checks on it, so drift between the OS and the
+        # editor fails here instead of reaching users. Its test is #[ignore]d
+        # and so is skipped by the Test step above.
+        run: scripts/check-smplos-stock-hypridle.sh
 
   control-surface:
     name: control-surface (CMake + ctest)
