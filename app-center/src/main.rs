@@ -397,6 +397,13 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
 
+    let executable = match os_update::Executable::current() {
+        Ok(executable) => Some(executable),
+        Err(error) => {
+            eprintln!("[app-center] {error}; restart will not be offered");
+            None
+        }
+    };
     smpl_common::init("app-center", 560.0, 620.0)?;
 
     let ui = MainWindow::new()?;
@@ -1071,61 +1078,152 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // -- Update OS (full system update, kernel + drivers) --
-    //
-    // We used to `let _ = Command::new(...).spawn()` here, which swallowed every
-    // possible failure (binary missing, exec denied, ENOENT, etc.). When users
-    // reported "I pressed Update OS but nothing happened" there was no trail
-    // whatsoever. Now we:
-    //   1. Log every invocation to ~/.local/share/smplos/logs/update-*.log so a
-    //      button-triggered update is always auditable after the fact.
-    //   2. Surface spawn failures via stderr AND the log file so the tester can
-    //      grep and diagnose without needing a debug script on Ventoy.
+    // -- Update OS (the OS owns progress, completion and its update lock) --
+    let pending_os_update = Arc::new(Mutex::new(None::<std::path::PathBuf>));
+    let restart_target = Rc::new(RefCell::new(None::<os_update::RestartTarget>));
     {
+        let ui_weak = ui.as_weak();
+        let pending = pending_os_update.clone();
+        let restart_target = restart_target.clone();
         ui.on_update_os(move || {
             use std::io::Write;
 
-            let home  = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            let logdir = std::path::PathBuf::from(&home).join(".local/share/smplos/logs");
-            let _ = std::fs::create_dir_all(&logdir);
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let logpath = logdir.join(format!("update-{stamp}.log"));
-
-            let mut log = std::fs::OpenOptions::new()
-                .create(true).append(true)
-                .open(&logpath)
-                .ok();
-
-            if let Some(f) = log.as_mut() {
-                let _ = writeln!(
-                    f,
-                    "[app-center] Update OS button pressed at unix={stamp}\n\
-                     [app-center] spawning: smplos-update --mode full",
-                );
+            let Some(ui) = ui_weak.upgrade() else { return };
+            ui.set_os_update_status(SharedString::default());
+            ui.set_restart_available(false);
+            *restart_target.borrow_mut() = None;
+            let (logpath, mut log) = match os_update::new_log() {
+                Ok(log) => log,
+                Err(error) => {
+                    eprintln!("[app-center] {error}");
+                    ui.set_os_update_status(error.into());
+                    return;
+                }
+            };
+            if let Err(error) = writeln!(log, "[app-center] spawning: smplos-update --mode full") {
+                let message = format!("Could not write OS update log: {error}");
+                eprintln!("[app-center] {message}");
+                ui.set_os_update_status(message.into());
+                return;
             }
-
-            match os_update::command().spawn() {
+            match os_update::command(&logpath).spawn() {
                 Ok(child) => {
+                    *pending.lock().unwrap() = Some(logpath.clone());
                     let pid = child.id();
                     let msg = format!("[app-center] smplos-update spawned OK, pid={pid}");
                     eprintln!("{msg}");
-                    if let Some(f) = log.as_mut() {
-                        let _ = writeln!(f, "{msg}");
+                    if let Err(error) = writeln!(log, "{msg}") {
+                        eprintln!("[app-center] Could not write update launch log: {error}");
                     }
+                    ui.set_os_update_status("OS updater launched. Use its terminal for progress; launcher exit alone does not verify completion.".into());
+                    let ui_weak = ui_weak.clone();
+                    let pending = pending.clone();
+                    std::thread::spawn(move || {
+                        let result = os_update::wait_for_launcher(child);
+                        let msg = match &result {
+                            Ok(()) => format!(
+                                "[app-center] updater launcher pid={pid} exited successfully; \
+                                 OS completion must be checked in the updater, not inferred from terminal exit"
+                            ),
+                            Err(error) => format!("[app-center] {error} (launcher pid={pid})"),
+                        };
+                        eprintln!("{msg}");
+                        if let Err(error) = writeln!(log, "{msg}") {
+                            eprintln!("[app-center] Could not write update launcher result: {error}");
+                        }
+                        if let Err(error) = result {
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                if pending.lock().unwrap().as_ref() == Some(&logpath) {
+                                    ui.set_os_update_status(error.into());
+                                }
+                            });
+                        }
+                    });
                 }
                 Err(e) => {
+                    ui.set_os_update_status(format!("Could not launch Update OS: {e}").into());
                     let msg = format!(
                         "[app-center] FAILED to spawn smplos-update: {e} (log at {})",
                         logpath.display(),
                     );
                     eprintln!("{msg}");
-                    if let Some(f) = log.as_mut() {
-                        let _ = writeln!(f, "{msg}");
+                    if let Err(error) = writeln!(log, "{msg}") {
+                        eprintln!("[app-center] Could not write update launch failure: {error}");
                     }
                 }
+            }
+        });
+    }
+
+    let os_update_timer = slint::Timer::default();
+    {
+        let ui_weak = ui.as_weak();
+        let restart_target = restart_target.clone();
+        os_update_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_secs(1),
+            move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let mut pending = pending_os_update.lock().unwrap();
+                if let Some(logpath) = pending.as_ref() {
+                    let completion = match os_update::read_completion(logpath) {
+                        Ok(None) => return,
+                        Ok(Some(completion)) => completion,
+                        Err(error) => {
+                            eprintln!("[app-center] {error} ({})", logpath.display());
+                            ui.set_os_update_status(error.into());
+                            *pending = None;
+                            return;
+                        }
+                    };
+                    *pending = None;
+                    let message = match completion {
+                        os_update::Completion::Verified { warnings } => {
+                            let message = if warnings {
+                                "OS update completed with warnings. Check its log."
+                            } else {
+                                "OS update completed and verified."
+                            };
+                            if let Some(executable) = &executable {
+                                match executable.replacement() {
+                                    Ok(Some(target)) => {
+                                        *restart_target.borrow_mut() = Some(target);
+                                        ui.set_restart_available(true);
+                                        ui.set_os_update_status(format!("{message} Restart App Center when app operations are finished to use its installed version.").into());
+                                        return;
+                                    }
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        eprintln!("[app-center] {error}");
+                                        ui.set_os_update_status(format!("{message} {error}").into());
+                                        return;
+                                    }
+                                }
+                            }
+                            message
+                        }
+                        os_update::Completion::Failed => "OS update failed. Check its terminal and log before retrying.",
+                        os_update::Completion::Interrupted => "OS update was interrupted. Check its log before retrying.",
+                        os_update::Completion::Unverified => "OS update completion could not be verified. Check its terminal and log.",
+                    };
+                    ui.set_os_update_status(message.into());
+                }
+            },
+        );
+    }
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_restart_app_center(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if ui.get_installing() {
+                ui.set_os_update_status("Finish the current app operation before restarting App Center.".into());
+                return;
+            }
+            let target = restart_target.borrow();
+            let Some(target) = target.as_ref() else { return };
+            if let Err(error) = target.restart() {
+                eprintln!("[app-center] {error}");
+                ui.set_os_update_status(error.into());
             }
         });
     }

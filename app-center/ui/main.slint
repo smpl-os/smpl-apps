@@ -327,6 +327,8 @@ export component MainWindow inherits Window {
 
     // Update confirm dialog
     in-out property <bool> show-update-os-confirm: false;
+    in-out property <string> os-update-status: "";
+    in-out property <bool> restart-available: false;
 
     // -- Callbacks --
     callback search(string);
@@ -342,6 +344,7 @@ export component MainWindow inherits Window {
     callback cancel-install();
     callback switch-tab(int);
     callback update-os();
+    callback restart-app-center();
     callback check-for-updates();
     callback toggle-app-select(int);
     callback update-selected-apps();
@@ -946,6 +949,22 @@ export component MainWindow inherits Window {
             color: Theme.warning;
             font-size: 12px;
             wrap: word-wrap;
+        }
+
+        if root.os-update-status != "": Text {
+            text: root.os-update-status;
+            color: Theme.warning;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+
+        if root.restart-available: HorizontalLayout {
+            alignment: end;
+            ActionButton {
+                label: "Restart App Center";
+                busy: root.installing;
+                clicked => { root.restart-app-center(); }
+            }
         }
 
         // == Results list or detail view ==
@@ -1721,7 +1740,7 @@ export component MainWindow inherits Window {
 
         Rectangle {
             width: 380px;
-            height: 180px;
+            height: 240px;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             border-radius: 8px;
@@ -1753,7 +1772,7 @@ export component MainWindow inherits Window {
                 }
 
                 Text {
-                    text: "Runs a full OS update with critical stack safety rules.\nKernel/driver/compositor updates are offered as a separate critical bundle.\nClose other apps before proceeding.";
+                    text: "Runs a full OS update with critical stack safety rules.\nKernel/driver/compositor updates are offered as a separate critical bundle.\nClose other apps before proceeding.\nAfter the updater reports completion, close and reopen App Center to use its newly installed version. Closing App Center does not cancel the OS update.";
                     color: Theme.fg;
                     font-size: 11px;
                     wrap: word-wrap;

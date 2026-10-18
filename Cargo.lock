@@ -134,6 +134,7 @@ name = "app-center"
 version = "0.8.29"
 dependencies = [
  "i-slint-backend-winit",
+ "libc",
  "serde",
  "serde_json",
  "slint",

@@ -793,7 +793,45 @@ not an incomplete latest release; inspect the failed run before retrying.
 
 App Center's **Update OS** confirmation launches `smplos-update --mode full`.
 The OS updater fetches the published smpl-apps release bundle; pushing source
-alone does not deliver new app binaries. The v0.8.23 release packages the
+alone does not deliver new app binaries. Replacing the installed executable
+does not change an already running App Center: after the updater reports
+successful native-app installation and completion, close and reopen App Center
+to use that build. A failed installation leaves the previous build installed;
+reopening cannot fix a delivery failure.
+
+App Center reaps its own updater launcher off the UI thread and displays
+launch/wait failures, but does not treat launcher exit as OS-update completion.
+Some terminals detach into a server; others remain open for acknowledgement
+after the work is finished. The OS updater owns progress, completion and the
+cross-process update lock. App Center deliberately has no persistent
+"OS update running" guard. Closing App Center does not cancel the update.
+
+With the matching OS completion-receipt support, App Center offers **Restart
+App Center** after its own full update verifies the core and releases the lock,
+and only if its installed executable has actually been replaced. Restart is
+an explicit action, disabled during an app install/remove/update, not an abrupt
+automatic close. It rechecks and executes the verified installed inode, removes
+inherited coordinator/sudo state and closes the updater's FD9 on exec. Only
+after the replacement successfully spawns does the old process exit, so an
+exec failure leaves the old window open with an error. Exiting reparents any
+completed launcher still waiting for terminal acknowledgement; self-exec would
+lose its waiter thread and retain ownership of an unreaped child. It never
+kills the updater or other applications. Without receipt support, close and
+reopen manually after the updater reports completion.
+
+The native/OS contract is `smplos-update --mode full` with a unique absolute
+`SMPLOS_UPDATE_LOG_FILE` under `~/.local/state/smplos/update/`. The OS must
+atomically publish `<log>.result` **after** all mutation, verification and
+finalization, and explicit lock release. It contains key/value lines:
+`protocol=1`, `status=complete|complete-with-warnings|failed|interrupted`,
+`stage=finished` (or the interrupted stage), `log=<exact requested path>`,
+`mode=full`, `core_verified=0|1`, `lock_released=1`, and optionally
+`optional_phase_warnings=N`. Only complete statuses with verified core and a
+finished stage permit restart. The unique receipt is polled even while the
+terminal waits for Enter; global status, launcher exit, missing/mismatched
+receipts and failed native delivery never authorize restart.
+
+The v0.8.23 release packages the
 previously unreleased start-menu icon/pinning fix, Settings power persistence
 and polling fixes, readable typography, and monitor-owned Taskbar integration.
 Publish the corresponding OS helper/renderer changes before this app release.

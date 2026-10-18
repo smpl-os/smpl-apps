@@ -20,6 +20,15 @@ All notable changes to smpl-apps are documented here.
 
 ### Changed
 
+- **app-center: make the OS updater lifecycle explicit.** Reap the owned
+  launcher without blocking the UI and show launch/wait failures in the
+  window. A unique post-unlock OS completion receipt plus a changed installed
+  executable enables an explicit **Restart App Center** action, only while
+  no app operation is running. Restart executes the revalidated installed
+  binary without inherited coordinator/sudo state or lock FD9. Terminal exit
+  alone never authorizes restart or adds a stale native running-update guard.
+  Older updaters retain the manual close-and-reopen path.
+
 - **Release commits carry no tool attribution.** The release workflow's
   version-bump commit no longer adds a `Co-authored-by` trailer.
 
