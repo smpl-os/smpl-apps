@@ -683,7 +683,8 @@ and mirroring outputs are named in the status line and never written. Every
 control reads the selected row, so the canvas, mode, scale and orientation
 always match what Hyprland reports. Mirrored transforms 4–7 appear as an extra,
 exactly named orientation. Outside Hyprland, or when `hyprctl` fails, the tab
-explains why it is unavailable; simulated displays need `settings --demo`.
+explains why it is unavailable; simulated displays need `settings --demo`
+(`settings --demo-policy` simulates a smplOS with the workspace policy on).
 
 Edits (drag, mode, scale, orientation) are normalized immediately so the canvas
 shows exactly what will be saved: an overlapping or detached display moves to
@@ -721,12 +722,19 @@ While the tab is open it checks for changes every two seconds. Without pending
 edits it reloads automatically; with pending edits Apply stays blocked until
 Refresh or Revert. When a display's saved rule differs from what is active, a
 notice offers **Use saved** (reload the file) or **Keep current** (save the
-active layout). "Primary" marks the display showing workspace 1. With the
-workspace policy enabled (`workspace-ctl enabled`), placement follows the
-arrangement and the button becomes a note; otherwise **Move workspace 1 here**
-moves it now without saving. Dispatches use the running config provider's
-syntax (Lua `hl.dsp.*` or legacy) and succeed only on an `ok` reply. Identify
-shows each name on its own screen.
+active layout). "Primary" marks the display that owns workspace 1 and the
+taskbar. With the stable workspace policy enabled (`workspace-ctl enabled`),
+the Primary Monitor card offers **Make primary** for any other connected
+display. It runs `workspace-ctl set-primary <connector>`, which saves the
+choice, applies it at once and moves the taskbar there, so Settings never
+touches the bar itself. The badge comes from `workspace-ctl primary` and is
+re-read after the change and on every poll. Without the policy, **Move
+workspace 1 here** moves workspace 1 now and says it is not saved. A smplOS
+that predates `workspace-ctl primary` and `set-primary` keeps the badge on the
+display showing workspace 1 and shows a note asking for a newer smplOS instead
+of a button. Dispatches use the running config provider's syntax (Lua
+`hl.dsp.*` or legacy) and succeed only on an `ok` reply. Identify shows each
+name on its own screen.
 
 Headless regression checks (temporary directories and mocked command runners):
 `cargo test -p settings --bin settings display`.

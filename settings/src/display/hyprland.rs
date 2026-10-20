@@ -12,6 +12,7 @@ use super::conf::{self, ConfPath, Planned};
 use super::hyprctl::{self, Dispatch, Provider, Runner};
 use super::layout::Rect;
 use super::monitor::{self, Kind, Output};
+use super::primary;
 use super::verify;
 
 pub struct HyprlandBackend {
@@ -259,11 +260,19 @@ impl DisplayBackend for HyprlandBackend {
     fn snapshot(&self) -> Result<Snapshot, String> {
         let outputs = self.outputs()?;
         let conf = self.conf_path().and_then(|path| path.read());
+        let workspace_one = self.workspace_one();
+        let workspace_policy = self.workspace_policy();
+        // Only a policy that is on can name a primary; asking an older OS or
+        // a disabled policy would just fail.
+        let policy_primary = workspace_policy
+            .then(|| primary::read(&*self.runner))
+            .flatten();
         Ok(Snapshot {
             outputs,
             conf,
-            workspace_one: self.workspace_one(),
-            workspace_policy: self.workspace_policy(),
+            workspace_one,
+            workspace_policy,
+            policy_primary,
         })
     }
 
@@ -372,6 +381,10 @@ impl DisplayBackend for HyprlandBackend {
             monitor: connector.into(),
         };
         hyprctl::dispatch(&*self.runner, self.provider()?, &action)
+    }
+
+    fn set_primary(&self, connector: &str) -> Result<(), String> {
+        primary::set(&*self.runner, connector)
     }
 
     fn identify(&self, labels: &[(String, String)]) -> Result<(), String> {
@@ -532,6 +545,28 @@ mod tests {
         }
     }
 
+    /// A fake with the workspace policy `enabled` whose `workspace-ctl
+    /// primary` answers `primary` (`None`: an OS without that subcommand).
+    /// Workspace 1 sits on DP-3, so the policy's answer can differ from it.
+    fn policy_fake(enabled: bool, primary: Option<&'static str>) -> Arc<MockRunner> {
+        Arc::new(MockRunner::new(move |program, args| {
+            match (program, args) {
+                ("hyprctl", ["-j", "monitors", "all"]) => reply(&monitors_json(1)),
+                ("hyprctl", ["-j", "workspaces"]) => {
+                    reply(r#"[{"id": 1, "monitor": "DP-3"}, {"id": 2, "monitor": "HDMI-A-1"}]"#)
+                }
+                ("workspace-ctl", ["enabled"]) if enabled => reply(""),
+                ("workspace-ctl", ["enabled"]) => failure(""),
+                ("workspace-ctl", ["primary"]) => match primary {
+                    Some(name) if enabled => reply(&format!("{name}\n")),
+                    _ => failure(""),
+                },
+                ("workspace-ctl", ["set-primary", _]) => reply(""),
+                _ => Err(format!("unexpected command {program} {args:?}")),
+            }
+        }))
+    }
+
     fn targets(snapshot: &Snapshot, dp3_transform: i32) -> Vec<Target> {
         snapshot
             .managed()
@@ -567,6 +602,74 @@ mod tests {
             .calls()
             .iter()
             .all(|call| !call.contains("reload") && !call.contains("dispatch")));
+    }
+
+    #[test]
+    fn snapshot_without_the_policy_never_asks_for_a_primary() {
+        let home = Home::new(Some(SAVED));
+        let runner = policy_fake(false, Some("HDMI-A-1"));
+        let snapshot = backend(runner.clone(), &home).snapshot().unwrap();
+        assert!(!snapshot.workspace_policy);
+        assert_eq!(snapshot.policy_primary, None);
+        assert_eq!(snapshot.primary(), Some("DP-3"), "workspace 1's host");
+        assert!(snapshot.can_set_primary());
+        assert!(!runner
+            .calls()
+            .contains(&"workspace-ctl primary".to_string()));
+    }
+
+    #[test]
+    fn snapshot_names_the_policys_primary_even_when_workspace_one_is_elsewhere() {
+        let home = Home::new(Some(SAVED));
+        let runner = policy_fake(true, Some("HDMI-A-1"));
+        let snapshot = backend(runner.clone(), &home).snapshot().unwrap();
+        assert!(snapshot.workspace_policy);
+        assert_eq!(snapshot.workspace_one.as_deref(), Some("DP-3"));
+        assert_eq!(snapshot.policy_primary.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(snapshot.primary(), Some("HDMI-A-1"));
+        assert!(snapshot.can_set_primary());
+        let calls = runner.calls();
+        let at = |command: &str| calls.iter().position(|call| call == command).unwrap();
+        assert!(at("workspace-ctl enabled") < at("workspace-ctl primary"));
+    }
+
+    #[test]
+    fn snapshot_on_an_os_without_primary_keeps_todays_view() {
+        let home = Home::new(Some(SAVED));
+        let runner = policy_fake(true, None);
+        let snapshot = backend(runner.clone(), &home).snapshot().unwrap();
+        assert!(snapshot.workspace_policy);
+        assert_eq!(snapshot.policy_primary, None);
+        assert_eq!(
+            snapshot.primary(),
+            Some("DP-3"),
+            "falls back to workspace 1"
+        );
+        assert!(!snapshot.can_set_primary(), "older OS: nothing to set");
+    }
+
+    #[test]
+    fn set_primary_only_asks_the_os() {
+        let home = Home::new(None);
+        let runner = policy_fake(true, Some("DP-3"));
+        backend(runner.clone(), &home)
+            .set_primary("HDMI-A-1")
+            .unwrap();
+        // The OS moves the taskbar and workspace 1: no hyprctl, eww or bar-ctl.
+        assert_eq!(runner.calls(), ["workspace-ctl set-primary HDMI-A-1"]);
+    }
+
+    #[test]
+    fn set_primary_reports_why_the_os_refused() {
+        let home = Home::new(None);
+        let runner = Arc::new(MockRunner::new(|program, args| match (program, args) {
+            ("workspace-ctl", ["set-primary", "DP-9"]) => {
+                failure("workspace-ctl: DP-9 is not a connected monitor\n")
+            }
+            _ => Err(format!("unexpected command {program} {args:?}")),
+        }));
+        let error = backend(runner, &home).set_primary("DP-9").unwrap_err();
+        assert_eq!(error, "workspace-ctl: DP-9 is not a connected monitor");
     }
 
     #[test]

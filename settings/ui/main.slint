@@ -1427,12 +1427,18 @@ export component MainWindow inherits Window {
     // Saved rules that differ from the active configuration, one per line.
     in property <string> disp-drift-text: "";
     in property <bool> disp-workspace-policy: false;
-    // The display currently showing workspace 1.
-    in property <string> disp-primary-name: "";
+    // Whether the Primary Monitor card can make the selected display primary:
+    // always without the workspace policy, and with it only when the OS can
+    // change its primary monitor.
+    in property <bool> disp-primary-settable: true;
+    // What the card says about the selected display, chosen by whether it is
+    // the primary one (selecting a display does not rebuild these strings).
+    in property <string> disp-primary-note-here: "";
+    in property <string> disp-primary-note-elsewhere: "";
     out property <bool> disp-can-apply: root.disp-has-changes && !root.disp-busy && !root.disp-stale;
     out property <bool> disp-can-revert: root.disp-has-changes && !root.disp-busy;
     out property <bool> disp-drift-actionable: !root.disp-has-changes && !root.disp-busy && !root.disp-stale;
-    out property <bool> disp-primary-movable: root.disp-selection-valid && !root.disp-workspace-policy && !root.disp-busy
+    out property <bool> disp-primary-movable: root.disp-selection-valid && root.disp-primary-settable && !root.disp-busy
         && !root.disp-monitors[root.disp-selected-index].is-primary;
 
     // ── Power tab properties ──
@@ -1957,7 +1963,7 @@ export component MainWindow inherits Window {
                     root.disp-refresh-monitors();
                     return accept;
                 }
-                if e.text == "p" && root.disp-selection-valid && !root.disp-workspace-policy && !root.disp-busy {
+                if e.text == "p" && root.disp-selection-valid && root.disp-primary-settable && !root.disp-busy {
                     root.disp-set-primary(root.disp-selected-index);
                     return accept;
                 }
@@ -3831,7 +3837,7 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // ── Primary Monitor card: the display showing workspace 1 ──
+                    // ── Primary Monitor card: the display that owns workspace 1 (and, under the workspace policy, the taskbar) ──
                     Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
@@ -3857,20 +3863,16 @@ export component MainWindow inherits Window {
                                 }
 
                                 Text {
-                                    text: root.disp-workspace-policy
-                                        ? "Workspace placement follows the display arrangement. Change it in Taskbar settings."
-                                        : root.disp-monitors[root.disp-selected-index].is-primary
-                                            ? "Workspace 1 is on this display."
-                                            : root.disp-primary-name != ""
-                                                ? "Workspace 1 is on " + root.disp-primary-name + ". Moving it takes effect now and is not saved."
-                                                : "Workspace 1 is not open on any display.";
+                                    text: root.disp-monitors[root.disp-selected-index].is-primary
+                                        ? root.disp-primary-note-here
+                                        : root.disp-primary-note-elsewhere;
                                     color: Theme.fg_dim;
                                     font-size: Typography.secondary;
                                     wrap: word-wrap;
                                 }
                             }
 
-                            if !root.disp-workspace-policy: VerticalLayout {
+                            if root.disp-primary-settable: VerticalLayout {
                                 alignment: center;
 
                                 Rectangle {
@@ -3887,7 +3889,7 @@ export component MainWindow inherits Window {
                                         padding-right: 10px;
 
                                         Text {
-                                            text: "Move workspace 1 here";
+                                            text: root.disp-workspace-policy ? "Make primary" : "Move workspace 1 here";
                                             color: !root.disp-primary-movable
                                                 ? Theme.fg_dim.darker(0.3)
                                                 : disp-primary-touch.has-hover ? Theme.bg : Theme.fg;

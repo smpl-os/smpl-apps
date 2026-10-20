@@ -12,6 +12,7 @@ pub mod hyprland;
 pub mod layout;
 pub mod model;
 pub mod monitor;
+pub mod primary;
 pub mod scale;
 pub mod ui;
 pub mod verify;

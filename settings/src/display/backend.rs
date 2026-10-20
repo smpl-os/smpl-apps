@@ -20,9 +20,26 @@ pub struct Snapshot {
     pub workspace_one: Option<String>,
     /// `workspace-ctl enabled`: workspaces follow the display arrangement.
     pub workspace_policy: bool,
+    /// `workspace-ctl primary`: the monitor the policy keeps workspace 1 and
+    /// the taskbar on. `None` without the policy and on an OS that can't say.
+    pub policy_primary: Option<String>,
 }
 
 impl Snapshot {
+    /// The primary monitor: the policy's choice, else the output showing
+    /// workspace 1.
+    pub fn primary(&self) -> Option<&str> {
+        self.policy_primary
+            .as_deref()
+            .or(self.workspace_one.as_deref())
+    }
+
+    /// Without the policy Settings moves workspace 1 itself. With it, only an
+    /// OS that answers `workspace-ctl primary` also accepts `set-primary`.
+    pub fn can_set_primary(&self) -> bool {
+        !self.workspace_policy || self.policy_primary.is_some()
+    }
+
     /// Identity of the display configuration (outputs and saved file),
     /// ignoring focus, workspaces and other volatile fields.
     pub fn fingerprint(&self) -> u64 {
@@ -118,7 +135,11 @@ pub trait DisplayBackend: Send + Sync {
     fn apply(&self, baseline: u64, targets: &[Target]) -> ApplyOutcome;
     /// Reloads the saved file and reports what still differs from it.
     fn use_saved(&self) -> ApplyOutcome;
+    /// Moves workspace 1 to `connector` for this session only (no policy).
     fn move_workspace_one(&self, connector: &str) -> Result<(), String>;
+    /// Makes `connector` the primary monitor under the workspace policy: the
+    /// policy saves the choice and the OS moves the taskbar with it.
+    fn set_primary(&self, connector: &str) -> Result<(), String>;
     /// Shows `(connector, label)` overlays on the matching screens.
     fn identify(&self, labels: &[(String, String)]) -> Result<(), String>;
     fn is_demo(&self) -> bool {
@@ -172,6 +193,7 @@ mod tests {
             conf: Ok(Some("monitor = DP-3, preferred, auto, 1\n".into())),
             workspace_one: Some("HDMI-A-1".into()),
             workspace_policy: false,
+            policy_primary: None,
         }
     }
 
@@ -181,6 +203,7 @@ mod tests {
         let mut moved_workspace = snapshot();
         moved_workspace.workspace_one = Some("DP-3".into());
         moved_workspace.workspace_policy = true;
+        moved_workspace.policy_primary = Some("DP-3".into());
         assert_eq!(base.fingerprint(), moved_workspace.fingerprint());
         let mut reordered = snapshot();
         reordered.outputs.reverse();
@@ -191,6 +214,31 @@ mod tests {
         let mut edited = snapshot();
         edited.conf = Ok(None);
         assert_ne!(base.fingerprint(), edited.fingerprint());
+    }
+
+    #[test]
+    fn primary_is_the_policys_choice_else_the_workspace_one_host() {
+        let mut snap = snapshot();
+        assert_eq!(snap.primary(), Some("HDMI-A-1"));
+        snap.workspace_one = None;
+        assert_eq!(snap.primary(), None);
+        snap.workspace_policy = true;
+        snap.policy_primary = Some("DP-3".into());
+        snap.workspace_one = Some("HDMI-A-1".into());
+        assert_eq!(snap.primary(), Some("DP-3"), "the policy is authoritative");
+    }
+
+    #[test]
+    fn primary_can_be_set_without_the_policy_or_with_an_os_that_supports_it() {
+        let mut snap = snapshot();
+        assert!(snap.can_set_primary(), "no policy: workspace 1 is moved");
+        snap.workspace_policy = true;
+        assert!(
+            !snap.can_set_primary(),
+            "policy on, but the OS can't name a primary: older install"
+        );
+        snap.policy_primary = Some("DP-3".into());
+        assert!(snap.can_set_primary());
     }
 
     #[test]
