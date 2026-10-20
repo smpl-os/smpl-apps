@@ -18,7 +18,7 @@ use super::icons;
 use super::{FirmwareImage, InputEvent, SheetPreview, Status, Validation, Variant};
 use crate::assign::{flow, picker};
 use crate::{
-    KeypadBindingRow, KeypadControl, KeypadIcon, KeypadSheetCell, KeypadSheetLine, KeypadTuning, KeypadVariant, MainWindow,
+    AssignBindingRow, KeypadControl, KeypadIcon, KeypadSheetCell, KeypadSheetLine, KeypadTuning, KeypadVariant, MainWindow,
 };
 
 const KEYPAD_TAB: i32 = 11;
@@ -1215,7 +1215,7 @@ fn render_state(ui: &MainWindow, st: &State) {
     ui.set_kp_sheet_context(st.sheet_context as i32);
     render_sheet_preview(ui, st);
 
-    let rows: Vec<KeypadBindingRow> = st
+    let rows: Vec<AssignBindingRow> = st
         .config
         .bound_slots_at(st.profile, st.held_index())
         .into_iter()
@@ -1226,7 +1226,7 @@ fn render_state(ui: &MainWindow, st: &State) {
             }).map(|w| w.message.rsplit_once(": ").map_or(w.message.clone(), |(_, m)| m.to_string()));
             let blocked = st.held_scope().is_some_and(|h| !st.usable_in(&h, &slot));
             let unsupported = slot.split('.').nth(1) == Some("shift") && st.shift_supported != Some(true);
-            KeypadBindingRow {
+            AssignBindingRow {
                 label: s(if unsupported {
                     format!("{} · Turn while pressed", config::slot_label(slot.split('.').next().unwrap_or(&slot)))
                 } else {

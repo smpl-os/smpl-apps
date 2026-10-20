@@ -441,6 +441,51 @@ fn keypad_page() -> &'static str {
     UI.split("// KEYPAD TAB").nth(1).unwrap().split("// ABOUT TAB").next().unwrap()
 }
 
+// The source of one top-level component, up to the next top-level component.
+fn component_source(name: &str) -> &'static str {
+    let body = UI
+        .split(&format!("component {name} inherits"))
+        .nth(1)
+        .unwrap_or_else(|| panic!("no component {name}"));
+    let end = ["\ncomponent ", "\nexport component "]
+        .iter()
+        .filter_map(|next| body.find(next))
+        .min()
+        .unwrap_or(body.len());
+    &body[..end]
+}
+
+// The editor rows live once, in the shared components, and every tab that
+// assigns actions binds them instead of repeating the markup.
+fn assert_uses_shared_assignment_components(page: &str, tab: &str) {
+    for component in ["AssignProfileEditor {", "AssignActionEditor {", "AssignBindingList {"] {
+        assert_eq!(page.matches(component).count(), 1, "{tab}: {component}");
+    }
+    for repeated in [
+        "text: \"Window class\";",
+        "text: \"Window title\";",
+        "text: \"Only if installed\";",
+        "Apply to control",
+        "for row in ",
+    ] {
+        assert!(!page.contains(repeated), "{tab} repeats a shared row: {repeated}");
+    }
+}
+
+#[test]
+fn assignment_rows_are_shared_components_not_copies() {
+    assert_uses_shared_assignment_components(keypad_page(), "Keypad");
+    let profile = component_source("AssignProfileEditor");
+    for row in ["text: \"Profile\";", "text: \"Window class\";", "text: \"Window title\";", "text: \"Add app\";"] {
+        assert!(profile.contains(row), "AssignProfileEditor: {row}");
+    }
+    let action = component_source("AssignActionEditor");
+    for row in ["text: \"Action\";", "text: \"Only if installed\";", "@children"] {
+        assert!(action.contains(row), "AssignActionEditor: {row}");
+    }
+    assert!(component_source("AssignBindingList").contains("for row in root.rows: Rectangle {"));
+}
+
 #[test]
 fn keypad_tab_states_its_device_scope_first() {
     let keypad = keypad_page();
@@ -521,14 +566,25 @@ fn keypad_advanced_reaches_what_was_hand_edited() {
         assert!(advanced.contains(needle), "advanced: {needle}");
     }
     assert!(UI.contains("in-out property <bool> kp-advanced-open: false;"), "collapsed by default");
+    // The profile and action editors are shared with the Mouse tab: the page
+    // binds them to kp-* and the components own the rows.
     for needle in [
-        "text <=> root.kp-profile-name;",
-        "text <=> root.kp-profile-title;",
-        "toggled(on) => { root.kp-set-fallthrough(on); }",
-        "text <=> root.kp-needs-text;",
+        "profile-name <=> root.kp-profile-name;",
+        "window-title <=> root.kp-profile-title;",
+        "set-fallthrough(on) => { root.kp-set-fallthrough(on); }",
+        "needs-text <=> root.kp-needs-text;",
     ] {
         assert!(keypad.contains(needle), "missing: {needle}");
     }
+    let profile_editor = component_source("AssignProfileEditor");
+    for needle in [
+        "text <=> root.profile-name;",
+        "text <=> root.window-title;",
+        "toggled(on) => { root.set-fallthrough(on); }",
+    ] {
+        assert!(profile_editor.contains(needle), "profile editor: {needle}");
+    }
+    assert!(component_source("AssignActionEditor").contains("text <=> root.needs-text;"));
     assert!(!UI.contains("kp-apply-profile-class"), "one Apply for name, class and title");
     assert!(keypad.contains("clicked => { root.kp-remove-shift(); }"), "unsupported shift bindings can be removed");
     for needle in [
@@ -537,15 +593,22 @@ fn keypad_advanced_reaches_what_was_hand_edited() {
         "clicked => { root.kp-start-held-layer(); }",
         "clicked => { root.kp-cancel-held-layer(); }",
         "clicked => { root.kp-remove-layer(); }",
-        "enabled: !root.kp-editor-locked && (",
-        "if root.kp-editor-mode != 3 && !root.kp-editor-locked: KeypadButton {",
-        "text: root.kp-bindings-title;",
+        "locked: root.kp-editor-locked;",
+        "mode: root.kp-editor-mode;",
+        "title: root.kp-bindings-title;",
         "text: root.kp-sheet-preview-caption;",
         "hold-glyph: root.kp-hold-glyph;",
         "clicked => { root.kp-move-layer-first(); }",
         "text: root.kp-picking-note;",
     ] {
         assert!(keypad.contains(needle), "held layers: {needle}");
+    }
+    let action_editor = component_source("AssignActionEditor");
+    for needle in [
+        "enabled: !root.locked && (root.mode != 3 || root.action-names.length > 1);",
+        "if root.mode != 3 && !root.locked: KeypadButton {",
+    ] {
+        assert!(action_editor.contains(needle), "locked editor: {needle}");
     }
     let canvas = UI.split("component KeypadCanvas").nth(1).unwrap().split("\ncomponent ").next().unwrap();
     for needle in ["if control.held: Text {", r#"text: "held";"#, "if control.holds && !control.seen: Text {", "font-italic: control.blocked;"] {
@@ -612,7 +675,7 @@ fn keypad_cheatsheet_card_label_and_preview_are_wired() {
     assert!(canvas.contains("text: control.glyph;"));
     let preview = UI.split("component KeypadSheetPreview").nth(1).unwrap().split("\ncomponent ").next().unwrap();
     assert!(preview.contains("text: c.glyph;") && preview.contains("for line[i] in c.lines: Rectangle {"));
-    assert!(keypad.contains(r#"text: row.warning ? "!" : row.glyph;"#));
+    assert!(component_source("AssignBindingList").contains(r#"text: row.warning ? "!" : row.glyph;"#));
     let show = ui_rs.split("ui.on_kp_show_sheet(").nth(1).unwrap().split("\n    let weak").next().unwrap();
     assert!(show.contains("super::hide_sheet()"), "Show on screen never leaves a sheet up for good");
     assert!(ui_rs.contains("o.click_through &= *ms > 0;"), "until hidden needs a clickable sheet");
