@@ -189,6 +189,34 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **settings: a second `settings --tab <name>` takes the running window to that
+  tab.** Launching `settings --tab keybindings` (the key that opens the
+  shortcut search) or `settings --tab wifi` while Settings is already open used
+  to bring the window forward on whatever tab it was showing, and only a launch
+  with `--highlight` moved it at all. The running window now switches to the
+  tab, with or without `--highlight`, and the highlight blink is skipped when
+  none was given. The Keybindings tab also takes the filter focus, including
+  when it is already showing. Plain `settings` still just raises the window.
+  The window is raised through Hyprland's Lua `hl.dsp.focus` where it has one
+  and the classic `dispatch focuswindow` otherwise, after the running instance
+  has taken the request, which it now watches for every 100 ms instead of 500.
+
+- **settings: Escape clears a search box.** In the global settings search, the
+  Keybindings filter, the keyboard-layout and dictation-language searches and
+  the keypad icon search, Escape empties a box that has text and refreshes its
+  results as typing would, without also closing the window or changing tab. In
+  the two dropdown searches the next Escape closes the list. In the global
+  search and the Keybindings filter an Escape on an empty box steps back one
+  layer (open list, help, editor, then the window) instead of being ignored.
+
+- **settings: the Keybindings tab opens on its filter box and lists the
+  function before the key.** Clicking the tab, `settings --tab keybindings`
+  and a second `settings --tab keybindings` put the cursor in "Filter
+  keybindings..." (leftover text is selected, so typing replaces it); leaving
+  the tab hands the keyboard back to the window. Rows now read the function
+  first and the key combination second (`Terminal`, `Super+Enter`), in the
+  expanded row too; the key column keeps its fixed width, so it still lines up.
+
 - **settings: Never on "Lock screen after" saves again, and a refused edit
   says why.** Since v0.8.23, pressing Never showed "Couldn't save this
   timeout" on smplOS's stock `hypridle.conf` and on files earlier Settings

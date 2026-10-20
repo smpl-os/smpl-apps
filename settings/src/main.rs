@@ -2,6 +2,7 @@ mod bluetooth;
 mod dictation;
 mod display;
 mod hints;
+mod instance;
 mod keybindings;
 mod keypad;
 mod layouts;
@@ -13,6 +14,8 @@ mod xr;
 mod ui_geometry;
 #[cfg(test)]
 mod ui_contract_tests;
+#[cfg(test)]
+mod keybindings_ux_tests;
 
 use slint::Model;
 use smpl_common::theme::{self, ThemePalette, ThemeRole};
@@ -59,39 +62,6 @@ fn start_highlight_blink(ui: &MainWindow) {
         },
     );
     std::mem::forget(timer);
-}
-
-// ── Single-instance guard ────────────────────────────────────────────────────
-
-fn acquire_single_instance(tab: i32, highlight: &str) {
-    use std::os::unix::io::AsRawFd;
-    let run_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    let lock_path = format!("{}/settings.lock", run_dir);
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .unwrap_or_else(|e| {
-            eprintln!("[settings] cannot open lock file: {}", e);
-            std::process::exit(1);
-        });
-    let fd = file.as_raw_fd();
-    let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    if ret != 0 {
-        eprintln!("[settings] another instance is already running — bringing it to focus");
-        // Write deep-link file so the running instance can navigate
-        if !highlight.is_empty() {
-            let deeplink_path = format!("{}/settings-deeplink", run_dir);
-            let _ = std::fs::write(&deeplink_path, format!("{}\n{}", tab, highlight));
-        }
-        // Bring the existing window to the foreground
-        let _ = std::process::Command::new("hyprctl")
-            .args(["dispatch", "focuswindow", "class:settings"])
-            .status();
-        std::process::exit(0);
-    }
-    std::mem::forget(file);
 }
 
 // ── Settings search index export ─────────────────────────────────────────────
@@ -627,6 +597,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let mut initial_layout = "us".to_string();
     let mut initial_variant = String::new();
     let mut initial_highlight = String::new();
+    let mut requested_tab: Option<i32> = None;
     let mut use_demo = false;
     let mut demo_policy = false;
 
@@ -657,6 +628,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "keypad" => 11,
                         _ => 0,
                     };
+                    requested_tab = Some(initial_tab);
                     i += 1;
                 }
             }
@@ -688,7 +660,8 @@ fn main() -> Result<(), slint::PlatformError> {
         i += 1;
     }
 
-    acquire_single_instance(initial_tab, &initial_highlight);
+    let launch = instance::Request::from_launch(requested_tab, &initial_highlight);
+    instance::acquire_or_hand_off(&launch);
     dictation::cleanup_stale_progress();
 
     // Export settings search index for start menu
@@ -712,11 +685,7 @@ fn main() -> Result<(), slint::PlatformError> {
             theme.set_popup_opacity(palette.opacity);
         }
     });
-    ui.set_active_tab(initial_tab);
-    if !initial_highlight.is_empty() {
-        ui.set_highlight_setting(slint::SharedString::from(&initial_highlight));
-        start_highlight_blink(&ui);
-    }
+    instance::apply(&ui, &launch);
 
     // ── Keyboard tab init ────────────────────────────────────────────────────
 
@@ -2763,32 +2732,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // ── Deep-link polling timer ──────────────────────────────────────────────
 
-    {
-        let ui_weak = ui.as_weak();
-        let deeplink_timer = slint::Timer::default();
-        deeplink_timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_millis(500),
-            move || {
-                let run_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-                let path = format!("{}/settings-deeplink", run_dir);
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let _ = std::fs::remove_file(&path);
-                    let lines: Vec<&str> = content.lines().collect();
-                    if lines.len() >= 2 {
-                        if let (Ok(tab), highlight) = (lines[0].parse::<i32>(), lines[1].to_string()) {
-                            if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_active_tab(tab);
-                                ui.set_highlight_setting(slint::SharedString::from(&highlight));
-                                start_highlight_blink(&ui);
-                            }
-                        }
-                    }
-                }
-            },
-        );
-        std::mem::forget(deeplink_timer);
-    }
+    instance::watch(&ui);
 
     // ── Dictation status polling timer ────────────────────────────────────────
 
