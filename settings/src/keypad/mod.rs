@@ -7,7 +7,6 @@
 
 pub mod config;
 pub mod icons;
-pub mod json;
 pub mod registry;
 pub mod ui;
 

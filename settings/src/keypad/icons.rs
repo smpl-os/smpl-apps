@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(glyph("not-an-icon"), "");
         let names: std::collections::HashSet<&str> = all().iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names.len(), all().len(), "names are unique");
-        assert!(all().iter().all(|i| crate::keypad::config::valid_icon(&i.name)));
+        assert!(all().iter().all(|i| crate::assign::action::valid_icon(&i.name)));
     }
 
     #[test]

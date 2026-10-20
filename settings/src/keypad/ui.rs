@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use super::config::{self, ActionKind, Binding, KeypadConfig, Layout, SheetOptions, ICON_NONE};
+use super::config::{self, ActionKind, Binding, KeypadConfig, Layout, Profiles, SheetOptions, ICON_NONE};
 use super::icons;
 use super::{FirmwareImage, InputEvent, SheetPreview, Status, Validation, Variant};
+use crate::assign::{flow, picker};
 use crate::{
     KeypadBindingRow, KeypadControl, KeypadIcon, KeypadSheetCell, KeypadSheetLine, KeypadTuning, KeypadVariant, MainWindow,
 };
@@ -28,6 +29,14 @@ const FLASH_HIGHLIGHT: Duration = Duration::from_millis(350);
 // What a daemon without `features` can address (key1..key15, knob1..knob3).
 const LEGACY_KEYS: usize = 15;
 const LEGACY_KNOBS: usize = 3;
+
+/// What "not set" means on the keypad: a key nobody mapped does nothing.
+const WORDING: picker::Wording = picker::Wording {
+    unset_global: "Not set",
+    hint_unset_global: "Unmapped: the control does nothing.",
+    hint_unset_app: "Uses the Global profile's binding for this control.",
+    hint_advanced: "Continuous controls, mode cycles and API requests are edited in the config file.",
+};
 
 pub const WIZARD_TITLES: [&str; 7] = [
     "Before you start",
@@ -296,19 +305,7 @@ impl State {
     }
 
     fn choices(&self) -> Vec<(String, String)> {
-        let table = |t: &[(&str, &str)]| t.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect::<Vec<_>>();
-        let mut list = match self.editor.kind {
-            ActionKind::Media => table(config::MEDIA_KEYS),
-            ActionKind::Mouse => table(config::MOUSE_BUTTONS),
-            ActionKind::Cheatsheet => table(config::CHEATSHEET_MODES),
-            ActionKind::Kdenlive if !self.kdenlive_actions.is_empty() => self.kdenlive_actions.clone(),
-            ActionKind::Kdenlive => table(config::KDENLIVE_ACTIONS),
-            _ => Vec::new(),
-        };
-        if !self.editor.value.is_empty() && !list.is_empty() && !list.iter().any(|(k, _)| *k == self.editor.value) {
-            list.push((self.editor.value.clone(), self.editor.value.clone()));
-        }
-        list
+        picker::choices(&self.editor, &self.kdenlive_actions)
     }
 
     fn load_editor(&mut self) {
@@ -1151,10 +1148,9 @@ fn render_state(ui: &MainWindow, st: &State) {
     let kinds = st.kinds();
     let global = st.global();
     let in_layer = st.held_scope().is_some();
-    ui.set_kp_action_names(strings(kinds.iter().map(|k| match (k, global) {
-        (ActionKind::Inherit, _) if in_layer => "Not set (its normal binding)".to_string(),
-        (ActionKind::Inherit, true) => "Not set".to_string(),
-        (k, _) => k.label().to_string(),
+    ui.set_kp_action_names(strings(kinds.iter().map(|k| match k {
+        ActionKind::Inherit if in_layer => "Not set (its normal binding)".to_string(),
+        k => picker::action_name(*k, global, &WORDING),
     })));
     ui.set_kp_action_index(kinds.iter().position(|k| *k == st.editor.kind).map_or(-1, |i| i as i32));
     let choices = st.choices();
@@ -1167,16 +1163,12 @@ fn render_state(ui: &MainWindow, st: &State) {
         )
     });
     let (mode, hint) = match st.editor.kind {
-        _ if locked => (0, "You hold this control to use the layer, so it has nothing to do in it. Pick another key or knob."),
-        ActionKind::Inherit if in_layer => (0, "Not mapped in this layer: while held, the control does what the next layer or its normal binding says."),
-        ActionKind::Inherit if global => (0, "Unmapped: the control does nothing."),
-        ActionKind::Inherit => (0, "Uses the Global profile's binding for this control."),
-        ActionKind::Disabled => (0, "Does nothing in this profile (also stops the Global binding)."),
-        ActionKind::Shortcut => (1, "e.g. ctrl+shift+s, F13, super+1; a sequence: ctrl+k x"),
-        ActionKind::Command => (1, "e.g. notify-send hello (runs without a shell)"),
-        ActionKind::Media | ActionKind::Mouse | ActionKind::Kdenlive => (2, ""),
-        ActionKind::Cheatsheet => (2, "Shows what every key and knob does in the app you're using."),
-        ActionKind::Advanced => (3, "Continuous controls, mode cycles and API requests are edited in the config file."),
+        _ if locked => (picker::MODE_NONE, "You hold this control to use the layer, so it has nothing to do in it. Pick another key or knob."),
+        ActionKind::Inherit if in_layer => (
+            picker::MODE_NONE,
+            "Not mapped in this layer: while held, the control does what the next layer or its normal binding says.",
+        ),
+        kind => picker::describe(kind, global, &WORDING),
     };
     ui.set_kp_editor_mode(if mappable && st.config_error.is_none() { mode } else { 0 });
     ui.set_kp_editor_hint(s(if !mappable {
@@ -1190,13 +1182,7 @@ fn render_state(ui: &MainWindow, st: &State) {
     }));
     ui.set_kp_advanced_text(s(if st.editor.kind == ActionKind::Advanced { st.editor.value.as_str() } else { "" }));
     ui.set_kp_label_enabled(mappable && !locked && st.config_error.is_none() && st.editor.takes_label());
-    ui.set_kp_needs_placeholder(s(match st.editor.kind {
-        ActionKind::Command => format!(
-            "Optional, e.g. {}: skip this binding while it isn't installed",
-            launched_program(&st.editor.value).unwrap_or("grafium")
-        ),
-        _ => "Optional: programs or app ids; skip this binding while one isn't installed".to_string(),
-    }));
+    ui.set_kp_needs_placeholder(s(picker::needs_placeholder(&st.editor)));
     render_advanced(ui, st, pad);
     let (glyph, caption) = st.icon_caption();
     ui.set_kp_icon_name(s(&st.editor.icon));
@@ -1530,45 +1516,20 @@ fn apply_binding(ui: &MainWindow) {
         if st.config_error.is_some() {
             return;
         }
-        let mut binding = st.editor.clone();
-        if matches!(binding.kind, ActionKind::Shortcut | ActionKind::Command) {
-            binding.value = text.clone();
-        }
-        binding.label = if binding.takes_label() { label.trim().to_string() } else { String::new() };
-        if binding.takes_label() {
-            binding = binding.needing(&needs);
-        } else {
-            binding.icon.clear();
-            binding.needs.clear();
-        }
+        let binding = picker::compose_binding(&st.editor, &text, &label, &needs);
         let slot = st.slot();
         match st.config.set_binding_at(st.profile, st.held_index(), &slot, &binding) {
             Ok(note) => {
                 st.dirty = true;
                 st.load_editor();
-                let what = match st.editor.summary() {
-                    v if v.is_empty() => "not set".to_string(),
-                    v => v,
-                };
-                let note = note.map(|n| format!(" {n}.")).unwrap_or_default();
-                st.set_message(format!("{} → {what}. Not saved yet.{note}", config::slot_label(&slot)), false);
+                let message = picker::assigned_message(&config::slot_label(&slot), &st.editor, note.as_deref());
+                st.set_message(message, false);
             }
             Err(e) => st.set_message(e, true),
         }
     });
     sync_editor_text(ui);
     render(ui);
-}
-
-/// The program a command line starts, past launcher wrappers
-/// ("focus-or-launch nemo nemo" and "gtk-launch nemo" -> "nemo").
-fn launched_program(command: &str) -> Option<&str> {
-    const WRAPPERS: [&str; 4] = ["focus-or-launch", "gtk-launch", "uwsm-app", "setsid"];
-    let words: Vec<&str> = command.split_whitespace().collect();
-    match words.first() {
-        Some(first) if WRAPPERS.contains(first) => words.last().copied().filter(|w| w != first),
-        first => first.copied(),
-    }
 }
 
 /// "Hold a key…" then a click (or a press while identifying): adds the layer
@@ -1786,24 +1747,6 @@ fn save(ui: &MainWindow) {
             render(&ui);
         });
     });
-}
-
-fn running_app_classes() -> Vec<String> {
-    let Ok(out) = Command::new("hyprctl").args(["clients", "-j"]).output() else {
-        return Vec::new();
-    };
-    let Ok(serde_json::Value::Array(clients)) = serde_json::from_slice(&out.stdout) else {
-        return Vec::new();
-    };
-    let mut classes: Vec<String> = clients
-        .iter()
-        .filter_map(|c| c.get("class").and_then(|v| v.as_str()))
-        .filter(|c| !c.is_empty() && *c != "settings")
-        .map(String::from)
-        .collect();
-    classes.sort();
-    classes.dedup();
-    classes
 }
 
 fn open_config_file() -> Result<(), String> {
@@ -2247,7 +2190,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         render(&ui);
         let weak = ui.as_weak();
         std::thread::spawn(move || {
-            let classes = running_app_classes();
+            let classes = flow::running_app_classes();
             let _ = slint::invoke_from_event_loop(move || {
                 with(|st| st.app_classes = classes);
                 if let Some(ui) = weak.upgrade() {
@@ -2269,19 +2212,16 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     ui.on_kp_confirm_add_profile(move || {
         let Some(ui) = weak.upgrade() else { return };
         let class = ui.get_kp_new_app().to_string();
-        with(|st| {
-            let name = class.rsplit('.').next().unwrap_or(&class).to_string();
-            match st.config.add_app_profile(&name, &class) {
-                Ok(i) => {
-                    st.profile = i;
-                    st.leave_layer();
-                    st.adding = false;
-                    st.dirty = true;
-                    st.load_editor();
-                    st.set_message(format!("Added a profile for {class}. Map its controls, then Save."), false);
-                }
-                Err(e) => st.set_message(e, true),
+        with(|st| match flow::add_app(&mut st.config, &class) {
+            Ok(done) => {
+                st.profile = done.select.unwrap_or(st.profile);
+                st.leave_layer();
+                st.adding = false;
+                st.dirty = true;
+                st.load_editor();
+                st.set_message(done.message, false);
             }
+            Err(e) => st.set_message(e, true),
         });
         sync_profile_fields(&ui);
         sync_editor_text(&ui);
@@ -2298,18 +2238,15 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     let weak = ui.as_weak();
     ui.on_kp_remove_profile(move || {
         let Some(ui) = weak.upgrade() else { return };
-        with(|st| {
-            let name = st.profiles().get(st.profile).map(|p| p.name.clone()).unwrap_or_default();
-            match st.config.remove_profile(st.profile) {
-                Ok(()) => {
-                    st.profile = st.profile.saturating_sub(1);
-                    st.leave_layer();
-                    st.dirty = true;
-                    st.load_editor();
-                    st.set_message(format!("Removed the {name} profile. Not saved yet."), false);
-                }
-                Err(e) => st.set_message(e, true),
+        with(|st| match flow::remove(&mut st.config, st.profile) {
+            Ok(done) => {
+                st.profile = done.select.unwrap_or(st.profile);
+                st.leave_layer();
+                st.dirty = true;
+                st.load_editor();
+                st.set_message(done.message, false);
             }
+            Err(e) => st.set_message(e, true),
         });
         sync_profile_fields(&ui);
         sync_editor_text(&ui);
@@ -2321,26 +2258,13 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         let Some(ui) = weak.upgrade() else { return };
         let (name, class, title) =
             (ui.get_kp_profile_name().to_string(), ui.get_kp_profile_class().to_string(), ui.get_kp_profile_title().to_string());
-        with(|st| {
-            let Some(p) = st.profiles().get(st.profile).cloned() else { return };
-            let mut result = Ok(());
-            if name.trim() != p.name {
-                result = st.config.set_profile_name(st.profile, &name);
+        with(|st| match flow::apply_details(&mut st.config, st.profile, &name, &class, &title) {
+            Ok(Some(done)) => {
+                st.dirty = true;
+                st.set_message(done.message, false);
             }
-            if result.is_ok() && !p.global && class.trim() != p.class {
-                result = st.config.set_profile_class(st.profile, &class);
-            }
-            if result.is_ok() && !p.global && title.trim() != p.title {
-                result = st.config.set_profile_title(st.profile, &title);
-            }
-            match result {
-                Ok(()) if st.profiles().get(st.profile) != Some(&p) => {
-                    st.dirty = true;
-                    st.set_message("Profile updated. Not saved yet.", false);
-                }
-                Ok(()) => {}
-                Err(e) => st.set_message(e, true),
-            }
+            Ok(None) => {}
+            Err(e) => st.set_message(e, true),
         });
         render(&ui);
     });
@@ -2477,16 +2401,9 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     ui.on_kp_set_fallthrough(move |on| {
         let Some(ui) = weak.upgrade() else { return };
         with(|st| {
-            if st.config.set_profile_fallthrough(st.profile, on).is_ok() {
+            if let Some(done) = flow::set_fallthrough(&mut st.config, st.profile, on) {
                 st.dirty = true;
-                st.set_message(
-                    if on {
-                        "Controls this profile leaves unset now do what Global maps them to. Not saved yet."
-                    } else {
-                        "Controls this profile leaves unset now do nothing in this app. Not saved yet."
-                    },
-                    false,
-                );
+                st.set_message(done.message, false);
             }
         });
         render(&ui);
@@ -2628,19 +2545,11 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         let Some(ui) = weak.upgrade() else { return };
         with(|st| {
             let Some(kind) = st.kinds().get(i.max(0) as usize).copied() else { return };
-            if kind == st.editor.kind {
-                return;
-            }
-            let current = st.config.binding_at(st.profile, st.held_index(), &st.slot());
-            let (label, icon, needs) = (st.editor.label.clone(), st.editor.icon.clone(), st.editor.needs.join(" "));
-            st.editor = if current.kind == kind {
-                current
-            } else {
-                Binding::new(kind, "").labelled(&label).with_icon(&icon).needing(&needs)
-            };
-            if let Some((first, _)) = st.choices().first().filter(|_| st.editor.value.is_empty()) {
-                st.editor.value = first.clone();
-            }
+            let saved = st.config.binding_at(st.profile, st.held_index(), &st.slot());
+            let Some(editor) = picker::change_kind(saved, &st.editor, kind) else { return };
+            st.editor = editor;
+            let choices = st.choices();
+            picker::default_choice(&mut st.editor, &choices);
         });
         sync_editor_text(&ui);
         render(&ui);
@@ -3119,15 +3028,6 @@ mod tests {
         assert_eq!(st.sheet_target().1, "");
         st.layer = Some(st.config.add_held_layer(1, "key13").unwrap());
         assert_eq!(st.sheet_target().1, r#"{"$held":"key13"}"#);
-    }
-
-    #[test]
-    fn if_installed_suggests_the_launched_program() {
-        assert_eq!(launched_program("focus-or-launch nemo nemo"), Some("nemo"));
-        assert_eq!(launched_program("gtk-launch grafium"), Some("grafium"));
-        assert_eq!(launched_program("smplos-settings"), Some("smplos-settings"));
-        assert_eq!(launched_program("gtk-launch"), None);
-        assert_eq!(launched_program(""), None);
     }
 
     #[test]
