@@ -82,10 +82,9 @@ fn sidebar_uses_theme_tinted_outline_assets_only_for_requested_icons() {
         .next()
         .unwrap();
     for (name, svg) in [
-        ("wifi", include_str!("../ui/assets/wifi-outline.svg")),
         (
-            "bluetooth",
-            include_str!("../ui/assets/bluetooth-outline.svg"),
+            "connections",
+            include_str!("../ui/assets/connections-outline.svg"),
         ),
         ("hints", include_str!("../ui/assets/hints-outline.svg")),
     ] {
@@ -94,7 +93,23 @@ fn sidebar_uses_theme_tinted_outline_assets_only_for_requested_icons() {
         assert!(svg.contains("stroke-width=\"1.7\""));
         assert!(svg.contains("viewBox=\"0 0 24 24\""));
     }
-    assert_eq!(sidebar.matches("use-outline-icon: true").count(), 3);
+    assert_eq!(sidebar.matches("use-outline-icon: true").count(), 2);
+    // Wi-Fi and Bluetooth are sections of Connections now: their icons mark the
+    // section switcher, not the sidebar.
+    for (name, svg) in [
+        ("wifi", include_str!("../ui/assets/wifi-outline.svg")),
+        (
+            "bluetooth",
+            include_str!("../ui/assets/bluetooth-outline.svg"),
+        ),
+    ] {
+        let asset = format!("assets/{name}-outline.svg");
+        assert!(!sidebar.contains(&asset));
+        assert!(UI.contains(&asset));
+        assert!(svg.contains("fill=\"none\""));
+        assert!(svg.contains("stroke-width=\"1.7\""));
+        assert!(svg.contains("viewBox=\"0 0 24 24\""));
+    }
     assert!(UI.contains("colorize: active ? Theme.accent : Theme.fg_dim"));
 }
 

@@ -335,63 +335,6 @@ pub fn disconnect() -> Result<(), String> {
     }
 }
 
-/// Enable or disable the Wi-Fi radio (airplane-mode equivalent).
-///
-/// `airplane = true`  → `nmcli radio wifi off` (radio off, no scanning/connecting)
-/// `airplane = false` → `nmcli radio wifi on`  (radio on)
-pub fn set_airplane_mode(airplane: bool) -> Result<(), String> {
-    let switch = if airplane { "off" } else { "on" };
-    let status = Command::new("nmcli")
-        .args(["radio", "wifi", switch])
-        .status()
-        .map_err(|e| format!("Failed to launch nmcli: {}", e))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "nmcli radio wifi {} failed (code {})",
-            switch,
-            status.code().unwrap_or(-1)
-        ))
-    }
-}
-
-/// Query the current Wi-Fi radio state.
-///
-/// Returns:
-/// - `Ok(Some(true))`  → radio is enabled
-/// - `Ok(Some(false))` → radio is disabled (software kill / airplane mode)
-/// - `Ok(None)`        → no Wi-Fi hardware detected (nmcli not found, or no wifi device)
-pub fn get_wifi_radio_state() -> Result<Option<bool>, String> {
-    // First check if there's any wifi device at all
-    let dev_output = match Command::new("nmcli")
-        .args(["-t", "-f", "TYPE", "device"])
-        .output()
-    {
-        Err(_) => return Ok(None), // nmcli not available → no wifi
-        Ok(o) if !o.status.success() => return Ok(None),
-        Ok(o) => o,
-    };
-    let dev_stdout = String::from_utf8_lossy(&dev_output.stdout);
-    let has_wifi = dev_stdout.lines().any(|l| l.trim() == "wifi");
-    if !has_wifi {
-        return Ok(None);
-    }
-
-    // Query radio state
-    let output = Command::new("nmcli")
-        .args(["radio", "wifi"])
-        .output()
-        .map_err(|e| format!("Failed to launch nmcli: {}", e))?;
-
-    let state = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_lowercase();
-
-    Ok(Some(state == "enabled"))
-}
-
 /// Delete the saved NetworkManager profile for `ssid`.
 ///
 /// This removes all stored credentials; the network will require a new

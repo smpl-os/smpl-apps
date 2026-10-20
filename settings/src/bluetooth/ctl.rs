@@ -35,7 +35,7 @@ pub struct BluetoothDevice {
 /// Timeout for any single bluetoothctl invocation (seconds).
 const CTL_TIMEOUT: Duration = Duration::from_secs(4);
 
-fn run_ctl(commands: &[&str]) -> Result<String, String> {
+pub(crate) fn run_ctl(commands: &[&str]) -> Result<String, String> {
     let mut child = Command::new("bluetoothctl")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -82,7 +82,7 @@ fn run_single(cmd: &str) -> Result<String, String> {
 }
 
 /// Strip ANSI escape codes from bluetoothctl output.
-fn strip_ansi(s: &str) -> String {
+pub(crate) fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -103,19 +103,51 @@ fn strip_ansi(s: &str) -> String {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Query whether the Bluetooth adapter exists and is powered on.
-/// Returns `Ok(true)` if powered, `Ok(false)` if powered off,
-/// `Err` if no adapter or bluetoothd is not running.
-pub fn is_powered() -> Result<bool, String> {
-    let out = run_single("show")?;
-    let clean = strip_ansi(&out);
+/// Error text for "no usable adapter" (none present, or bluetoothd is not running).
+pub(crate) const NO_ADAPTER: &str = "No Bluetooth adapter found";
+
+/// Read the adapter's power state from the output of `bluetoothctl show`.
+///
+/// `Ok(true)` / `Ok(false)` for a `Powered:` line, `Err(NO_ADAPTER)` when there is
+/// no controller (or bluetoothd is not reachable), and another `Err` when the
+/// output has no `Powered:` line at all, so the real state is unknown.
+pub(crate) fn parse_powered(show_output: &str) -> Result<bool, String> {
+    let clean = strip_ansi(show_output);
     if clean.contains("No default controller") || clean.contains("Waiting to connect") {
-        return Err("No Bluetooth adapter found".to_string());
+        return Err(NO_ADAPTER.to_string());
     }
-    Ok(clean.lines().any(|l| {
-        let trimmed = l.trim();
-        trimmed.starts_with("Powered:") && trimmed.ends_with("yes")
-    }))
+    for line in clean.lines() {
+        if let Some(value) = line.trim().strip_prefix("Powered:") {
+            return Ok(value.trim() == "yes");
+        }
+    }
+    Err("Unexpected bluetoothctl output".to_string())
+}
+
+/// Interpret the output of `bluetoothctl power on|off`.
+///
+/// BlueZ reports some failures (for example `org.bluez.Error.Blocked` when rfkill
+/// blocks the adapter) as text while bluetoothctl still exits normally, so callers
+/// that need certainty must also read the state back.
+pub(crate) fn power_reply(output: &str) -> Result<(), String> {
+    let clean = strip_ansi(output);
+    if clean.contains("Changing power on succeeded")
+        || clean.contains("Changing power off succeeded")
+        || clean.contains("already powered")
+    {
+        return Ok(());
+    }
+    if clean.contains("No default controller") {
+        return Err(NO_ADAPTER.to_string());
+    }
+    if let Some(line) = clean.lines().map(str::trim).find(|l| l.contains("Failed to set power")) {
+        if line.contains("org.bluez.Error.Blocked") {
+            return Err("Bluetooth is blocked by rfkill; unblock it and try again".to_string());
+        }
+        return Err(line.to_string());
+    }
+    // Some versions succeed silently.
+    Ok(())
 }
 
 /// Get adapter info: name, address, powered, discoverable, pairable.
@@ -155,24 +187,6 @@ pub fn get_adapter_info() -> Result<(String, String, bool, bool, bool), String> 
     }
 
     Ok((name, address, powered, discoverable, pairable))
-}
-
-/// Turn Bluetooth adapter on or off.
-pub fn set_powered(on: bool) -> Result<(), String> {
-    let cmd = if on { "power on" } else { "power off" };
-    let out = run_single(cmd)?;
-    let clean = strip_ansi(&out);
-    if clean.contains("Changing power on succeeded")
-        || clean.contains("Changing power off succeeded")
-        || clean.contains("already powered")
-    {
-        Ok(())
-    } else if clean.contains("No default controller") {
-        Err("No Bluetooth adapter found".to_string())
-    } else {
-        // Some versions just succeed silently
-        Ok(())
-    }
 }
 
 /// Set discoverable on or off.
@@ -430,6 +444,58 @@ mod tests {
     fn strip_ansi_empty() {
         assert_eq!(strip_ansi(""), "");
         assert_eq!(strip_ansi("no escapes"), "no escapes");
+    }
+
+    #[test]
+    fn parse_powered_reads_the_powered_line() {
+        let on = "Controller AA:BB:CC:DD:EE:FF (public)\n\tName: laptop\n\tPowered: yes\n\tDiscoverable: no\n";
+        let off = "Controller AA:BB:CC:DD:EE:FF (public)\n\tPowered: no\n\tPairable: yes\n";
+        assert_eq!(parse_powered(on), Ok(true));
+        assert_eq!(parse_powered(off), Ok(false));
+    }
+
+    #[test]
+    fn parse_powered_ignores_ansi_noise_and_prompts() {
+        let noisy = "\x1b[0;94m[bluetooth]\x1b[0m# show\nController AA:BB:CC:DD:EE:FF\n\tPowered: yes\n[bluetooth]# exit\n";
+        assert_eq!(parse_powered(noisy), Ok(true));
+    }
+
+    #[test]
+    fn parse_powered_reports_missing_adapter_and_daemon() {
+        assert_eq!(
+            parse_powered("No default controller available\n"),
+            Err(NO_ADAPTER.to_string())
+        );
+        assert_eq!(
+            parse_powered("Waiting to connect to bluetoothd...\n"),
+            Err(NO_ADAPTER.to_string())
+        );
+    }
+
+    #[test]
+    fn parse_powered_without_a_powered_line_is_unknown_not_off() {
+        let err = parse_powered("something unexpected\n").unwrap_err();
+        assert_ne!(err, NO_ADAPTER);
+    }
+
+    #[test]
+    fn power_reply_accepts_success_and_silent_replies() {
+        assert_eq!(power_reply("Changing power on succeeded\n"), Ok(()));
+        assert_eq!(power_reply("Changing power off succeeded\n"), Ok(()));
+        assert_eq!(power_reply("already powered\n"), Ok(()));
+        assert_eq!(power_reply(""), Ok(()));
+    }
+
+    #[test]
+    fn power_reply_surfaces_failures_that_bluetoothctl_prints_as_text() {
+        assert_eq!(
+            power_reply("No default controller available\n"),
+            Err(NO_ADAPTER.to_string())
+        );
+        let blocked = power_reply("Failed to set power on: org.bluez.Error.Blocked\n").unwrap_err();
+        assert!(blocked.contains("rfkill"), "{blocked}");
+        let other = power_reply("Failed to set power off: org.bluez.Error.Failed\n").unwrap_err();
+        assert!(other.contains("Failed to set power off"), "{other}");
     }
 
     #[test]

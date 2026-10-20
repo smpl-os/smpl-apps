@@ -9,7 +9,7 @@ pub mod ctl;
 // ── Re-export commonly used items ─────────────────────────────────────────────
 
 pub use ctl::{
-    connect, disconnect, forget_device, get_adapter_info, is_powered, list_devices,
-    scan_devices, set_discoverable, set_powered, trust_device,
+    connect, disconnect, forget_device, get_adapter_info, list_devices,
+    scan_devices, set_discoverable, trust_device,
     pair_device, BluetoothDevice,
 };

@@ -54,6 +54,16 @@ impl Request {
         self.tab == Some(KEYBINDINGS_TAB)
     }
 
+    /// The tab to show. Wi-Fi and Bluetooth are two sections of the Connections
+    /// tab, and a launch lands on the section its label belongs to, whichever of
+    /// `--tab wifi`, `--tab bluetooth` and `--tab connections` was given. The
+    /// request keeps the tab as the launch named it, so builds that don't know
+    /// about sections read the same file.
+    pub fn landing_tab(&self) -> Option<i32> {
+        self.tab
+            .map(|tab| crate::connections::route(tab, &self.highlight))
+    }
+
     /// `<tab>\n<highlight>\n`. The tab line is empty when there is no tab. Builds
     /// that only knew the tab-and-highlight pair read the same two lines.
     fn encode(&self) -> String {
@@ -304,7 +314,7 @@ impl Navigation for MainWindow {
 /// Navigate to what a launch asked for: the first instance does this for its own
 /// command line, a running one for each later launch.
 pub fn apply(window: &impl Navigation, request: &Request) {
-    if let Some(tab) = request.tab {
+    if let Some(tab) = request.landing_tab() {
         window.show_tab(tab);
     }
     if request.focuses_keybindings_filter() {
@@ -600,6 +610,101 @@ mod tests {
                 ["tab 5", "focus filter"]
             );
         }
+    }
+
+    /// What the running window does with a later launch: the request goes through
+    /// the hand-off file and is applied by the instance that picks it up.
+    fn applied_by_a_running_window(request: &Request) -> Vec<String> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Tests run in parallel; each hand-off gets a directory of its own.
+        static HAND_OFFS: AtomicUsize = AtomicUsize::new(0);
+        let dir = Scratch::new(&format!(
+            "running-window-{}",
+            HAND_OFFS.fetch_add(1, Ordering::Relaxed)
+        ));
+        send_in(&dir.0, request).unwrap();
+        let received = take_from(&dir.0).expect("the running window takes the request");
+        applied(&received)
+    }
+
+    /// The first launch applies its own command line and later ones are handed to
+    /// it; both must end up in the same place.
+    fn applied_either_way(tab: i32, highlight: &str) -> Vec<String> {
+        let launch = Request::from_launch(Some(tab), highlight);
+        let first = applied(&launch);
+        assert_eq!(
+            applied_by_a_running_window(&launch),
+            first,
+            "--tab {tab} --highlight {highlight:?} differs once Settings is running"
+        );
+        first
+    }
+
+    #[test]
+    fn connections_launches_land_on_the_right_section_in_a_new_and_a_running_window() {
+        use crate::connections::{BLUETOOTH_SECTION, WIFI_SECTION};
+        // `settings --tab wifi` and `--tab connections` (7), `--tab bluetooth` (8)
+        assert_eq!(applied_either_way(WIFI_SECTION, ""), ["tab 7"]);
+        assert_eq!(applied_either_way(BLUETOOTH_SECTION, ""), ["tab 8"]);
+        // The page's own labels stay in the section that was asked for.
+        assert_eq!(
+            applied_either_way(WIFI_SECTION, "Airplane Mode"),
+            ["tab 7", "blink Airplane Mode"]
+        );
+        assert_eq!(
+            applied_either_way(BLUETOOTH_SECTION, "Airplane Mode"),
+            ["tab 8", "blink Airplane Mode"]
+        );
+        // A label that belongs to the other section wins over the tab name.
+        assert_eq!(
+            applied_either_way(WIFI_SECTION, "Headphones"),
+            ["tab 8", "blink Headphones"]
+        );
+        assert_eq!(
+            applied_either_way(BLUETOOTH_SECTION, "Connect Wi-Fi"),
+            ["tab 7", "blink Connect Wi-Fi"]
+        );
+    }
+
+    #[test]
+    fn every_connections_label_opens_its_section_whichever_tab_name_launched_it() {
+        use crate::connections::{BLUETOOTH_LABELS, BLUETOOTH_SECTION, WIFI_LABELS, WIFI_SECTION};
+        for tab in [WIFI_SECTION, BLUETOOTH_SECTION] {
+            for (labels, section) in [
+                (&WIFI_LABELS[..], WIFI_SECTION),
+                (&BLUETOOTH_LABELS[..], BLUETOOTH_SECTION),
+            ] {
+                for label in labels {
+                    assert_eq!(
+                        applied_either_way(tab, label),
+                        [format!("tab {section}"), format!("blink {label}")],
+                        "--tab {tab} --highlight {label:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_connections_tab_is_redirected_by_a_connections_label() {
+        assert_eq!(
+            applied_either_way(3, "Bluetooth"),
+            ["tab 3", "blink Bluetooth"]
+        );
+        assert_eq!(
+            applied_either_way(KEYBINDINGS_TAB, "Wi-Fi"),
+            ["tab 5", "focus filter", "blink Wi-Fi"]
+        );
+    }
+
+    #[test]
+    fn the_request_names_the_tab_as_launched_so_older_builds_read_it_too() {
+        // The section is chosen by the window that applies the request, so the
+        // file still carries `--tab wifi` as the tab it always was.
+        let sent = Request::from_launch(Some(7), "Headphones");
+        assert_eq!(sent.encode(), "7\nHeadphones\n");
+        assert_eq!(sent.landing_tab(), Some(8));
+        assert_eq!(Request::from_launch(None, "").landing_tab(), None);
     }
 
     #[test]
