@@ -10,6 +10,28 @@ pub mod json;
 pub mod picker;
 pub mod profile;
 
+/// How a tab keeps its edits. The shared editing code says so in its
+/// status messages, so it can serve a tab with a Save button and one that
+/// writes every edit at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Saving {
+    /// Edits wait for the tab's Save button (Keypad).
+    Manual,
+    /// Every edit is written as soon as it is made (Mouse).
+    #[allow(dead_code)] // the Mouse tab is the first to use it
+    Immediate,
+}
+
+impl Saving {
+    /// What a status message ends with after an edit.
+    pub fn tail(self) -> &'static str {
+        match self {
+            Self::Manual => "Not saved yet.",
+            Self::Immediate => "Saved.",
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     use super::json::{self, Json};

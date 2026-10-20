@@ -6,6 +6,7 @@
 //! (what "not set" means for its hardware) and its own list of offered kinds.
 
 use super::action::{ActionKind, Binding, CHEATSHEET_MODES, KDENLIVE_ACTIONS, MEDIA_KEYS, MOUSE_BUTTONS};
+use super::Saving;
 
 /// An id and the text the dropdown shows for it.
 pub type Choice = (String, String);
@@ -110,14 +111,15 @@ pub fn compose_binding(editor: &Binding, text: &str, label: &str, needs: &str) -
     binding
 }
 
-/// "<control> → <what it does>. Not saved yet." with an optional note after it.
-pub fn assigned_message(control: &str, binding: &Binding, note: Option<&str>) -> String {
+/// "<control> → <what it does>." and how the edit was kept (`Saving::tail`),
+/// with an optional note after it.
+pub fn assigned_message(control: &str, binding: &Binding, note: Option<&str>, saving: Saving) -> String {
     let what = match binding.summary() {
         v if v.is_empty() => "not set".to_string(),
         v => v,
     };
     let note = note.map(|n| format!(" {n}.")).unwrap_or_default();
-    format!("{control} → {what}. Not saved yet.{note}")
+    format!("{control} → {what}. {}{note}", saving.tail())
 }
 
 /// The program a command line starts, past launcher wrappers
@@ -244,9 +246,11 @@ mod tests {
     #[test]
     fn the_applied_message_names_the_control_and_the_result() {
         let b = Binding::new(ActionKind::Shortcut, "alt+left");
-        assert_eq!(assigned_message("Back", &b, None), "Back → alt+left. Not saved yet.");
-        assert_eq!(assigned_message("Back", &Binding::new(ActionKind::Inherit, ""), None), "Back → not set. Not saved yet.");
-        assert_eq!(assigned_message("Back", &b, Some("Two things changed")), "Back → alt+left. Not saved yet. Two things changed.");
+        let wait = Saving::Manual;
+        assert_eq!(assigned_message("Back", &b, None, wait), "Back → alt+left. Not saved yet.");
+        assert_eq!(assigned_message("Back", &Binding::new(ActionKind::Inherit, ""), None, wait), "Back → not set. Not saved yet.");
+        assert_eq!(assigned_message("Back", &b, Some("Two things changed"), wait), "Back → alt+left. Not saved yet. Two things changed.");
+        assert_eq!(assigned_message("Back", &b, None, Saving::Immediate), "Back → alt+left. Saved.");
     }
 
     #[test]
