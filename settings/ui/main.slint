@@ -166,14 +166,15 @@ struct KeypadIcon {
     glyph: string,
 }
 
-/// A binding of the selected keypad profile ("knob1.cw" -> "Media key").
-struct KeypadBindingRow {
+/// One assigned control of the selected profile ("knob1.cw", "btn-back")
+/// and what it does; the list shared by the Keypad and Mouse tabs.
+struct AssignBindingRow {
     slot: string,
     label: string,
     summary: string,
     advanced: bool,
     glyph: string,
-    // The keypad can't do it (e.g. turn while pressed): marked with "!".
+    // The device can't do it (e.g. turn while pressed): marked with "!".
     warning: bool,
 }
 
@@ -1557,6 +1558,309 @@ component ConnScrollTo {
     }
 }
 
+// ── Shared assignment editor ─────────────────────────────────────────────────
+// The Keypad and Mouse tabs give a control an action through the same three
+// pieces below. Each tab binds them to its own properties and callbacks
+// (kp-* / ms-*); the logic behind them is the Rust `assign` module.
+
+// Profile half: choose a profile, add or remove an app profile, and edit its
+// name, window class and title.
+component AssignProfileEditor inherits VerticalLayout {
+    in property <[string]> profile-names;
+    in property <int> profile-index: 0;
+    in property <bool> is-global: true;
+    in property <bool> adding: false;
+    in property <[string]> app-classes;
+    in property <bool> fallthrough: true;
+    in property <string> name-placeholder: "Shown in the profile list";
+    in property <string> fallthrough-text: "Controls this profile leaves unset do what Global maps them to";
+    in-out property <string> new-app;
+    in-out property <string> profile-name;
+    in-out property <string> window-class;
+    in-out property <string> window-title;
+    callback select-profile(int);
+    callback start-add();
+    callback pick-app(int);
+    callback confirm-add();
+    callback cancel-add();
+    callback remove();
+    callback apply-details();
+    callback set-fallthrough(bool);
+
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Profile";
+            width: 96px;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+            vertical-alignment: center;
+        }
+        ResDropdown {
+            horizontal-stretch: 1;
+            model: root.profile-names;
+            current-index: root.profile-index;
+            selected(i) => { root.select-profile(i); }
+        }
+        KeypadButton { text: "Add app"; clicked => { root.start-add(); } }
+        if !root.is-global: KeypadButton {
+            text: "Remove";
+            clicked => { root.remove(); }
+        }
+    }
+
+    if root.adding: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "New app";
+            width: 96px;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+            vertical-alignment: center;
+        }
+        if root.app-classes.length > 0: ResDropdown {
+            width: 160px;
+            model: root.app-classes;
+            current-index: -1;
+            selected(i) => { root.pick-app(i); }
+        }
+        KeypadInput {
+            horizontal-stretch: 1;
+            text <=> root.new-app;
+            placeholder: "Window class, e.g. org.kde.kdenlive";
+            accepted => { root.confirm-add(); }
+        }
+        KeypadButton { text: "Add"; primary: true; clicked => { root.confirm-add(); } }
+        KeypadButton { text: "Cancel"; clicked => { root.cancel-add(); } }
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Name";
+            width: 96px;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+            vertical-alignment: center;
+        }
+        KeypadInput {
+            horizontal-stretch: 1;
+            text <=> root.profile-name;
+            placeholder: root.name-placeholder;
+            accepted => { root.apply-details(); }
+        }
+        if root.is-global: KeypadButton { text: "Apply"; clicked => { root.apply-details(); } }
+    }
+    if !root.is-global: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Window class";
+            width: 96px;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+            vertical-alignment: center;
+        }
+        KeypadInput {
+            horizontal-stretch: 1;
+            text <=> root.window-class;
+            placeholder: "Regular expression, e.g. ^firefox$";
+            accepted => { root.apply-details(); }
+        }
+    }
+    if !root.is-global: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Window title";
+            width: 96px;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+            vertical-alignment: center;
+        }
+        KeypadInput {
+            horizontal-stretch: 1;
+            text <=> root.window-title;
+            placeholder: "Optional regular expression: only while the title matches, e.g. YouTube";
+            accepted => { root.apply-details(); }
+        }
+        KeypadButton { text: "Apply"; clicked => { root.apply-details(); } }
+    }
+    if !root.is-global: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: root.fallthrough-text;
+            color: Theme.fg;
+            font-size: Typography.secondary;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+        }
+        KeypadToggle {
+            on: root.fallthrough;
+            toggled(on) => { root.set-fallthrough(on); }
+        }
+    }
+}
+
+// Action half: the action dropdown, the value it takes (text, a choice or a
+// note), an optional hint, any extra rows a tab passes in as children, the
+// "only if installed" row and Apply.
+component AssignActionEditor inherits VerticalLayout {
+    // 0: nothing to enter, 1: text, 2: a choice, 3: advanced (read-only).
+    in property <int> mode: 0;
+    in property <bool> locked: false;
+    in property <[string]> action-names;
+    in property <int> action-index: 0;
+    in-out property <string> action-text;
+    in property <[string]> choice-names;
+    in property <int> choice-index: -1;
+    in property <string> advanced-text;
+    in property <string> hint;
+    in property <bool> needs-enabled: false;
+    in-out property <string> needs-text;
+    in property <string> needs-placeholder;
+    in property <string> apply-text: "Apply to control";
+    callback select-action(int);
+    callback select-choice(int);
+    callback apply();
+
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Action";
+            width: 96px;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+            vertical-alignment: center;
+        }
+        ResDropdown {
+            horizontal-stretch: 1;
+            enabled: !root.locked && (root.mode != 3 || root.action-names.length > 1);
+            model: root.action-names;
+            current-index: root.action-index;
+            selected(i) => { root.select-action(i); }
+        }
+    }
+    if root.mode == 1: KeypadInput {
+        text <=> root.action-text;
+        placeholder: root.hint;
+        accepted => { root.apply(); }
+    }
+    if root.mode == 2: ResDropdown {
+        model: root.choice-names;
+        current-index: root.choice-index;
+        selected(i) => { root.select-choice(i); }
+    }
+    if root.mode == 3: Text {
+        text: root.advanced-text;
+        color: Theme.fg_dim;
+        font-size: Typography.secondary;
+        wrap: word-wrap;
+    }
+    if root.hint != "": Text {
+        text: root.hint;
+        color: Theme.fg_dim;
+        font-size: Typography.caption;
+        wrap: word-wrap;
+    }
+    @children
+    if root.needs-enabled: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: "Only if installed";
+            width: 96px;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+        KeypadInput {
+            horizontal-stretch: 1;
+            text <=> root.needs-text;
+            placeholder: root.needs-placeholder;
+            accepted => { root.apply(); }
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        if root.mode != 3 && !root.locked: KeypadButton {
+            text: root.apply-text;
+            primary: true;
+            clicked => { root.apply(); }
+        }
+    }
+}
+
+// What the selected profile has assigned, one row per control.
+component AssignBindingList inherits Rectangle {
+    in property <string> title: "Mapped in this profile";
+    in property <string> empty-text: "Nothing mapped yet.";
+    in property <[AssignBindingRow]> rows;
+    callback selected(string);
+
+    border-radius: 6px;
+    background: Theme.panel;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 2px;
+
+        Text {
+            text: root.title;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+            font-weight: 600;
+        }
+        if root.rows.length == 0: Text {
+            text: root.empty-text;
+            color: Theme.fg_dim;
+            font-size: Typography.secondary;
+        }
+        for row in root.rows: Rectangle {
+            height: Typography.row;
+            border-radius: 4px;
+            background: row-touch.has-hover ? Theme.hover : transparent;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 12px;
+                Text {
+                    text: row.warning ? "!" : row.glyph;
+                    width: 20px;
+                    font-family: row.warning ? "Noto Sans" : KeypadIcons.family;
+                    font-size: 16px;
+                    font-weight: row.warning ? 700 : 400;
+                    color: row.warning ? Theme.warning : Theme.accent;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: row.label;
+                    width: 170px;
+                    color: Theme.fg;
+                    font-size: Typography.secondary;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: row.summary;
+                    color: row.advanced ? Theme.fg_dim : Theme.fg;
+                    font-size: Typography.secondary;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+            row-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.selected(row.slot); }
+            }
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Settings";
     default-font-family: "Noto Sans";
@@ -1961,7 +2265,7 @@ export component MainWindow inherits Window {
     in property <int> kp-editor-mode: 0;
     in property <string> kp-editor-hint;
     in property <string> kp-advanced-text;
-    in property <[KeypadBindingRow]> kp-binding-rows;
+    in property <[AssignBindingRow]> kp-binding-rows;
     in property <bool> kp-dirty: false;
     in property <bool> kp-saving: false;
     in property <string> kp-config-path;
@@ -8769,117 +9073,26 @@ export component MainWindow inherits Window {
                                 font-weight: 600;
                             }
 
-                            HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Profile";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                }
-                                ResDropdown {
-                                    horizontal-stretch: 1;
-                                    model: root.kp-profile-names;
-                                    current-index: root.kp-profile-index;
-                                    selected(i) => { root.kp-select-profile(i); }
-                                }
-                                KeypadButton { text: "Add app"; clicked => { root.kp-start-add-profile(); } }
-                                if !root.kp-profile-global: KeypadButton {
-                                    text: "Remove";
-                                    clicked => { root.kp-remove-profile(); }
-                                }
-                            }
-
-                            if root.kp-adding-profile: HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "New app";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                }
-                                if root.kp-app-classes.length > 0: ResDropdown {
-                                    width: 160px;
-                                    model: root.kp-app-classes;
-                                    current-index: -1;
-                                    selected(i) => { root.kp-pick-app(i); }
-                                }
-                                KeypadInput {
-                                    horizontal-stretch: 1;
-                                    text <=> root.kp-new-app;
-                                    placeholder: "Window class, e.g. org.kde.kdenlive";
-                                    accepted => { root.kp-confirm-add-profile(); }
-                                }
-                                KeypadButton { text: "Add"; primary: true; clicked => { root.kp-confirm-add-profile(); } }
-                                KeypadButton { text: "Cancel"; clicked => { root.kp-cancel-add-profile(); } }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Name";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                }
-                                KeypadInput {
-                                    horizontal-stretch: 1;
-                                    text <=> root.kp-profile-name;
-                                    placeholder: "Shown in the profile list and on the cheatsheet";
-                                    accepted => { root.kp-apply-profile-details(); }
-                                }
-                                if root.kp-profile-global: KeypadButton { text: "Apply"; clicked => { root.kp-apply-profile-details(); } }
-                            }
-                            if !root.kp-profile-global: HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Window class";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                }
-                                KeypadInput {
-                                    horizontal-stretch: 1;
-                                    text <=> root.kp-profile-class;
-                                    placeholder: "Regular expression, e.g. ^firefox$";
-                                    accepted => { root.kp-apply-profile-details(); }
-                                }
-                            }
-                            if !root.kp-profile-global: HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Window title";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                }
-                                KeypadInput {
-                                    horizontal-stretch: 1;
-                                    text <=> root.kp-profile-title;
-                                    placeholder: "Optional regular expression: only while the title matches, e.g. YouTube";
-                                    accepted => { root.kp-apply-profile-details(); }
-                                }
-                                KeypadButton { text: "Apply"; clicked => { root.kp-apply-profile-details(); } }
-                            }
-                            if !root.kp-profile-global: HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Controls this profile leaves unset do what Global maps them to";
-                                    color: Theme.fg;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                    wrap: word-wrap;
-                                }
-                                KeypadToggle {
-                                    on: root.kp-profile-fallthrough;
-                                    toggled(on) => { root.kp-set-fallthrough(on); }
-                                }
+                            AssignProfileEditor {
+                                profile-names: root.kp-profile-names;
+                                profile-index: root.kp-profile-index;
+                                is-global: root.kp-profile-global;
+                                adding: root.kp-adding-profile;
+                                app-classes: root.kp-app-classes;
+                                fallthrough: root.kp-profile-fallthrough;
+                                name-placeholder: "Shown in the profile list and on the cheatsheet";
+                                new-app <=> root.kp-new-app;
+                                profile-name <=> root.kp-profile-name;
+                                window-class <=> root.kp-profile-class;
+                                window-title <=> root.kp-profile-title;
+                                select-profile(i) => { root.kp-select-profile(i); }
+                                start-add => { root.kp-start-add-profile(); }
+                                remove => { root.kp-remove-profile(); }
+                                pick-app(i) => { root.kp-pick-app(i); }
+                                confirm-add => { root.kp-confirm-add-profile(); }
+                                cancel-add => { root.kp-cancel-add-profile(); }
+                                apply-details => { root.kp-apply-profile-details(); }
+                                set-fallthrough(on) => { root.kp-set-fallthrough(on); }
                             }
 
                             HorizontalLayout {
@@ -9085,129 +9298,84 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Action";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                }
-                                ResDropdown {
-                                    horizontal-stretch: 1;
-                                    enabled: !root.kp-editor-locked && (root.kp-editor-mode != 3 || root.kp-action-names.length > 1);
-                                    model: root.kp-action-names;
-                                    current-index: root.kp-action-index;
-                                    selected(i) => { root.kp-select-action(i); }
-                                }
-                            }
-                            if root.kp-editor-mode == 1: KeypadInput {
-                                text <=> root.kp-action-text;
-                                placeholder: root.kp-editor-hint;
-                                accepted => { root.kp-apply-binding(); }
-                            }
-                            if root.kp-editor-mode == 2: ResDropdown {
-                                model: root.kp-choice-names;
-                                current-index: root.kp-choice-index;
-                                selected(i) => { root.kp-select-choice(i); }
-                            }
-                            if root.kp-editor-mode == 3: Text {
-                                text: root.kp-advanced-text;
-                                color: Theme.fg_dim;
-                                font-size: Typography.secondary;
-                                wrap: word-wrap;
-                            }
-                            if root.kp-editor-hint != "": Text {
-                                text: root.kp-editor-hint;
-                                color: Theme.fg_dim;
-                                font-size: Typography.caption;
-                                wrap: word-wrap;
-                            }
-                            if root.kp-label-enabled && root.kp-sheet-supported: HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Sheet label";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                }
-                                KeypadInput {
-                                    horizontal-stretch: 1;
-                                    text <=> root.kp-label-text;
-                                    placeholder: "Optional, e.g. Save; empty: made from the action";
-                                    accepted => { root.kp-apply-binding(); }
-                                }
-                            }
-                            if root.kp-label-enabled && root.kp-sheet-supported: HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Icon";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                }
-                                Rectangle {
-                                    width: Typography.compact-control;
-                                    height: Typography.compact-control;
-                                    border-radius: 4px;
-                                    background: Theme.bg;
-                                    border-width: 1px;
-                                    border-color: Theme.bg_lighter;
+                            AssignActionEditor {
+                                mode: root.kp-editor-mode;
+                                locked: root.kp-editor-locked;
+                                action-names: root.kp-action-names;
+                                action-index: root.kp-action-index;
+                                action-text <=> root.kp-action-text;
+                                choice-names: root.kp-choice-names;
+                                choice-index: root.kp-choice-index;
+                                advanced-text: root.kp-advanced-text;
+                                hint: root.kp-editor-hint;
+                                needs-enabled: root.kp-label-enabled;
+                                needs-text <=> root.kp-needs-text;
+                                needs-placeholder: root.kp-needs-placeholder;
+                                select-action(i) => { root.kp-select-action(i); }
+                                select-choice(i) => { root.kp-select-choice(i); }
+                                apply => { root.kp-apply-binding(); }
+
+                                // Keypad-only rows: the label and icon on the cheatsheet.
+                                if root.kp-label-enabled && root.kp-sheet-supported: HorizontalLayout {
+                                    spacing: 8px;
                                     Text {
-                                        x: (parent.width - self.width) / 2;
-                                        y: (parent.height - self.height) / 2;
-                                        text: root.kp-icon-glyph;
-                                        font-family: KeypadIcons.family;
-                                        font-size: 20px;
-                                        color: Theme.accent;
+                                        text: "Sheet label";
+                                        width: 96px;
+                                        color: Theme.fg_dim;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                    KeypadInput {
+                                        horizontal-stretch: 1;
+                                        text <=> root.kp-label-text;
+                                        placeholder: "Optional, e.g. Save; empty: made from the action";
+                                        accepted => { root.kp-apply-binding(); }
                                     }
                                 }
-                                Text {
-                                    text: root.kp-icon-caption;
-                                    color: Theme.fg;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                    overflow: elide;
+                                if root.kp-label-enabled && root.kp-sheet-supported: HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: "Icon";
+                                        width: 96px;
+                                        color: Theme.fg_dim;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        width: Typography.compact-control;
+                                        height: Typography.compact-control;
+                                        border-radius: 4px;
+                                        background: Theme.bg;
+                                        border-width: 1px;
+                                        border-color: Theme.bg_lighter;
+                                        Text {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            text: root.kp-icon-glyph;
+                                            font-family: KeypadIcons.family;
+                                            font-size: 20px;
+                                            color: Theme.accent;
+                                        }
+                                    }
+                                    Text {
+                                        text: root.kp-icon-caption;
+                                        color: Theme.fg;
+                                        font-size: Typography.secondary;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+                                    KeypadButton {
+                                        text: root.kp-icon-picker-open ? "Close" : "Choose…";
+                                        clicked => { root.kp-toggle-icon-picker(); }
+                                    }
                                 }
-                                KeypadButton {
-                                    text: root.kp-icon-picker-open ? "Close" : "Choose…";
-                                    clicked => { root.kp-toggle-icon-picker(); }
-                                }
-                            }
-                            if root.kp-label-enabled && root.kp-sheet-supported && root.kp-icon-picker-open: KeypadIconPicker {
-                                icons: root.kp-icon-results;
-                                current: root.kp-icon-name;
-                                query <=> root.kp-icon-query;
-                                search(t) => { root.kp-search-icons(t); }
-                                picked(name) => { root.kp-pick-icon(name); }
-                            }
-                            if root.kp-label-enabled: HorizontalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Only if installed";
-                                    width: 96px;
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.secondary;
-                                    vertical-alignment: center;
-                                    wrap: word-wrap;
-                                }
-                                KeypadInput {
-                                    horizontal-stretch: 1;
-                                    text <=> root.kp-needs-text;
-                                    placeholder: root.kp-needs-placeholder;
-                                    accepted => { root.kp-apply-binding(); }
-                                }
-                            }
-                            HorizontalLayout {
-                                alignment: end;
-                                if root.kp-editor-mode != 3 && !root.kp-editor-locked: KeypadButton {
-                                    text: "Apply to control";
-                                    primary: true;
-                                    clicked => { root.kp-apply-binding(); }
+                                if root.kp-label-enabled && root.kp-sheet-supported && root.kp-icon-picker-open: KeypadIconPicker {
+                                    icons: root.kp-icon-results;
+                                    current: root.kp-icon-name;
+                                    query <=> root.kp-icon-query;
+                                    search(t) => { root.kp-search-icons(t); }
+                                    picked(name) => { root.kp-pick-icon(name); }
                                 }
                             }
                         }
@@ -9374,65 +9542,10 @@ export component MainWindow inherits Window {
                     }
 
                     // ── Bindings of the selected profile ──
-                    if !root.kp-wizard-open: Rectangle {
-                        border-radius: 6px;
-                        background: Theme.panel;
-
-                        VerticalLayout {
-                            padding: 12px;
-                            spacing: 2px;
-
-                            Text {
-                                text: root.kp-bindings-title;
-                                color: Theme.fg_dim;
-                                font-size: Typography.secondary;
-                                font-weight: 600;
-                            }
-                            if root.kp-binding-rows.length == 0: Text {
-                                text: "Nothing mapped yet.";
-                                color: Theme.fg_dim;
-                                font-size: Typography.secondary;
-                            }
-                            for row in root.kp-binding-rows: Rectangle {
-                                height: Typography.row;
-                                border-radius: 4px;
-                                background: row-touch.has-hover ? Theme.hover : transparent;
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 8px;
-                                    spacing: 12px;
-                                    Text {
-                                        text: row.warning ? "!" : row.glyph;
-                                        width: 20px;
-                                        font-family: row.warning ? "Noto Sans" : KeypadIcons.family;
-                                        font-size: 16px;
-                                        font-weight: row.warning ? 700 : 400;
-                                        color: row.warning ? Theme.warning : Theme.accent;
-                                        vertical-alignment: center;
-                                        horizontal-alignment: center;
-                                    }
-                                    Text {
-                                        text: row.label;
-                                        width: 170px;
-                                        color: Theme.fg;
-                                        font-size: Typography.secondary;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: row.summary;
-                                        color: row.advanced ? Theme.fg_dim : Theme.fg;
-                                        font-size: Typography.secondary;
-                                        vertical-alignment: center;
-                                        horizontal-stretch: 1;
-                                        overflow: elide;
-                                    }
-                                }
-                                row-touch := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.kp-select-control(row.slot); }
-                                }
-                            }
-                        }
+                    if !root.kp-wizard-open: AssignBindingList {
+                        title: root.kp-bindings-title;
+                        rows: root.kp-binding-rows;
+                        selected(slot) => { root.kp-select-control(slot); }
                     }
 
                     // ── Advanced: what would otherwise be hand-edited in the file ──
