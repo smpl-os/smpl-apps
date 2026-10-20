@@ -294,12 +294,62 @@ fn display_tab_never_shows_unverified_or_stale_state_as_applicable() {
     assert!(tab.contains("if root.disp-drift-text != \"\": Rectangle"));
     assert!(tab.contains("clicked => { root.disp-use-saved(); }"));
     assert!(tab.contains("clicked => { root.disp-keep-current(); }"));
-    assert!(tab.contains("if !root.disp-workspace-policy: VerticalLayout"));
+    assert!(tab.contains("if root.disp-primary-settable: VerticalLayout"));
     assert!(tab.contains("Move workspace 1 here"));
     let rect = component("MonitorRect");
     assert!(rect.contains("private property <bool> narrow: size-measure.preferred-width + 8px > root.width;"));
     assert!(rect.contains("text: root.narrow ? root.sublabel-two-line : root.sublabel;"));
     assert!(!rect.contains("overflow: elide"));
+}
+
+#[test]
+fn display_primary_monitor_can_be_chosen_in_place_with_or_without_the_policy() {
+    let tab = display_tab();
+    // No dead end: the card never sends the user to the Taskbar tab.
+    assert!(!UI.contains("Taskbar settings"));
+    for source in [
+        include_str!("display/ui.rs"),
+        include_str!("display/primary.rs"),
+    ] {
+        assert!(!source.contains("Change it in Taskbar settings"));
+    }
+    // The text is built in Rust and picked by whether the selection is primary.
+    assert!(tab.contains("? root.disp-primary-note-here"));
+    assert!(tab.contains(": root.disp-primary-note-elsewhere;"));
+    // The button shows whenever the primary can be changed; under the policy it
+    // says what it does, without it it keeps the session-only wording.
+    assert!(tab.contains(
+        "text: root.disp-workspace-policy ? \"Make primary\" : \"Move workspace 1 here\";"
+    ));
+    assert!(tab.contains("root.disp-set-primary(root.disp-selected-index);"));
+    // The button and Alt+P are governed by the same state.
+    assert!(UI.contains(
+        "out property <bool> disp-primary-movable: root.disp-selection-valid && root.disp-primary-settable && !root.disp-busy"
+    ));
+    assert!(UI.contains(
+        "if e.text == \"p\" && root.disp-selection-valid && root.disp-primary-settable && !root.disp-busy {"
+    ));
+    // The state is pushed from Rust only, and the help overlay still names the key.
+    let ui_rs = include_str!("display/ui.rs");
+    for property in [
+        "disp-primary-settable",
+        "disp-primary-note-here",
+        "disp-primary-note-elsewhere",
+    ] {
+        assert!(
+            UI.lines()
+                .any(|line| line.contains("in property <") && line.contains(&format!("{property}:"))),
+            "{property} is not an in property"
+        );
+        assert!(
+            ui_rs.contains(&format!("ui.set_{}(", property.replace('-', "_"))),
+            "{property} is never set from Rust"
+        );
+    }
+    assert!(UI.contains("Alt+P   Move workspace 1 here"));
+    // The deep link and the search entry that lead here keep working.
+    assert!(tab.contains("root.highlight-setting == \"Primary Monitor\""));
+    assert!(include_str!("main.rs").contains("(\"Primary Monitor\", \"display\", 3)"));
 }
 
 fn dictation_tab() -> &'static str {

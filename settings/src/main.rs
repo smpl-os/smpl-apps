@@ -628,6 +628,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let mut initial_variant = String::new();
     let mut initial_highlight = String::new();
     let mut use_demo = false;
+    let mut demo_policy = false;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -667,6 +668,11 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             "--demo" => {
                 use_demo = true;
+            }
+            // Simulated displays under the OS workspace policy.
+            "--demo-policy" => {
+                use_demo = true;
+                demo_policy = true;
             }
             other => {
                 // Positional: layout [variant]
@@ -862,7 +868,11 @@ fn main() -> Result<(), slint::PlatformError> {
     let display_backend: Result<std::sync::Arc<dyn display::backend::DisplayBackend>, String> =
         if use_demo {
             eprintln!("Running display tab in demo mode with simulated displays");
-            Ok(std::sync::Arc::new(display::demo::DemoBackend::new()))
+            Ok(std::sync::Arc::new(if demo_policy {
+                display::demo::DemoBackend::with_policy()
+            } else {
+                display::demo::DemoBackend::new()
+            }))
         } else {
             display::backend::detect_backend()
         };

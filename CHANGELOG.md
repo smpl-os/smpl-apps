@@ -285,6 +285,25 @@ All notable changes to smpl-apps are documented here.
   The threshold scales with query length so noise like `wifi` never matches
   `Power`. Covered by 8 unit tests in `settings::fuzzy_tests`.
 
+- **settings: Display → Primary Monitor can now be changed on smplOS, in the
+  Display tab.** With the stable workspace policy on, the card used to hide its
+  button and say "Change it in Taskbar settings", but the Taskbar tab has no
+  such control, so there was nowhere to choose the primary monitor. The card
+  now shows **Make primary** for any other connected display and runs
+  `workspace-ctl set-primary <connector>`: the choice is saved, applied
+  immediately, and the OS moves the taskbar and workspace 1 to that display
+  (Settings itself never touches the bar). The Primary badge comes from
+  `workspace-ctl primary`, so it also reflects a primary chosen elsewhere, and
+  it is re-read after the change and whenever the displays change. The card
+  says where the taskbar and workspace 1 live and that the choice is saved;
+  without the policy, **Move workspace 1 here** works as before and still says
+  it is not saved. On a smplOS older than `workspace-ctl primary` /
+  `set-primary` the card keeps today's badge and asks for a newer smplOS
+  instead of showing a dead-end pointer. Publish the matching OS update first.
+  `settings --demo-policy` simulates the policy for trying the card without a
+  real session. Covered by mocked-runner tests for the command sequence,
+  output parsing, error reporting and the fallbacks.
+
 ---
 
 ## v0.8.14

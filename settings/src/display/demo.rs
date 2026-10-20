@@ -10,10 +10,14 @@ use super::verify;
 struct State {
     outputs: Vec<Output>,
     workspace_one: Option<String>,
+    /// What `workspace-ctl primary` would answer (policy demo only).
+    policy_primary: Option<String>,
 }
 
 pub struct DemoBackend {
     state: Mutex<State>,
+    /// Simulates the OS workspace policy (`settings --demo-policy`).
+    policy: bool,
 }
 
 fn output(
@@ -52,7 +56,19 @@ fn output(
 }
 
 impl DemoBackend {
+    /// Simulated displays without the workspace policy: the Primary Monitor
+    /// card moves workspace 1 for this session.
     pub fn new() -> Self {
+        Self::build(false)
+    }
+
+    /// The same displays with the workspace policy on: the card makes a
+    /// monitor primary, as the OS would save it.
+    pub fn with_policy() -> Self {
+        Self::build(true)
+    }
+
+    fn build(policy: bool) -> Self {
         let outputs = vec![
             output(
                 0,
@@ -92,7 +108,9 @@ impl DemoBackend {
             state: Mutex::new(State {
                 outputs,
                 workspace_one: Some("DP-1".into()),
+                policy_primary: policy.then(|| "DP-1".to_string()),
             }),
+            policy,
         }
     }
 }
@@ -110,7 +128,8 @@ impl DisplayBackend for DemoBackend {
             outputs: state.outputs.clone(),
             conf: Ok(None),
             workspace_one: state.workspace_one.clone(),
-            workspace_policy: false,
+            workspace_policy: self.policy,
+            policy_primary: state.policy_primary.clone(),
         })
     }
 
@@ -171,6 +190,20 @@ impl DisplayBackend for DemoBackend {
         Ok(())
     }
 
+    fn set_primary(&self, connector: &str) -> Result<(), String> {
+        if !self.policy {
+            return Err("the workspace policy is disabled".into());
+        }
+        let mut state = self.state.lock().unwrap();
+        if !state.outputs.iter().any(|output| output.name == connector) {
+            return Err(format!("{connector} is not a connected monitor"));
+        }
+        // The primary monitor owns workspace 1.
+        state.policy_primary = Some(connector.into());
+        state.workspace_one = Some(connector.into());
+        Ok(())
+    }
+
     fn identify(&self, labels: &[(String, String)]) -> Result<(), String> {
         for (connector, label) in labels {
             eprintln!("[demo] identify {connector}: {label}");
@@ -180,5 +213,41 @@ impl DisplayBackend for DemoBackend {
 
     fn is_demo(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_demo_has_no_policy_and_cannot_set_a_primary() {
+        let demo = DemoBackend::new();
+        let snapshot = demo.snapshot().unwrap();
+        assert!(!snapshot.workspace_policy);
+        assert_eq!(snapshot.policy_primary, None);
+        assert_eq!(snapshot.primary(), Some("DP-1"));
+        assert!(demo.set_primary("eDP-1").is_err());
+        demo.move_workspace_one("eDP-1").unwrap();
+        assert_eq!(demo.snapshot().unwrap().primary(), Some("eDP-1"));
+    }
+
+    #[test]
+    fn policy_demo_names_and_changes_the_primary() {
+        let demo = DemoBackend::with_policy();
+        let snapshot = demo.snapshot().unwrap();
+        assert!(snapshot.workspace_policy);
+        assert_eq!(snapshot.policy_primary.as_deref(), Some("DP-1"));
+        assert!(snapshot.can_set_primary());
+
+        demo.set_primary("HDMI-A-1").unwrap();
+        let snapshot = demo.snapshot().unwrap();
+        assert_eq!(snapshot.policy_primary.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(snapshot.workspace_one.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(
+            demo.set_primary("DP-9"),
+            Err("DP-9 is not a connected monitor".into())
+        );
+        assert_eq!(demo.snapshot().unwrap().primary(), Some("HDMI-A-1"));
     }
 }

@@ -212,11 +212,13 @@ impl DisplayModel {
     }
 
     /// Takes a newer snapshot with the same display configuration (the
-    /// workspace-1 host or policy may differ). Returns whether those changed.
+    /// workspace-1 host, the policy or its primary may differ). Returns
+    /// whether those changed.
     pub fn refresh_details(&mut self, snapshot: Snapshot) -> bool {
         let changed = self.snapshot.as_ref().is_none_or(|old| {
             old.workspace_one != snapshot.workspace_one
                 || old.workspace_policy != snapshot.workspace_policy
+                || old.policy_primary != snapshot.policy_primary
         });
         self.snapshot = Some(snapshot);
         changed
@@ -352,12 +354,25 @@ impl DisplayModel {
         self.original.iter().map(Monitor::target).collect()
     }
 
+    #[cfg(test)]
     pub fn workspace_one(&self) -> Option<&str> {
         self.snapshot.as_ref()?.workspace_one.as_deref()
     }
 
     pub fn workspace_policy(&self) -> bool {
         self.snapshot.as_ref().is_some_and(|s| s.workspace_policy)
+    }
+
+    /// The primary monitor: the policy's choice, else workspace 1's host.
+    pub fn primary(&self) -> Option<&str> {
+        self.snapshot.as_ref()?.primary()
+    }
+
+    /// Whether the card can offer to make a monitor primary right now.
+    pub fn can_set_primary(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(Snapshot::can_set_primary)
     }
 
     /// Saved rules that differ from the loaded live state.
@@ -395,6 +410,7 @@ pub(crate) mod tests {
             )),
             workspace_one: Some("HDMI-A-1".into()),
             workspace_policy: false,
+            policy_primary: None,
         }
     }
 
@@ -637,5 +653,30 @@ pub(crate) mod tests {
         model.load(snapshot(outputs));
         assert_eq!(model.monitors[1].mode_index(), Some(0));
         assert_eq!(model.monitors[1].modes.len(), 1);
+    }
+
+    #[test]
+    fn the_primary_is_the_policys_choice_and_changes_redraw_the_card() {
+        let mut model = loaded();
+        assert_eq!(model.primary(), Some("HDMI-A-1"));
+        assert!(model.can_set_primary());
+
+        let mut policy = snapshot(live_pair());
+        policy.workspace_policy = true;
+        policy.policy_primary = Some("HDMI-A-1".into());
+        assert!(model.refresh_details(policy.clone()), "policy switched on");
+        assert!(!model.refresh_details(policy.clone()), "nothing changed");
+
+        // workspace 1 stays on HDMI-A-1 while the policy now names DP-3.
+        policy.policy_primary = Some("DP-3".into());
+        assert!(model.refresh_details(policy.clone()));
+        assert_eq!(model.workspace_one(), Some("HDMI-A-1"));
+        assert_eq!(model.primary(), Some("DP-3"));
+
+        // An OS that stops answering `workspace-ctl primary`.
+        policy.policy_primary = None;
+        assert!(model.refresh_details(policy));
+        assert_eq!(model.primary(), Some("HDMI-A-1"));
+        assert!(!model.can_set_primary());
     }
 }

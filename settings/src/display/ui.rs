@@ -10,13 +10,12 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use super::backend::{ApplyOutcome, DisplayBackend, Snapshot, Target};
 use super::model::{Canvas, DisplayModel};
 use super::monitor::transform_label;
+use super::primary;
 use super::verify::Drift;
 use crate::{MainWindow, MonitorInfo};
 
 const DISPLAY_TAB: i32 = 3;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
-const POLICY_NOTE: &str =
-    "Workspace placement follows the display arrangement. Change it in Taskbar settings.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JobKind {
@@ -26,6 +25,7 @@ enum JobKind {
     KeepCurrent,
     UseSaved,
     MoveWorkspaceOne,
+    SetPrimary,
     Identify,
 }
 
@@ -41,6 +41,7 @@ enum Job {
     },
     UseSaved,
     MoveWorkspaceOne(String),
+    SetPrimary(String),
     Identify(Vec<(String, String)>),
 }
 
@@ -58,6 +59,7 @@ impl Job {
             } => JobKind::KeepCurrent,
             Self::UseSaved => JobKind::UseSaved,
             Self::MoveWorkspaceOne(_) => JobKind::MoveWorkspaceOne,
+            Self::SetPrimary(_) => JobKind::SetPrimary,
             Self::Identify(_) => JobKind::Identify,
         }
     }
@@ -75,6 +77,11 @@ enum Done {
     },
     UsedSaved(ApplyOutcome),
     Moved {
+        connector: String,
+        result: Result<(), String>,
+        snapshot: Result<Snapshot, String>,
+    },
+    PrimarySet {
         connector: String,
         result: Result<(), String>,
         snapshot: Result<Snapshot, String>,
@@ -106,6 +113,14 @@ fn run(backend: &dyn DisplayBackend, job: Job) -> Done {
                 snapshot: backend.snapshot(),
             }
         }
+        Job::SetPrimary(connector) => {
+            let result = backend.set_primary(&connector);
+            Done::PrimarySet {
+                connector,
+                result,
+                snapshot: backend.snapshot(),
+            }
+        }
         Job::Identify(labels) => Done::Identified(backend.identify(&labels)),
     }
 }
@@ -115,6 +130,15 @@ fn count(displays: usize) -> String {
         1 => "1 display".into(),
         n => format!("{n} displays"),
     }
+}
+
+/// What choosing a display on the Primary Monitor card (button or Alt+P) does.
+enum PrimaryStep {
+    /// A job is running or no such display exists: nothing happens.
+    Ignored,
+    /// Nothing to run; the message says why.
+    Noted,
+    Run(Job),
 }
 
 /// UI-thread state shared with worker deliveries.
@@ -162,6 +186,38 @@ impl Controller {
 
     fn busy(&self) -> bool {
         self.busy_kind().is_some()
+    }
+
+    /// Makes the display at `index` primary. Without the OS workspace policy
+    /// that moves workspace 1 for this session; with it, the OS saves the
+    /// choice and moves the taskbar along.
+    fn choose_primary(&mut self, index: i32) -> PrimaryStep {
+        if self.busy() {
+            return PrimaryStep::Ignored;
+        }
+        let Some(name) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.model.monitors.get(index))
+            .map(|monitor| monitor.name.clone())
+        else {
+            return PrimaryStep::Ignored;
+        };
+        if !self.model.workspace_policy() {
+            return PrimaryStep::Run(Job::MoveWorkspaceOne(name));
+        }
+        if !self.model.can_set_primary() {
+            self.message = Some((
+                "This smplOS can't change the primary monitor from Settings; update smplOS to enable it."
+                    .into(),
+                false,
+            ));
+            return PrimaryStep::Noted;
+        }
+        if self.model.primary() == Some(name.as_str()) {
+            self.message = Some((format!("{name} is already the primary monitor."), false));
+            return PrimaryStep::Noted;
+        }
+        PrimaryStep::Run(Job::SetPrimary(name))
     }
 
     /// The job to start now, if any. User actions wait behind a running poll
@@ -295,6 +351,34 @@ impl Controller {
                 }
                 true
             }
+            Done::PrimarySet {
+                connector,
+                result,
+                snapshot,
+            } => {
+                // What the OS reports now; `None` when it couldn't be read.
+                let reported = snapshot.as_ref().ok().map(Snapshot::primary);
+                self.message = Some(match (result, reported) {
+                    (Err(error), _) => (format!("Couldn't set the primary monitor: {error}"), true),
+                    (Ok(()), Some(now)) if now != Some(connector.as_str()) => (
+                        format!(
+                            "The OS accepted {connector} as the primary monitor, but it still reports {}.",
+                            now.unwrap_or("no primary monitor")
+                        ),
+                        true,
+                    ),
+                    (Ok(()), _) => (
+                        format!(
+                            "{connector} is now the primary monitor. The taskbar and workspace 1 follow it, and the choice is saved."
+                        ),
+                        false,
+                    ),
+                });
+                if let Ok(snapshot) = snapshot {
+                    self.absorb_snapshot(snapshot);
+                }
+                true
+            }
             Done::Identified(result) => {
                 self.message = Some(match result {
                     Ok(()) => (
@@ -364,6 +448,7 @@ impl Controller {
                     JobKind::KeepCurrent => "Saving the active layout…",
                     JobKind::UseSaved => "Applying the saved settings…",
                     JobKind::MoveWorkspaceOne => "Moving workspace 1…",
+                    JobKind::SetPrimary => "Setting the primary monitor…",
                     JobKind::Identify => "Identifying displays…",
                 }
                 .to_string(),
@@ -413,7 +498,7 @@ fn shared_strings(items: impl Iterator<Item = String>) -> ModelRc<SharedString> 
 /// The rows the UI draws, derived only from the model.
 fn rows(model: &DisplayModel) -> Vec<MonitorInfo> {
     let canvas = Canvas::fit(&model.monitors);
-    let primary = model.workspace_one();
+    let primary = model.primary();
     model
         .monitors
         .iter()
@@ -508,8 +593,15 @@ fn push(ui: &MainWindow, controller: &Controller) {
         .map(Drift::sentence)
         .collect();
     ui.set_disp_drift_text(drift.join("\n").into());
-    ui.set_disp_workspace_policy(controller.model.workspace_policy());
-    ui.set_disp_primary_name(controller.model.workspace_one().unwrap_or_default().into());
+    let policy = controller.model.workspace_policy();
+    let settable = controller.model.can_set_primary();
+    let primary = controller.model.primary();
+    ui.set_disp_workspace_policy(policy);
+    ui.set_disp_primary_settable(settable);
+    // The card text depends on which display is selected, and selecting does
+    // not redraw, so the UI picks between the two.
+    ui.set_disp_primary_note_here(primary::card_text(policy, settable, primary, true).into());
+    ui.set_disp_primary_note_elsewhere(primary::card_text(policy, settable, primary, false).into());
     let (status, warning) = controller.status();
     ui.set_disp_status_text(status.into());
     ui.set_disp_status_warning(warning);
@@ -634,23 +726,11 @@ pub fn install(ui: &MainWindow, backend: Result<Arc<dyn DisplayBackend>, String>
         let shared = shared.clone();
         ui.on_disp_set_primary(move |index| {
             let Some(ui) = weak.upgrade() else { return };
-            let job = {
-                let mut controller = shared.lock().unwrap();
-                if controller.busy() {
-                    return;
-                }
-                if controller.model.workspace_policy() {
-                    controller.message = Some((POLICY_NOTE.into(), false));
-                    push(&ui, &controller);
-                    return;
-                }
-                usize::try_from(index)
-                    .ok()
-                    .and_then(|index| controller.model.monitors.get(index))
-                    .map(|monitor| Job::MoveWorkspaceOne(monitor.name.clone()))
-            };
-            if let Some(job) = job {
-                request(&ui, &shared, job);
+            let step = shared.lock().unwrap().choose_primary(index);
+            match step {
+                PrimaryStep::Ignored => {}
+                PrimaryStep::Noted => push(&ui, &shared.lock().unwrap()),
+                PrimaryStep::Run(job) => request(&ui, &shared, job),
             }
         });
     }
@@ -770,6 +850,10 @@ mod tests {
         }
 
         fn move_workspace_one(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn set_primary(&self, _: &str) -> Result<(), String> {
             Ok(())
         }
 
@@ -1018,6 +1102,185 @@ mod tests {
         assert!(rows(&controller.model)[1].is_primary);
     }
 
+    /// A snapshot under the workspace policy; `primary` is what
+    /// `workspace-ctl primary` says (`None`: an OS without that subcommand).
+    fn policy_snapshot(primary: Option<&str>) -> Snapshot {
+        let mut policy = snapshot(live_pair());
+        policy.workspace_policy = true;
+        policy.policy_primary = primary.map(String::from);
+        policy
+    }
+
+    fn policy_controller(primary: Option<&str>) -> Controller {
+        let mut controller = controller();
+        poll(&mut controller, policy_snapshot(primary));
+        controller
+    }
+
+    fn primary_rows(controller: &Controller) -> Vec<bool> {
+        rows(&controller.model)
+            .iter()
+            .map(|row| row.is_primary)
+            .collect()
+    }
+
+    #[test]
+    fn without_the_policy_choosing_a_display_still_moves_workspace_one() {
+        let mut controller = controller();
+        // DP-3, and also HDMI-A-1 which already hosts workspace 1.
+        for (index, name) in [(1, "DP-3"), (0, "HDMI-A-1")] {
+            let step = controller.choose_primary(index);
+            assert!(
+                matches!(&step, PrimaryStep::Run(Job::MoveWorkspaceOne(to)) if to == name),
+                "index {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_the_policy_choosing_a_display_asks_the_os_and_the_badge_follows() {
+        let mut controller = policy_controller(Some("HDMI-A-1"));
+        assert_eq!(primary_rows(&controller), [true, false]);
+        let PrimaryStep::Run(job) = controller.choose_primary(1) else {
+            panic!("the other display can be made primary");
+        };
+        assert!(matches!(&job, Job::SetPrimary(name) if name == "DP-3"));
+        controller.request(job).unwrap();
+        assert!(controller.busy());
+        assert_eq!(
+            controller.status(),
+            ("Setting the primary monitor…".into(), false)
+        );
+        // The worker re-reads the OS afterwards: the badge moves to DP-3.
+        controller.finish(
+            Done::PrimarySet {
+                connector: "DP-3".into(),
+                result: Ok(()),
+                snapshot: Ok(policy_snapshot(Some("DP-3"))),
+            },
+            false,
+        );
+        assert!(!controller.busy());
+        assert_eq!(controller.model.primary(), Some("DP-3"));
+        assert_eq!(primary_rows(&controller), [false, true]);
+        assert_eq!(
+            controller.status(),
+            (
+                "DP-3 is now the primary monitor. The taskbar and workspace 1 follow it, and the choice is saved."
+                    .into(),
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn choosing_the_current_primary_runs_nothing() {
+        let mut controller = policy_controller(Some("HDMI-A-1"));
+        assert!(matches!(controller.choose_primary(0), PrimaryStep::Noted));
+        assert_eq!(
+            controller.status(),
+            ("HDMI-A-1 is already the primary monitor.".into(), false)
+        );
+    }
+
+    #[test]
+    fn an_os_without_set_primary_gets_an_honest_note_instead_of_a_job() {
+        let mut controller = policy_controller(None);
+        assert!(!controller.model.can_set_primary());
+        assert!(matches!(controller.choose_primary(1), PrimaryStep::Noted));
+        let (text, warning) = controller.status();
+        assert!(text.contains("update smplOS"), "{text}");
+        assert!(!text.contains("Taskbar settings"), "{text}");
+        assert!(!warning);
+        // Workspace 1's host still gets the badge, as before.
+        assert_eq!(primary_rows(&controller), [true, false]);
+    }
+
+    #[test]
+    fn choosing_a_display_is_ignored_while_busy_or_for_an_unknown_index() {
+        let mut controller = policy_controller(Some("HDMI-A-1"));
+        assert!(matches!(
+            controller.choose_primary(-1),
+            PrimaryStep::Ignored
+        ));
+        assert!(matches!(controller.choose_primary(9), PrimaryStep::Ignored));
+        controller.request(Job::UseSaved).unwrap();
+        assert!(matches!(controller.choose_primary(1), PrimaryStep::Ignored));
+    }
+
+    #[test]
+    fn a_refused_set_primary_shows_the_os_message_and_keeps_the_badge() {
+        let mut controller = policy_controller(Some("HDMI-A-1"));
+        controller.request(Job::SetPrimary("DP-3".into())).unwrap();
+        controller.finish(
+            Done::PrimarySet {
+                connector: "DP-3".into(),
+                result: Err("workspace-ctl: policy is disabled".into()),
+                snapshot: Ok(policy_snapshot(Some("HDMI-A-1"))),
+            },
+            false,
+        );
+        assert_eq!(
+            controller.status(),
+            (
+                "Couldn't set the primary monitor: workspace-ctl: policy is disabled".into(),
+                true
+            )
+        );
+        assert_eq!(primary_rows(&controller), [true, false]);
+    }
+
+    #[test]
+    fn set_primary_warns_when_the_os_still_reports_another_monitor() {
+        let mut controller = policy_controller(Some("HDMI-A-1"));
+        controller.request(Job::SetPrimary("DP-3".into())).unwrap();
+        controller.finish(
+            Done::PrimarySet {
+                connector: "DP-3".into(),
+                result: Ok(()),
+                snapshot: Ok(policy_snapshot(Some("HDMI-A-1"))),
+            },
+            false,
+        );
+        assert_eq!(
+            controller.status(),
+            (
+                "The OS accepted DP-3 as the primary monitor, but it still reports HDMI-A-1."
+                    .into(),
+                true
+            )
+        );
+        assert_eq!(primary_rows(&controller), [true, false]);
+    }
+
+    #[test]
+    fn set_primary_succeeds_even_when_the_displays_cannot_be_read_back() {
+        let mut controller = policy_controller(Some("HDMI-A-1"));
+        controller.request(Job::SetPrimary("DP-3".into())).unwrap();
+        controller.finish(
+            Done::PrimarySet {
+                connector: "DP-3".into(),
+                result: Ok(()),
+                snapshot: Err("hyprctl did not finish in time".into()),
+            },
+            false,
+        );
+        let (text, warning) = controller.status();
+        assert!(
+            text.starts_with("DP-3 is now the primary monitor."),
+            "{text}"
+        );
+        assert!(!warning);
+    }
+
+    #[test]
+    fn primary_changes_from_outside_settings_redraw_the_badge() {
+        let mut controller = policy_controller(Some("HDMI-A-1"));
+        assert!(!poll(&mut controller, policy_snapshot(Some("HDMI-A-1"))));
+        assert!(poll(&mut controller, policy_snapshot(Some("DP-3"))));
+        assert_eq!(primary_rows(&controller), [false, true]);
+    }
+
     #[test]
     fn demo_jobs_round_trip_through_the_worker_function() {
         let backend = DemoBackend::new();
@@ -1068,5 +1331,30 @@ mod tests {
         };
         assert_eq!(moved.workspace_one.as_deref(), Some("eDP-1"));
         assert!(matches!(run(&backend, Job::Poll), Done::Polled(Ok(_))));
+    }
+
+    #[test]
+    fn demo_policy_makes_a_monitor_primary_through_the_worker_function() {
+        let backend = DemoBackend::with_policy();
+        let Done::PrimarySet {
+            result,
+            snapshot: Ok(after),
+            ..
+        } = run(&backend, Job::SetPrimary("eDP-1".into()))
+        else {
+            panic!("demo set-primary failed");
+        };
+        assert_eq!(result, Ok(()));
+        assert_eq!(after.policy_primary.as_deref(), Some("eDP-1"));
+        let Done::PrimarySet {
+            result,
+            snapshot: Ok(after),
+            ..
+        } = run(&backend, Job::SetPrimary("DP-9".into()))
+        else {
+            panic!("demo set-primary failed");
+        };
+        assert_eq!(result, Err("DP-9 is not a connected monitor".into()));
+        assert_eq!(after.policy_primary.as_deref(), Some("eDP-1"));
     }
 }
