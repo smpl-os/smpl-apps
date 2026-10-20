@@ -1,3 +1,4 @@
+mod assign;
 mod bluetooth;
 mod connections;
 mod dictation;
