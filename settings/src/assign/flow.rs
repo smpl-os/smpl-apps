@@ -6,6 +6,7 @@
 //! unsaved, reloading its editor, moving the selection).
 
 use super::profile::Profiles;
+use super::Saving;
 
 /// What a successful edit asks of the tab.
 #[derive(Debug, PartialEq, Eq)]
@@ -21,20 +22,31 @@ pub fn default_profile_name(class: &str) -> String {
     class.rsplit('.').next().unwrap_or(class).to_string()
 }
 
-pub fn add_app(config: &mut impl Profiles, class: &str) -> Result<Done, String> {
+pub fn add_app(config: &mut impl Profiles, class: &str, saving: Saving) -> Result<Done, String> {
     let index = config.add_app_profile(&default_profile_name(class), class)?;
-    Ok(Done { select: Some(index), message: format!("Added a profile for {class}. Map its controls, then Save.") })
+    let next = match saving {
+        Saving::Manual => "Map its controls, then Save.",
+        Saving::Immediate => "Pick a button to assign it.",
+    };
+    Ok(Done { select: Some(index), message: format!("Added a profile for {class}. {next}") })
 }
 
-pub fn remove(config: &mut impl Profiles, index: usize) -> Result<Done, String> {
+pub fn remove(config: &mut impl Profiles, index: usize, saving: Saving) -> Result<Done, String> {
     let name = config.profiles().get(index).map(|p| p.name.clone()).unwrap_or_default();
     config.remove_profile(index)?;
-    Ok(Done { select: Some(index.saturating_sub(1)), message: format!("Removed the {name} profile. Not saved yet.") })
+    Ok(Done { select: Some(index.saturating_sub(1)), message: format!("Removed the {name} profile. {}", saving.tail()) })
 }
 
 /// Applies the name, window class and window title fields; only what differs
 /// from the profile is written. `None` when nothing changed.
-pub fn apply_details(config: &mut impl Profiles, index: usize, name: &str, class: &str, title: &str) -> Result<Option<Done>, String> {
+pub fn apply_details(
+    config: &mut impl Profiles,
+    index: usize,
+    name: &str,
+    class: &str,
+    title: &str,
+    saving: Saving,
+) -> Result<Option<Done>, String> {
     let Some(before) = config.profiles().get(index).cloned() else {
         return Ok(None);
     };
@@ -50,17 +62,17 @@ pub fn apply_details(config: &mut impl Profiles, index: usize, name: &str, class
     if config.profiles().get(index) == Some(&before) {
         return Ok(None);
     }
-    Ok(Some(Done { select: None, message: "Profile updated. Not saved yet.".into() }))
+    Ok(Some(Done { select: None, message: format!("Profile updated. {}", saving.tail()) }))
 }
 
-pub fn set_fallthrough(config: &mut impl Profiles, index: usize, on: bool) -> Option<Done> {
+pub fn set_fallthrough(config: &mut impl Profiles, index: usize, on: bool, saving: Saving) -> Option<Done> {
     config.set_profile_fallthrough(index, on).ok()?;
-    let message = if on {
-        "Controls this profile leaves unset now do what Global maps them to. Not saved yet."
+    let effect = if on {
+        "Controls this profile leaves unset now do what Global maps them to."
     } else {
-        "Controls this profile leaves unset now do nothing in this app. Not saved yet."
+        "Controls this profile leaves unset now do nothing in this app."
     };
-    Some(Done { select: None, message: message.into() })
+    Some(Done { select: None, message: format!("{effect} {}", saving.tail()) })
 }
 
 /// The window classes of the open windows, for the "Add app" picker.
@@ -92,63 +104,83 @@ mod tests {
     use super::*;
     use crate::assign::testing::{doc_from, global_only as doc, Doc};
 
+    const SAVE: Saving = Saving::Manual;
+
     #[test]
     fn adding_an_app_names_it_after_its_class_and_selects_it() {
         let mut d = doc();
-        let done = add_app(&mut d, "org.mozilla.firefox").unwrap();
+        let done = add_app(&mut d, "org.mozilla.firefox", SAVE).unwrap();
         assert_eq!(done.select, Some(0), "app profiles go before the global one");
         assert_eq!(done.message, "Added a profile for org.mozilla.firefox. Map its controls, then Save.");
         assert_eq!(d.profiles()[0].name, "firefox");
         assert_eq!(d.profiles()[0].class, r"^org\.mozilla\.firefox$");
         assert!(d.profiles()[1].global);
-        assert!(add_app(&mut d, "org.mozilla.firefox").unwrap_err().contains("already matches"));
-        assert!(add_app(&mut d, "  ").is_err());
+        assert!(add_app(&mut d, "org.mozilla.firefox", SAVE).unwrap_err().contains("already matches"));
+        assert!(add_app(&mut d, "  ", SAVE).is_err());
     }
 
     #[test]
     fn removing_selects_the_previous_profile_and_never_removes_global() {
         let mut d = doc();
-        add_app(&mut d, "a.one").unwrap();
-        add_app(&mut d, "b.two").unwrap();
-        let done = remove(&mut d, 1).unwrap();
+        add_app(&mut d, "a.one", SAVE).unwrap();
+        add_app(&mut d, "b.two", SAVE).unwrap();
+        let done = remove(&mut d, 1, SAVE).unwrap();
         assert_eq!(done.message, "Removed the two profile. Not saved yet.");
         assert_eq!(done.select, Some(0));
         let global = d.profiles().iter().position(|p| p.global).unwrap();
-        assert_eq!(remove(&mut d, global).unwrap_err(), "the Global profile can't be removed");
+        assert_eq!(remove(&mut d, global, SAVE).unwrap_err(), "the Global profile can't be removed");
     }
 
     #[test]
     fn details_write_only_what_changed() {
         let mut d = doc();
-        add_app(&mut d, "org.example.app").unwrap();
+        add_app(&mut d, "org.example.app", SAVE).unwrap();
         let class = d.profiles()[0].class.clone();
 
-        assert_eq!(apply_details(&mut d, 0, "app", &class, "").unwrap(), None);
-        let done = apply_details(&mut d, 0, "Example", &class, "Inbox").unwrap().expect("changed");
+        assert_eq!(apply_details(&mut d, 0, "app", &class, "", SAVE).unwrap(), None);
+        let done = apply_details(&mut d, 0, "Example", &class, "Inbox", SAVE).unwrap().expect("changed");
         assert_eq!(done.message, "Profile updated. Not saved yet.");
         assert_eq!((d.profiles()[0].name.as_str(), d.profiles()[0].title.as_str()), ("Example", "Inbox"));
 
         // The global profile keeps its (absent) match whatever the fields say.
         let global = d.profiles().iter().position(|p| p.global).unwrap();
-        assert_eq!(apply_details(&mut d, global, "global", "x", "y").unwrap(), None);
+        assert_eq!(apply_details(&mut d, global, "global", "x", "y", SAVE).unwrap(), None);
         assert!(d.profiles()[global].global);
 
-        assert!(apply_details(&mut d, 0, "global", &class, "").unwrap_err().contains("already a profile named"));
-        assert_eq!(apply_details(&mut d, 9, "n", "c", "t").unwrap(), None);
+        assert!(apply_details(&mut d, 0, "global", &class, "", SAVE).unwrap_err().contains("already a profile named"));
+        assert_eq!(apply_details(&mut d, 9, "n", "c", "t", SAVE).unwrap(), None);
     }
 
     #[test]
     fn fallthrough_is_stored_only_when_off() {
         let mut d = doc();
-        add_app(&mut d, "a.one").unwrap();
-        let off = set_fallthrough(&mut d, 0, false).unwrap();
+        add_app(&mut d, "a.one", SAVE).unwrap();
+        let off = set_fallthrough(&mut d, 0, false, SAVE).unwrap();
         assert!(off.message.contains("do nothing in this app"));
         assert!(!d.profiles()[0].fallthrough);
-        let on = set_fallthrough(&mut d, 0, true).unwrap();
+        let on = set_fallthrough(&mut d, 0, true, SAVE).unwrap();
         assert!(on.message.contains("do what Global maps them to"));
         assert!(d.profiles()[0].fallthrough);
         assert!(d.profile_list()[0].get("fallthrough").is_none());
-        assert_eq!(set_fallthrough(&mut d, 9, true), None);
+        assert_eq!(set_fallthrough(&mut d, 9, true, SAVE), None);
+    }
+
+    #[test]
+    fn a_tab_that_saves_at_once_is_told_so_instead_of_to_press_save() {
+        let now = Saving::Immediate;
+        let mut d = doc();
+        let added = add_app(&mut d, "org.example.app", now).unwrap();
+        assert_eq!(added.message, "Added a profile for org.example.app. Pick a button to assign it.");
+        let class = d.profiles()[0].class.clone();
+        let updated = apply_details(&mut d, 0, "Example", &class, "", now).unwrap().expect("changed");
+        assert_eq!(updated.message, "Profile updated. Saved.");
+        let off = set_fallthrough(&mut d, 0, false, now).unwrap();
+        assert_eq!(off.message, "Controls this profile leaves unset now do nothing in this app. Saved.");
+        let removed = remove(&mut d, 0, now).unwrap();
+        assert_eq!(removed.message, "Removed the Example profile. Saved.");
+        for message in [added.message, updated.message, off.message, removed.message] {
+            assert!(!message.contains("Not saved") && !message.contains("then Save"), "{message}");
+        }
     }
 
     #[test]
@@ -163,7 +195,7 @@ mod tests {
     fn any_slot_name_round_trips_through_the_shared_grammar() {
         use crate::assign::action::{classify, to_json, ActionKind, Binding};
         let mut d = doc();
-        let idx = add_app(&mut d, "org.example.app").unwrap().select.unwrap();
+        let idx = add_app(&mut d, "org.example.app", SAVE).unwrap().select.unwrap();
         let back = Binding::new(ActionKind::Shortcut, "alt+left");
         let value = to_json(&back).unwrap().expect("a shortcut is stored");
         d.bindings_mut(idx, None).unwrap().set("btn-back", value);

@@ -16,7 +16,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use super::config::{self, ActionKind, Binding, KeypadConfig, Layout, Profiles, SheetOptions, ICON_NONE};
 use super::icons;
 use super::{FirmwareImage, InputEvent, SheetPreview, Status, Validation, Variant};
-use crate::assign::{flow, picker};
+use crate::assign::{flow, picker, Saving};
 use crate::{
     AssignBindingRow, KeypadControl, KeypadIcon, KeypadSheetCell, KeypadSheetLine, KeypadTuning, KeypadVariant, MainWindow,
 };
@@ -1522,7 +1522,7 @@ fn apply_binding(ui: &MainWindow) {
             Ok(note) => {
                 st.dirty = true;
                 st.load_editor();
-                let message = picker::assigned_message(&config::slot_label(&slot), &st.editor, note.as_deref());
+                let message = picker::assigned_message(&config::slot_label(&slot), &st.editor, note.as_deref(), Saving::Manual);
                 st.set_message(message, false);
             }
             Err(e) => st.set_message(e, true),
@@ -2212,7 +2212,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     ui.on_kp_confirm_add_profile(move || {
         let Some(ui) = weak.upgrade() else { return };
         let class = ui.get_kp_new_app().to_string();
-        with(|st| match flow::add_app(&mut st.config, &class) {
+        with(|st| match flow::add_app(&mut st.config, &class, Saving::Manual) {
             Ok(done) => {
                 st.profile = done.select.unwrap_or(st.profile);
                 st.leave_layer();
@@ -2238,7 +2238,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     let weak = ui.as_weak();
     ui.on_kp_remove_profile(move || {
         let Some(ui) = weak.upgrade() else { return };
-        with(|st| match flow::remove(&mut st.config, st.profile) {
+        with(|st| match flow::remove(&mut st.config, st.profile, Saving::Manual) {
             Ok(done) => {
                 st.profile = done.select.unwrap_or(st.profile);
                 st.leave_layer();
@@ -2258,7 +2258,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
         let Some(ui) = weak.upgrade() else { return };
         let (name, class, title) =
             (ui.get_kp_profile_name().to_string(), ui.get_kp_profile_class().to_string(), ui.get_kp_profile_title().to_string());
-        with(|st| match flow::apply_details(&mut st.config, st.profile, &name, &class, &title) {
+        with(|st| match flow::apply_details(&mut st.config, st.profile, &name, &class, &title, Saving::Manual) {
             Ok(Some(done)) => {
                 st.dirty = true;
                 st.set_message(done.message, false);
@@ -2401,7 +2401,7 @@ pub fn install(ui: &MainWindow) -> KeypadTab {
     ui.on_kp_set_fallthrough(move |on| {
         let Some(ui) = weak.upgrade() else { return };
         with(|st| {
-            if let Some(done) = flow::set_fallthrough(&mut st.config, st.profile, on) {
+            if let Some(done) = flow::set_fallthrough(&mut st.config, st.profile, on, Saving::Manual) {
                 st.dirty = true;
                 st.set_message(done.message, false);
             }
