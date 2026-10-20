@@ -1217,9 +1217,40 @@ component KeypadPositionPicker inherits Rectangle {
     }
 }
 
+// A single-line search/filter field whose Escape key empties it. The clear runs
+// the host's own `edited` handler, so the list refreshes exactly as if the text
+// had been typed away. Escape on an empty field is reported through `dismissed`
+// for the host to act on.
+component SearchInput inherits TextInput {
+    callback dismissed();
+
+    // True when `key` was Escape, whether or not there was anything to clear.
+    public function escape-pressed(key: string) -> bool {
+        if key != Key.Escape {
+            return false;
+        }
+        if self.text != "" {
+            self.text = "";
+            self.edited();
+        } else {
+            self.dismissed();
+        }
+        return true;
+    }
+
+    key-pressed(e) => {
+        if self.escape-pressed(e.text) {
+            return accept;
+        }
+        reject
+    }
+}
+
 component KeypadInput inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder;
+    // Search fields set this so Escape empties them and refreshes the results.
+    in property <bool> escape-clears: false;
     callback accepted();
     callback edited(string);
 
@@ -1229,7 +1260,7 @@ component KeypadInput inherits Rectangle {
     border-width: 1px;
     border-color: input.has-focus ? Theme.accent : Theme.bg_lighter;
 
-    input := TextInput {
+    input := SearchInput {
         x: 8px;
         width: parent.width - 16px;
         height: parent.height;
@@ -1240,6 +1271,12 @@ component KeypadInput inherits Rectangle {
         text <=> root.text;
         accepted => { root.accepted(); }
         edited => { root.edited(self.text); }
+        key-pressed(e) => {
+            if root.escape-clears && self.escape-pressed(e.text) {
+                return accept;
+            }
+            reject
+        }
     }
 
     if root.text == "": Text {
@@ -1280,6 +1317,7 @@ component KeypadIconPicker inherits Rectangle {
                 horizontal-stretch: 1;
                 text <=> root.query;
                 placeholder: "Search: volume, play, folder, github";
+                escape-clears: true;
                 edited(t) => { root.search(t); }
             }
             KeypadButton {
@@ -1476,6 +1514,8 @@ export component MainWindow inherits Window {
     in-out property <bool> kb-capturing: false;
     in-out property <int> kb-capture-idx: -1;
     in property <string> kb-capture-combo: "";
+    // Raised to put the keyboard in the filter box; the box lowers it again.
+    in-out property <bool> kb-focus-filter: false;
     property <bool> kb-adding: false;
     in-out property <string> kb-new-desc: "";
     in-out property <string> kb-new-cmd: "";
@@ -1855,6 +1895,12 @@ export component MainWindow inherits Window {
     // whichever tab the user lands on re-reads its config from disk instead
     // of showing stale values captured at startup.
     changed active-tab => {
+        if root.active-tab != 5 {
+            // A filter box on the tab just left is gone; hand the keyboard back
+            // so shortcuts and Escape keep working.
+            root.kb-focus-filter = false;
+            focus-scope.focus();
+        }
         if root.active-tab == 3 { root.disp-tab-entered(); }
         if root.active-tab == 4 { root.power-refresh(); }
         if root.active-tab == 5 { root.kb-load(); }
@@ -1863,6 +1909,29 @@ export component MainWindow inherits Window {
         if root.active-tab == 8 { root.bt-list(); }
         if root.active-tab == 9 { root.xr-refresh(); }
         if root.active-tab == 11 { root.kp-refresh(); }
+    }
+
+    // Escape steps back one layer: the top-most overlay if there is one,
+    // otherwise the window. Search boxes call this too when Escape finds
+    // nothing left to clear.
+    function dismiss-top-layer() {
+        if root.dropdown-open {
+            root.dropdown-open = false;
+        } else if root.dictation-lang-dropdown-open {
+            root.dictation-lang-dropdown-open = false;
+        } else if root.show-help {
+            root.show-help = false;
+        } else if root.dictation-configuring {
+            root.dictation-configuring = false;
+        } else if root.kb-edit-idx >= 0 {
+            root.kb-edit-idx = -1;
+            root.kb-capture-idx = -1;
+            root.kb-capturing = false;
+        } else if root.kb-adding {
+            root.kb-adding = false;
+        } else {
+            root.close();
+        }
     }
 
     // ── Keyboard shortcuts ──
@@ -1897,33 +1966,7 @@ export component MainWindow inherits Window {
                 return accept;
             }
             if e.text == Key.Escape {
-                if root.dropdown-open {
-                    root.dropdown-open = false;
-                    return accept;
-                }
-                if root.dictation-lang-dropdown-open {
-                    root.dictation-lang-dropdown-open = false;
-                    return accept;
-                }
-                if root.show-help {
-                    root.show-help = false;
-                    return accept;
-                }
-                if root.dictation-configuring {
-                    root.dictation-configuring = false;
-                    return accept;
-                }
-                if root.kb-edit-idx >= 0 {
-                    root.kb-edit-idx = -1;
-                    root.kb-capture-idx = -1;
-                    root.kb-capturing = false;
-                    return accept;
-                }
-                if root.kb-adding {
-                    root.kb-adding = false;
-                    return accept;
-                }
-                root.close();
+                root.dismiss-top-layer();
                 return accept;
             }
             if e.modifiers.alt && (e.text == "a" || e.text == "A") && root.active-tab == 1 {
@@ -2101,7 +2144,7 @@ export component MainWindow inherits Window {
                                 vertical-alignment: center;
                             }
 
-                            global-search-input := TextInput {
+                            global-search-input := SearchInput {
                                 font-size: Typography.secondary;
                                 color: Theme.fg;
                                 text <=> root.global-search-text;
@@ -2109,6 +2152,7 @@ export component MainWindow inherits Window {
                                     root.search-selected-index = 0;
                                     root.filter-search(self.text);
                                 }
+                                dismissed => { root.dismiss-top-layer(); }
                                 accepted => {
                                     if root.search-results.length > 0 {
                                         root.active-tab = root.search-results[root.search-selected-index].tab-index;
@@ -2275,6 +2319,8 @@ export component MainWindow inherits Window {
                             root.dropdown-open = false;
                             root.kb-load();
                             focus-scope.focus();
+                            // Land in the filter box, ready to type
+                            root.kb-focus-filter = true;
                         }
                     }
 
@@ -4709,6 +4755,22 @@ export component MainWindow inherits Window {
                 vertical-stretch: 1;
                 clip: true;
 
+                // Serves a focus request raised before this tab exists (it starts
+                // with the tab) and one raised while it is showing. It runs from the
+                // timer list: focusing from `init` would happen while the window is
+                // laying this tab out, which Slint rejects as a binding loop.
+                Timer {
+                    interval: 1ms;
+                    running: root.kb-focus-filter;
+                    triggered => {
+                        if root.kb-focus-filter {
+                            root.kb-focus-filter = false;
+                            kb-filter-input.focus();
+                            kb-filter-input.select-all();
+                        }
+                    }
+                }
+
                 tab5-flick := Flickable {
                     width: parent.width - 6px;
                     height: parent.height;
@@ -4738,7 +4800,7 @@ export component MainWindow inherits Window {
                         border-radius: 4px;
                         background: Theme.panel;
 
-                        kb-filter-input := TextInput {
+                        kb-filter-input := SearchInput {
                             x: 8px;
                             y: 0px;
                             width: parent.width - 16px;
@@ -4749,6 +4811,7 @@ export component MainWindow inherits Window {
                             edited => {
                                 root.kb-filter(self.text, root.kb-selected-section);
                             }
+                            dismissed => { root.dismiss-top-layer(); }
                         }
 
                         Text {
@@ -4832,6 +4895,35 @@ export component MainWindow inherits Window {
                                     spacing: 8px;
                                     height: Typography.row;
 
+                                    // Description
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: entry.description;
+                                        color: Theme.fg;
+                                        font-size: Typography.body;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+
+                                    // Submap tag
+                                    if entry.submap != "": Rectangle {
+                                        width: 60px;
+                                        height: 18px;
+                                        border-radius: 3px;
+                                        background: Theme.warning.transparentize(70%);
+                                        y: 8px;
+
+                                        Text {
+                                            text: entry.submap;
+                                            color: Theme.warning;
+                                            font-size: Typography.caption;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            width: parent.width;
+                                            height: parent.height;
+                                        }
+                                    }
+
                                     // Key combo badge — click to rebind directly
                                     Rectangle {
                                         width: 180px;
@@ -4861,40 +4953,13 @@ export component MainWindow inherits Window {
                                                 root.kb-capture-idx = entry.idx;
                                                 root.kb-capturing = true;
                                                 root.kb-edit-combo(entry.idx);
+                                                // The pressed keys are read by the window's focus scope
+                                                focus-scope.focus();
                                             }
                                             mouse-cursor: pointer;
                                         }
 
                                         y: 5px;
-                                    }
-
-                                    // Description
-                                    Text {
-                                        horizontal-stretch: 1;
-                                        text: entry.description;
-                                        color: Theme.fg;
-                                        font-size: Typography.body;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
-
-                                    // Submap tag
-                                    if entry.submap != "": Rectangle {
-                                        width: 60px;
-                                        height: 18px;
-                                        border-radius: 3px;
-                                        background: Theme.warning.transparentize(70%);
-                                        y: 8px;
-
-                                        Text {
-                                            text: entry.submap;
-                                            color: Theme.warning;
-                                            font-size: Typography.caption;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                            width: parent.width;
-                                            height: parent.height;
-                                        }
                                     }
 
                                     // Edit button (expand for args/delete)
@@ -4933,6 +4998,15 @@ export component MainWindow inherits Window {
                                         spacing: 8px;
                                         height: Typography.compact-control;
 
+                                        Text {
+                                            text: entry.description;
+                                            color: Theme.fg;
+                                            font-size: Typography.body;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+
                                         // Rebind button
                                         Rectangle {
                                             width: 160px;
@@ -4960,18 +5034,11 @@ export component MainWindow inherits Window {
                                                     root.kb-capture-idx = entry.idx;
                                                     root.kb-capturing = true;
                                                     root.kb-edit-combo(entry.idx);
+                                                    // The pressed keys are read by the window's focus scope
+                                                    focus-scope.focus();
                                                 }
                                                 mouse-cursor: pointer;
                                             }
-                                        }
-
-                                        Text {
-                                            text: entry.description;
-                                            color: Theme.fg;
-                                            font-size: Typography.body;
-                                            vertical-alignment: center;
-                                            horizontal-stretch: 1;
-                                            overflow: elide;
                                         }
                                     }
 
@@ -9799,7 +9866,7 @@ export component MainWindow inherits Window {
                             font-weight: 600;
                         }
                         Text {
-                            text: "1-8       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Move workspace 1 here\nEsc      Close overlay / app\n?         Toggle this Help";
+                            text: "1-8       Switch tabs\nCtrl+F  Search settings\nAlt+C   Open layout dropdown\nAlt+A   Add selected layout\nAlt+D   Remove second layout\nAlt+I    Identify monitors\nAlt+R   Refresh monitors\nAlt+P   Move workspace 1 here\nEsc      Clear search / close overlay / app\n?         Toggle this Help";
                             color: Theme.fg;
                             font-size: Typography.body;
                             wrap: word-wrap;
@@ -9922,7 +9989,7 @@ export component MainWindow inherits Window {
                     border-radius: 4px;
                     background: Theme.bg;
 
-                    search-input := TextInput {
+                    search-input := SearchInput {
                         x: 8px;
                         y: 6px;
                         width: parent.width - 16px;
@@ -9934,6 +10001,11 @@ export component MainWindow inherits Window {
                             root.filter-layouts(self.text);
                             root.highlighted-dropdown-index = 0;
                             dropdown-flick.viewport-y = 0;
+                        }
+                        // Escape clears the search first, then closes the list
+                        dismissed => {
+                            root.dropdown-open = false;
+                            focus-scope.focus();
                         }
                         key-pressed(e) => {
                             if e.text == Key.DownArrow {
@@ -9967,9 +10039,7 @@ export component MainWindow inherits Window {
                                 }
                                 return accept;
                             }
-                            if e.text == Key.Escape {
-                                root.dropdown-open = false;
-                                focus-scope.focus();
+                            if self.escape-pressed(e.text) {
                                 return accept;
                             }
                             reject
@@ -10064,7 +10134,7 @@ export component MainWindow inherits Window {
                     border-radius: 4px;
                     background: Theme.bg;
 
-                    dictation-lang-search-input := TextInput {
+                    dictation-lang-search-input := SearchInput {
                         x: 8px;
                         y: 6px;
                         width: parent.width - 16px;
@@ -10076,6 +10146,11 @@ export component MainWindow inherits Window {
                             root.filter-dictation-langs(self.text);
                             root.dictation-lang-highlighted-idx = 0;
                             dict-lang-flick.viewport-y = 0;
+                        }
+                        // Escape clears the search first, then closes the list
+                        dismissed => {
+                            root.dictation-lang-dropdown-open = false;
+                            focus-scope.focus();
                         }
                         key-pressed(e) => {
                             if e.text == Key.DownArrow {
@@ -10108,9 +10183,7 @@ export component MainWindow inherits Window {
                                 }
                                 return accept;
                             }
-                            if e.text == Key.Escape {
-                                root.dictation-lang-dropdown-open = false;
-                                focus-scope.focus();
+                            if self.escape-pressed(e.text) {
                                 return accept;
                             }
                             reject

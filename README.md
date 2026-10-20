@@ -619,6 +619,30 @@ text or making controls unreachable. The Display page also scrolls as a whole.
 Wi-Fi, Bluetooth, and Hints sidebar icons use matching theme-tinted outline
 assets; connection/status glyphs elsewhere keep their existing meanings.
 
+### Keybindings tab and launching Settings
+
+The Keybindings tab lists each binding's function first and its key
+combination second (`Terminal`, `Super+Enter`), and opens with the cursor in
+its **Filter keybindings...** box; leftover text is selected, so typing
+replaces it. Escape in a search box (the global search, the Keybindings filter,
+the keyboard-layout and dictation-language lists, the keypad icon picker)
+clears what was typed and refreshes the results. Pressed again on an empty
+global search or Keybindings filter it steps back one layer: the open list,
+then help or the editor, then the window; in the two dropdown lists it closes
+the list.
+
+`settings --tab <name> [--highlight <setting>]` opens a tab, and
+`settings --tab keybindings` is the launch for a "search the shortcuts" key.
+When Settings is already open the command passes the request to that window
+rather than starting a second one: the window switches to the tab (the
+Keybindings tab also takes the filter focus, even if it is already showing),
+blinks the highlighted setting if one was given, and comes to the foreground.
+Plain `settings` only raises the window. The request travels as a two-line file
+(tab, then highlight; either may be empty) named `settings-deeplink` in
+`$XDG_RUNTIME_DIR`, and the window is raised with Hyprland's Lua
+`hl.dsp.focus` where available and the classic `dispatch focuswindow` otherwise.
+The window animation is unchanged.
+
 ### Keypad cheatsheet theme intensity
 
 Settings' keypad preview follows the active smplOS popup palette, including
