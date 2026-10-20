@@ -1374,6 +1374,189 @@ component KeypadIconPicker inherits Rectangle {
     }
 }
 
+// ── Connections tab (Wi-Fi + Bluetooth) ──────────────────────────────────────
+
+// Radio switch. The knob's side (not only the colour) shows the state, and a
+// disabled switch is flat grey so it never reads as a live control.
+component ConnSwitch inherits Rectangle {
+    in property <bool> on;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: !root.enabled ? Theme.bg_light : root.on ? Theme.accent : Theme.bg_lighter;
+    animate background { duration: 200ms; }
+
+    Rectangle {
+        x: root.on ? parent.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: root.enabled ? white : Theme.fg_dim;
+        animate x { duration: 200ms; easing: ease-in-out; }
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.toggled(!root.on); }
+    }
+}
+
+component ConnSegment inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> active: false;
+    callback clicked();
+
+    horizontal-stretch: 1;
+    height: Typography.compact-control;
+    border-radius: 4px;
+    background: root.active ? Theme.accent.transparentize(70%)
+        : seg-touch.has-hover ? Theme.bg_lighter : transparent;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: root.active ? Theme.accent : Theme.fg_dim;
+                width: 18px;
+                height: 18px;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: root.active ? Theme.fg : Theme.fg_dim;
+            font-size: Typography.body;
+            font-weight: root.active ? 600 : 400;
+            vertical-alignment: center;
+        }
+    }
+
+    seg-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Top of both the Wi-Fi and the Bluetooth section: the airplane master switch
+// (both radios) and the Wi-Fi | Bluetooth switcher. `section` is 7 or 8.
+component ConnectionsHeader inherits VerticalLayout {
+    in property <int> section: 7;
+    in property <bool> airplane-on: false;
+    in property <bool> airplane-available: true;
+    in property <bool> busy: false;
+    in property <string> detail;
+    in property <string> error;
+    in property <bool> highlighted: false;
+    callback set-airplane(bool);
+    callback select-section(int);
+
+    spacing: 12px;
+
+    // ── Airplane Mode card ──
+    Rectangle {
+        border-radius: 6px;
+        background: Theme.panel;
+        border-width: root.highlighted ? 2px : 0px;
+        border-color: root.highlighted ? Theme.accent : transparent;
+        animate border-width { duration: 400ms; easing: ease-in-out; }
+        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    text: "\u{2708}  Airplane Mode";
+                    color: Theme.fg_dim;
+                    font-size: Typography.secondary;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                ConnSwitch {
+                    on: root.airplane-on;
+                    enabled: root.airplane-available && !root.busy;
+                    toggled(want) => { root.set-airplane(want); }
+                }
+            }
+
+            Text {
+                text: root.detail;
+                color: Theme.fg_dim;
+                font-size: Typography.secondary;
+                wrap: word-wrap;
+            }
+
+            if root.error != "": Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: Typography.secondary;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // ── Section switcher ──
+    Rectangle {
+        border-radius: 6px;
+        background: Theme.panel;
+
+        HorizontalLayout {
+            padding: 4px;
+            spacing: 4px;
+
+            ConnSegment {
+                label: "Wi-Fi";
+                icon: @image-url("assets/wifi-outline.svg");
+                active: root.section == 7;
+                clicked => { root.select-section(7); }
+            }
+
+            ConnSegment {
+                label: "Bluetooth";
+                icon: @image-url("assets/bluetooth-outline.svg");
+                active: root.section == 8;
+                clicked => { root.select-section(8); }
+            }
+        }
+    }
+}
+
+// Asks the page to scroll to a deep-link card, once, after layout has settled.
+// The cards are conditional, so they are created while their parent layout is
+// being solved; reading their own `y` from `init` would re-enter that layout.
+component ConnScrollTo {
+    in property <bool> armed;
+    in property <length> card-y;
+    callback reveal(length);
+    private property <bool> done;
+
+    changed armed => { if !root.armed { root.done = false; } }
+
+    Timer {
+        interval: 80ms;
+        running: root.armed && !root.done;
+        triggered => {
+            root.done = true;
+            root.reveal(root.card-y);
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Settings";
     default-font-family: "Noto Sans";
@@ -1548,7 +1731,7 @@ export component MainWindow inherits Window {
     in property <string>     wifi-status: "";
     in property <bool>       wifi-status-is-error: false;
     in property <string>     wifi-current-ssid: "";
-    in property <bool>       wifi-airplane-mode: false;
+    in property <bool>       wifi-radio-on: true;
     in property <bool>       wifi-no-hardware: false;
     in property <image>      wifi-qr-image;
     in-out property <bool>   wifi-qr-visible: false;
@@ -1569,6 +1752,30 @@ export component MainWindow inherits Window {
     in property <bool>       bt-no-hardware: false;
     in property <bool>       bt-discoverable: false;
 
+    // ── Connections tab (Wi-Fi + Bluetooth) properties ──
+    // Airplane Mode is derived from the real radios; the "not available"
+    // notes explain why a section has no controls.
+    in property <bool>       conn-airplane-on: false;
+    in property <bool>       conn-airplane-available: true;
+    in property <string>     conn-airplane-detail: "Turns off Wi-Fi and Bluetooth at once.";
+    in property <bool>       conn-busy: false;
+    in property <string>     conn-error: "";
+    in property <string>     conn-wifi-note: "";
+    in property <string>     conn-bt-note: "";
+    // The section the single "Connections" sidebar entry reopens (7 = Wi-Fi, 8 = Bluetooth).
+    property <int>           conn-section: 7;
+    // Deep-link labels that name the network and device cards. Those cards are
+    // hidden while their radio is off, so the power card blinks in their place.
+    property <bool>          conn-wifi-list-hl: root.highlight-setting == "Wi-Fi"
+        || root.highlight-setting == "Network"
+        || root.highlight-setting == "Connect Wi-Fi"
+        || root.highlight-setting == "Wi-Fi Password"
+        || root.highlight-setting == "QR Code Wi-Fi"
+        || root.highlight-setting == "Share Wi-Fi";
+    property <bool>          conn-bt-device-hl: root.highlight-setting == "Bluetooth Devices"
+        || root.highlight-setting == "Pair Bluetooth"
+        || root.highlight-setting == "Connect Bluetooth"
+        || root.highlight-setting == "Headphones";
     // ── Glasses (XR) tab properties ──
     in property <bool>       xr-glasses-connected: false;  // VITURE USB device present
     in property <bool>       xr-running: false;            // renderer process alive
@@ -1670,7 +1877,9 @@ export component MainWindow inherits Window {
     callback wifi-apply-uri(string);       // connect from a WIFI: URI string
     callback wifi-scan-screenshot();       // grim + zbarimg screen scan
     callback wifi-export-qr(int);          // save QR SVG to ~/Downloads/
-    callback wifi-set-airplane(bool);       // enable/disable airplane mode
+    callback wifi-set-radio(bool);         // Wi-Fi radio on/off
+    callback conn-set-airplane(bool);      // airplane mode: both radios
+    callback conn-refresh();               // re-read both radio states
     callback wifi-list-saved();            // refresh wifi-saved-networks
     callback wifi-forget-by-ssid(string);  // delete saved profile by SSID
     callback wifi-forget-all();            // delete every saved 802-11-wireless profile
@@ -1911,6 +2120,7 @@ export component MainWindow inherits Window {
         if root.active-tab == 4 { root.power-refresh(); }
         if root.active-tab == 5 { root.kb-load(); }
         if root.active-tab == 6 { root.tb-refresh(); }
+        if root.active-tab == 7 || root.active-tab == 8 { root.conn-section = root.active-tab; root.conn-refresh(); }
         if root.active-tab == 7 { root.wifi-list(); }
         if root.active-tab == 8 { root.bt-list(); }
         if root.active-tab == 9 { root.xr-refresh(); }
@@ -2342,27 +2552,14 @@ export component MainWindow inherits Window {
                     }
 
                     TabButton {
-                        label: "Wi-Fi";
+                        label: "Connections";
                         use-outline-icon: true;
-                        outline-icon: @image-url("assets/wifi-outline.svg");
-                        active: root.active-tab == 7;
+                        outline-icon: @image-url("assets/connections-outline.svg");
+                        active: root.active-tab == 7 || root.active-tab == 8;
                         clicked => {
-                            root.active-tab = 7;
+                            root.active-tab = root.conn-section;
                             root.dropdown-open = false;
-                            root.wifi-list();
-                            focus-scope.focus();
-                        }
-                    }
-
-                    TabButton {
-                        label: "Bluetooth";
-                        use-outline-icon: true;
-                        outline-icon: @image-url("assets/bluetooth-outline.svg");
-                        active: root.active-tab == 8;
-                        clicked => {
-                            root.active-tab = 8;
-                            root.dropdown-open = false;
-                            root.bt-list();
+                            if root.conn-section == 7 { root.wifi-list(); } else { root.bt-list(); }
                             focus-scope.focus();
                         }
                     }
@@ -6357,6 +6554,22 @@ export component MainWindow inherits Window {
                     padding-right: 4px;
                     spacing: 12px;
 
+                    ConnectionsHeader {
+                        section: root.active-tab;
+                        airplane-on: root.conn-airplane-on;
+                        airplane-available: root.conn-airplane-available;
+                        busy: root.conn-busy;
+                        detail: root.conn-airplane-detail;
+                        error: root.conn-error;
+                        highlighted: root.highlight-setting == "Airplane Mode" && root.highlight-blink-on;
+                        set-airplane(want) => { root.conn-set-airplane(want); }
+                        select-section(s) => {
+                            root.active-tab = s;
+                            root.dropdown-open = false;
+                            focus-scope.focus();
+                        }
+                    }
+
                     // ── Header: title + scan button ──
                     HorizontalLayout {
                         height: Typography.compact-control;
@@ -6385,11 +6598,12 @@ export component MainWindow inherits Window {
                             width: 60px;
                             height: Typography.compact-control;
                             border-radius: 4px;
-                            background: wifi-scan-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+                            private property <bool> _can-scan: root.wifi-radio-on && !root.wifi-no-hardware;
+                            background: wifi-scan-touch.has-hover && self._can-scan ? Theme.bg_lighter : Theme.bg_light;
 
                             Text {
                                 text: root.wifi-scanning ? "Scanning…" : "Scan";
-                                color: root.wifi-scanning ? Theme.fg_dim : Theme.fg;
+                                color: !parent._can-scan ? Theme.fg_dim : root.wifi-scanning ? Theme.fg_dim : Theme.fg;
                                 font-size: Typography.secondary;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -6397,21 +6611,24 @@ export component MainWindow inherits Window {
 
                             wifi-scan-touch := TouchArea {
                                 clicked => {
-                                    if !root.wifi-scanning {
+                                    if !root.wifi-scanning && parent._can-scan {
                                         root.wifi-scan();
                                     }
                                 }
-                                mouse-cursor: root.wifi-scanning ? default : pointer;
+                                mouse-cursor: root.wifi-scanning || !parent._can-scan ? default : pointer;
                             }
                         }
                     }
 
-                    // ── Airplane Mode card ──
-                    Rectangle {
+                    // ── Wi-Fi power card ──
+                    if !root.wifi-no-hardware: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
-                        border-width: root.highlight-setting == "Airplane Mode" && root.highlight-blink-on ? 2px : 0px;
-                        border-color: root.highlight-setting == "Airplane Mode" && root.highlight-blink-on ? Theme.accent : transparent;
+                        private property <bool> _lit: root.highlight-blink-on
+                            && (root.highlight-setting == "WiFi" || root.highlight-setting == "Wireless"
+                                || (!root.wifi-radio-on && root.conn-wifi-list-hl));
+                        border-width: _lit ? 2px : 0px;
+                        border-color: _lit ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
                         animate border-color { duration: 400ms; easing: ease-in-out; }
 
@@ -6423,7 +6640,7 @@ export component MainWindow inherits Window {
                                 spacing: 8px;
 
                                 Text {
-                                    text: "\u{2708}  Airplane Mode";
+                                    text: "\u{1F4F6}  Wi-Fi Power";
                                     color: Theme.fg_dim;
                                     font-size: Typography.secondary;
                                     font-weight: 600;
@@ -6431,68 +6648,87 @@ export component MainWindow inherits Window {
                                     horizontal-stretch: 1;
                                 }
 
-                                // Toggle pill
-                                Rectangle {
-                                    width: 40px;
-                                    height: 22px;
-                                    border-radius: 11px;
-                                    background: root.wifi-airplane-mode ? Theme.accent : Theme.bg_lighter;
-                                    animate background { duration: 200ms; }
-
-                                    Rectangle {
-                                        x: root.wifi-airplane-mode ? parent.width - self.width - 3px : 3px;
-                                        y: 3px;
-                                        width: 16px;
-                                        height: 16px;
-                                        border-radius: 8px;
-                                        background: white;
-                                        animate x { duration: 200ms; easing: ease-in-out; }
-                                    }
-
-                                    TouchArea {
-                                        clicked => {
-                                            root.wifi-set-airplane(!root.wifi-airplane-mode);
-                                        }
-                                        mouse-cursor: pointer;
-                                    }
+                                ConnSwitch {
+                                    on: root.wifi-radio-on;
+                                    enabled: !root.conn-busy;
+                                    toggled(want) => { root.wifi-set-radio(want); }
                                 }
                             }
 
-                            if root.wifi-airplane-mode: Text {
-                                text: "Wi-Fi is disabled. Turn off airplane mode to see networks.";
+                            if !root.wifi-radio-on: Text {
+                                text: "Wi-Fi is off. Turn it on to see and join networks.";
                                 color: Theme.fg_dim;
                                 font-size: Typography.secondary;
                             }
                         }
                     }
 
-                    // ── No hardware warning ──
+                    // ── Not available (no adapter, or NetworkManager not running) ──
                     if root.wifi-no-hardware: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
-                        height: 48px;
 
-                        HorizontalLayout {
+                        VerticalLayout {
                             padding: 12px;
                             spacing: 8px;
 
                             Text {
-                                text: "\u{26A0}  No Wi-Fi adapter detected";
-                                color: #f38ba8;
-                                font-size: Typography.body;
-                                vertical-alignment: center;
+                                text: "Wi-Fi is not available";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+
+                            Text {
+                                text: root.conn-wifi-note;
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                alignment: start;
+
+                                Rectangle {
+                                    width: 110px;
+                                    height: Typography.compact-control;
+                                    border-radius: 4px;
+                                    background: wifi-recheck-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+
+                                    Text {
+                                        text: "Check again";
+                                        color: Theme.fg;
+                                        font-size: Typography.secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    wifi-recheck-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.conn-refresh(); }
+                                    }
+                                }
                             }
                         }
                     }
 
                     // ── Network list card ──
-                    if !root.wifi-airplane-mode && !root.wifi-no-hardware && root.wifi-selected-idx == -1: Rectangle {
+                    // Also the landing card for the connect / password / QR-share deep links:
+                    // those actions start from a network picked here.
+                    if root.wifi-radio-on && !root.wifi-no-hardware && root.wifi-selected-idx == -1: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
-                        border-width: root.highlight-setting == "Wi-Fi" && root.highlight-blink-on ? 2px : 0px;
-                        border-color: root.highlight-setting == "Wi-Fi" && root.highlight-blink-on ? Theme.accent : transparent;
+                        private property <bool> _match: root.conn-wifi-list-hl;
+                        border-width: _match && root.highlight-blink-on ? 2px : 0px;
+                        border-color: _match && root.highlight-blink-on ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
                         animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        ConnScrollTo {
+                            armed: parent._match;
+                            card-y: parent.y;
+                            reveal(top) => { tab7-flick.viewport-y = -max(0px, top - 20px); }
+                        }
 
                         VerticalLayout {
                             padding: 12px;
@@ -6987,9 +7223,20 @@ export component MainWindow inherits Window {
                     }
 
                     // ── Connect via URI card ──
-                    if !root.wifi-airplane-mode && !root.wifi-no-hardware: Rectangle {
+                    if root.wifi-radio-on && !root.wifi-no-hardware: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
+                        private property <bool> _match: root.highlight-setting == "Scan QR";
+                        border-width: _match && root.highlight-blink-on ? 2px : 0px;
+                        border-color: _match && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        ConnScrollTo {
+                            armed: parent._match;
+                            card-y: parent.y;
+                            reveal(top) => { tab7-flick.viewport-y = -max(0px, top - 20px); }
+                        }
 
                         VerticalLayout {
                             padding: 12px;
@@ -7241,6 +7488,22 @@ export component MainWindow inherits Window {
                     padding-right: 4px;
                     spacing: 12px;
 
+                    ConnectionsHeader {
+                        section: root.active-tab;
+                        airplane-on: root.conn-airplane-on;
+                        airplane-available: root.conn-airplane-available;
+                        busy: root.conn-busy;
+                        detail: root.conn-airplane-detail;
+                        error: root.conn-error;
+                        highlighted: root.highlight-setting == "Airplane Mode" && root.highlight-blink-on;
+                        set-airplane(want) => { root.conn-set-airplane(want); }
+                        select-section(s) => {
+                            root.active-tab = s;
+                            root.dropdown-open = false;
+                            focus-scope.focus();
+                        }
+                    }
+
                     // ── Header: title + scan button ──
                     HorizontalLayout {
                         height: Typography.compact-control;
@@ -7269,11 +7532,12 @@ export component MainWindow inherits Window {
                             width: 60px;
                             height: Typography.compact-control;
                             border-radius: 4px;
-                            background: bt-scan-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+                            private property <bool> _can-scan: root.bt-powered && !root.bt-no-hardware;
+                            background: bt-scan-touch.has-hover && self._can-scan ? Theme.bg_lighter : Theme.bg_light;
 
                             Text {
                                 text: root.bt-scanning ? "Scanning…" : "Scan";
-                                color: root.bt-scanning ? Theme.fg_dim : Theme.fg;
+                                color: !parent._can-scan ? Theme.fg_dim : root.bt-scanning ? Theme.fg_dim : Theme.fg;
                                 font-size: Typography.secondary;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -7281,21 +7545,24 @@ export component MainWindow inherits Window {
 
                             bt-scan-touch := TouchArea {
                                 clicked => {
-                                    if !root.bt-scanning {
+                                    if !root.bt-scanning && parent._can-scan {
                                         root.bt-scan();
                                     }
                                 }
-                                mouse-cursor: root.bt-scanning ? default : pointer;
+                                mouse-cursor: root.bt-scanning || !parent._can-scan ? default : pointer;
                             }
                         }
                     }
 
                     // ── Power toggle card ──
-                    Rectangle {
+                    if !root.bt-no-hardware: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
-                        border-width: root.highlight-setting == "Bluetooth" && root.highlight-blink-on ? 2px : 0px;
-                        border-color: root.highlight-setting == "Bluetooth" && root.highlight-blink-on ? Theme.accent : transparent;
+                        private property <bool> _lit: root.highlight-blink-on
+                            && (root.highlight-setting == "Bluetooth"
+                                || (!root.bt-powered && (root.conn-bt-device-hl || root.highlight-setting == "Discoverable")));
+                        border-width: _lit ? 2px : 0px;
+                        border-color: _lit ? Theme.accent : transparent;
                         animate border-width { duration: 400ms; easing: ease-in-out; }
                         animate border-color { duration: 400ms; easing: ease-in-out; }
 
@@ -7315,30 +7582,10 @@ export component MainWindow inherits Window {
                                     horizontal-stretch: 1;
                                 }
 
-                                // Toggle pill
-                                Rectangle {
-                                    width: 40px;
-                                    height: 22px;
-                                    border-radius: 11px;
-                                    background: root.bt-powered ? Theme.accent : Theme.bg_lighter;
-                                    animate background { duration: 200ms; }
-
-                                    Rectangle {
-                                        x: root.bt-powered ? parent.width - self.width - 3px : 3px;
-                                        y: 3px;
-                                        width: 16px;
-                                        height: 16px;
-                                        border-radius: 8px;
-                                        background: white;
-                                        animate x { duration: 200ms; easing: ease-in-out; }
-                                    }
-
-                                    TouchArea {
-                                        clicked => {
-                                            root.bt-set-powered(!root.bt-powered);
-                                        }
-                                        mouse-cursor: pointer;
-                                    }
+                                ConnSwitch {
+                                    on: root.bt-powered;
+                                    enabled: !root.conn-busy;
+                                    toggled(want) => { root.bt-set-powered(want); }
                                 }
                             }
 
@@ -7350,21 +7597,51 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // ── No hardware warning ──
+                    // ── Not available (no adapter, or the Bluetooth service is not running) ──
                     if root.bt-no-hardware: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
-                        height: 48px;
 
-                        HorizontalLayout {
+                        VerticalLayout {
                             padding: 12px;
                             spacing: 8px;
 
                             Text {
-                                text: "\u{26A0}  No Bluetooth adapter detected";
-                                color: #f38ba8;
-                                font-size: Typography.body;
-                                vertical-alignment: center;
+                                text: "Bluetooth is not available";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+
+                            Text {
+                                text: root.conn-bt-note;
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                alignment: start;
+
+                                Rectangle {
+                                    width: 110px;
+                                    height: Typography.compact-control;
+                                    border-radius: 4px;
+                                    background: bt-recheck-touch.has-hover ? Theme.bg_lighter : Theme.bg_light;
+
+                                    Text {
+                                        text: "Check again";
+                                        color: Theme.fg;
+                                        font-size: Typography.secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    bt-recheck-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.conn-refresh(); }
+                                    }
+                                }
                             }
                         }
                     }
@@ -7373,6 +7650,17 @@ export component MainWindow inherits Window {
                     if root.bt-powered && !root.bt-no-hardware: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
+                        private property <bool> _match: root.highlight-setting == "Discoverable";
+                        border-width: _match && root.highlight-blink-on ? 2px : 0px;
+                        border-color: _match && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        ConnScrollTo {
+                            armed: parent._match;
+                            card-y: parent.y;
+                            reveal(top) => { tab8-flick.viewport-y = -max(0px, top - 20px); }
+                        }
 
                         VerticalLayout {
                             padding: 12px;
@@ -7426,9 +7714,21 @@ export component MainWindow inherits Window {
                     }
 
                     // ── Device list card ──
+                    // Also the landing card for the pair / connect / headphones deep links.
                     if root.bt-powered && !root.bt-no-hardware: Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
+                        private property <bool> _match: root.conn-bt-device-hl;
+                        border-width: _match && root.highlight-blink-on ? 2px : 0px;
+                        border-color: _match && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                        ConnScrollTo {
+                            armed: parent._match;
+                            card-y: parent.y;
+                            reveal(top) => { tab8-flick.viewport-y = -max(0px, top - 20px); }
+                        }
 
                         VerticalLayout {
                             padding: 12px;
@@ -7472,9 +7772,12 @@ export component MainWindow inherits Window {
                                         spacing: 8px;
                                         alignment: start;
 
-                                        // Device icon
+                                        // Device icon. Keep the explicit color: a Text without
+                                        // one makes Slint read the system color scheme, which
+                                        // aborts this app (no Tokio runtime on the UI thread).
                                         Text {
                                             text: dev.icon;
+                                            color: Theme.fg;
                                             font-size: Typography.heading;
                                             vertical-alignment: center;
                                         }

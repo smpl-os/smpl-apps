@@ -18,7 +18,36 @@ All notable changes to smpl-apps are documented here.
   text and the firmware's CC BY-SA 3.0 notice); release checks verify its
   firmware checksums and its upload like the other assets.
 
+- **settings: one Airplane Mode for Wi-Fi and Bluetooth.** Airplane Mode used
+  to appear only on the Wi-Fi page and only switched Wi-Fi. It now sits at the
+  top of the new Connections tab and acts on both radios: turning it on
+  remembers which radios were on and switches them all off, turning it off
+  brings those radios back. The switch always shows the real radio states, so
+  it cannot go stale: it is on exactly when every radio that exists is off.
+  The memory is kept in `$XDG_STATE_HOME/smplos/settings/airplane-mode.json`
+  so it survives a restart. Each section has its own radio switch, including a
+  Bluetooth power switch that reports a rfkill block instead of silently
+  staying off. Every switch is confirmed by reading the radio back. A machine
+  without Wi-Fi, or without a Bluetooth adapter, shows a "not available" card
+  with **Check again** for that section instead of an error.
+
 ### Changed
+
+- **settings: Wi-Fi and Bluetooth are sections of one Connections tab.** The
+  two sidebar entries became one; a Wi-Fi | Bluetooth switcher under the
+  Airplane Mode card picks the section, and every existing control moved over
+  unchanged. `settings --tab connections` is the new canonical deep link.
+  `--tab wifi` and `--tab bluetooth` still work, and the `--highlight` label
+  picks the section: WiFi, Wireless, Connect Wi-Fi, Wi-Fi Password, QR Code
+  Wi-Fi and the other Wi-Fi labels open Wi-Fi; Bluetooth Devices, Pair
+  Bluetooth, Connect Bluetooth, Headphones and Discoverable open Bluetooth;
+  Airplane Mode stays in the section that was asked for. The same section is
+  chosen when Settings is already open: a second `settings --tab wifi
+  --highlight Headphones` takes the running window to Bluetooth, as it does on
+  a cold start. The settings search
+  index lists Wi-Fi and Bluetooth entries under Connections, and
+  `--export-index` emits `--tab connections` for them. The radio state is read
+  with `LC_ALL=C`, so it is parsed correctly in any locale.
 
 - **app-center: make the OS updater lifecycle explicit.** Reap the owned
   launcher without blocking the UI and show launch/wait failures in the
@@ -216,6 +245,22 @@ All notable changes to smpl-apps are documented here.
   the tab hands the keyboard back to the window. Rows now read the function
   first and the key combination second (`Terminal`, `Super+Enter`), in the
   expanded row too; the key column keeps its fixed width, so it still lines up.
+
+- **settings: the Bluetooth device list no longer aborts Settings.** Each
+  device row's icon was a `Text` with no explicit color. Slint then reads the
+  system color scheme, and its XDG watcher panics on this build (zbus is built
+  for Tokio, and the UI thread has no runtime), so Settings exited as soon as
+  the device list had a row. The icon now has an explicit color. In the new
+  Connections tab the **Scan** button is also greyed out and ignored while its
+  radio is off or missing, instead of asking the stack to scan a radio that is
+  not there.
+
+- **settings: every `--highlight` handed to an open window blinks for the full
+  five seconds.** The blink ran on a repeating timer that was never stopped, so
+  after the first blink in a window the leftover timers kept clearing each
+  later one within half a second: a second `settings --tab wifi --highlight
+  "Connect Wi-Fi"` flashed once and was gone. All blinks now share one timer
+  that each launch restarts and the last tick stops.
 
 - **settings: Never on "Lock screen after" saves again, and a refused edit
   says why.** Since v0.8.23, pressing Never showed "Couldn't save this

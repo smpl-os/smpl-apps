@@ -1,4 +1,5 @@
 mod bluetooth;
+mod connections;
 mod dictation;
 mod display;
 mod hints;
@@ -35,33 +36,41 @@ pub(crate) use debug_log;
 
 // ── Highlight blink animation ────────────────────────────────────────────────
 
+thread_local! {
+    /// The one timer that animates the highlight. Every blink restarts it, so an
+    /// earlier blink never fires again and clears the highlight of a newer one
+    /// (each launch handed to a running window starts a blink of its own).
+    static BLINK_TIMER: slint::Timer = slint::Timer::default();
+}
+
 /// Blink the highlight border 5 times with smooth fade-in/fade-out.
-/// Total duration: 5 blinks × 1s = 5 seconds, then clears.
+/// Total duration: 5 blinks × 1s = 5 seconds, then clears and stops.
 fn start_highlight_blink(ui: &MainWindow) {
     let ui_weak = ui.as_weak();
     let blink_count = Rc::new(RefCell::new(0u32));
-    let timer = slint::Timer::default();
     // Start with blink on
     ui.set_highlight_blink_on(true);
     let blink_count2 = blink_count.clone();
-    timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(500),
-        move || {
-            let Some(ui) = ui_weak.upgrade() else { return; };
-            let mut count = blink_count2.borrow_mut();
-            *count += 1;
-            if *count >= 10 {
-                // 5 full on/off cycles done — clear
-                ui.set_highlight_blink_on(false);
-                ui.set_highlight_setting(slint::SharedString::default());
-                return;
-            }
-            // Toggle blink
-            ui.set_highlight_blink_on((*count).is_multiple_of(2));
-        },
-    );
-    std::mem::forget(timer);
+    BLINK_TIMER.with(|timer| {
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(500),
+            move || {
+                let Some(ui) = ui_weak.upgrade() else { return; };
+                let mut count = blink_count2.borrow_mut();
+                *count += 1;
+                if *count >= 10 {
+                    // 5 full on/off cycles done — clear and stop
+                    ui.set_highlight_blink_on(false);
+                    ui.set_highlight_setting(slint::SharedString::default());
+                    BLINK_TIMER.with(|timer| timer.stop());
+                    return;
+                }
+                // Toggle blink
+                ui.set_highlight_blink_on((*count).is_multiple_of(2));
+            },
+        );
+    });
 }
 
 // ── Settings search index export ─────────────────────────────────────────────
@@ -130,24 +139,24 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("Date Format", "taskbar", 6),
         ("24-hour", "taskbar", 6),
         ("AM PM", "taskbar", 6),
-        // Wi-Fi
-        ("Wi-Fi", "wifi", 7),
-        ("WiFi", "wifi", 7),
-        ("Wireless", "wifi", 7),
-        ("Connect Wi-Fi", "wifi", 7),
-        ("Wi-Fi Password", "wifi", 7),
-        ("Network", "wifi", 7),
-        ("Airplane Mode", "wifi", 7),
-        ("QR Code Wi-Fi", "wifi", 7),
-        ("Share Wi-Fi", "wifi", 7),
-        ("Scan QR", "wifi", 7),
-        // Bluetooth
-        ("Bluetooth", "bluetooth", 8),
-        ("Bluetooth Devices", "bluetooth", 8),
-        ("Pair Bluetooth", "bluetooth", 8),
-        ("Connect Bluetooth", "bluetooth", 8),
-        ("Headphones", "bluetooth", 8),
-        ("Discoverable", "bluetooth", 8),
+        // Connections: Wi-Fi (section 7) and Bluetooth (section 8) share one page
+        ("Connections", "connections", 7),
+        ("Wi-Fi", "connections", 7),
+        ("WiFi", "connections", 7),
+        ("Wireless", "connections", 7),
+        ("Connect Wi-Fi", "connections", 7),
+        ("Wi-Fi Password", "connections", 7),
+        ("Network", "connections", 7),
+        ("Airplane Mode", "connections", 7),
+        ("QR Code Wi-Fi", "connections", 7),
+        ("Share Wi-Fi", "connections", 7),
+        ("Scan QR", "connections", 7),
+        ("Bluetooth", "connections", 8),
+        ("Bluetooth Devices", "connections", 8),
+        ("Pair Bluetooth", "connections", 8),
+        ("Connect Bluetooth", "connections", 8),
+        ("Headphones", "connections", 8),
+        ("Discoverable", "connections", 8),
         // Glasses (XR)
         ("Glasses", "glasses", 9),
         ("XR Glasses", "glasses", 9),
@@ -623,6 +632,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "power" => 4,
                         "keybindings" => 5,
                         "taskbar" => 6,
+                        "connections" => 7,
                         "wifi" => 7,
                         "bluetooth" => 8,
                         "keypad" => 11,
@@ -1595,32 +1605,9 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
 
-    // ── Wi-Fi radio init (background) ──────────────────────────────────────
-    // Query the current radio state so the airplane toggle reflects reality.
-    {
-        let ui_weak = ui.as_weak();
-        std::thread::spawn(move || {
-            let state = wifi::nmcli::get_wifi_radio_state();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    match state {
-                        Ok(Some(enabled)) => {
-                            ui.set_wifi_airplane_mode(!enabled);
-                            ui.set_wifi_no_hardware(false);
-                        }
-                        Ok(None) => {
-                            ui.set_wifi_no_hardware(true);
-                            ui.set_wifi_airplane_mode(false);
-                        }
-                        Err(e) => {
-                            eprintln!("[settings] wifi radio state check failed: {}", e);
-                            ui.set_wifi_no_hardware(false);
-                        }
-                    }
-                }
-            });
-        });
-    }
+    // ── Connections: radio switches and airplane mode ───────────────────────
+    // Reads the Wi-Fi and Bluetooth radios, so the switches reflect reality.
+    let _connections_timer = connections::ui::install(&ui);
 
     // List networks (background — no active re-probe but still runs nmcli)
     {
@@ -1763,51 +1750,6 @@ fn main() -> Result<(), slint::PlatformError> {
                     });
                 });
             }
-        });
-    }
-
-    // Airplane mode toggle
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_set_airplane(move |enabled| {
-            let ui_weak2 = ui_weak.clone();
-            std::thread::spawn(move || {
-                let result = wifi::set_airplane_mode(enabled);
-                // Pre-fetch network data on the worker thread
-                let (nets, curr) = if result.is_ok() && !enabled {
-                    let n = wifi::list_networks(false);
-                    let c = wifi::get_current_ssid().unwrap_or_default();
-                    (n, c)
-                } else {
-                    (vec![], String::new())
-                };
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak2.upgrade() {
-                        match result {
-                            Ok(_) => {
-                                ui.set_wifi_airplane_mode(enabled);
-                                let status = if enabled {
-                                    "Airplane mode on — Wi-Fi radio disabled"
-                                } else {
-                                    "Airplane mode off — Wi-Fi radio enabled"
-                                };
-                                wifi_set_status(&ui, status);
-                                let entries: Vec<WifiEntry> =
-                                    nets.iter().map(to_wifi_entry).collect();
-                                ui.set_wifi_networks(slint::ModelRc::from(
-                                    Rc::new(slint::VecModel::from(entries)),
-                                ));
-                                ui.set_wifi_current_ssid(curr.into());
-                            }
-                            Err(e) => {
-                                wifi_set_status(&ui, &format!("Airplane mode error: {}", e));
-                                // Revert the toggle on error
-                                ui.set_wifi_airplane_mode(!enabled);
-                            }
-                        }
-                    }
-                });
-            });
         });
     }
 
@@ -2266,23 +2208,14 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // ── Bluetooth init (background) ──────────────────────────────────────
+    // The power state is read by the Connections page; this loads the rest of the
+    // adapter state.
     {
         let ui_weak = ui.as_weak();
         std::thread::spawn(move || {
-            let powered = bluetooth::is_powered();
             let adapter = bluetooth::get_adapter_info();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_weak.upgrade() {
-                    match powered {
-                        Ok(p) => {
-                            ui.set_bt_powered(p);
-                            ui.set_bt_no_hardware(false);
-                        }
-                        Err(_) => {
-                            ui.set_bt_no_hardware(true);
-                            ui.set_bt_powered(false);
-                        }
-                    }
                     if let Ok((_name, _addr, _powered, discoverable, _pairable)) = adapter {
                         ui.set_bt_discoverable(discoverable);
                     }
@@ -2530,48 +2463,6 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // bt-set-powered
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_bt_set_powered(move |on| {
-            let ui_weak2 = ui_weak.clone();
-            std::thread::spawn(move || {
-                let result = bluetooth::set_powered(on);
-                let devices = if result.is_ok() && on {
-                    bluetooth::list_devices().unwrap_or_default()
-                } else {
-                    vec![]
-                };
-                let entries: Vec<BtDevice> = devices.iter().map(to_bt_device).collect();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak2.upgrade() {
-                        match result {
-                            Ok(_) => {
-                                ui.set_bt_powered(on);
-                                let status = if on {
-                                    "Bluetooth on"
-                                } else {
-                                    "Bluetooth off"
-                                };
-                                bt_set_status(&ui, status);
-                                ui.set_bt_devices(slint::ModelRc::from(
-                                    Rc::new(slint::VecModel::from(entries)),
-                                ));
-                            }
-                            Err(e) => {
-                                bt_set_status(
-                                    &ui,
-                                    &format!("Failed to change power: {}", e),
-                                );
-                                ui.set_bt_powered(!on); // revert
-                            }
-                        }
-                    }
-                });
-            });
-        });
-    }
-
     // bt-set-discoverable
     {
         let ui_weak = ui.as_weak();
@@ -2695,8 +2586,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "power" => "Power",
                 "keybindings" => "Keybindings",
                 "taskbar" => "Taskbar",
-                "wifi" => "Wi-Fi",
-                "bluetooth" => "Bluetooth",
+                "connections" => "Connections",
                 "glasses" => "Glasses",
                 "keypad" => "Keypad",
                 _ => key,

@@ -616,8 +616,48 @@ two-line choices have additional room. The original 500×350 minimum and
 900×560 preferred window sizes are unchanged. The sidebar scrolls at short
 heights; narrow tabs expose a horizontal scroll thumb instead of shrinking
 text or making controls unreachable. The Display page also scrolls as a whole.
-Wi-Fi, Bluetooth, and Hints sidebar icons use matching theme-tinted outline
-assets; connection/status glyphs elsewhere keep their existing meanings.
+Connections and Hints sidebar icons use matching theme-tinted outline assets,
+as do the Wi-Fi and Bluetooth icons in the Connections section switcher;
+connection/status glyphs elsewhere keep their existing meanings.
+
+### Connections settings
+
+Wi-Fi and Bluetooth share one **Connections** tab in Settings. Airplane Mode
+is at the top and covers both radios; below it a Wi-Fi | Bluetooth switcher
+opens the section for each one, and each section has its own radio switch.
+Everything the two tabs offered before (networks, saved networks, QR sharing,
+passwords, pairing, connecting, discoverable) is unchanged inside its section.
+
+Airplane Mode is a master switch over the two radio switches, and it always
+shows the real radios: it is on exactly when every radio that exists is off,
+so turning a radio on by hand turns it off, and switching the last radio off by
+hand turns it on. Turning it on remembers which radios were on and switches all
+of them off; turning it off brings those radios back. A radio that was already
+off stays off, and with nothing remembered every radio that exists comes back.
+The memory is kept in `$XDG_STATE_HOME/smplos/settings/airplane-mode.json`
+(`~/.local/state/...` by default), so restarting Settings while Airplane Mode
+is on loses nothing. Every switch is confirmed by reading the radio's state
+back: a rfkill or hardware block is reported instead of leaving a switch that
+lies. A machine without Wi-Fi, or without a Bluetooth adapter, shows a neutral
+"not available" card for that section, with **Check again**, instead of an
+error.
+
+Deep links: `settings --tab connections` opens the page. `--tab wifi` and
+`--tab bluetooth` still work, and the `--highlight` label picks the section:
+
+| Section | `--highlight` labels |
+|---------|----------------------|
+| Wi-Fi | Wi-Fi, WiFi, Wireless, Connect Wi-Fi, Wi-Fi Password, Network, QR Code Wi-Fi, Share Wi-Fi, Scan QR |
+| Bluetooth | Bluetooth, Bluetooth Devices, Pair Bluetooth, Connect Bluetooth, Headphones, Discoverable |
+| Either (stays in the requested section) | Airplane Mode, Connections |
+
+A launch lands in the same section whether Settings was closed or already open:
+the section is chosen where the request is applied, so `settings --tab wifi
+--highlight Headphones` takes a running window to the Bluetooth section, just as
+it opens there from a cold start.
+
+The settings search index lists all of these under **Connections**
+(`--export-index` writes `settings --tab connections --highlight "<label>"`).
 
 ### Keybindings tab and launching Settings
 
