@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "id": "mmo-12",
+  "name": "MMO mouse (12-button side grid)",
+  "description": "Preview of a mouse with a 12-button thumb grid, like a Razer Naga. The real button list and codes come from capturing the buttons; many of these mice report the grid as keyboard keys.",
+  "preview": true,
+  "match": [
+    { "vendor": "1532", "name": "Naga" }
+  ],
+  "aspect": 1.6,
+  "actions": ["inherit", "disabled", "shortcut", "media", "mouse", "command"],
+  "panels": [
+    { "label": "Side grid", "box": [3, 4, 35, 84] },
+    { "label": "", "box": [42, 2, 56, 96] }
+  ],
+  "inputs": [
+    { "id": "grid-1",  "label": "Grid button 1",  "short": "1",  "box": [4.5, 12.5, 9.5, 16] },
+    { "id": "grid-2",  "label": "Grid button 2",  "short": "2",  "box": [15.75, 12.5, 9.5, 16] },
+    { "id": "grid-3",  "label": "Grid button 3",  "short": "3",  "box": [27, 12.5, 9.5, 16] },
+    { "id": "grid-4",  "label": "Grid button 4",  "short": "4",  "box": [4.5, 31, 9.5, 16] },
+    { "id": "grid-5",  "label": "Grid button 5",  "short": "5",  "box": [15.75, 31, 9.5, 16] },
+    { "id": "grid-6",  "label": "Grid button 6",  "short": "6",  "box": [27, 31, 9.5, 16] },
+    { "id": "grid-7",  "label": "Grid button 7",  "short": "7",  "box": [4.5, 49.5, 9.5, 16] },
+    { "id": "grid-8",  "label": "Grid button 8",  "short": "8",  "box": [15.75, 49.5, 9.5, 16] },
+    { "id": "grid-9",  "label": "Grid button 9",  "short": "9",  "box": [27, 49.5, 9.5, 16] },
+    { "id": "grid-10", "label": "Grid button 10", "short": "10", "box": [4.5, 68, 9.5, 16] },
+    { "id": "grid-11", "label": "Grid button 11", "short": "11", "box": [15.75, 68, 9.5, 16] },
+    { "id": "grid-12", "label": "Grid button 12", "short": "12", "box": [27, 68, 9.5, 16] },
+    {
+      "id": "btn-left", "label": "Left button", "short": "Left",
+      "box": [45, 5, 24.5, 24], "actions": ["inherit", "mouse"],
+      "code": "BTN_LEFT", "source": "pointer",
+      "note": "Only \"Mouse button\" can be assigned here (to swap left and right, for example), so a mistake can't lock you out of clicking."
+    },
+    {
+      "id": "btn-right", "label": "Right button", "short": "Right",
+      "box": [71.5, 5, 24.5, 24], "actions": ["inherit", "mouse"],
+      "code": "BTN_RIGHT", "source": "pointer",
+      "note": "Only \"Mouse button\" can be assigned here, so a mistake can't lock you out of clicking."
+    },
+    {
+      "id": "wheel-tilt-left", "label": "Wheel tilt left", "short": "Tilt left",
+      "box": [45, 31.5, 16, 11]
+    },
+    {
+      "id": "btn-middle", "label": "Wheel click", "short": "Wheel",
+      "box": [62.5, 31.5, 16, 11],
+      "code": "BTN_MIDDLE", "source": "pointer"
+    },
+    {
+      "id": "wheel-tilt-right", "label": "Wheel tilt right", "short": "Tilt right",
+      "box": [80, 31.5, 16, 11]
+    },
+    {
+      "id": "btn-forward", "label": "Forward button", "short": "Forward",
+      "box": [45, 60, 24, 12],
+      "code": "BTN_EXTRA", "source": "pointer"
+    },
+    {
+      "id": "btn-back", "label": "Back button", "short": "Back",
+      "box": [45, 74, 24, 12],
+      "code": "BTN_SIDE", "source": "pointer"
+    },
+    {
+      "id": "btn-dpi", "label": "DPI button", "short": "DPI",
+      "box": [72, 60, 24, 12],
+      "note": "Many mice handle this button inside the mouse and send nothing the computer can see. Capturing it will tell."
+    }
+  ]
+}

@@ -103,7 +103,7 @@ pub fn parse_provider(systeminfo: &str) -> Result<Provider, String> {
 }
 
 /// A Lua string literal.
-fn lua_string(text: &str) -> String {
+pub(crate) fn lua_string(text: &str) -> String {
     let mut literal = String::from("\"");
     for c in text.chars() {
         match c {

@@ -18,7 +18,6 @@ pub enum Saving {
     /// Edits wait for the tab's Save button (Keypad).
     Manual,
     /// Every edit is written as soon as it is made (Mouse).
-    #[allow(dead_code)] // the Mouse tab is the first to use it
     Immediate,
 }
 

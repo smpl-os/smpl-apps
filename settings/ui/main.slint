@@ -178,6 +178,32 @@ struct AssignBindingRow {
     warning: bool,
 }
 
+/// One button on the picture of a device (Mouse tab). The box is in percent
+/// of the picture.
+struct DeviceButton {
+    id: string,
+    caption: string,
+    summary: string,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    selected: bool,
+    assigned: bool,
+    // The profile leaves it unset and Global's action applies.
+    inherited: bool,
+}
+
+/// A named area of the device picture that groups buttons ("Side grid").
+/// An unnamed one draws the body of the device.
+struct DevicePanel {
+    label: string,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+}
+
 // Outline keypad icons (Tabler Icons subset, MIT), embedded; see
 // assets/TABLER-ICONS-LICENSE.txt.
 global KeypadIcons {
@@ -1861,6 +1887,90 @@ component AssignBindingList inherits Rectangle {
     }
 }
 
+// A picture of a device with its buttons where they are on it, to pick one
+// from. `aspect` is the picture's width over its height; boxes are in percent
+// of the picture, so it is drawn at any size up to `max-picture-width` and
+// centred. `clicked` says which button was chosen.
+component DeviceCanvas inherits Rectangle {
+    in property <[DeviceButton]> buttons;
+    in property <[DevicePanel]> panels;
+    in property <float> aspect: 1.0;
+    in property <length> max-picture-width: 520px;
+    callback clicked(string);
+
+    height: picture.height;
+
+    picture := Rectangle {
+        x: (root.width - self.width) / 2;
+        width: min(root.width, root.max-picture-width);
+        height: self.width / max(root.aspect, 0.5);
+
+        for panel in root.panels: Rectangle {
+            x: picture.width * panel.x / 100;
+            y: picture.height * panel.y / 100;
+            width: picture.width * panel.w / 100;
+            height: picture.height * panel.h / 100;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.bg_lighter;
+            background: Theme.bg.transparentize(60%);
+
+            if panel.label != "": Text {
+                x: 10px;
+                y: 4px;
+                text: panel.label;
+                color: Theme.fg_dim;
+                font-size: Typography.caption;
+            }
+        }
+
+        for button in root.buttons: Rectangle {
+            x: picture.width * button.x / 100;
+            y: picture.height * button.y / 100;
+            width: picture.width * button.w / 100;
+            height: picture.height * button.h / 100;
+            border-radius: 6px;
+            border-width: button.selected ? 2px : 1px;
+            border-color: button.selected ? Theme.accent
+                : button.assigned ? Theme.accent.transparentize(50%)
+                : Theme.bg_lighter;
+            background: button.selected ? Theme.accent.transparentize(75%)
+                : button-touch.has-hover ? Theme.hover
+                : button.assigned ? Theme.accent.transparentize(88%)
+                : Theme.bg;
+            clip: true;
+
+            VerticalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                alignment: center;
+                spacing: 1px;
+                Text {
+                    text: button.caption;
+                    color: button.selected ? Theme.fg : Theme.fg_dim;
+                    font-size: Typography.caption;
+                    font-weight: button.selected ? 600 : 400;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+                if button.summary != "": Text {
+                    text: button.summary;
+                    color: button.inherited ? Theme.fg_dim : Theme.fg;
+                    font-size: Typography.caption;
+                    font-italic: button.inherited;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            button-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.clicked(button.id); }
+            }
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Settings";
     default-font-family: "Noto Sans";
@@ -2405,6 +2515,74 @@ export component MainWindow inherits Window {
     callback kp-set-sheet-context(int);
     callback kp-show-sheet();
 
+    // ── Mouse tab properties ──
+    // Pointer card.
+    in property <float> ms-sensitivity: 0;
+    in property <string> ms-sensitivity-text;
+    in property <[string]> ms-accel-names;
+    in property <int> ms-accel-index: 0;
+    in property <bool> ms-natural-scroll: false;
+    in property <float> ms-scroll-factor: 1;
+    in property <string> ms-scroll-factor-text;
+    in property <bool> ms-pointer-at-defaults: true;
+    in property <string> ms-pointer-status;
+    in property <bool> ms-pointer-status-is-error: false;
+    in property <string> ms-pointer-path;
+    // Buttons card: the device and its picture.
+    in property <[string]> ms-device-names;
+    in property <int> ms-device-index: 0;
+    in property <string> ms-device-note;
+    in property <float> ms-aspect: 1.0;
+    in property <[DevicePanel]> ms-panels;
+    in property <[DeviceButton]> ms-buttons;
+    // Assignment card: the profile and action editors shared with Keypad.
+    in property <[string]> ms-profile-names;
+    in property <int> ms-profile-index: 0;
+    in property <bool> ms-profile-global: true;
+    in property <bool> ms-profile-fallthrough: true;
+    in property <bool> ms-adding-profile: false;
+    in property <[string]> ms-app-classes;
+    in-out property <string> ms-new-app;
+    in-out property <string> ms-profile-name;
+    in-out property <string> ms-profile-class;
+    in-out property <string> ms-profile-title;
+    in property <bool> ms-editing: false;
+    in property <string> ms-selected-title;
+    in property <string> ms-selected-note;
+    in property <[string]> ms-action-names;
+    in property <int> ms-action-index: 0;
+    in-out property <string> ms-action-text;
+    in property <[string]> ms-choice-names;
+    in property <int> ms-choice-index: 0;
+    in property <int> ms-editor-mode: 0;
+    in property <string> ms-editor-hint;
+    in property <string> ms-advanced-text;
+    in property <string> ms-bindings-title;
+    in property <[AssignBindingRow]> ms-binding-rows;
+    in property <string> ms-status;
+    in property <bool> ms-status-is-error: false;
+    in property <string> ms-config-path;
+    callback ms-entered();
+    callback ms-refresh();
+    callback ms-set-sensitivity(float);
+    callback ms-set-accel(int);
+    callback ms-set-natural-scroll(bool);
+    callback ms-set-scroll-factor(float);
+    callback ms-reset-pointer();
+    callback ms-select-device(int);
+    callback ms-select-button(string);
+    callback ms-select-profile(int);
+    callback ms-start-add-profile();
+    callback ms-pick-app(int);
+    callback ms-confirm-add-profile();
+    callback ms-cancel-add-profile();
+    callback ms-remove-profile();
+    callback ms-apply-profile-details();
+    callback ms-set-fallthrough(bool);
+    callback ms-select-action(int);
+    callback ms-select-choice(int);
+    callback ms-apply-binding();
+
     // Search
     callback filter-search(string);
 
@@ -2429,6 +2607,7 @@ export component MainWindow inherits Window {
         if root.active-tab == 8 { root.bt-list(); }
         if root.active-tab == 9 { root.xr-refresh(); }
         if root.active-tab == 11 { root.kp-refresh(); }
+        if root.active-tab == 12 { root.ms-entered(); }
     }
 
     // Escape steps back one layer: the top-most overlay if there is one,
@@ -2792,6 +2971,17 @@ export component MainWindow inherits Window {
                         active: root.active-tab == 11;
                         clicked => {
                             root.active-tab = 11;
+                            root.dropdown-open = false;
+                            focus-scope.focus();
+                        }
+                    }
+
+                    TabButton {
+                        label: "Mouse";
+                        icon: "\u{1F5B1}";
+                        active: root.active-tab == 12;
+                        clicked => {
+                            root.active-tab = 12;
                             root.dropdown-open = false;
                             focus-scope.focus();
                         }
@@ -10076,6 +10266,425 @@ export component MainWindow inherits Window {
                     viewport-height: tab11-flick.viewport-height;
                     viewport-y: tab11-flick.viewport-y;
                     visible-height: tab11-flick.height;
+                }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // MOUSE TAB (pointer speed and scrolling; button assignments)
+            // ══════════════════════════════════════════════════════════════
+
+            if root.active-tab == 12: Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                clip: true;
+
+                tab12-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: max(self.width, tab12-content.min-width);
+                    viewport-height: tab12-content.preferred-height;
+
+                tab12-content := VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 10px;
+                    padding-bottom: 14px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Mouse";
+                            color: Theme.fg;
+                            font-size: Typography.heading;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        KeypadButton { text: "Refresh"; clicked => { root.ms-refresh(); } }
+                    }
+
+                    // ── What works now and what is a preview ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+                        border-width: 1px;
+                        border-color: Theme.info;
+
+                        HorizontalLayout {
+                            padding: 10px;
+                            spacing: 10px;
+                            Text {
+                                text: "\u{2139}";
+                                color: Theme.info;
+                                font-size: Typography.heading;
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 4px;
+                                Text {
+                                    text: "Pointer speed and scrolling are applied as you change them and saved to ~/.config/hypr/pointer.conf. They come back at login only when your Hyprland setup loads that file.";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "Button assignments are a preview: they are saved for each mouse, but nothing acts on a button press yet, and the buttons drawn are examples until the real ones are captured.";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Pointer: speed, acceleration, scrolling ──
+                    ms-pointer-card := Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+                        private property <string> _hl: root.highlight-setting;
+                        private property <bool> highlighted: _hl == "Pointer Speed" || _hl == "Cursor Speed" || _hl == "Mouse Sensitivity" || _hl == "Mouse Acceleration" || _hl == "Scroll Direction" || _hl == "Natural Scrolling" || _hl == "Scroll Speed";
+                        // On a cold start the page is laid out before the window has its final size, so the card moves for a moment: keep it in view until it stops.
+                        private property <bool> settling: false;
+                        border-width: highlighted && root.highlight-blink-on ? 2px : 0px;
+                        border-color: highlighted && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+                        init => { if highlighted { settling = true; tab12-flick.viewport-y = -max(0px, self.y - 20px); } }
+                        changed _hl => { if highlighted { tab12-flick.viewport-y = -max(0px, self.y - 20px); } }
+                        changed y => { if settling && highlighted { tab12-flick.viewport-y = -max(0px, self.y - 20px); } }
+                        Timer {
+                            interval: 2s;
+                            running: ms-pointer-card.settling;
+                            triggered => { ms-pointer-card.settling = false; }
+                        }
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 10px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Pointer";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                KeypadButton {
+                                    text: "Reset to defaults";
+                                    enabled: !root.ms-pointer-at-defaults;
+                                    clicked => { root.ms-reset-pointer(); }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Speed";
+                                    width: 120px;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ThemeSlider {
+                                    horizontal-stretch: 1;
+                                    minimum: -1.0;
+                                    maximum: 1.0;
+                                    step: 0.05;
+                                    value: root.ms-sensitivity;
+                                    changed(v) => { root.ms-set-sensitivity(v); }
+                                }
+                                Text {
+                                    text: root.ms-sensitivity-text;
+                                    width: 110px;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Acceleration";
+                                    width: 120px;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    horizontal-stretch: 1;
+                                    model: root.ms-accel-names;
+                                    current-index: root.ms-accel-index;
+                                    selected(i) => { root.ms-set-accel(i); }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Scroll direction";
+                                    width: 120px;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                for direction[idx] in ["Traditional", "Natural"]: Rectangle {
+                                    height: Typography.compact-control;
+                                    horizontal-stretch: 1;
+                                    border-radius: 4px;
+                                    background: (idx == 1) == root.ms-natural-scroll ? Theme.accent
+                                        : direction-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                    Text {
+                                        text: direction;
+                                        color: (idx == 1) == root.ms-natural-scroll ? Theme.bg : Theme.fg;
+                                        font-size: Typography.secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: parent.width;
+                                        height: parent.height;
+                                    }
+                                    direction-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.ms-set-natural-scroll(idx == 1); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                Rectangle { width: 128px; }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: "Traditional: rolling the wheel away from you scrolls up. Natural: it scrolls down, as if you were dragging the page.";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.caption;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Scroll speed";
+                                    width: 120px;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ThemeSlider {
+                                    horizontal-stretch: 1;
+                                    minimum: 0.25;
+                                    maximum: 4.0;
+                                    step: 0.05;
+                                    value: root.ms-scroll-factor;
+                                    changed(v) => { root.ms-set-scroll-factor(v); }
+                                }
+                                Text {
+                                    text: root.ms-scroll-factor-text;
+                                    width: 110px;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            if root.ms-pointer-status != "": Text {
+                                text: root.ms-pointer-status;
+                                color: root.ms-pointer-status-is-error ? Theme.danger : Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // ── Buttons: which mouse, and its picture ──
+                    ms-buttons-card := Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+                        private property <string> _hl: root.highlight-setting;
+                        private property <bool> highlighted: _hl == "Mouse Buttons" || _hl == "Mouse Button Mapping" || _hl == "MMO Mouse" || _hl == "Razer Naga" || _hl == "Redragon Mouse";
+                        // Same cold-start settling as the Pointer card.
+                        private property <bool> settling: false;
+                        border-width: highlighted && root.highlight-blink-on ? 2px : 0px;
+                        border-color: highlighted && root.highlight-blink-on ? Theme.accent : transparent;
+                        animate border-width { duration: 400ms; easing: ease-in-out; }
+                        animate border-color { duration: 400ms; easing: ease-in-out; }
+                        init => { if highlighted { settling = true; tab12-flick.viewport-y = -max(0px, self.y - 20px); } }
+                        changed _hl => { if highlighted { tab12-flick.viewport-y = -max(0px, self.y - 20px); } }
+                        changed y => { if settling && highlighted { tab12-flick.viewport-y = -max(0px, self.y - 20px); } }
+                        Timer {
+                            interval: 2s;
+                            running: ms-buttons-card.settling;
+                            triggered => { ms-buttons-card.settling = false; }
+                        }
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Buttons";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Mouse";
+                                    width: 120px;
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    vertical-alignment: center;
+                                }
+                                ResDropdown {
+                                    horizontal-stretch: 1;
+                                    model: root.ms-device-names;
+                                    current-index: root.ms-device-index;
+                                    selected(i) => { root.ms-select-device(i); }
+                                }
+                            }
+
+                            if root.ms-device-note != "": Text {
+                                text: root.ms-device-note;
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
+                            }
+
+                            DeviceCanvas {
+                                buttons: root.ms-buttons;
+                                panels: root.ms-panels;
+                                aspect: root.ms-aspect;
+                                clicked(id) => { root.ms-select-button(id); }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                KeypadButton { text: "Press a button to identify it"; enabled: false; }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: "Not available yet: it needs the button backend. Pick a button on the picture meanwhile.";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.caption;
+                                    wrap: word-wrap;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Assignment: profile and action of the selected button ──
+                    Rectangle {
+                        border-radius: 6px;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Assignment";
+                                color: Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                font-weight: 600;
+                            }
+
+                            AssignProfileEditor {
+                                profile-names: root.ms-profile-names;
+                                profile-index: root.ms-profile-index;
+                                is-global: root.ms-profile-global;
+                                adding: root.ms-adding-profile;
+                                app-classes: root.ms-app-classes;
+                                fallthrough: root.ms-profile-fallthrough;
+                                name-placeholder: "Shown in the profile list";
+                                fallthrough-text: "Buttons this profile leaves unset do what Global maps them to";
+                                new-app <=> root.ms-new-app;
+                                profile-name <=> root.ms-profile-name;
+                                window-class <=> root.ms-profile-class;
+                                window-title <=> root.ms-profile-title;
+                                select-profile(i) => { root.ms-select-profile(i); }
+                                start-add => { root.ms-start-add-profile(); }
+                                remove => { root.ms-remove-profile(); }
+                                pick-app(i) => { root.ms-pick-app(i); }
+                                confirm-add => { root.ms-confirm-add-profile(); }
+                                cancel-add => { root.ms-cancel-add-profile(); }
+                                apply-details => { root.ms-apply-profile-details(); }
+                                set-fallthrough(on) => { root.ms-set-fallthrough(on); }
+                            }
+
+                            Text {
+                                text: root.ms-selected-title;
+                                color: Theme.fg;
+                                font-size: Typography.body;
+                                font-weight: 600;
+                            }
+                            if root.ms-selected-note != "": Text {
+                                text: root.ms-selected-note;
+                                color: Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
+                            }
+
+                            AssignActionEditor {
+                                mode: root.ms-editor-mode;
+                                locked: !root.ms-editing;
+                                action-names: root.ms-action-names;
+                                action-index: root.ms-action-index;
+                                action-text <=> root.ms-action-text;
+                                choice-names: root.ms-choice-names;
+                                choice-index: root.ms-choice-index;
+                                advanced-text: root.ms-advanced-text;
+                                hint: root.ms-editor-hint;
+                                needs-enabled: false;
+                                apply-text: "Apply to button";
+                                select-action(i) => { root.ms-select-action(i); }
+                                select-choice(i) => { root.ms-select-choice(i); }
+                                apply => { root.ms-apply-binding(); }
+                            }
+
+                            if root.ms-status != "": Text {
+                                text: root.ms-status;
+                                color: root.ms-status-is-error ? Theme.danger : Theme.fg_dim;
+                                font-size: Typography.secondary;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // ── What the selected profile assigns ──
+                    AssignBindingList {
+                        title: root.ms-bindings-title;
+                        empty-text: "No button is assigned in this profile yet.";
+                        rows: root.ms-binding-rows;
+                        selected(slot) => { root.ms-select-button(slot); }
+                    }
+
+                    Text {
+                        text: "Assignments: " + root.ms-config-path + "\nPointer options: " + root.ms-pointer-path;
+                        color: Theme.fg_dim;
+                        font-size: Typography.caption;
+                        wrap: word-wrap;
+                    }
+                }
+                }
+
+                HorizontalScrollIndicator {
+                    y: parent.height - self.height;
+                    width: parent.width - 10px;
+                    viewport-width: tab12-flick.viewport-width;
+                    viewport-x <=> tab12-flick.viewport-x;
+                    visible-width: tab12-flick.width;
+                }
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    height: parent.height;
+                    viewport-height: tab12-flick.viewport-height;
+                    viewport-y: tab12-flick.viewport-y;
+                    visible-height: tab12-flick.height;
                 }
             }
 

@@ -31,6 +31,20 @@ All notable changes to smpl-apps are documented here.
   without Wi-Fi, or without a Bluetooth adapter, shows a "not available" card
   with **Check again** for that section instead of an error.
 
+- **settings: Mouse tab.** Pointer speed (-1 to 1), acceleration profile
+  (system default, flat, adaptive), scroll direction (traditional or natural)
+  and scroll speed (0.25x to 4x). Each change is saved at once to
+  `~/.config/hypr/pointer.conf` and applied to the running Hyprland
+  (`hyprctl eval` under the Lua provider, `hyprctl keyword` under hyprlang);
+  saving and applying report separately. Until the OS loads that file at
+  login, the options apply live only. The tab also has a button-assignment
+  area with global and per-app profiles for every mouse, saved in
+  `~/.config/smplos/mouse.json`. Mice are device profiles in data
+  (`settings/src/mouse/devices/*.json`); a generic mouse and a 12-button
+  thumb-grid MMO mouse ship as previews. Nothing acts on the assignments yet,
+  because the button capture and remap backend does not exist. Open it with
+  `settings --tab mouse`.
+
 ### Changed
 
 - **settings: Wi-Fi and Bluetooth are sections of one Connections tab.** The
@@ -48,6 +62,12 @@ All notable changes to smpl-apps are documented here.
   index lists Wi-Fi and Bluetooth entries under Connections, and
   `--export-index` emits `--tab connections` for them. The radio state is read
   with `LC_ALL=C`, so it is parsed correctly in any locale.
+
+- **settings: the Keypad and Mouse tabs share one assignment editor.** The
+  profile list, the action picker and the binding rows moved out of the Keypad
+  tab into `settings/src/assign/` and shared Slint components
+  (`AssignProfileEditor`, `AssignActionEditor`, `AssignBindingList`). The
+  Keypad tab looks and behaves as before.
 
 - **app-center: make the OS updater lifecycle explicit.** Reap the owned
   launcher without blocking the UI and show launch/wait failures in the

@@ -116,7 +116,7 @@ fn sidebar_uses_theme_tinted_outline_assets_only_for_requested_icons() {
 #[test]
 fn every_tab_and_sidebar_remain_scrollable_at_minimum_window_size() {
     assert!(UI.contains("sidebar-flick := Flickable"));
-    for tab in 0..=11 {
+    for tab in 0..=12 {
         assert!(UI.contains(&format!("tab{tab}-flick := Flickable")));
         assert!(UI.contains(&format!("viewport-x <=> tab{tab}-flick.viewport-x")));
         assert!(
@@ -404,13 +404,7 @@ fn dictation_says_when_the_model_is_missing_and_how_to_get_it() {
 
 #[test]
 fn keypad_tab_is_wired_and_flashes_only_as_a_dry_run_by_default() {
-    let keypad = UI
-        .split("// KEYPAD TAB")
-        .nth(1)
-        .unwrap()
-        .split("// ABOUT TAB")
-        .next()
-        .unwrap();
+    let keypad = keypad_page();
     for needle in [
         "clicked(id) => { root.kp-select-control(id); }",
         "clicked => { root.kp-save(); }",
@@ -438,7 +432,7 @@ fn keypad_tab_is_wired_and_flashes_only_as_a_dry_run_by_default() {
 }
 
 fn keypad_page() -> &'static str {
-    UI.split("// KEYPAD TAB").nth(1).unwrap().split("// ABOUT TAB").next().unwrap()
+    UI.split("// KEYPAD TAB").nth(1).unwrap().split("// MOUSE TAB").next().unwrap()
 }
 
 // The source of one top-level component, up to the next top-level component.
@@ -475,6 +469,7 @@ fn assert_uses_shared_assignment_components(page: &str, tab: &str) {
 #[test]
 fn assignment_rows_are_shared_components_not_copies() {
     assert_uses_shared_assignment_components(keypad_page(), "Keypad");
+    assert_uses_shared_assignment_components(mouse_page(), "Mouse");
     let profile = component_source("AssignProfileEditor");
     for row in ["text: \"Profile\";", "text: \"Window class\";", "text: \"Window title\";", "text: \"Add app\";"] {
         assert!(profile.contains(row), "AssignProfileEditor: {row}");
@@ -759,4 +754,270 @@ fn keypad_theme_intensity_contract_covers_quantization_and_theme_relative_alpha(
             }
         }
     }
+}
+
+// ── Mouse tab ───────────────────────────────────────────────────────────────
+
+/// `source` with comments and the insides of string literals blanked out. It
+/// is as long as `source`, so offsets into one index the other.
+fn masked(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    out[i] = b' ';
+                    i += 1;
+                }
+                if bytes[i] != b'\n' {
+                    out[i] = b' ';
+                }
+                i += 1;
+            }
+            i += 1;
+        } else if bytes[i..].starts_with(b"//") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
+            }
+        } else if bytes[i..].starts_with(b"/*") {
+            while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                if bytes[i] != b'\n' {
+                    out[i] = b' ';
+                }
+                i += 1;
+            }
+            for blank in out.iter_mut().skip(i).take(2) {
+                *blank = b' ';
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("blanking whole literals and comments keeps the text valid")
+}
+
+/// From the `{` that ends `opener` to its matching `}`.
+fn braced_block(source: &'static str, opener: &str) -> &'static str {
+    let start = source.find(opener).unwrap_or_else(|| panic!("no `{opener}`"));
+    let open = start + opener.rfind('{').expect("the opener ends at its brace");
+    let code = masked(source);
+    let mut depth = 0usize;
+    for (offset, byte) in code.as_bytes()[open..].iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[open..=open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{opener}` is never closed")
+}
+
+fn mouse_page() -> &'static str {
+    braced_block(UI, "if root.active-tab == 12: Rectangle {")
+}
+
+/// The `Text` and `TextInput` elements in `source` that set no `color` of
+/// their own. Without one Slint reads the desktop colour scheme over D-Bus;
+/// that watcher panics on the UI thread and Settings exits.
+fn uncolored_texts(source: &str) -> Vec<String> {
+    let code = masked(source);
+    let bytes = code.as_bytes();
+    let in_name = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
+    let mut found = Vec::new();
+    for name in ["Text", "TextInput"] {
+        let mut from = 0;
+        while let Some(at) = code[from..].find(name) {
+            let start = from + at;
+            from = start + name.len();
+            if start > 0 && in_name(bytes[start - 1]) {
+                continue;
+            }
+            let Some(open) = code[from..].find(|c: char| !c.is_whitespace()).map(|n| from + n) else {
+                continue;
+            };
+            if bytes[open] != b'{' {
+                continue;
+            }
+            let mut depth = 0usize;
+            let mut colored = false;
+            for i in open..bytes.len() {
+                match bytes[i] {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    b'c' if depth == 1 && bytes[i..].starts_with(b"color") && !in_name(bytes[i - 1]) => {
+                        let after = code[i + "color".len()..].trim_start();
+                        colored |= after.starts_with(':');
+                    }
+                    _ => {}
+                }
+            }
+            if !colored {
+                let snippet: String = source[start..].chars().take(70).collect();
+                found.push(snippet.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn the_text_color_check_sees_what_it_should() {
+    assert!(uncolored_texts(r#"Text { text: "a"; color: Theme.fg; }"#).is_empty());
+    assert!(uncolored_texts("TextInput { text <=> x; color : Theme.fg; }").is_empty());
+    assert!(uncolored_texts("if x: Text\n{ color: red; }").is_empty());
+    assert_eq!(uncolored_texts("if x: Text { font-size: 12px; }").len(), 1);
+    assert_eq!(uncolored_texts("TextInput { text <=> x; }").len(), 1);
+    // A colour of a child, of another property, in a comment or in a string is not its own.
+    assert_eq!(uncolored_texts("Text { Rectangle { color: red; } }").len(), 1);
+    assert_eq!(uncolored_texts("Text { border-color: red; }").len(), 1);
+    assert_eq!(uncolored_texts("Text { // color: red;\n }").len(), 1);
+    assert_eq!(uncolored_texts("Text { /* color: red; */ }").len(), 1);
+    assert_eq!(uncolored_texts("Text { text: \"color: red;\"; }").len(), 1);
+    // Other names, and Text in a string or comment, are not elements.
+    assert!(uncolored_texts("KeypadText { }  MyText { }  Texture { }  Text").is_empty());
+    assert!(uncolored_texts("// Text { }\nlet s: \"Text { }\";").is_empty());
+}
+
+#[test]
+fn texts_in_the_mouse_tab_and_the_shared_assignment_components_set_a_color() {
+    for (name, source) in [
+        ("the Mouse page", mouse_page()),
+        ("AssignProfileEditor", component_source("AssignProfileEditor")),
+        ("AssignActionEditor", component_source("AssignActionEditor")),
+        ("AssignBindingList", component_source("AssignBindingList")),
+        ("DeviceCanvas", component_source("DeviceCanvas")),
+    ] {
+        assert!(source.contains("Text {"), "{name} has no Text to check");
+        let missing = uncolored_texts(source);
+        assert!(missing.is_empty(), "{name}: Text without a color: {missing:#?}");
+    }
+}
+
+#[test]
+fn mouse_tab_is_wired_into_the_sidebar_command_line_and_search() {
+    let main = include_str!("main.rs");
+    assert!(main.contains("\"mouse\" => 12,"));
+    assert!(main.contains("\"mouse\" => \"Mouse\","));
+    assert!(main.contains("(\"Mouse\", \"mouse\", 12)"));
+    assert!(main.contains("mouse::ui::install(&ui)"));
+    assert!(include_str!("mouse/ui.rs").contains("const MOUSE_TAB: i32 = 12;"));
+    let button: String = UI.split("label: \"Mouse\";").nth(1).unwrap().chars().take(300).collect();
+    assert!(button.contains("active: root.active-tab == 12;"), "{button}");
+    assert!(button.contains("root.active-tab = 12;"), "{button}");
+    assert!(UI.contains("if root.active-tab == 12 { root.ms-entered(); }"));
+}
+
+// The launcher and the search box send these as `--highlight`; each must
+// light up a card, and each card label must be searchable.
+const MOUSE_HIGHLIGHTS: [&str; 12] = [
+    "Pointer Speed",
+    "Cursor Speed",
+    "Mouse Sensitivity",
+    "Mouse Acceleration",
+    "Scroll Direction",
+    "Natural Scrolling",
+    "Scroll Speed",
+    "Mouse Buttons",
+    "Mouse Button Mapping",
+    "MMO Mouse",
+    "Razer Naga",
+    "Redragon Mouse",
+];
+
+#[test]
+fn mouse_search_labels_and_highlights_agree() {
+    use std::collections::BTreeSet;
+    let expected: BTreeSet<&str> = MOUSE_HIGHLIGHTS.into_iter().collect();
+    let searchable: BTreeSet<&str> = include_str!("main.rs")
+        .lines()
+        .filter_map(|line| {
+            let (label, _) = line.trim().strip_prefix("(\"")?.split_once("\", \"mouse\", 12)")?;
+            Some(label).filter(|label| *label != "Mouse")
+        })
+        .collect();
+    assert_eq!(searchable, expected, "search entries for the tab");
+    let highlighted: BTreeSet<&str> = mouse_page()
+        .split("_hl == \"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert_eq!(highlighted, expected, "labels the page highlights");
+}
+
+// A cold start lays the page out before the window has its final size, so a
+// highlighted card has to be scrolled to again until its position stops moving.
+#[test]
+fn mouse_highlight_cards_stay_in_view_while_a_cold_start_settles() {
+    let page = mouse_page();
+    let scroll = "tab12-flick.viewport-y = -max(0px, self.y - 20px);";
+    for hook in [
+        format!("init => {{ if highlighted {{ settling = true; {scroll} }} }}"),
+        format!("changed _hl => {{ if highlighted {{ {scroll} }} }}"),
+        format!("changed y => {{ if settling && highlighted {{ {scroll} }} }}"),
+    ] {
+        assert_eq!(page.matches(hook.as_str()).count(), 2, "one per highlight card: {hook}");
+    }
+    for card in ["ms-pointer-card", "ms-buttons-card"] {
+        for needle in [
+            format!("{card} := Rectangle {{"),
+            format!("running: {card}.settling;"),
+            format!("triggered => {{ {card}.settling = false; }}"),
+        ] {
+            assert!(page.contains(&needle), "missing: {needle}");
+        }
+    }
+}
+
+#[test]
+fn mouse_page_shows_the_model_and_only_reports_changes() {
+    let page = mouse_page();
+    for needle in [
+        "value: root.ms-sensitivity;",
+        "changed(v) => { root.ms-set-sensitivity(v); }",
+        "value: root.ms-scroll-factor;",
+        "changed(v) => { root.ms-set-scroll-factor(v); }",
+        "current-index: root.ms-accel-index;",
+        "selected(i) => { root.ms-set-accel(i); }",
+        "current-index: root.ms-device-index;",
+        "selected(i) => { root.ms-select-device(i); }",
+        "root.ms-set-natural-scroll(idx == 1);",
+        "enabled: !root.ms-pointer-at-defaults;",
+        "clicked => { root.ms-refresh(); }",
+        "clicked(id) => { root.ms-select-button(id); }",
+        "selected(slot) => { root.ms-select-button(slot); }",
+        "locked: !root.ms-editing;",
+        "apply => { root.ms-apply-binding(); }",
+    ] {
+        assert!(page.contains(needle), "missing: {needle}");
+    }
+    // Controlled inputs: nothing here stores a value the model owns. (Typed
+    // text is bound two ways on purpose, with `<=>`.)
+    let code = masked(page);
+    let mut from = 0;
+    while let Some(at) = code[from..].find("root.ms-") {
+        let start = from + at + "root.".len();
+        let end = code[start..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .map_or(code.len(), |n| start + n);
+        let after = code[end..].trim_start();
+        assert!(!after.starts_with('=') || after.starts_with("=="), "the page assigns {}", &code[start..end]);
+        from = end;
+    }
+    // Nothing on the page is a made-up control: capture is not available yet.
+    assert!(page.contains("KeypadButton { text: \"Press a button to identify it\"; enabled: false; }"));
 }

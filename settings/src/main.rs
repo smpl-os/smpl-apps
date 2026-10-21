@@ -8,6 +8,7 @@ mod instance;
 mod keybindings;
 mod keypad;
 mod layouts;
+mod mouse;
 mod power;
 mod taskbar;
 mod wifi;
@@ -100,6 +101,20 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("Keypad App Profiles", "keypad", 11),
         ("Kdenlive Control Surface", "keypad", 11),
         ("Keypad Firmware", "keypad", 11),
+        // Mouse
+        ("Mouse", "mouse", 12),
+        ("Pointer Speed", "mouse", 12),
+        ("Cursor Speed", "mouse", 12),
+        ("Mouse Sensitivity", "mouse", 12),
+        ("Mouse Acceleration", "mouse", 12),
+        ("Scroll Direction", "mouse", 12),
+        ("Natural Scrolling", "mouse", 12),
+        ("Scroll Speed", "mouse", 12),
+        ("Mouse Buttons", "mouse", 12),
+        ("Mouse Button Mapping", "mouse", 12),
+        ("MMO Mouse", "mouse", 12),
+        ("Razer Naga", "mouse", 12),
+        ("Redragon Mouse", "mouse", 12),
         // Dictation
         ("Dictation", "dictation", 2),
         ("Speech to Text", "dictation", 2),
@@ -637,6 +652,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "wifi" => 7,
                         "bluetooth" => 8,
                         "keypad" => 11,
+                        "mouse" => 12,
                         _ => 0,
                     };
                     requested_tab = Some(initial_tab);
@@ -860,6 +876,9 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // ── Keypad tab init (CH552 macro keypads) ────────────────────────────────
     let _keypad_tab = keypad::ui::install(&ui);
+
+    // ── Mouse tab init (pointer options, button assignments) ─────────────────
+    mouse::ui::install(&ui);
 
     // ── Power tab init ───────────────────────────────────────────────────────
 
@@ -2590,6 +2609,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "connections" => "Connections",
                 "glasses" => "Glasses",
                 "keypad" => "Keypad",
+                "mouse" => "Mouse",
                 _ => key,
             }
         }
