@@ -826,15 +826,16 @@ fn mouse_page() -> &'static str {
     braced_block(UI, "if root.active-tab == 12: Rectangle {")
 }
 
-/// The `Text` and `TextInput` elements in `source` that set no `color` of
-/// their own. Without one Slint reads the desktop colour scheme over D-Bus;
-/// that watcher panics on the UI thread and Settings exits.
-fn uncolored_texts(source: &str) -> Vec<String> {
+/// The `names` elements in `source` that do not set `property` themselves, as
+/// short snippets for the failure message. A property of a child element, of
+/// another name (`border-color` is not `color`), or inside a comment or string
+/// does not count.
+fn elements_without(source: &str, names: &[&str], property: &str) -> Vec<String> {
     let code = masked(source);
     let bytes = code.as_bytes();
     let in_name = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
     let mut found = Vec::new();
-    for name in ["Text", "TextInput"] {
+    for name in names {
         let mut from = 0;
         while let Some(at) = code[from..].find(name) {
             let start = from + at;
@@ -849,7 +850,7 @@ fn uncolored_texts(source: &str) -> Vec<String> {
                 continue;
             }
             let mut depth = 0usize;
-            let mut colored = false;
+            let mut set = false;
             for i in open..bytes.len() {
                 match bytes[i] {
                     b'{' => depth += 1,
@@ -859,20 +860,31 @@ fn uncolored_texts(source: &str) -> Vec<String> {
                             break;
                         }
                     }
-                    b'c' if depth == 1 && bytes[i..].starts_with(b"color") && !in_name(bytes[i - 1]) => {
-                        let after = code[i + "color".len()..].trim_start();
-                        colored |= after.starts_with(':');
+                    _ if depth == 1
+                        && bytes[i..].starts_with(property.as_bytes())
+                        && !in_name(bytes[i - 1]) =>
+                    {
+                        let after = code[i + property.len()..].trim_start();
+                        set |= after.starts_with(':');
                     }
                     _ => {}
                 }
             }
-            if !colored {
+            if !set {
                 let snippet: String = source[start..].chars().take(70).collect();
                 found.push(snippet.split_whitespace().collect::<Vec<_>>().join(" "));
             }
         }
     }
     found
+}
+
+/// The `Text` and `TextInput` elements in `source` that set no `color` of
+/// their own. Without one Slint reads the desktop colour scheme over D-Bus;
+/// that watcher panicked on the UI thread, which has no async runtime, and
+/// Settings exited.
+fn uncolored_texts(source: &str) -> Vec<String> {
+    elements_without(source, &["Text", "TextInput"], "color")
 }
 
 #[test]
@@ -891,6 +903,59 @@ fn the_text_color_check_sees_what_it_should() {
     // Other names, and Text in a string or comment, are not elements.
     assert!(uncolored_texts("KeypadText { }  MyText { }  Texture { }  Text").is_empty());
     assert!(uncolored_texts("// Text { }\nlet s: \"Text { }\";").is_empty());
+}
+
+#[test]
+fn the_property_check_wants_the_whole_property_on_the_element_itself() {
+    let selection = "selection-foreground-color";
+    let check = |source| elements_without(source, &["TextInput"], selection).len();
+    assert_eq!(check("TextInput { selection-foreground-color: red; }"), 0);
+    assert_eq!(check("TextInput { selection-foreground-color : red; }"), 0);
+    assert_eq!(check("TextInput { }"), 1);
+    // Another property, a child's property, and a longer name are not it.
+    assert_eq!(check("TextInput { selection-background-color: red; }"), 1);
+    assert_eq!(check("TextInput { Rectangle { selection-foreground-color: red; } }"), 1);
+    assert_eq!(check("TextInput { my-selection-foreground-color: red; }"), 1);
+    // `color` is not satisfied by the selection colours that end in it.
+    let colors = "TextInput { selection-background-color: red; selection-foreground-color: red; }";
+    assert_eq!(elements_without(colors, &["TextInput"], "color").len(), 1);
+}
+
+#[test]
+fn every_text_and_text_input_in_the_ui_sets_a_color() {
+    let missing = uncolored_texts(UI);
+    assert!(
+        missing.is_empty(),
+        "Text without a color makes Slint read the desktop colour scheme: {missing:#?}"
+    );
+}
+
+#[test]
+fn every_text_input_sets_its_selection_colors() {
+    // Selecting text is what first drew the style's default selection colours,
+    // which come from the desktop colour scheme.
+    for property in ["selection-background-color", "selection-foreground-color"] {
+        let missing = elements_without(UI, &["TextInput"], property);
+        assert!(missing.is_empty(), "TextInput without {property}: {missing:#?}");
+    }
+}
+
+#[test]
+fn text_fields_are_built_from_the_themed_text_input() {
+    assert_eq!(
+        UI.matches("inherits TextInput").count(),
+        1,
+        "build text fields from ThemedTextInput, not from TextInput"
+    );
+    let themed = component_source("ThemedTextInput");
+    for setting in [
+        "color: Theme.fg;",
+        "selection-background-color: Theme.accent;",
+        "selection-foreground-color: Theme.bg;",
+    ] {
+        assert!(themed.contains(setting), "ThemedTextInput lacks `{setting}`");
+    }
+    assert!(UI.contains("component SearchInput inherits ThemedTextInput {"));
 }
 
 #[test]

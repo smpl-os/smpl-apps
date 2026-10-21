@@ -150,6 +150,32 @@ app release so the new application token and all self-managed-alpha IDs are
 available. Legacy themes without the new key remain compatible. Source commits
 alone do not update installed binaries; use the normal release workflow.
 
+## Crash log and the UI-thread runtime
+
+`smpl_common::init` does two more things before it builds the backend, and
+every GUI app depends on both:
+
+- It records panics. Each one is appended as a single line (time, app,
+  version, thread, location, message) to
+  `$XDG_STATE_HOME/smplos/<app-id>/crash.log`, normally
+  `~/.local/state/smplos/<app-id>/crash.log`, and the file is rotated to
+  `crash.log.1` at 64 KiB. Apps started by a key binding have their stderr
+  discarded and release builds abort on a panic, so this file is what is left.
+- It enters a small Tokio runtime on the calling thread for the life of the
+  process. Slint reads the desktop colour scheme over D-Bus on the UI thread,
+  the first time a text selection, a `Palette` value or a `Text` without a
+  `color` is drawn, and this workspace's zbus (its `tokio` feature) panics
+  there when no runtime is entered, which aborted Settings when text was
+  selected. Call `init` on the thread that runs the event loop.
+
+The Settings UI also avoids that lookup. Give every `Text` and `TextInput` an
+explicit `color`, and build text fields from `ThemedTextInput`, which sets the
+selection colours too. `ui_contract_tests` fails if either is missing.
+
+Focused checks: `cargo test -p smpl-common` (the runtime, the crash log and
+the order of work in `init`) and
+`cargo test -p settings --bin settings ui_contract_tests`.
+
 ## Calendar clocks and forecast
 
 The calendar popup prefers 364 by 650 logical pixels, clamps its height on

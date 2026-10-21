@@ -558,6 +558,7 @@ component MonitorRect inherits Rectangle {
     size-measure := Text {
         visible: false;
         text: root.sublabel;
+        color: Theme.fg;
         font-size: Typography.secondary;
     }
 
@@ -1244,11 +1245,21 @@ component KeypadPositionPicker inherits Rectangle {
     }
 }
 
+// A text field in the app's own colours. Every colour is set explicitly, the selection
+// included: a default would come from the style's palette, and reading the palette makes
+// Slint ask the desktop for its colour scheme over D-Bus. Use this instead of a bare
+// TextInput; a contract test enforces it.
+component ThemedTextInput inherits TextInput {
+    color: Theme.fg;
+    selection-background-color: Theme.accent;
+    selection-foreground-color: Theme.bg;
+}
+
 // A single-line search/filter field whose Escape key empties it. The clear runs
 // the host's own `edited` handler, so the list refreshes exactly as if the text
 // had been typed away. Escape on an empty field is reported through `dismissed`
 // for the host to act on.
-component SearchInput inherits TextInput {
+component SearchInput inherits ThemedTextInput {
     callback dismissed();
 
     // True when `key` was Escape, whether or not there was anything to clear.
@@ -5746,7 +5757,7 @@ export component MainWindow inherits Window {
                                             border-radius: 4px;
                                             background: Theme.bg;
 
-                                            kb-args-input := TextInput {
+                                            kb-args-input := ThemedTextInput {
                                                 x: 8px;
                                                 y: 5px;
                                                 width: parent.width - 16px;
@@ -5856,7 +5867,7 @@ export component MainWindow inherits Window {
                                 border-radius: 4px;
                                 background: Theme.bg;
 
-                                TextInput {
+                                ThemedTextInput {
                                     x: 8px;
                                     y: 5px;
                                     width: parent.width - 16px;
@@ -5890,7 +5901,7 @@ export component MainWindow inherits Window {
                                 border-radius: 4px;
                                 background: Theme.bg;
 
-                                TextInput {
+                                ThemedTextInput {
                                     x: 8px;
                                     y: 5px;
                                     width: parent.width - 16px;
@@ -7456,7 +7467,7 @@ export component MainWindow inherits Window {
                                     border-radius: 4px;
                                     background: Theme.bg;
 
-                                    wifi-pw-input-d := TextInput {
+                                    wifi-pw-input-d := ThemedTextInput {
                                         x: 10px;
                                         y: 0px;
                                         width: parent.width - 44px;
@@ -7752,7 +7763,7 @@ export component MainWindow inherits Window {
                                     border-radius: 4px;
                                     background: Theme.bg;
 
-                                    wifi-uri-field := TextInput {
+                                    wifi-uri-field := ThemedTextInput {
                                         x: 8px;
                                         y: 5px;
                                         width: parent.width - 16px;
@@ -8573,7 +8584,8 @@ export component MainWindow inherits Window {
                         background: xr-recenter-touch.has-hover ? Theme.accent : Theme.bg_light;
                         HorizontalLayout {
                             alignment: center; spacing: 8px;
-                            Text { text: "\u{1F3AF}"; font-size: Typography.heading; vertical-alignment: center; }
+                            Text { text: "\u{1F3AF}"; color: xr-recenter-touch.has-hover ? Theme.bg : Theme.fg;
+                                font-size: Typography.heading; vertical-alignment: center; }
                             Text { text: "Recenter view"; color: xr-recenter-touch.has-hover ? Theme.bg : Theme.fg;
                                 font-size: Typography.body; vertical-alignment: center; }
                         }

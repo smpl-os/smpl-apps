@@ -5,6 +5,9 @@
 //!   2. `with_decorations(false)` — no CSD frame
 //!   3. `with_name(app_id, app_id)` — sets Wayland app_id for windowrulev2
 //!   4. A fixed logical size so Hyprland can float + size it via windowrule
+//!   5. A Tokio runtime context on the UI thread — Slint reads the colour scheme over D-Bus
+//!      through zbus, which is built for Tokio and panics (and aborts) without one
+//!   6. A crash log, because these apps are launched with stderr discarded
 //!
 //! NEVER use renderer-software — it uses softbuffer which hardcodes
 //! wl_shm::Format::Xrgb8888 on Wayland, making alpha completely ignored.
@@ -12,7 +15,9 @@
 //! Without ALL of these, either the blur breaks, the window gets decorated,
 //! or Hyprland can't target it with windowrulev2. See copilot-instructions.md.
 
+pub mod crash_log;
 pub mod keybindings;
+mod runtime;
 pub mod theme;
 
 use i_slint_backend_winit::winit::dpi::LogicalSize;
@@ -21,11 +26,13 @@ use slint::PlatformError;
 
 /// Initialise the Slint backend for a smplOS popup window.
 ///
-/// Must be called **before** creating any Slint component.
+/// Must be called **before** creating any Slint component, on the thread that will run the
+/// event loop.
 ///
 /// # Arguments
 /// * `app_id` – Wayland `app_id` / instance name (matches binary name).
-///   Must match the `initialClass` in Hyprland `windowrulev2`.
+///   Must match the `initialClass` in Hyprland `windowrulev2`. Also names the crash log,
+///   `$XDG_STATE_HOME/smplos/<app_id>/crash.log`.
 /// * `width` – Logical width in DIPs.
 /// * `height` – Logical height in DIPs.
 ///
@@ -37,6 +44,9 @@ use slint::PlatformError;
 /// ui.run().unwrap();
 /// ```
 pub fn init(app_id: &'static str, width: f64, height: f64) -> Result<(), PlatformError> {
+    crash_log::install(app_id);
+    runtime::enter_ui_thread()?;
+
     let backend = i_slint_backend_winit::Backend::builder()
         // FemtoVG renderer: uses OpenGL/EGL with ARGB visuals on Wayland,
         // so the compositor sees real alpha and can blur through it.

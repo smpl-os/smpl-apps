@@ -4688,8 +4688,13 @@ dependencies = [
 name = "smpl-common"
 version = "0.8.32"
 dependencies = [
+ "chrono",
+ "dirs",
+ "futures",
  "i-slint-backend-winit",
  "slint",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]
