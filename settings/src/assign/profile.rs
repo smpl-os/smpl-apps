@@ -14,6 +14,7 @@
 //! rules (unique names, no duplicate app, the global profile can't be removed
 //! or re-matched) for free.
 
+use super::action::{classify, merge_extras, to_json, Binding};
 use super::json::Json;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -176,6 +177,33 @@ pub trait Profiles {
         }
     }
 
+    /// The binding in a flat slot of a profile (`"btn-back"`): for controls
+    /// without knob events or layers, like the buttons of a mouse.
+    fn flat_binding(&self, profile: usize, slot: &str) -> Binding {
+        classify(self.bindings_of(profile, None).and_then(|b| b.get(slot)))
+    }
+
+    /// Every flat slot a profile binds, in file order.
+    fn flat_bindings(&self, profile: usize) -> Vec<(String, Binding)> {
+        let bindings = self.bindings_of(profile, None).map(Json::entries).unwrap_or(&[]);
+        bindings.iter().map(|(slot, value)| (slot.clone(), classify(Some(value)))).collect()
+    }
+
+    /// Sets a flat slot; "not set" removes it. Fields Settings doesn't edit
+    /// are kept when the action itself stays the same (see `merge_extras`).
+    fn set_flat_binding(&mut self, profile: usize, slot: &str, binding: &Binding) -> Result<(), String> {
+        let value = to_json(binding)?;
+        let old = self.bindings_of(profile, None).and_then(|b| b.get(slot)).cloned();
+        let bindings = self.bindings_mut(profile, None)?;
+        match value {
+            Some(v) => bindings.set(slot, merge_extras(old.as_ref(), v)),
+            None => {
+                bindings.remove(slot);
+            }
+        }
+        Ok(())
+    }
+
     /// Renames a profile (names show in the profile list and the cheatsheet).
     fn set_profile_name(&mut self, index: usize, name: &str) -> Result<(), String> {
         let name = name.trim();
@@ -272,6 +300,7 @@ pub trait Profiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assign::action::ActionKind;
     use crate::assign::testing::{doc_from, global_only};
 
     const TWO_APPS: &str = r#"{"profiles":[
@@ -413,6 +442,60 @@ mod tests {
         assert!(d.bindings_of(0, None).is_none());
         d.bindings_mut(0, None).unwrap().set("grid-1", Json::str("1"));
         assert!(d.bindings_of(0, None).is_some());
+    }
+
+    #[test]
+    fn flat_slots_are_read_per_profile_and_unset_ones_inherit() {
+        let d = doc_from(TWO_APPS);
+        assert_eq!(d.flat_binding(0, "btn-back"), Binding::new(ActionKind::Shortcut, "alt+left"));
+        assert_eq!(d.flat_binding(0, "btn-fwd").kind, ActionKind::Inherit);
+        assert_eq!(d.flat_binding(2, "btn-fwd"), Binding::new(ActionKind::Shortcut, "alt+right"));
+        assert_eq!(d.flat_binding(9, "btn-back").kind, ActionKind::Inherit, "no such profile");
+
+        let slots: Vec<String> = d.flat_bindings(2).into_iter().map(|(slot, _)| slot).collect();
+        assert_eq!(slots, ["btn-fwd"]);
+        assert!(d.flat_bindings(1).is_empty());
+        assert!(d.flat_bindings(9).is_empty());
+    }
+
+    #[test]
+    fn a_flat_slot_is_set_replaced_and_removed_in_file_order() {
+        let mut d = doc_from(TWO_APPS);
+        d.set_flat_binding(2, "btn-back", &Binding::new(ActionKind::Media, "mute")).unwrap();
+        d.set_flat_binding(2, "btn-fwd", &Binding::new(ActionKind::Mouse, "middle")).unwrap();
+        let bound: Vec<(String, ActionKind)> = d.flat_bindings(2).into_iter().map(|(s, b)| (s, b.kind)).collect();
+        assert_eq!(
+            bound,
+            [("btn-fwd".to_string(), ActionKind::Mouse), ("btn-back".to_string(), ActionKind::Media)],
+            "a replaced slot keeps its place, a new one goes last"
+        );
+
+        d.set_flat_binding(2, "btn-fwd", &Binding::new(ActionKind::Inherit, "")).unwrap();
+        assert_eq!(d.flat_bindings(2).len(), 1, "not set removes the slot");
+        assert_eq!(d.flat_binding(0, "btn-back").kind, ActionKind::Shortcut, "other profiles are untouched");
+    }
+
+    #[test]
+    fn a_flat_slot_refuses_what_cannot_be_stored() {
+        let mut d = doc_from(TWO_APPS);
+        let before = d.doc().clone();
+        assert!(d.set_flat_binding(2, "btn-back", &Binding::new(ActionKind::Shortcut, "")).is_err());
+        assert!(d.set_flat_binding(2, "btn-back", &Binding::new(ActionKind::Mouse, "sideways")).is_err());
+        assert!(d.set_flat_binding(2, "btn-back", &Binding::new(ActionKind::Advanced, "{}")).is_err());
+        assert_eq!(d.set_flat_binding(9, "btn-back", &Binding::new(ActionKind::Disabled, "")), Err("no such profile".to_string()));
+        assert_eq!(*d.doc(), before, "a refused edit changes nothing");
+    }
+
+    #[test]
+    fn applying_the_same_action_again_keeps_fields_settings_does_not_edit() {
+        let mut d = doc_from(r#"{"profiles":[{"name":"global","bindings":{"grid-7":{"keys":"ctrl+z","repeat":true}}}]}"#);
+        d.set_flat_binding(0, "grid-7", &Binding::new(ActionKind::Shortcut, "ctrl+z").labelled("Undo")).unwrap();
+        let stored = d.bindings_of(0, None).and_then(|b| b.get("grid-7")).cloned().unwrap();
+        assert_eq!(stored.get("repeat"), Some(&Json::Bool(true)));
+        assert_eq!(stored.get("label"), Some(&Json::str("Undo")));
+
+        d.set_flat_binding(0, "grid-7", &Binding::new(ActionKind::Shortcut, "ctrl+y")).unwrap();
+        assert_eq!(d.flat_binding(0, "grid-7"), Binding::new(ActionKind::Shortcut, "ctrl+y"), "another action starts clean");
     }
 
     #[test]

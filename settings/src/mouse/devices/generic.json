@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "id": "generic",
+  "name": "Generic mouse",
+  "description": "A typical mouse: two buttons, a wheel that clicks and tilts, two thumb buttons and a DPI button.",
+  "preview": true,
+  "aspect": 1.6,
+  "actions": ["inherit", "disabled", "shortcut", "media", "mouse", "command"],
+  "panels": [
+    { "label": "", "box": [25, 2, 50, 92] }
+  ],
+  "inputs": [
+    {
+      "id": "btn-left", "label": "Left button", "short": "Left",
+      "box": [28, 5, 21, 24], "actions": ["inherit", "mouse"],
+      "code": "BTN_LEFT", "source": "pointer",
+      "note": "Only \"Mouse button\" can be assigned here (to swap left and right, for example), so a mistake can't lock you out of clicking."
+    },
+    {
+      "id": "btn-right", "label": "Right button", "short": "Right",
+      "box": [51, 5, 21, 24], "actions": ["inherit", "mouse"],
+      "code": "BTN_RIGHT", "source": "pointer",
+      "note": "Only \"Mouse button\" can be assigned here, so a mistake can't lock you out of clicking."
+    },
+    {
+      "id": "wheel-tilt-left", "label": "Wheel tilt left", "short": "Tilt left",
+      "box": [28, 31, 14, 11]
+    },
+    {
+      "id": "btn-middle", "label": "Wheel click", "short": "Wheel",
+      "box": [43, 31, 14, 11],
+      "code": "BTN_MIDDLE", "source": "pointer"
+    },
+    {
+      "id": "wheel-tilt-right", "label": "Wheel tilt right", "short": "Tilt right",
+      "box": [58, 31, 14, 11]
+    },
+    {
+      "id": "btn-dpi", "label": "DPI button", "short": "DPI",
+      "box": [36, 46, 28, 10],
+      "note": "Many mice handle this button inside the mouse and send nothing the computer can see. Capturing it will tell."
+    },
+    {
+      "id": "btn-forward", "label": "Forward button", "short": "Forward",
+      "box": [4, 38, 19, 11],
+      "code": "BTN_EXTRA", "source": "pointer"
+    },
+    {
+      "id": "btn-back", "label": "Back button", "short": "Back",
+      "box": [4, 51, 19, 11],
+      "code": "BTN_SIDE", "source": "pointer"
+    }
+  ]
+}

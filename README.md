@@ -712,6 +712,61 @@ Focused headless checks:
 The preview checks enforce source wiring and numeric contracts, not compositor
 pixels or blur.
 
+### Mouse settings
+
+Settings → Mouse (`settings --tab mouse`) has a pointer card that works and a
+buttons card that is still a preview.
+
+Pointer: speed (`input:sensitivity`, −1 to 1), acceleration (system default,
+flat or adaptive), scroll direction (traditional or natural) and scroll speed
+(`input:scroll_factor`, 0.25× to 4×). Every change is saved at once to
+`$HOME/.config/hypr/pointer.conf` (never an `XDG_CONFIG_HOME` copy) and, about
+a quarter of a second after the last change, applied to the running
+compositor: `hyprctl eval "hl.config(...)"` under the Lua provider (which
+refuses `hyprctl keyword`), one `hyprctl keyword input:<option>` per option
+under hyprlang. Only an `ok` reply counts, and saving and applying are
+reported separately, so a refusal never loses the saved value. Until the file
+has the options the page shows what Hyprland reports (read-only
+`hyprctl getoption`); after that the file wins. Writes are atomic, follow a
+symlink to its target and are refused when the file changed since Settings
+read it. The settings are global; per-device pointer options are not offered
+yet.
+
+`pointer.conf` is hyprlang, like `monitors.conf`. Settings manages four options
+in its `input { }` block (`accel_profile` is left out for the system default)
+and keeps every other line:
+
+```
+input {
+    sensitivity = 0.35
+    accel_profile = flat
+    natural_scroll = true
+    scroll_factor = 1.5
+}
+```
+
+Hyprland does not read this file by itself under the Lua provider. The OS has
+to load it after `input.lua`, as it loads `monitors.conf` (a small loader that
+passes the block to `hl.config`, or `source = ~/.config/hypr/pointer.conf`
+under hyprlang), and `smplos-os-update` has to leave the file alone. Until it
+does, the options apply live but are not restored at login. Publish the
+matching OS update first.
+
+Buttons (preview): each mouse is a device profile, which is data
+(`settings/src/mouse/devices/*.json`, schema in `devices.rs`), so adding a
+mouse is adding a file. A generic mouse and a 12-button thumb-grid MMO mouse
+ship as examples, labelled as previews until real buttons are captured. The
+assignments use the Keypad tab's editor (`settings/src/assign`): global and
+per-app profiles, an action picker, "unset buttons use Global" and Advanced
+entries kept as written. They are saved per device, each change at once, in
+`$HOME/.config/smplos/mouse.json`; the previous version of the file is kept in
+`backups/` beside it. **Nothing acts on the assignments yet**: there is no
+button capture and no remap backend. Left and right click accept only "Mouse
+button", so a mistake cannot lock the user out.
+
+Headless checks (temporary directories and mocked command runners):
+`cargo test -p settings --bin settings -- mouse:: assign:: ui_contract_tests::mouse`.
+
 ### Taskbar workspace preferences
 
 Settings and the OS taskbar helpers share `~/.config/smplos/bar.conf` (the
