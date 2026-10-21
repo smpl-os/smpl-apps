@@ -109,13 +109,15 @@ fn every_search_box_is_a_search_input_that_empties_itself_on_escape() {
     }
     assert!(component("KeypadInput").contains("input:=SearchInput{"));
 
-    // A search or filter box added later has to join in.
+    // A search or filter box added later has to join in, whichever text input it is built from.
     for line in UI.lines() {
-        if let Some((id, _)) = line.trim().split_once(" := TextInput {") {
-            assert!(
-                !id.contains("search") && !id.contains("filter"),
-                "{id} is a search box that does not clear on Escape"
-            );
+        for raw in [" := TextInput {", " := ThemedTextInput {"] {
+            if let Some((id, _)) = line.trim().split_once(raw) {
+                assert!(
+                    !id.contains("search") && !id.contains("filter"),
+                    "{id} is a search box that does not clear on Escape"
+                );
+            }
         }
     }
 }
@@ -291,7 +293,7 @@ fn keybinding_rows_list_the_function_before_the_key_combination() {
     assert!(badge.contains("overflow:elide;"));
 
     // Expanded row: the function first, then the rebind button.
-    let edit = between(tab, "// Edit view", "kb-args-input := TextInput");
+    let edit = between(tab, "// Edit view", "kb-args-input := ThemedTextInput");
     assert!(edit.find("text: entry.description;").unwrap() < edit.find("// Rebind button").unwrap());
     assert_eq!(edit.matches("text: entry.description;").count(), 1);
 }

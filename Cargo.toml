@@ -63,7 +63,9 @@ gio  = { version = "0.20", features = ["v2_70"] }
 zbus     = { version = "5.5", default-features = false, features = ["tokio", "blocking-api"] }
 zvariant = "5"
 
-# Async (sync-center)
+# Async (sync-center, hints). smpl-common also enters a runtime of its own on every
+# GUI thread: zbus' tokio feature panics where there is none, and Slint reaches zbus
+# from the UI thread (the colour-scheme watcher).
 tokio   = { version = "1", features = ["full"] }
 futures = "0.3"
 

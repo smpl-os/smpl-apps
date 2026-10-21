@@ -238,6 +238,32 @@ All notable changes to smpl-apps are documented here.
 
 ### Fixed
 
+- **All apps: selecting text could crash the app with no message.** Selecting
+  text in a text box (Ctrl+A, a double-click, a drag, Shift+arrows, or the
+  leftover filter text that `settings --tab keybindings` selects when it
+  refocuses the Keybindings filter) makes Slint ask the desktop for its colour
+  scheme over D-Bus, the first time anything on screen needs it. Slint does
+  that on the UI thread, zbus is built for Tokio, and the UI thread had no
+  Tokio runtime, so zbus panicked and, with `panic = "abort"`, the app died
+  with SIGABRT. Apps started by a compositor key binding have their stderr
+  discarded, so nothing was logged. `smpl_common::init`, which every GUI app
+  calls, now gives the UI thread a small Tokio runtime context (one worker
+  thread), so the lookup runs, or fails quietly when there is no settings
+  portal. Settings also sets every text field's selection colours itself, in
+  the app's theme (accent behind the selected text), through one
+  `ThemedTextInput`, and the two `Text` items there that had no colour (a
+  hidden measuring label, the Glasses recenter icon) now have one, so selecting
+  text no longer asks for the colour scheme at all. Contract tests fail if a
+  `Text` or `TextInput` in Settings goes without a colour, or a text field is
+  not a `ThemedTextInput`.
+
+- **All apps: a panic now leaves a record.** `smpl_common::init` appends one
+  line per panic (time, app, version, thread, location, message) to
+  `$XDG_STATE_HOME/smplos/<app-id>/crash.log` (normally
+  `~/.local/state/smplos/<app-id>/crash.log`) and then lets the previous panic
+  hook run. The file is private to the user (mode 0600) and is rotated to
+  `crash.log.1` at 64 KiB.
+
 - **settings: a second `settings --tab <name>` takes the running window to that
   tab.** Launching `settings --tab keybindings` (the key that opens the
   shortcut search) or `settings --tab wifi` while Settings is already open used

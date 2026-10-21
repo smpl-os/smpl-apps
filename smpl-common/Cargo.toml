@@ -6,3 +6,13 @@ edition.workspace = true
 [dependencies]
 i-slint-backend-winit = { workspace = true }
 slint                 = { workspace = true }
+# runtime.rs: a runtime context for the UI thread.
+tokio                 = { workspace = true }
+# crash_log.rs: where the log goes and when a panic happened.
+dirs                  = { workspace = true }
+chrono                = { workspace = true }
+
+[dev-dependencies]
+# runtime.rs tests drive the same zbus calls Slint makes.
+zbus    = { workspace = true }
+futures = { workspace = true }
