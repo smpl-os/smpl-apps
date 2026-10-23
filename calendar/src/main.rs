@@ -24,8 +24,8 @@ slint::include_modules!();
 // ── Check reminder service without overriding user policy ──────────────────────
 
 fn ensure_alertd() {
-    // The no-argument launcher only checks the user service. It cannot override
-    // a stopped/masked unit or race the service with an unmanaged daemon.
+    // Ordinary launches only check the service. The standalone RPM's desktop
+    // entry opts into starting that same managed unit, never an unmanaged copy.
     std::thread::spawn(|| {
         let self_exe = std::env::current_exe().unwrap_or_default();
         let alertd = self_exe
@@ -33,7 +33,11 @@ fn ensure_alertd() {
             .unwrap_or(std::path::Path::new("/usr/local/bin"))
             .join("smpl-calendar-alertd");
         if alertd.exists() {
-            match std::process::Command::new(&alertd)
+            let mut command = std::process::Command::new(&alertd);
+            if std::env::args().any(|arg| arg == "--autostart-reminders") {
+                command.arg("--autostart");
+            }
+            match command
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .spawn()

@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=smpl Calendar
+Comment=Calendar, local events, reminders, clocks and weather
+Exec=smpl-calendar --details --autostart-reminders
+Icon=x-office-calendar
+StartupWMClass=smpl-calendar-details
+Terminal=false
+Categories=Office;Calendar;
+Keywords=calendar;events;reminders;weather;clock;
+Actions=Compact;
+
+[Desktop Action Compact]
+Name=Clock and weather
+Exec=smpl-calendar --autostart-reminders

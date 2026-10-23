@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=smpl Calendar reminders
+Comment=Start the managed calendar reminder service at login
+Exec=smpl-calendar-alertd --autostart
+TryExec=smpl-calendar-alertd
+Terminal=false
+NoDisplay=true
