@@ -77,7 +77,7 @@ target_link_libraries(control-surfaced PRIVATE cs_core)
 qt_add_resources(control-surfaced "defaults" PREFIX "/control-surface" BASE data FILES data/config.example.jsonc)
 
 # The mouse has its own process and bus name; it never starts the pad backend.
-add_library(cs_mouse STATIC src/mouse/mapping.cpp src/mouse/device.cpp src/mouse/service.cpp)
+add_library(cs_mouse STATIC src/mouse/mapping.cpp src/mouse/device.cpp src/mouse/service.cpp src/mouse/onboard.cpp)
 target_include_directories(cs_mouse PUBLIC src/mouse)
 target_link_libraries(cs_mouse PUBLIC cs_core)
 add_executable(mouse-remapperd src/mouse/main.cpp)

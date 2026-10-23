@@ -263,3 +263,87 @@ state machine, tests atomic save/preservation, and refuses concurrent edits.
 Physical-device/compositor acceptance is a separate,
 coordinated local step; building or running the offline feature check does
 not activate input capture.
+
+## Onboard DPI backup and guarded remapping
+
+`mouse-remapperd onboard-backup --json` uses only whitelisted vendor read
+commands, not the input grabber or Settings D-Bus service. It dynamically finds
+one exact `1532:00b4` USB interface-0 hidraw node, checks the opened character
+device's IDs and sysfs identity again, and refuses ambiguity. HID feature
+transport requires an `O_RDWR` descriptor and `HIDIOCSFEATURE` even for read
+queries; the report's command IDs remain read-only. This is not an assignment
+write, firmware update, reset, OpenRazer installation or permission change.
+Permission errors require a narrowly scoped foreground `pkexec` invocation,
+not `sudo` in a terminal or broad `chmod`/udev access.
+
+The helper verifies 91-byte framing (report ID plus 90-byte vendor report),
+transaction `0x1f`, CRC, command, status, argument size and echoed button
+address for normal-layer functions. It reads the serial (stored only as
+SHA-256), firmware, single-profile counts, and all 42 normal/Hypershift query
+replies for the 21 documented primary/wheel/top/grid controls. A second
+independent read must match exactly before any backup JSON is emitted.
+Schema 2 explicitly has `scope:"normal-layer-only"`: `assignments` contains
+only the 21 verified normal-layer functions, while `readEvidence` retains
+both complete 42-query raw argument maps. `hypershiftVerified:false` makes
+clear that independent Hypershift storage was not established. Actual
+receiver firmware 1.1 (`01010000`) returns the normal-layer byte and identical
+normal function for every Hypershift request; these are evidence, not verified
+Hypershift assignments. Normal replies still require exact address echoes
+and valid function lengths. The mechanical
+scroll-mode control has no verified assignment address and is not guessed.
+The backup is user data; preserve and verify the output file, never commit it.
+Running the backup does not replace installed binaries or affect existing
+learned controls.
+
+If strict address validation fails, `onboard-probe --json` records two passes
+of all 42 read-only requests with the requested prefix and returned argument
+bytes. This distinguishes response-echo quirks from invalid function lengths
+without accepting a mismatch. Its output explicitly says `diagnosticOnly:true`
+and `usableAsBackup:false`; it is not accepted for planning or restoration.
+It does not relax normal-layer backup validation or write onboard assignments.
+
+`mouse-remapperd onboard-plan --backup FILE --json` validates that complete
+backup against a fresh double read of the same receiver. It describes only
+normal-layer top buttons `0x0b`/`0x0c` becoming F23/F24 (HID keyboard usages
+`0x72`/`0x73`), refusing collisions with other onboard buttons. Both original
+seven-byte functions are included for a possible exact two-button restore.
+Only normal-layer addresses would be written; all other normal-layer
+assignments must remain unchanged. Because this receiver does not establish
+independent Hypershift state, unchanged effective Hypershift behavior cannot
+be promised. Backup/probe/plan commands never write assignments. Enabling
+even those two buttons requires specific user approval after the backup/readback and proposed
+change are reviewed. A successful read is not proof of a successful restore.
+Emitting spare keys also does not implement held workspace layers.
+
+Protocol facts were cross-checked against the MIT-licensed projects
+[mouseo at 60559ee](https://github.com/pengowray/mouseo/tree/60559ee0a6e8a25e362923ed0a5abf41d1265d4a)
+and [razerqdhid at 4363a88](https://github.com/geezmolycos/razerqdhid/tree/4363a8836ab970c712fa8f2a9dd530a7e7bc5011).
+This helper is an independent native implementation; it does not run their
+personal layout/apply/test scripts or clone their runtime code. The button
+read is `0x028c`, and the documented assignment/restore command is `0x020c`;
+the latter is deliberately refused by the read-query transport.
+
+After that approval, `onboard-apply-dpi --backup FILE --sha256 HASH
+--confirm-dpi-to-f23-f24 --json` checks the exact saved file hash, device,
+complete normal preimage and raw read evidence again. The write transport
+permits only normal profile-1 buttons `0x0b`/`0x0c` and their exact original
+DPI next/previous or proposed F23/F24 functions. It cannot set another button,
+layer, profile, arbitrary key, firmware or reset command. After each write,
+a fresh double-read verifies the expected complete normal-layer state,
+including all other controls.
+
+`onboard-restore-dpi --backup FILE --sha256 HASH --confirm-restore-dpi --json`
+restores those exact original functions; it accepts only original/mapped
+states on the two targets, with all other normal controls and device identity
+matching the backup. Already-restored controls require no write. On an apply
+failure, automatic restoration uses the same checks and verifies the original
+normal state. A failed acknowledgement may still mean a write occurred, so
+readback is authoritative. If readback is unavailable or unrelated assignments
+changed concurrently, restoration is explicitly refused/unverified rather
+than overwriting unknown state or claiming success. Keep the original backup
+and investigate; never reset or flash the mouse as a recovery shortcut.
+
+These are one-shot, explicitly confirmed foreground administrator commands.
+They do not install or start another daemon, broaden hidraw permissions,
+change Settings mappings, or implement workspace layers. The device-bound
+evdev remapper learns the newly emitted inputs through the existing wizard.

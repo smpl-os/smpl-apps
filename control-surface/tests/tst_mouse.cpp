@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "kdenlivecontract.h"
 #include "mapping.h"
+#include "onboard.h"
 #include "mockkdenlive.h"
 #include "service.h"
 #include <QDBusConnection>
@@ -40,7 +41,315 @@ private Q_SLOTS:
     void guidedCalibrationCapturesAllTwelveAndReplacesAtomically();
     void fullSetupCapturesKeysAndWheelDirectionsAfterArming();
     void fullSetupRetrySkipCancelAndConcurrentEdits();
+    void onboardReportValidationAndReadOnlyGuard();
+    void onboardBackupRequiresStableDoubleRead();
+    void onboardProbeDoesNotTreatMismatchesAsBackup();
+    void onboardDpiWritesAreStrictlyBounded();
+    void onboardDpiApplyRestoreAndFaults();
+    void onboardDpiPlanPreservesOriginalFunctions();
 };
+
+namespace {
+std::optional<QByteArray> onboardReadFixture(quint16 command, const QByteArray &args, int size, QString *error) {
+    if (command == 0x0082 && args.isEmpty() && size == 16)
+        return QByteArray(16, 'S');
+    if (command == 0x0081 && args.isEmpty() && size == 4)
+        return QByteArray::fromHex("01010000");
+    if ((command == 0x0580 || command == 0x058a) && args.isEmpty() && size == 1)
+        return QByteArray(1, 1);
+    if (command == 0x028c && args.size() == 3 && args[0] == 1 && size == 10) {
+        auto function = QByteArray(7, 0);
+        if (args[1] == 0x0b)
+            function = QByteArray::fromHex("06010100000000");
+        else if (args[1] == 0x0c)
+            function = QByteArray::fromHex("06010200000000");
+        return args + function;
+    }
+    *error = QStringLiteral("Unexpected fixture query");
+    return std::nullopt;
+}
+}
+
+void MouseTest::onboardReportValidationAndReadOnlyGuard() {
+    using namespace cs::mouse::onboard;
+    const auto prefix = QByteArray::fromHex("010b00");
+    const auto function = QByteArray::fromHex("06010100000000");
+    auto report = readReport(0x028c, prefix, 10);
+    QCOMPARE(report.size(), 91);
+    QCOMPARE(quint8(report[2]), 0x1f);
+    QCOMPARE(quint8(report[6]), 10);
+    QCOMPARE(quint8(report[7]), 2);
+    QCOMPARE(quint8(report[8]), 0x8c);
+    QCOMPARE(report.mid(9, 3), prefix);
+    QVERIFY(readReport(0x020c, prefix + function, 10).isEmpty());
+    QVERIFY(readReport(0x0004, {}, 2).isEmpty());
+    QVERIFY(readReport(0x060a, {}, 6).isEmpty());
+    QVERIFY(readReport(0x028c, prefix, 81).isEmpty());
+    report[1] = 2;
+    report.replace(12, 7, function);
+    auto crc = [](QByteArray &bytes) {
+        quint8 sum = 0;
+        for (int i = 3; i <= 88; ++i) sum ^= quint8(bytes[i]);
+        bytes[89] = char(sum);
+    };
+    crc(report);
+    auto reply = decodeReply(report, 0x028c, 10);
+    QCOMPARE(reply.state, ReplyState::Ready);
+    QCOMPARE(reply.arguments, prefix + function);
+    report[1] = 1;
+    QCOMPARE(decodeReply(report, 0x028c, 10).state, ReplyState::Busy);
+    report[1] = 3;
+    QCOMPARE(decodeReply(report, 0x028c, 10).state, ReplyState::Error);
+    report[1] = 2;
+    report[2] = 0x3f;
+    QCOMPARE(decodeReply(report, 0x028c, 10).state, ReplyState::Unrelated);
+    report[2] = 0x1f;
+    report[6] = 9;
+    crc(report);
+    QCOMPARE(decodeReply(report, 0x028c, 10).state, ReplyState::Error);
+    report[6] = 10;
+    crc(report);
+    report[12] = 5;
+    QCOMPARE(decodeReply(report, 0x028c, 10).state, ReplyState::Error);
+    QVERIFY(!decodeReply(report.left(90), 0x028c, 10).error.isEmpty());
+}
+
+void MouseTest::onboardBackupRequiresStableDoubleRead() {
+    using namespace cs::mouse::onboard;
+    QString error;
+    int reads = 0;
+    const auto saved = backup([&](quint16 command, const QByteArray &args, int size, QString *reason) {
+        ++reads;
+        return onboardReadFixture(command, args, size, reason);
+    }, &error);
+    QVERIFY2(saved, qPrintable(error));
+    QCOMPARE(reads, 92);
+    QCOMPARE(saved->value("verifiedReads").toInt(), 2);
+    QCOMPARE(saved->value("schemaVersion").toInt(), 2);
+    QCOMPARE(saved->value("scope").toString(), QString("normal-layer-only"));
+    QVERIFY(!saved->value("hypershiftVerified").toBool(true));
+    QCOMPARE(saved->value("assignments").toObject().size(), 21);
+    QCOMPARE(saved->value("assignments").toObject().value("0b/0").toString(), QString("06010100000000"));
+    QCOMPARE(saved->value("readEvidence").toArray().size(), 2);
+    QCOMPARE(saved->value("readEvidence").toArray()[0].toObject().value("0c/1").toString(),
+             QString("010c0106010200000000"));
+    int functions = 0;
+    QVERIFY(!backup([&](quint16 command, const QByteArray &args, int size, QString *reason) {
+        auto result = onboardReadFixture(command, args, size, reason);
+        if (result && command == 0x028c && ++functions > 42)
+            (*result)[5] = 3;
+        return result;
+    }, &error));
+    QVERIFY(error.contains("changed between"));
+    QVERIFY(!backup([](quint16 command, const QByteArray &args, int size, QString *reason) {
+        if (command == 0x0580) return std::optional<QByteArray>(QByteArray(1, 2));
+        return onboardReadFixture(command, args, size, reason);
+    }, &error));
+    QVERIFY(error.contains("single-profile"));
+    QVERIFY(!backup([](quint16 command, const QByteArray &args, int size, QString *reason) {
+        auto result = onboardReadFixture(command, args, size, reason);
+        if (result && command == 0x028c) (*result)[1] = 0;
+        return result;
+    }, &error));
+    QVERIFY(error.contains("mismatched button"));
+    QVERIFY(!backup([](quint16 command, const QByteArray &args, int size, QString *reason) {
+        auto result = onboardReadFixture(command, args, size, reason);
+        if (result && command == 0x028c) (*result)[4] = 6;
+        return result;
+    }, &error));
+    QVERIFY(error.contains("Malformed"));
+    QVERIFY(!backup([](quint16 command, const QByteArray &args, int size, QString *reason) {
+        if (command == 0x0081) return std::optional<QByteArray>(QByteArray(3, 0));
+        return onboardReadFixture(command, args, size, reason);
+    }, &error));
+    QVERIFY(error.contains("firmware"));
+    const auto aliases = backup([](quint16 command, const QByteArray &args, int size, QString *reason) {
+        auto result = onboardReadFixture(command, args, size, reason);
+        if (result && command == 0x028c) (*result)[2] = 0;
+        return result;
+    }, &error);
+    QVERIFY2(aliases, qPrintable(error));
+    QVERIFY(!aliases->value("hypershiftVerified").toBool(true));
+    QCOMPARE(aliases->value("readEvidence").toArray()[0].toObject().value("0b/1").toString(),
+             QString("010b0006010100000000"));
+    QVERIFY(dpiPlan(*aliases, *aliases, &error));
+}
+
+void MouseTest::onboardDpiPlanPreservesOriginalFunctions() {
+    using namespace cs::mouse::onboard;
+    QString error;
+    const auto saved = backup(onboardReadFixture, &error);
+    QVERIFY2(saved, qPrintable(error));
+    const auto plan = dpiPlan(*saved, *saved, &error);
+    QVERIFY2(plan, qPrintable(error));
+    QVERIFY(!plan->value("writesPerformed").toBool(true));
+    const auto changes = plan->value("changes").toArray();
+    QCOMPARE(changes.size(), 2);
+    QCOMPARE(changes[0].toObject().value("button").toInt(), 11);
+    QCOMPARE(changes[0].toObject().value("layer").toInt(), 0);
+    QCOMPARE(changes[0].toObject().value("originalFunction").toString(), QString("06010100000000"));
+    QCOMPARE(changes[0].toObject().value("proposedFunction").toString(), QString("02020072000000"));
+    QCOMPARE(changes[1].toObject().value("originalFunction").toString(), QString("06010200000000"));
+    QCOMPARE(changes[1].toObject().value("proposedFunction").toString(), QString("02020073000000"));
+    auto other = *saved;
+    auto entries = other.value("assignments").toObject();
+    entries.insert("40/0", "02020072000000");
+    other.insert("assignments", entries);
+    auto evidence = other.value("readEvidence").toArray();
+    auto replies = evidence[0].toObject();
+    replies.insert("40/0", "01400002020072000000");
+    other.insert("readEvidence", QJsonArray{replies, replies});
+    QVERIFY(!dpiPlan(other, other, &error));
+    QVERIFY(error.contains("already used"));
+    QVERIFY(!dpiPlan(*saved, other, &error));
+    QVERIFY(error.contains("does not match"));
+    entries.remove("40/0");
+    other.insert("assignments", entries);
+    QVERIFY(!dpiPlan(other, other, &error));
+    QVERIFY(error.contains("incomplete"));
+    other = *saved;
+    auto device = other.value("device").toObject();
+    device.insert("serialSha256", QString(64, '0'));
+    other.insert("device", device);
+    QVERIFY(!dpiPlan(*saved, other, &error));
+    QVERIFY(error.contains("does not match"));
+    other = *saved;
+    other.insert("verifiedReads", 1);
+    QVERIFY(!dpiPlan(other, *saved, &error));
+    QVERIFY(error.contains("Invalid"));
+}
+
+void MouseTest::onboardProbeDoesNotTreatMismatchesAsBackup() {
+    using namespace cs::mouse::onboard;
+    QString error;
+    int reads = 0;
+    const auto result = probe([&](quint16 command, const QByteArray &args, int size, QString *reason) {
+        ++reads;
+        auto data = onboardReadFixture(command, args, size, reason);
+        if (data && command == 0x028c && args[2] == 1)
+            (*data)[2] = 0;
+        return data;
+    }, &error);
+    QVERIFY2(result, qPrintable(error));
+    QCOMPARE(reads, 85);
+    QVERIFY(result->value("diagnosticOnly").toBool());
+    QVERIFY(!result->value("usableAsBackup").toBool(true));
+    QVERIFY(!result->value("writesPerformed").toBool(true));
+    const auto queries = result->value("queries").toArray();
+    QCOMPARE(queries.size(), 84);
+    QVERIFY(queries[0].toObject().value("echoMatches").toBool());
+    QVERIFY(!queries[21].toObject().value("echoMatches").toBool(true));
+    QCOMPARE(queries[21].toObject().value("requestedPrefix").toString(), QString("010101"));
+    QCOMPARE(queries[21].toObject().value("returnedArguments").toString(), QString("01010000000000000000"));
+    QVERIFY(!dpiPlan(*result, *result, &error));
+    QVERIFY(error.contains("incomplete"));
+}
+
+void MouseTest::onboardDpiWritesAreStrictlyBounded() {
+    using namespace cs::mouse::onboard;
+    for (int button : {0x0b, 0x0c}) {
+        const auto original = QByteArray::fromHex(button == 11 ? "06010100000000" : "06010200000000");
+        const auto mapped = QByteArray::fromHex(button == 11 ? "02020072000000" : "02020073000000");
+        for (const auto &function : {original, mapped}) {
+            auto packet = dpiWriteReport(button, function);
+            QCOMPARE(packet.size(), 91);
+            QCOMPARE(packet.mid(7, 2).toHex(), QByteArray("020c"));
+            QCOMPARE(packet.mid(9, 3), QByteArray::fromHex(button == 11 ? "010b00" : "010c00"));
+            QCOMPARE(packet.mid(12, 7), function);
+            packet[1] = 2;
+            QCOMPARE(decodeReply(packet, 0x020c, 10).state, ReplyState::Ready);
+        }
+        QVERIFY(dpiWriteReport(button, QByteArray(7, 0)).isEmpty());
+        QVERIFY(dpiWriteReport(button, mapped.left(6)).isEmpty());
+    }
+    QVERIFY(dpiWriteReport(1, QByteArray::fromHex("02020072000000")).isEmpty());
+    QVERIFY(dpiWriteReport(12, QByteArray::fromHex("02020072000000")).isEmpty());
+    QVERIFY(readReport(0x020c, QByteArray::fromHex("010b0002020072000000"), 10).isEmpty());
+}
+
+void MouseTest::onboardDpiApplyRestoreAndFaults() {
+    using namespace cs::mouse::onboard;
+    for (int scenario = 0; scenario <= 6; ++scenario) {
+        QMap<int, QByteArray> functions;
+        int writes = 0;
+        int snapshots = 0;
+        const Read read = [&](quint16 command, const QByteArray &args, int size, QString *reason) {
+            auto result = onboardReadFixture(command, args, size, reason);
+            if (result && command == 0x028c) {
+                const int button = quint8(args[1]);
+                (*result)[2] = 0;
+                if (functions.contains(button)) result->replace(3, 7, functions.value(button));
+            }
+            return result;
+        };
+        QString error;
+        const auto saved = backup(read, &error);
+        QVERIFY2(saved, qPrintable(error));
+        const WriteDpi write = [&](int button, const QByteArray &function, QString *reason) {
+            ++writes;
+            if (dpiWriteReport(button, function).isEmpty()) {
+                *reason = "Forbidden test write";
+                return false;
+            }
+            if (scenario == 2 && writes == 1) {
+                *reason = "send failed before application";
+                return false;
+            }
+            if (scenario == 3 && writes == 1) return true;
+            if (scenario == 6 && writes > 2) {
+                *reason = "restore send failed";
+                return false;
+            }
+            functions.insert(button, function);
+            if (scenario == 4 && writes == 2) functions.insert(0x40, QByteArray::fromHex("02020071000000"));
+            if ((scenario == 1 || scenario == 6) && writes == 2) {
+                *reason = "ack lost after application";
+                return false;
+            }
+            return true;
+        };
+        const Snapshot snapshot = [&](QString *reason) -> std::optional<QJsonObject> {
+            if (scenario == 5 && ++snapshots == 1) {
+                *reason = "temporary readback failure";
+                return std::nullopt;
+            }
+            return backup(read, reason);
+        };
+        const auto result = changeDpi(*saved, *saved, DpiOperation::Apply, write, snapshot, &error);
+        if (scenario == 0) {
+            QVERIFY2(result, qPrintable(error));
+            QCOMPARE(writes, 2);
+            QVERIFY(result->value("normalLayerVerified").toBool());
+            const auto current = backup(read, &error);
+            QVERIFY(current);
+            QVERIFY(changeDpi(*saved, *current, DpiOperation::Restore, write, snapshot, &error));
+            QCOMPARE(writes, 4);
+            const auto restored = backup(read, &error);
+            QVERIFY(restored);
+            QCOMPARE(restored->value("assignments"), saved->value("assignments"));
+            QVERIFY(changeDpi(*saved, *restored, DpiOperation::Restore, write, snapshot, &error));
+            QCOMPARE(writes, 4);
+            auto foreign = *saved;
+            auto identity = foreign.value("device").toObject();
+            identity.insert("serialSha256", QString(64, '0'));
+            foreign.insert("device", identity);
+            QVERIFY(!changeDpi(*saved, foreign, DpiOperation::Apply, write, snapshot, &error));
+            QVERIFY(!changeDpi(*saved, foreign, DpiOperation::Restore, write, snapshot, &error));
+            QCOMPARE(writes, 4);
+        } else {
+            QVERIFY(!result);
+            if (scenario == 4 || scenario == 6) {
+                QVERIFY2(error.contains("unverified") || error.contains("NOT verified"), qPrintable(error));
+                QCOMPARE(writes, scenario == 4 ? 2 : 4);
+            } else {
+                QVERIFY2(error.contains("restored and independently verified"), qPrintable(error));
+                const auto restored = backup(read, &error);
+                QVERIFY(restored);
+                QCOMPARE(restored->value("assignments"), saved->value("assignments"));
+            }
+        }
+    }
+}
 
 void MouseTest::profilesAndPreservation() {
     QString error;
@@ -400,11 +709,14 @@ void MouseTest::fullSetupCapturesKeysAndWheelDirectionsAfterArming() {
             router.consume("input1/keyboard", false, {EV_SYN, SYN_REPORT, 0});
         } else {
             const int code = slot == "btn-left" ? BTN_LEFT : slot == "btn-right" ? BTN_RIGHT : slot == "btn-middle" ? BTN_MIDDLE :
-                             slot.startsWith("grid-") ? KEY_F1 + slot.mid(5).toInt() - 1 : KEY_PROG1 + index - 19;
+                             slot.startsWith("grid-") ? KEY_F1 + slot.mid(5).toInt() - 1 :
+                             slot == "btn-dpi-up" ? KEY_F23 : slot == "btn-dpi-down" ? KEY_F24 : KEY_PROG1;
+            const bool dpi = slot == "btn-dpi-up" || slot == "btn-dpi-down";
+            const SourceKey source{dpi ? "input2/keyboard" : "input0/pointer", code};
             const bool primary = index < 3;
-            QCOMPARE(router.key({"input0/pointer", code}, true, 1), !primary);
+            QCOMPARE(router.key(source, !dpi, 1), !primary);
             QVERIFY(!setup.captured()); // A held button is not confirmed until release.
-            QCOMPARE(router.key({"input0/pointer", code}, true, 0), !primary);
+            QCOMPARE(router.key(source, !dpi, 0), !primary);
         }
         QCOMPARE(captures, index + 1);
         QVERIFY(setup.captured());
@@ -424,9 +736,9 @@ void MouseTest::fullSetupCapturesKeysAndWheelDirectionsAfterArming() {
     QCOMPARE(mapping->relativeSlot("input1/keyboard", REL_HWHEEL_HI_RES, -120), QString("wheel-tilt-left"));
     QCOMPARE(mapping->relativeSlot("input1/keyboard", REL_WHEEL, 1), QString("wheel-up"));
     QCOMPARE(mapping->relativeSlot("input1/keyboard", REL_WHEEL, -1), QString("wheel-down"));
-    QCOMPARE(mapping->slot({"input0/pointer", KEY_PROG1}, true), QString("btn-dpi-up"));
-    QCOMPARE(mapping->slot({"input0/pointer", KEY_PROG1 + 1}, true), QString("btn-dpi-down"));
-    QCOMPARE(mapping->slot({"input0/pointer", KEY_PROG1 + 2}, true), QString("btn-scroll-mode"));
+    QCOMPARE(mapping->slot({"input2/keyboard", KEY_F23}, false), QString("btn-dpi-up"));
+    QCOMPARE(mapping->slot({"input2/keyboard", KEY_F24}, false), QString("btn-dpi-down"));
+    QCOMPARE(mapping->slot({"input0/pointer", KEY_PROG1}, true), QString("btn-scroll-mode"));
     for (auto input = setup.inputs().begin(); input != setup.inputs().end(); ++input) {
         if (input->type == EV_KEY)
             QCOMPARE(mapping->slot(*input, true), input.key());

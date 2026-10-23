@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "service.h"
+#include "onboard.h"
 #include <QCoreApplication>
 #include <QDBusConnection>
 #include <QDBusError>
@@ -26,6 +27,8 @@ int main(int argc, char **argv) {
                                                          {"identifyWheels", true},
                                                          {"guidedCalibration", true},
                                                          {"guidedSetup", true},
+                                                         {"onboardBackup", true},
+                                                         {"onboardDpiWrite", true},
                                                          {"passthrough", true},
                                                          {"kdenliveApi", true},
                                                          {"appProfiles", "hyprland"}})
@@ -33,11 +36,21 @@ int main(int argc, char **argv) {
                             << '\n';
         return 0;
     }
+    if (!args.isEmpty() && (args.first() == "onboard-backup" || args.first() == "onboard-plan" ||
+                            args.first() == "onboard-apply-dpi" || args.first() == "onboard-restore-dpi" ||
+                            args.first() == "onboard-probe"))
+        return cs::mouse::onboard::run(args);
     if (args != QStringList{"run"}) {
         QTextStream(args.contains("--help") ? stdout : stderr) << "Usage: mouse-remapperd run | features --json\n"
+                                                                  "       mouse-remapperd onboard-backup --json\n"
+                                                                  "       mouse-remapperd onboard-probe --json\n"
+                                                                  "       mouse-remapperd onboard-plan --backup FILE --json\n"
+                                                                  "       mouse-remapperd onboard-apply-dpi --backup FILE --sha256 HASH --confirm-dpi-to-f23-f24 --json\n"
+                                                                  "       mouse-remapperd onboard-restore-dpi --backup FILE --sha256 HASH --confirm-restore-dpi --json\n"
                                                                   "Exact device: Razer Naga V2 HyperSpeed (1532:00b4).\n"
                                                                   "run grabs only this mouse's button interfaces; features opens no "
-                                                                  "input.\n";
+                                                                  "input. Backup/probe/plan are read-only. Only explicitly confirmed "
+                                                                  "DPI commands write two normal-layer addresses. No resets or firmware updates.\n";
         return args.contains("--help") ? 0 : 2;
     }
     auto bus = QDBusConnection::sessionBus();
