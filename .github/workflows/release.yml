@@ -123,9 +123,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure git identity
+        env:
+          RELEASE_AUTHOR: ${{ github.actor }}
+          RELEASE_AUTHOR_ID: ${{ github.actor_id }}
         run: |
-          git config --global user.name  "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "$RELEASE_AUTHOR"
+          git config --global user.email "${RELEASE_AUTHOR_ID}+${RELEASE_AUTHOR}@users.noreply.github.com"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           echo "RELEASE_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 

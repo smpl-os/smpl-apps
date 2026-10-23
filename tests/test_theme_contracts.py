@@ -6,6 +6,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+PRIVATE_MOUSE_PROBE = ROOT / "settings/src/mouse/native_tests.rs"
 GUI_SOURCES = {
     "start-menu/src/main.rs": ("start-menu", "Popup"),
     "notif-center/src/main.rs": ("notif-center", "Popup"),
@@ -41,13 +42,21 @@ class ThemeContractTests(unittest.TestCase):
         ]:
             self.assertIn(requirement, backend)
         for source in ROOT.glob("*/src/**/*.rs"):
-            if source != ROOT / "smpl-common/src/lib.rs":
+            if source not in {ROOT / "smpl-common/src/lib.rs", PRIVATE_MOUSE_PROBE}:
                 self.assertNotIn(
                     "Backend::builder()", source.read_text(), str(source)
                 )
         manifest = (ROOT / "Cargo.toml").read_text()
         self.assertNotIn("renderer-software", manifest)
         self.assertNotIn("renderer-skia", manifest)
+
+    def test_mouse_probe_backend_is_test_only_and_private_femtovg(self):
+        module = (ROOT / "settings/src/mouse/mod.rs").read_text()
+        self.assertRegex(module, r"#\[cfg\(test\)\]\s+mod native_tests;")
+        source = PRIVATE_MOUSE_PROBE.read_text()
+        self.assertIn('.with_renderer_name("femtovg")', source)
+        self.assertIn('std::env::var("SMPL_MOUSE_PROBE_PRIVATE_DISPLAY").as_deref(), Ok("1")', source)
+        self.assertIn('std::env::var("DISPLAY").unwrap().starts_with("127.0.0.1:")', source)
 
     def test_ui_does_not_fade_foreground_or_ancestors(self):
         for source in ROOT.glob("*/ui/*.slint"):
