@@ -12,6 +12,7 @@ use std::time::Duration;
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel, Weak};
 
 use super::buttons::{Buttons, ButtonView, PanelView, RowView};
+use super::backend::{self, Command, Status};
 use super::devices;
 use super::pointer::{self, Pointer};
 use super::pointer_state::PointerState;
@@ -29,11 +30,19 @@ const APPLY_DELAY: Duration = Duration::from_millis(250);
 struct State {
     buttons: Buttons,
     pointer: PointerState,
+    backend: Result<Status, String>,
+    polling: bool,
+    auto_selected: bool,
+    last_sequence: u64,
+    last_learning: String,
+    last_setup: bool,
+    on_tab: bool,
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     static APPLY_TIMER: Timer = Timer::default();
+    static BACKEND_TIMER: Timer = Timer::default();
 }
 
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
@@ -115,6 +124,7 @@ fn render_buttons(ui: &MainWindow) {
     ui.set_ms_profile_names(strings(&view.profile_names));
     ui.set_ms_profile_index(view.profile_index);
     ui.set_ms_profile_global(view.profile_global);
+    ui.set_ms_profile_kdenlive(view.profile_kdenlive);
     ui.set_ms_profile_fallthrough(view.fallthrough);
     ui.set_ms_adding_profile(view.adding);
     ui.set_ms_app_classes(strings(&view.app_classes));
@@ -135,6 +145,52 @@ fn render_buttons(ui: &MainWindow) {
     ui.set_ms_status(s(&view.status));
     ui.set_ms_status_is_error(view.status_is_error);
     ui.set_ms_config_path(s(&view.path));
+    render_backend(ui);
+}
+
+fn render_backend(ui: &MainWindow) {
+    with(|st| {
+        let razer = st.buttons.is_razer();
+        match &st.backend {
+            Ok(status) => {
+                ui.set_ms_backend_status(s(if razer {
+                    status.summary()
+                } else {
+                    "This model is a preview. Only the Razer Naga V2 HyperSpeed (1532:00b4) has a live remapping backend.".into()
+                }));
+                ui.set_ms_backend_ready(razer && status.ready);
+                ui.set_ms_backend_error(razer && (!status.error.is_empty() || !status.ready));
+                ui.set_ms_identifying(razer && status.identify);
+                ui.set_ms_learning(razer && !status.learning.is_empty());
+                ui.set_ms_calibrating(razer && status.calibrating);
+                ui.set_ms_setup_active(razer && status.setup.active);
+                ui.set_ms_setup_phase(s(&status.setup.phase));
+                ui.set_ms_setup_progress(s(format!("Step {} of {}: {}", status.setup.step, status.setup.total, ui.get_ms_selected_title())));
+                ui.set_ms_setup_notice(s(&status.notice));
+                ui.set_ms_setup_rows(strings(&status.setup.rows));
+                ui.set_ms_setup_captured(status.setup.captured as i32);
+                ui.set_ms_can_learn(st.buttons.learnable_input().is_some());
+                if razer {
+                    if let Some(slot) = st.buttons.selected_input() {
+                        if status.learned.iter().any(|learned| learned == slot) {
+                            ui.set_ms_selected_note(s("Code learned from this mouse interface. Use Identify buttons to select it by pressing it."));
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                ui.set_ms_backend_status(s(error));
+                ui.set_ms_backend_error(true);
+                ui.set_ms_backend_ready(false);
+                ui.set_ms_identifying(false);
+                ui.set_ms_learning(false);
+                ui.set_ms_calibrating(false);
+                // Keep a pending setup's Cancel control usable after a method error.
+                ui.set_ms_setup_notice(s(error));
+                ui.set_ms_can_learn(false);
+            }
+        }
+    });
 }
 
 // ── Typed-in fields ──────────────────────────────────────────────────────────
@@ -190,12 +246,28 @@ fn ensure_loaded(ui: &MainWindow) -> bool {
     ui.set_ms_pointer_path(s(paths.pointer.display().to_string()));
     let pointer = PointerState::load(paths.pointer);
     let ask_hyprland = pointer.needs_live_read();
-    let buttons = Buttons::load(devices::builtin(), paths.assignments);
-    STATE.with(|cell| *cell.borrow_mut() = Some(State { buttons, pointer }));
+    let mut buttons = Buttons::load(devices::builtin(), paths.assignments);
+    buttons.select_default_input();
+    STATE.with(|cell| *cell.borrow_mut() = Some(State {
+        buttons, pointer, backend: Err("Checking mouse remapper…".into()),
+        polling: false, auto_selected: false, last_sequence: 0, last_learning: String::new(), last_setup: false, on_tab: true,
+    }));
     if ask_hyprland {
         read_live(ui.as_weak());
     }
     true
+}
+
+fn load_catalog(weak: Weak<MainWindow>) {
+    std::thread::spawn(move || {
+        let daemon = crate::keypad::daemon_binary();
+        let actions = crate::assign::catalog::load(daemon.as_deref());
+        let _ = slint::invoke_from_event_loop(move || {
+            if with(|st| st.buttons.set_live_actions(actions)) == Some(true) {
+                if let Some(ui) = weak.upgrade() { render_buttons(&ui); }
+            }
+        });
+    });
 }
 
 /// The tab is open: build the models the first time, else read the
@@ -207,6 +279,73 @@ fn enter(ui: &MainWindow) {
     sync_profile_fields(ui);
     sync_editor_text(ui);
     render(ui);
+    load_catalog(ui.as_weak());
+    with(|st| st.on_tab = true);
+    request_backend(ui.as_weak(), Command::Poll);
+}
+
+fn request_backend(weak: Weak<MainWindow>, command: Command) {
+    if matches!(command, Command::Poll) && with(|st| st.polling) == Some(true) {
+        return;
+    }
+    with(|st| st.polling = true);
+    backend::request(command, move |result| {
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut refill = false;
+            with(|st| {
+                st.polling = false;
+                st.backend = result.and_then(|status| {
+                    let expected = Paths::standard().assignments.display().to_string();
+                    if status.config_path != expected {
+                        Err(format!("Mouse service uses {}, but Settings edits {expected}; remapping controls are disabled.", status.config_path))
+                    } else {
+                        Ok(status)
+                    }
+                }).map_err(|error| format!("Mouse remapper unavailable: {error}. Check mouse-remap.service."));
+                let Ok(status) = &st.backend else { return };
+                if !st.on_tab { return; }
+                if !st.auto_selected && status.connected {
+                    st.buttons.show_razer();
+                    st.auto_selected = true;
+                    refill = true;
+                }
+                if (!st.last_learning.is_empty() && status.learning.is_empty()) || (st.last_setup && !status.setup.active) {
+                    st.buttons.reread();
+                    refill = true;
+                }
+                st.last_learning = status.learning.clone();
+                st.last_setup = status.setup.active;
+                if status.setup.active && !status.setup.target.is_empty() &&
+                    st.buttons.selected_input() != Some(status.setup.target.as_str()) {
+                    st.buttons.select_input(&status.setup.target);
+                    refill = true;
+                }
+                if status.calibrating && !status.learning.is_empty() &&
+                    st.buttons.selected_input() != Some(status.learning.as_str()) {
+                    st.buttons.select_input(&status.learning);
+                    refill = true;
+                }
+                if status.sequence != st.last_sequence {
+                    st.last_sequence = status.sequence;
+                    if st.buttons.is_razer() && !status.last_slot.is_empty() && !status.calibrating && !status.setup.active {
+                        st.buttons.select_input(&status.last_slot);
+                        refill = true;
+                    }
+                }
+            });
+            if refill {
+                sync_profile_fields(&ui);
+                sync_editor_text(&ui);
+            }
+            if refill {
+                render_buttons(&ui);
+            } else {
+                // Status heartbeats must not replace a dropdown's model while it is open.
+                render_backend(&ui);
+            }
+        });
+    });
 }
 
 /// Asks the running Hyprland what the options are (a read-only query), for a
@@ -282,6 +421,51 @@ pub fn install(ui: &MainWindow) {
     install_devices(ui);
     install_profiles(ui);
     install_editor(ui);
+    install_backend(ui);
+}
+
+fn install_backend(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_ms_start_setup(move || request_backend(weak.clone(), Command::StartSetup));
+    let weak = ui.as_weak();
+    ui.on_ms_arm_setup(move || request_backend(weak.clone(), Command::ArmSetup));
+    let weak = ui.as_weak();
+    ui.on_ms_next_setup(move || request_backend(weak.clone(), Command::NextSetup));
+    let weak = ui.as_weak();
+    ui.on_ms_skip_setup(move || request_backend(weak.clone(), Command::SkipSetup));
+    let weak = ui.as_weak();
+    ui.on_ms_retry_setup(move || request_backend(weak.clone(), Command::RetrySetup));
+    let weak = ui.as_weak();
+    ui.on_ms_save_setup(move || request_backend(weak.clone(), Command::SaveSetup));
+    let weak = ui.as_weak();
+    ui.on_ms_cancel_setup(move || request_backend(weak.clone(), Command::CancelSetup));
+    let weak = ui.as_weak();
+    ui.on_ms_calibrate(move || request_backend(weak.clone(), Command::Calibrate));
+    let weak = ui.as_weak();
+    ui.on_ms_identify(move |on| request_backend(weak.clone(), Command::Identify(on)));
+    let weak = ui.as_weak();
+    ui.on_ms_learn(move || {
+        if let Some(Some(slot)) = with(|st| st.buttons.learnable_input().map(str::to_string)) {
+            request_backend(weak.clone(), Command::Learn(slot));
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_ms_cancel_learn(move || request_backend(weak.clone(), Command::Cancel));
+    let weak = ui.as_weak();
+    BACKEND_TIMER.with(|timer| timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let active = ui.get_active_tab() == MOUSE_TAB;
+        let leaving = with(|st| {
+            let leaving = st.on_tab && !active;
+            st.on_tab = active;
+            leaving
+        }).unwrap_or(false);
+        if leaving {
+            request_backend(weak.clone(), Command::Leave);
+        } else if active {
+            request_backend(weak.clone(), Command::Poll);
+        }
+    }));
 }
 
 fn install_pointer(ui: &MainWindow) {
@@ -307,13 +491,16 @@ fn install_devices(ui: &MainWindow) {
         edit_buttons(&weak, |b| {
             b.refresh();
             Refill::Both
-        })
+        });
+        load_catalog(weak.clone());
     });
 
     let weak = ui.as_weak();
     ui.on_ms_select_device(move |index| {
+        request_backend(weak.clone(), Command::Leave);
         edit_buttons(&weak, |b| {
             b.select_device(index.max(0) as usize);
+            b.select_default_input();
             Refill::Both
         })
     });
@@ -328,6 +515,13 @@ fn install_devices(ui: &MainWindow) {
 }
 
 fn install_profiles(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_ms_set_kdenlive(move |enabled| {
+        edit_buttons(&weak, |buttons| {
+            buttons.set_kdenlive(enabled);
+            Refill::Editor
+        });
+    });
     let weak = ui.as_weak();
     ui.on_ms_select_profile(move |index| {
         edit_buttons(&weak, |b| {

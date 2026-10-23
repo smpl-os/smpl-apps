@@ -31,7 +31,7 @@ SERVICE = "smpl-calendar-alertd.service"
 SERVICE_SOURCE = Path(__file__).resolve().parents[1] / "calendar/systemd" / SERVICE
 
 CONTROL_SURFACE_SOURCE = Path(__file__).resolve().parents[1] / "control-surface"
-CONTROL_SURFACE_BINARIES = ("control-surfaced", "ch552-padprog")
+CONTROL_SURFACE_BINARIES = ("control-surfaced", "ch552-padprog", "mouse-remapperd")
 FIRMWARE_DIR = "usr/share/control-surface/firmware"
 # Runtime baseline of the control-surface asset: the oldest Qt and glibc it
 # must run on (smplOS's installed qt6-base 6.11.2 and glibc 2.44). A Qt
@@ -52,6 +52,7 @@ CONTROL_SURFACE_DATA = (
     ("firmware/release/LICENSE", "usr/share/licenses/control-surface/firmware-LICENSE"),
     ("COPYING", "usr/share/licenses/control-surface/COPYING"),
     ("README.md", "usr/share/doc/control-surface/README.md"),
+    ("docs/mouse-remapping.md", "usr/share/doc/control-surface/docs/mouse-remapping.md"),
     ("USER-QUICKSTART.md", "usr/share/doc/control-surface/USER-QUICKSTART.md"),
 )
 
@@ -296,7 +297,8 @@ def describe(summaries):
 def smoke_control_surface(tarball):
     """Run the packaged binaries on this (baseline) system, without a device,
     a D-Bus session, a config or the network: `control-surfaced features
-    --json` and `ch552-padprog --help`. Returns the Qt library they loaded."""
+    --json`, `mouse-remapperd features --json` and `ch552-padprog --help`.
+    Returns the Qt library they loaded."""
     if os.geteuid() == 0:
         raise ValueError("run the control-surface smoke test as a regular user, as smplOS does")
     summaries = check_control_surface(tarball)
@@ -325,6 +327,16 @@ def smoke_control_surface(tarball):
         for key in ("apiVersion", "bindingKinds", "kdenlive", "device"):
             if key not in features:
                 raise ValueError(f"control-surfaced features --json lacks {key}")
+        run = subprocess.run([str(root / "usr/bin/mouse-remapperd"), "features", "--json"],
+                             capture_output=True, text=True, env=env, timeout=SMOKE_TIMEOUT)
+        if run.returncode:
+            raise ValueError(f"mouse-remapperd features --json failed ({run.returncode}): {run.stderr.strip()}")
+        mouse = json.loads(run.stdout)
+        expected = {"apiVersion": 1, "vendor": "1532", "product": "00b4", "learning": True,
+                    "identify": True, "passthrough": True, "appProfiles": "hyprland", "kdenliveApi": True,
+                    "identifyWheels": True, "guidedCalibration": True, "guidedSetup": True}
+        if any(mouse.get(key) != value for key, value in expected.items()):
+            raise ValueError("mouse-remapperd features --json does not satisfy the mouse runtime contract")
         run = subprocess.run([str(root / "usr/bin/ch552-padprog"), "--help"], capture_output=True,
                              text=True, env=env, timeout=SMOKE_TIMEOUT)
         if run.returncode or "list | plan | flash | blank" not in run.stdout:

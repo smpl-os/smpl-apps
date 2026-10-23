@@ -16,6 +16,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
+pub use crate::assign::catalog::{running_kdenlive_actions, kdenlive_catalog};
+#[cfg(test)]
+use crate::assign::catalog::parse_actions;
 
 pub const SERVICE: &str = "control-surface.service";
 const BACKUPS_KEPT: usize = 10;
@@ -788,22 +791,6 @@ fn prune_backups(dir: &Path) {
 
 /// Kdenlive's advertised actions, when a Kdenlive with its control-surface
 /// interface enabled is running (read-only query, no lease).
-pub fn running_kdenlive_actions(daemon: Option<&Path>) -> Vec<(String, String)> {
-    let Some(daemon) = daemon else {
-        return Vec::new();
-    };
-    let Ok(out) = Command::new(daemon).args(["list-capabilities", "--json"]).output() else {
-        return Vec::new();
-    };
-    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else {
-        return Vec::new();
-    };
-    let mut actions = Vec::new();
-    for service in v.get("kdenlive").and_then(Value::as_array).into_iter().flatten() {
-        parse_actions(service, &mut actions);
-    }
-    actions
-}
 
 // ── Firmware ─────────────────────────────────────────────────────────────────
 
@@ -1348,26 +1335,6 @@ pub fn features(daemon: Option<&Path>) -> Option<Features> {
         return None;
     }
     parse_features(&String::from_utf8_lossy(&out.stdout))
-}
-
-fn parse_actions(v: &Value, into: &mut Vec<(String, String)>) {
-    for a in v.get("actions").and_then(Value::as_array).into_iter().flatten() {
-        let id = text(a, "id");
-        if !id.is_empty() && !into.iter().any(|(i, _)| *i == id) {
-            into.push((id.clone(), text(a, "text").replace('&', "")));
-        }
-    }
-}
-
-/// The curated Kdenlive catalog, offline (`list-actions --json`).
-pub fn kdenlive_catalog(daemon: Option<&Path>) -> Vec<(String, String)> {
-    let mut actions = Vec::new();
-    if let Some(out) = daemon.and_then(|d| Command::new(d).args(["list-actions", "--json"]).output().ok()) {
-        if let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) {
-            parse_actions(&v, &mut actions);
-        }
-    }
-    actions
 }
 
 fn follow_file(path: &Path, on_event: &impl Fn(InputEvent) -> bool) {

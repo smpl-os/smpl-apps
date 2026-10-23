@@ -177,10 +177,13 @@ std::optional<QList<KeyChord>> parseKeys(const QJsonValue &v, QString *error)
     return std::nullopt;
 }
 
-bool parseBindings(const QJsonObject &o, BindingMap &into, QString *error)
+bool parseBindings(const QJsonObject &o, BindingMap &into, QString *error, const QStringList &inputSlots = {})
 {
     for (auto it = o.begin(); it != o.end(); ++it) {
         const QString slot = it.key();
+        if (!inputSlots.isEmpty() && !inputSlots.contains(slot)) {
+            return fail(error, QStringLiteral("unknown input slot '%1'").arg(slot));
+        }
         if (slot.startsWith(QLatin1String("knob")) && !slot.contains(QLatin1Char('.')) && it.value().isObject()
             && !it.value().toObject().contains(QStringLiteral("keys")) && !it.value().toObject().contains(QStringLiteral("action"))
             && !it.value().toObject().contains(QStringLiteral("control"))) {
@@ -220,7 +223,7 @@ bool parseBindings(const QJsonObject &o, BindingMap &into, QString *error)
             continue;
         }
         static const QRegularExpression slotRe(QStringLiteral("^(key([1-9]|1[0-6])|knob[1-3]\\.(turn|ccw|cw|press|shift\\.(turn|ccw|cw)))$"));
-        if (!slotRe.match(slot).hasMatch()) {
+        if (inputSlots.isEmpty() && !slotRe.match(slot).hasMatch()) {
             return fail(error, QStringLiteral("unknown control slot '%1' (key1..key16, knob1..knob3 with turn/ccw/cw/press/shift)").arg(slot));
         }
         auto b = parseBinding(it.value(), error);
@@ -490,7 +493,7 @@ const Profile *Config::globalProfile() const
     return nullptr;
 }
 
-std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDir, QString *error)
+std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDir, QString *error, const QStringList &inputSlots)
 {
     QJsonParseError pe;
     const QJsonDocument doc = QJsonDocument::fromJson(stripJsonComments(jsonc), &pe);
@@ -720,7 +723,7 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
             p.modes.insert(it.key(), values);
         }
         QString err;
-        if (!parseBindings(po.value(QStringLiteral("bindings")).toObject(), p.bindings, &err)) {
+        if (!parseBindings(po.value(QStringLiteral("bindings")).toObject(), p.bindings, &err, inputSlots)) {
             if (error) {
                 *error = QStringLiteral("profile %1: %2").arg(p.name, err);
             }
@@ -747,7 +750,7 @@ std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDi
                     }
                 }
             }
-            if (!parseBindings(lo.value(QStringLiteral("bindings")).toObject(), l.bindings, &err)) {
+            if (!parseBindings(lo.value(QStringLiteral("bindings")).toObject(), l.bindings, &err, inputSlots)) {
                 if (error) {
                     *error = QStringLiteral("profile %1 layer %2: %3").arg(p.name, l.name, err);
                 }

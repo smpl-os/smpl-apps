@@ -160,7 +160,7 @@ Engine::Engine(KeySink *keys, KdenliveClient *kdenlive, QObject *parent)
             if (!kdenliveProfile() || fb.pid != m_window.pid || fb.address != m_window.address) {
                 return;
             }
-            if (!m_profile->keyFallback) {
+            if (!m_apiFallbackAllowed || !m_profile->keyFallback) {
                 noticeAbsent(id);
                 return;
             }
@@ -324,7 +324,7 @@ bool Engine::kdenliveAbsent() const
 bool Engine::kdenliveStock() const
 {
     // API-only by default: stock shortcuts are typed only when the profile opts in.
-    return kdenliveAbsent() && m_profile->keyFallback;
+    return m_apiFallbackAllowed && kdenliveAbsent() && m_profile->keyFallback;
 }
 
 QString Engine::absentNotice()
@@ -340,8 +340,10 @@ void Engine::noticeAbsent(const QString &what)
     const QString key = QStringLiteral("absent|%1").arg(m_kd ? m_kd->attachedPid() : 0);
     if (!m_said.contains(key)) {
         m_said.insert(key);
-        Q_EMIT message(QStringLiteral("%1 (%2)").arg(absentNotice(), what));
-        Q_EMIT notice(absentNotice());
+        const QString text = m_apiFallbackAllowed ? absentNotice()
+            : QStringLiteral("Kdenlive control interface not enabled: nothing sent. Enable \"Control surface interface\" in Kdenlive (off by default). No keyboard fallback is used.");
+        Q_EMIT message(QStringLiteral("%1 (%2)").arg(text, what));
+        Q_EMIT notice(text);
     }
 }
 
@@ -396,6 +398,13 @@ void Engine::releaseAll()
     if (had) {
         Q_EMIT resolutionChanged();
     }
+}
+
+void Engine::cancelPending()
+{
+    endAllGestures(true);
+    dropPendingWork();
+    releaseAll();
 }
 
 bool Engine::isHeldModifier(const QString &control) const
@@ -834,6 +843,10 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
         enqueueTaps(group, dir, b.keys, count);
         return;
     case Binding::Action:
+        if (!kd && !m_apiFallbackAllowed) {
+            sayOnce(QStringLiteral("api-profile|") + b.name, QStringLiteral("%1: Kdenlive API profile is not active; nothing sent").arg(b.name));
+            return;
+        }
         if (!kd || kdenliveStock()) {
             // Not Kdenlive, or stock Kdenlive with keyFallback: the action's stock shortcut.
             if (!b.keys.isEmpty()) {
@@ -849,7 +862,7 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
                 return;
             }
             endAllGestures(false);  // discrete operations close editing gestures first
-            m_actionFallback.insert(b.name, Fallback{m_profile->keyFallback ? b.keys : QList<KeyChord>{}, m_window.pid, m_window.address});
+            m_actionFallback.insert(b.name, Fallback{m_apiFallbackAllowed && m_profile->keyFallback ? b.keys : QList<KeyChord>{}, m_window.pid, m_window.address});
             for (int i = 0; i < (isTurn ? count : 1); ++i) {
                 m_kd->triggerAction(b.name);
             }
@@ -988,6 +1001,10 @@ void Engine::execute(const Resolution &r, const QString &slot, double detents, b
 
 void Engine::executeControl(const Binding &b, const QString &slot, const QString &group, int dir, double delta)
 {
+    if (!kdenliveProfile() && !m_apiFallbackAllowed) {
+        sayOnce(QStringLiteral("api-profile|") + b.name, QStringLiteral("%1: Kdenlive API profile is not active; nothing sent").arg(b.name));
+        return;
+    }
     if (!kdenliveProfile() || kdenliveStock()) {
         // Stock behaviour: [negative key, positive key] or one key.
         if (b.keys.size() >= 2) {

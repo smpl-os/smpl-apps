@@ -33,13 +33,14 @@ const BUILTIN: [(&str, &str); 2] = [
 ];
 
 /// The action names a device file may use.
-const KINDS: [(&str, ActionKind); 6] = [
+const KINDS: [(&str, ActionKind); 7] = [
     ("inherit", ActionKind::Inherit),
     ("disabled", ActionKind::Disabled),
     ("shortcut", ActionKind::Shortcut),
     ("media", ActionKind::Media),
     ("mouse", ActionKind::Mouse),
     ("command", ActionKind::Command),
+    ("kdenlive", ActionKind::Kdenlive),
 ];
 
 /// Evdev names of the clicks a mouse is unusable without.
@@ -151,7 +152,7 @@ impl Device {
     }
 
     /// Whether a connected device (its USB ids and name) is this one.
-    #[allow(dead_code)] // used by the capture backend, which does not exist yet
+    #[allow(dead_code)] // matching is also enforced independently by mouse-remapperd
     pub fn matches(&self, vendor: u16, product: u16, name: &str) -> bool {
         let name = name.to_lowercase();
         self.matchers.iter().any(|rule| {
@@ -289,7 +290,7 @@ fn input_of(input: &Json, index: usize) -> Result<Input, String> {
     let code = match input.get("code") {
         None => None,
         Some(Json::Str(code)) if valid_code(code) => Some(code.clone()),
-        Some(_) => return Err(format!("{what}: \"code\" must be an evdev name like KEY_1 or BTN_SIDE")),
+        Some(_) => return Err(format!("{what}: \"code\" must be an evdev name like KEY_1, BTN_SIDE or REL_WHEEL")),
     };
     let source = match input.get("source") {
         None => None,
@@ -376,7 +377,7 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn valid_code(code: &str) -> bool {
-    let Some(rest) = code.strip_prefix("KEY_").or_else(|| code.strip_prefix("BTN_")) else {
+    let Some(rest) = code.strip_prefix("KEY_").or_else(|| code.strip_prefix("BTN_")).or_else(|| code.strip_prefix("REL_")) else {
         return false;
     };
     !rest.is_empty() && rest.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
@@ -476,13 +477,14 @@ mod tests {
     }
 
     #[test]
-    fn every_built_in_file_parses_and_is_a_preview() {
+    fn every_built_in_file_parses_and_only_supported_hardware_is_live() {
         for (file, text) in BUILTIN {
             parse(text).unwrap_or_else(|error| panic!("{file}: {error}"));
         }
         let devices = builtin();
         assert_eq!(devices.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["generic", "mmo-12"]);
-        assert!(devices.iter().all(|device| device.preview), "no mouse has been confirmed on hardware yet");
+        assert!(devices[0].preview);
+        assert!(!devices[1].preview);
         assert_eq!(devices[0].title(), "Generic mouse (preview)");
     }
 
@@ -618,8 +620,9 @@ mod tests {
     #[test]
     fn devices_are_recognised_by_their_ids_and_name() {
         let naga = built_in("mmo-12");
-        assert!(naga.matches(0x1532, 0x0067, "Razer Razer Naga Trinity"));
-        assert!(naga.matches(0x1532, 0x0040, "razer naga 2014"), "names match in any case");
+        assert!(naga.matches(0x1532, 0x00b4, "Razer Razer Naga V2 HyperSpeed"));
+        assert!(naga.matches(0x1532, 0x00b4, "razer naga v2 hyperspeed"), "names match in any case");
+        assert!(!naga.matches(0x1532, 0x0067, "Razer Razer Naga Trinity"), "other Naga models are not silently supported");
         assert!(!naga.matches(0x1532, 0x0043, "Razer DeathAdder"), "the name has to match too");
         assert!(!naga.matches(0x046d, 0xc08b, "Naga clone"), "so does the vendor");
         assert!(!built_in("generic").matches(0x1532, 0x0067, "Razer Naga"), "a generic mouse is never auto-picked");

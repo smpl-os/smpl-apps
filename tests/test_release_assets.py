@@ -295,6 +295,14 @@ class ControlSurfaceAssetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             assets.stage_control_surface(self.install, self.tarball, self.source)
 
+    def test_mouse_daemon_and_runtime_docs_are_mandatory(self):
+        self.assertIn("mouse-remapperd", assets.CONTROL_SURFACE_BINARIES)
+        self.assertIn(("docs/mouse-remapping.md", "usr/share/doc/control-surface/docs/mouse-remapping.md"),
+                      assets.CONTROL_SURFACE_DATA)
+        (self.install / "usr/bin/mouse-remapperd").unlink()
+        with self.assertRaisesRegex(ValueError, "mouse-remapperd"):
+            assets.stage_control_surface(self.install, self.tarball, self.source)
+
     def test_tampered_asset_fails_verification(self):
         assets.stage_control_surface(self.install, self.tarball, self.source)
         bad = self.root / "bad.tar.gz"
@@ -460,4 +468,3 @@ class ControlSurfaceRuntimeTests(unittest.TestCase):
                     if path.suffix in {".txt", ".cmake", ".cpp", ".h", ".sh"} and path.is_file()]
         for path in sources:
             self.assertNotIn("QT_NO_VERSION_TAGGING", path.read_text(errors="replace"), path)
-

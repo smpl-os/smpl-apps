@@ -1743,7 +1743,7 @@ component AssignProfileEditor inherits VerticalLayout {
 // Action half: the action dropdown, the value it takes (text, a choice or a
 // note), an optional hint, any extra rows a tab passes in as children, the
 // "only if installed" row and Apply.
-component AssignActionEditor inherits VerticalLayout {
+export component AssignActionEditor inherits VerticalLayout {
     // 0: nothing to enter, 1: text, 2: a choice, 3: advanced (read-only).
     in property <int> mode: 0;
     in property <bool> locked: false;
@@ -2550,6 +2550,7 @@ export component MainWindow inherits Window {
     in property <[string]> ms-profile-names;
     in property <int> ms-profile-index: 0;
     in property <bool> ms-profile-global: true;
+    in property <bool> ms-profile-kdenlive: false;
     in property <bool> ms-profile-fallthrough: true;
     in property <bool> ms-adding-profile: false;
     in property <[string]> ms-app-classes;
@@ -2573,7 +2574,31 @@ export component MainWindow inherits Window {
     in property <string> ms-status;
     in property <bool> ms-status-is-error: false;
     in property <string> ms-config-path;
+    in property <string> ms-backend-status;
+    in property <bool> ms-backend-error;
+    in property <bool> ms-backend-ready;
+    in property <bool> ms-identifying;
+    in property <bool> ms-learning;
+    in property <bool> ms-calibrating;
+    in property <bool> ms-setup-active;
+    in property <string> ms-setup-phase;
+    in property <string> ms-setup-progress;
+    in property <string> ms-setup-notice;
+    in property <[string]> ms-setup-rows;
+    in property <int> ms-setup-captured;
+    in property <bool> ms-can-learn;
     callback ms-entered();
+    callback ms-identify(bool);
+    callback ms-learn();
+    callback ms-calibrate();
+    callback ms-start-setup();
+    callback ms-arm-setup();
+    callback ms-next-setup();
+    callback ms-skip-setup();
+    callback ms-retry-setup();
+    callback ms-save-setup();
+    callback ms-cancel-setup();
+    callback ms-cancel-learn();
     callback ms-refresh();
     callback ms-set-sensitivity(float);
     callback ms-set-accel(int);
@@ -2590,6 +2615,7 @@ export component MainWindow inherits Window {
     callback ms-remove-profile();
     callback ms-apply-profile-details();
     callback ms-set-fallthrough(bool);
+    callback ms-set-kdenlive(bool);
     callback ms-select-action(int);
     callback ms-select-choice(int);
     callback ms-apply-binding();
@@ -2631,6 +2657,8 @@ export component MainWindow inherits Window {
             root.dictation-lang-dropdown-open = false;
         } else if root.show-help {
             root.show-help = false;
+        } else if root.ms-setup-active {
+            root.ms-cancel-setup();
         } else if root.dictation-configuring {
             root.dictation-configuring = false;
         } else if root.kb-edit-idx >= 0 {
@@ -2677,6 +2705,9 @@ export component MainWindow inherits Window {
             }
             if e.text == Key.Escape {
                 root.dismiss-top-layer();
+                return accept;
+            }
+            if root.ms-setup-active {
                 return accept;
             }
             if e.modifiers.alt && (e.text == "a" || e.text == "A") && root.active-tab == 1 {
@@ -10316,7 +10347,7 @@ export component MainWindow inherits Window {
                         KeypadButton { text: "Refresh"; clicked => { root.ms-refresh(); } }
                     }
 
-                    // ── What works now and what is a preview ──
+                    // ── Pointer and button backend scope ──
                     Rectangle {
                         border-radius: 6px;
                         background: Theme.panel;
@@ -10341,7 +10372,7 @@ export component MainWindow inherits Window {
                                     wrap: word-wrap;
                                 }
                                 Text {
-                                    text: "Button assignments are a preview: they are saved for each mouse, but nothing acts on a button press yet, and the buttons drawn are examples until the real ones are captured.";
+                                    text: "Razer Naga V2 HyperSpeed button assignments use the mouse remapper service. Other models remain previews. Unassigned input, pointer motion and scrolling keep their normal behavior; app profiles require Hyprland.";
                                     color: Theme.fg_dim;
                                     font-size: Typography.secondary;
                                     wrap: word-wrap;
@@ -10536,11 +10567,27 @@ export component MainWindow inherits Window {
                             padding: 12px;
                             spacing: 8px;
 
-                            Text {
-                                text: "Buttons";
-                                color: Theme.fg_dim;
-                                font-size: Typography.secondary;
-                                font-weight: 600;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Buttons";
+                                    color: Theme.fg_dim;
+                                    font-size: Typography.secondary;
+                                    font-weight: 600;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                KeypadButton {
+                                    text: "Set up this mouse";
+                                    primary: true;
+                                    enabled: root.ms-backend-ready;
+                                    clicked => { root.ms-start-setup(); }
+                                }
+                                KeypadButton {
+                                    text: root.ms-calibrating ? "Calibrating side grid..." : "Calibrate side grid";
+                                    enabled: root.ms-backend-ready && !root.ms-learning;
+                                    clicked => { root.ms-calibrate(); }
+                                }
                             }
 
                             HorizontalLayout {
@@ -10576,15 +10623,33 @@ export component MainWindow inherits Window {
 
                             HorizontalLayout {
                                 spacing: 8px;
-                                KeypadButton { text: "Press a button to identify it"; enabled: false; }
-                                Text {
-                                    horizontal-stretch: 1;
-                                    text: "Not available yet: it needs the button backend. Pick a button on the picture meanwhile.";
-                                    color: Theme.fg_dim;
-                                    font-size: Typography.caption;
-                                    wrap: word-wrap;
-                                    vertical-alignment: center;
+                                KeypadButton {
+                                    text: root.ms-identifying ? "Stop identifying" : "Identify buttons";
+                                    enabled: root.ms-backend-ready;
+                                    clicked => { root.ms-identify(!root.ms-identifying); }
                                 }
+                                KeypadButton {
+                                    text: root.ms-learning ? "Cancel learning" : "Learn selected button";
+                                    enabled: root.ms-backend-ready && (root.ms-can-learn || root.ms-learning);
+                                    clicked => {
+                                        if root.ms-learning { root.ms-cancel-learn(); }
+                                        else { root.ms-learn(); }
+                                    }
+                                }
+                            }
+                            Text {
+                                text: root.ms-backend-status;
+                                color: root.ms-backend-error ? Theme.danger : Theme.fg_dim;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
+                            }
+                            if root.ms-identifying || root.ms-learning: Text {
+                                text: root.ms-calibrating
+                                    ? "Press only the highlighted numbered side button, then release it. Continue through 12. Cancel discards this calibration; existing mappings stay unchanged."
+                                    : "Press a mouse button, scroll or tilt to select it on the map. Typing and scrolling are suppressed; primary clicks and movement still work. For unknown side keys, use Calibrate side grid. For a changed extra button, select its position and Learn.";
+                                color: Theme.info;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
                             }
                         }
                     }
@@ -10633,6 +10698,26 @@ export component MainWindow inherits Window {
                                 color: Theme.fg;
                                 font-size: Typography.body;
                                 font-weight: 600;
+                            }
+                            if !root.ms-profile-global: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Kdenlive control surface API";
+                                    color: Theme.fg;
+                                    font-size: Typography.secondary;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                KeypadToggle {
+                                    on: root.ms-profile-kdenlive;
+                                    toggled(on) => { root.ms-set-kdenlive(on); }
+                                }
+                            }
+                            if root.ms-profile-kdenlive: Text {
+                                text: "Enable Control surface interface in Kdenlive. API actions use the same plugin dispatcher as Keypad; an absent/refusing plugin never turns them into keyboard shortcuts.";
+                                color: Theme.info;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
                             }
                             if root.ms-selected-note != "": Text {
                                 text: root.ms-selected-note;
@@ -10851,6 +10936,134 @@ export component MainWindow inherits Window {
                     viewport-height: tab0-flick.viewport-height;
                     viewport-y: tab0-flick.viewport-y;
                     visible-height: tab0-flick.height;
+                }
+            }
+        }
+    }
+
+    if root.ms-setup-active: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: Theme.bg.transparentize(15%);
+        TouchArea { }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 16px;
+            width: min(740px, parent.width - 32px);
+            height: parent.height - 32px;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.accent;
+            background: Theme.bg;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                Text {
+                    text: "Set up this mouse";
+                    color: Theme.fg;
+                    font-size: Typography.heading;
+                    font-weight: 600;
+                }
+                Text {
+                    text: root.ms-setup-phase == "review" ? "Review captured controls" : root.ms-setup-progress;
+                    color: Theme.accent;
+                    font-size: Typography.body;
+                }
+                Text {
+                    text: root.ms-setup-notice;
+                    color: Theme.fg;
+                    font-size: Typography.caption;
+                    wrap: word-wrap;
+                }
+                if root.ms-setup-phase != "review": DeviceCanvas {
+                    buttons: root.ms-buttons;
+                    panels: root.ms-panels;
+                    aspect: root.ms-aspect;
+                    max-picture-width: min(500px, max(140px, (root.height - 260px) * root.ms-aspect));
+                }
+                if root.ms-setup-phase == "review": Rectangle {
+                    vertical-stretch: 1;
+                    setup-review := Flickable {
+                        width: parent.width - 14px;
+                        height: parent.height;
+                        viewport-width: self.width;
+                        VerticalLayout {
+                            spacing: 4px;
+                            for row in root.ms-setup-rows: Text {
+                                text: row;
+                                color: Theme.fg;
+                                font-size: Typography.caption;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    ScrollIndicator {
+                        x: parent.width - 8px;
+                        width: 8px;
+                        height: parent.height;
+                        viewport-height: setup-review.viewport-height;
+                        viewport-y: setup-review.viewport-y;
+                        visible-height: setup-review.height;
+                    }
+                    TouchArea {
+                        x: parent.width - 12px;
+                        width: 12px;
+                        height: parent.height;
+                        mouse-cursor: ns-resize;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down {
+                                setup-review.viewport-y = -clamp(self.mouse-y / max(self.height, 1px), 0, 1)
+                                    * max(0px, setup-review.viewport-height - setup-review.height);
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                setup-review.viewport-y = -clamp(self.mouse-y / max(self.height, 1px), 0, 1)
+                                    * max(0px, setup-review.viewport-height - setup-review.height);
+                            }
+                        }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    if root.ms-setup-phase != "review": KeypadButton {
+                        text: root.ms-setup-phase == "armed" ? "Waiting for input..." : "Capture next press";
+                        primary: true;
+                        enabled: root.ms-backend-ready && root.ms-setup-phase == "idle";
+                        clicked => { root.ms-arm-setup(); }
+                    }
+                    if root.ms-setup-phase != "review": KeypadButton {
+                        text: "Try again";
+                        enabled: root.ms-backend-ready && root.ms-setup-phase != "idle";
+                        clicked => { root.ms-retry-setup(); }
+                    }
+                    if root.ms-setup-phase != "review": KeypadButton {
+                        text: "Skip";
+                        enabled: root.ms-backend-ready;
+                        clicked => { root.ms-skip-setup(); }
+                    }
+                    if root.ms-setup-phase != "review": KeypadButton {
+                        text: "Next";
+                        enabled: root.ms-backend-ready && root.ms-setup-phase == "captured";
+                        clicked => { root.ms-next-setup(); }
+                    }
+                    if root.ms-setup-phase == "review": KeypadButton {
+                        text: "Save setup";
+                        primary: true;
+                        enabled: root.ms-backend-ready && root.ms-setup-captured > 0;
+                        clicked => { root.ms-save-setup(); }
+                    }
+                    KeypadButton {
+                        text: "Cancel";
+                        clicked => { root.ms-cancel-setup(); }
+                    }
+                }
+                Text {
+                    text: "Skipped controls keep existing mappings. No onboard settings are changed. Escape cancels without saving.";
+                    color: Theme.fg_dim;
+                    font-size: Typography.caption;
+                    wrap: word-wrap;
                 }
             }
         }

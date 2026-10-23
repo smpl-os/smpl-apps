@@ -4,6 +4,14 @@ A small native daemon (C++20, Qt 6 Core/Network/DBus, libudev; no Python) that
 turns the CH552 macro pad (USB `1189:8890`: 15 keys, 3 knobs that turn and
 press) into a per-application control surface on Hyprland.
 
+The same build also provides the separate **`mouse-remapperd`** for Razer
+Naga V2 HyperSpeed `1532:00b4`, sharing the Engine, Kdenlive plugin dispatch
+and action/configuration helpers
+without starting a CH552 backend. Settings > Mouse exposes a visible guided
+setup with captured-code review, learning and identify-on-diagram;
+see [mouse-remapping.md](docs/mouse-remapping.md) for
+its independent service, configuration and D-Bus contract.
+
 * Grabs **only** the pad: matched by VID:PID and serial, checked again with
   `EVIOCGID` before `EVIOCGRAB`. Re-attaches after unplug/replug via udev. Your
   keyboard and mouse are never opened.

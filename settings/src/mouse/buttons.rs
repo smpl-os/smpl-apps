@@ -84,6 +84,7 @@ pub struct View {
     pub profile_names: Vec<String>,
     pub profile_index: i32,
     pub profile_global: bool,
+    pub profile_kdenlive: bool,
     pub fallthrough: bool,
     pub adding: bool,
     pub app_classes: Vec<String>,
@@ -117,6 +118,7 @@ pub struct Buttons {
     editor: Binding,
     adding: bool,
     app_classes: Vec<String>,
+    live_actions: Vec<picker::Choice>,
     message: String,
     message_is_error: bool,
 }
@@ -137,6 +139,7 @@ impl Buttons {
             editor: unset(),
             adding: false,
             app_classes: Vec::new(),
+            live_actions: Vec::new(),
             message: String::new(),
             message_is_error: false,
         };
@@ -280,6 +283,44 @@ impl Buttons {
         self.message.clear();
     }
 
+    pub fn is_razer(&self) -> bool {
+        self.current_device().is_some_and(|device| device.id == "mmo-12")
+    }
+
+    pub fn show_razer(&mut self) {
+        if let Some(index) = self.devices.iter().position(|device| device.id == "mmo-12") {
+            if self.device != index {
+                self.select_device(index);
+            }
+        }
+        self.select_default_input();
+    }
+
+    pub fn select_default_input(&mut self) {
+        if self.input.is_none() {
+            self.select_input(if self.is_razer() { "grid-1" } else { "btn-back" });
+        }
+    }
+
+    pub fn set_live_actions(&mut self, actions: Vec<picker::Choice>) -> bool {
+        if self.live_actions == actions {
+            return false;
+        }
+        self.live_actions = actions;
+        true
+    }
+
+    pub fn selected_input(&self) -> Option<&str> {
+        self.input.as_deref()
+    }
+
+    pub fn learnable_input(&self) -> Option<&str> {
+        self.selected_input().filter(|id| {
+            self.is_razer() && (id.starts_with("grid-") || id.starts_with("wheel-tilt-") ||
+                matches!(*id, "btn-dpi" | "btn-dpi-up" | "btn-dpi-down" | "btn-scroll-mode" | "btn-back" | "btn-forward"))
+        })
+    }
+
     pub fn select_input(&mut self, id: &str) {
         if self.current_device().and_then(|d| d.input(id)).is_none() {
             return;
@@ -320,6 +361,9 @@ impl Buttons {
             return Vec::new();
         };
         let mut kinds = device.kinds_for(input).to_vec();
+        if !self.config.profiles().get(self.profile).is_some_and(|profile| profile.kdenlive) {
+            kinds.retain(|kind| *kind != ActionKind::Kdenlive);
+        }
         if !kinds.contains(&self.editor.kind) {
             kinds.push(self.editor.kind);
         }
@@ -327,7 +371,14 @@ impl Buttons {
     }
 
     fn choices(&self) -> Vec<picker::Choice> {
-        picker::choices(&self.editor, &[])
+        let mut choices = picker::choices(&self.editor, &self.live_actions);
+        if self.is_razer()
+            && self.editor.kind == ActionKind::Mouse
+            && matches!(self.selected_input(), Some("btn-left" | "btn-right"))
+        {
+            choices.retain(|(value, _)| value == "left" || value == "right");
+        }
+        choices
     }
 
     pub fn select_action(&mut self, index: usize) {
@@ -414,6 +465,13 @@ impl Buttons {
         self.change(|config, profile| Ok(flow::set_fallthrough(config, profile, on, SAVING)));
     }
 
+    pub fn set_kdenlive(&mut self, enabled: bool) {
+        self.change(|config, profile| {
+            config.set_profile_flag(profile, "kdenlive", enabled)?;
+            Ok(Some(Done { select: None, message: format!("Kdenlive API {}. Saved.", if enabled { "enabled" } else { "disabled" }) }))
+        });
+    }
+
     // ── What the page shows ──────────────────────────────────────────────────
 
     pub fn view(&self) -> View {
@@ -452,6 +510,7 @@ impl Buttons {
             profile_names: profiles.iter().map(ProfileInfo::title).collect(),
             profile_index: if current.is_some() { self.profile as i32 } else { -1 },
             profile_global: global,
+            profile_kdenlive: current.is_some_and(|profile| profile.kdenlive),
             fallthrough: current.is_none_or(|p| p.fallthrough),
             adding: self.adding,
             app_classes: self.app_classes.clone(),
@@ -595,6 +654,65 @@ mod tests {
     }
 
     #[test]
+    fn kdenlive_profile_uses_shared_live_catalog_and_saves_api_binding() {
+        let (mut page, path) = page("kdenlive-api", None);
+        page.show_razer();
+        page.confirm_add("org.kde.kdenlive");
+        page.set_kdenlive(true);
+        page.select_input("grid-1");
+        page.set_live_actions(vec![("monitor_pause".into(), "Pause playback".into()), ("edit_undo".into(), "Undo".into())]);
+        choose(&mut page, ActionKind::Kdenlive);
+        assert_eq!(page.view().choice_names, ["Pause playback", "Undo"]);
+        page.select_choice(1);
+        assert_eq!(page.view().choice_index, 1);
+        assert!(page.apply(""));
+        let text = saved(&path);
+        assert!(text.contains("\"kdenlive\": true"));
+        assert!(text.contains("\"action\": \"edit_undo\""));
+        assert!(!text.contains("\"keys\""), "API action must not be saved as a keyboard fallback");
+        let mut again = Buttons::load(devices::builtin(), path);
+        again.select_profile(0);
+        again.select_input("grid-1");
+        assert_eq!(again.editor.kind, ActionKind::Kdenlive);
+        assert_eq!(again.editor.value, "edit_undo");
+    }
+
+    #[test]
+    fn selecting_a_default_button_populates_category_model_without_identify() {
+        let (mut page, _) = page("default-action-model", None);
+        page.select_default_input();
+        assert!(page.view().editing);
+        assert!(page.view().action_names.contains(&"Keyboard shortcut".into()));
+        page.show_razer();
+        assert_eq!(page.selected_input(), Some("grid-1"));
+        assert!(page.view().action_names.contains(&"Media key".into()));
+    }
+
+    #[test]
+    fn identifying_selects_the_real_slot_on_the_diagram_without_changing_assignments() {
+        let (mut page, path) = page("identify-diagram", None);
+        page.show_razer();
+        page.select_input("grid-7");
+        let view = page.view();
+        assert!(button(&view, "grid-7").selected);
+        assert_eq!(view.buttons.iter().filter(|b| b.selected).count(), 1);
+        assert_eq!(view.selected_title, "Grid button 7");
+        assert_eq!(page.learnable_input(), Some("grid-7"));
+        page.select_input("btn-left");
+        assert_eq!(page.learnable_input(), None);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn razer_primary_click_choices_cannot_disable_pointing() {
+        let (mut page, _) = page("primary-safety", None);
+        page.show_razer();
+        page.select_input("btn-left");
+        choose(&mut page, ActionKind::Mouse);
+        assert_eq!(page.choices().iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["left", "right"]);
+    }
+
+    #[test]
     fn it_opens_on_the_first_device_with_its_global_profile_and_nothing_selected() {
         let (page, path) = page("opens", None);
         let view = page.view();
@@ -617,7 +735,7 @@ mod tests {
         let (page, _) = page("opens-on-saved", Some(text));
         let view = page.view();
         assert_eq!(view.device_index, 1);
-        assert_eq!(view.buttons.len(), 12 + 8, "the MMO mouse's own buttons: the grid and the body");
+        assert_eq!(view.buttons.len(), 12 + 10 + 3, "the Razer controls plus preserved legacy assignment slots");
         assert_eq!(button(&view, "grid-1").summary, "ctrl+c");
         assert_eq!(view.rows.len(), 1);
     }

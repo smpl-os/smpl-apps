@@ -65,6 +65,10 @@ public:
     int pendingTaps() const { return int(m_tapQueue.size()); }
     int activeGestures() const { return int(m_gestures.size()); }
     void endAllGestures(bool dropPending);
+    // Stop work owned by an input surface being disabled/identified/disconnected.
+    void cancelPending();
+    // Hosts can forbid API actions becoming keyboard input, even outside an API profile.
+    void setApiFallbackAllowed(bool allowed) { m_apiFallbackAllowed = allowed; }
 
 Q_SIGNALS:
     void runCommand(const QStringList &argv);
@@ -80,6 +84,7 @@ Q_SIGNALS:
     void resolutionChanged();
 
 private:
+    bool m_apiFallbackAllowed = true;
     struct Tap {
         QString group;
         int dir = 0;

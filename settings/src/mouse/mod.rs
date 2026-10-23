@@ -12,9 +12,10 @@
 //! - `ui`: copies them into the window and wires its callbacks.
 //!
 //! Assignments use the editor the Keypad tab uses (`crate::assign`). They
-//! are saved but not applied yet: nothing reads the buttons until the
-//! capture and remap backend exists.
+//! are read by the separate mouse-remapperd for the supported Razer device.
+//! Generic devices remain editable previews.
 
+mod backend;
 pub mod buttons;
 pub mod config;
 pub mod devices;
@@ -22,6 +23,8 @@ pub mod pointer;
 pub mod pointer_state;
 pub mod store;
 pub mod ui;
+#[cfg(test)]
+mod native_tests;
 
 use std::path::PathBuf;
 

@@ -1,14 +1,14 @@
 {
   "version": 1,
   "id": "mmo-12",
-  "name": "MMO mouse (12-button side grid)",
-  "description": "Preview of a mouse with a 12-button thumb grid, like a Razer Naga. The real button list and codes come from capturing the buttons; many of these mice report the grid as keyboard keys.",
-  "preview": true,
+  "name": "Razer Naga V2 HyperSpeed",
+  "description": "Razer Naga V2 HyperSpeed (1532:00b4). Set up this mouse guides actual input capture and review. Identify then selects captured buttons, wheel scroll and tilt.",
+  "preview": false,
   "match": [
-    { "vendor": "1532", "name": "Naga" }
+    { "vendor": "1532", "product": "00b4", "name": "Naga" }
   ],
   "aspect": 1.6,
-  "actions": ["inherit", "disabled", "shortcut", "media", "mouse", "command"],
+  "actions": ["inherit", "disabled", "shortcut", "media", "mouse", "command", "kdenlive"],
   "panels": [
     { "label": "Side grid", "box": [3, 4, 35, 84] },
     { "label": "", "box": [42, 2, 56, 96] }
@@ -28,13 +28,13 @@
     { "id": "grid-12", "label": "Grid button 12", "short": "12", "box": [27, 68, 9.5, 16] },
     {
       "id": "btn-left", "label": "Left button", "short": "Left",
-      "box": [45, 5, 24.5, 24], "actions": ["inherit", "mouse"],
+      "box": [57, 5, 18, 24], "actions": ["inherit", "mouse"],
       "code": "BTN_LEFT", "source": "pointer",
       "note": "Only \"Mouse button\" can be assigned here (to swap left and right, for example), so a mistake can't lock you out of clicking."
     },
     {
       "id": "btn-right", "label": "Right button", "short": "Right",
-      "box": [71.5, 5, 24.5, 24], "actions": ["inherit", "mouse"],
+      "box": [77, 5, 19, 24], "actions": ["inherit", "mouse"],
       "code": "BTN_RIGHT", "source": "pointer",
       "note": "Only \"Mouse button\" can be assigned here, so a mistake can't lock you out of clicking."
     },
@@ -52,19 +52,48 @@
       "box": [80, 31.5, 16, 11]
     },
     {
+      "id": "wheel-up", "label": "Wheel scroll up", "short": "Up",
+      "box": [62.5, 45, 16, 11],
+      "code": "REL_WHEEL",
+      "note": "Positive (up) ordinary and high-resolution wheel events identify this position."
+    },
+    {
+      "id": "wheel-down", "label": "Wheel scroll down", "short": "Down",
+      "box": [80, 45, 16, 11],
+      "code": "REL_WHEEL",
+      "note": "Negative (down) ordinary and high-resolution wheel events identify this position."
+    },
+    {
+      "id": "btn-dpi-up", "label": "DPI stage up", "short": "DPI+",
+      "box": [44, 5, 11, 11],
+      "note": "Upper-left DPI stage control. Capture its actual input in setup; its current onboard assignment may emit no evdev event. No onboard settings are written."
+    },
+    {
+      "id": "btn-dpi-down", "label": "DPI stage down", "short": "DPI-",
+      "box": [44, 18, 11, 11],
+      "note": "Upper-left DPI stage control. Capture its actual input in setup; its current onboard assignment may emit no evdev event. No onboard settings are written."
+    },
+    {
+      "id": "btn-scroll-mode", "label": "Scroll mode button", "short": "Mode",
+      "box": [45, 45, 16, 11],
+      "note": "The current onboard scroll-mode assignment may emit no evdev input. Setup can skip it without changing firmware or existing mappings."
+    },
+    {
       "id": "btn-forward", "label": "Forward button", "short": "Forward",
-      "box": [45, 60, 24, 12],
-      "code": "BTN_EXTRA", "source": "pointer"
+      "box": [44, 81, 16, 12],
+      "code": "BTN_EXTRA", "source": "pointer",
+      "note": "Compatibility slot for existing Forward assignments, not a claim that the upper-left DPI controls emit BTN_EXTRA. Actual captured positions take precedence."
     },
     {
       "id": "btn-back", "label": "Back button", "short": "Back",
-      "box": [45, 74, 24, 12],
-      "code": "BTN_SIDE", "source": "pointer"
+      "box": [62, 81, 16, 12],
+      "code": "BTN_SIDE", "source": "pointer",
+      "note": "Compatibility slot for existing Back assignments, not a claim that the upper-left DPI controls emit BTN_SIDE. Actual captured positions take precedence."
     },
     {
-      "id": "btn-dpi", "label": "DPI button", "short": "DPI",
-      "box": [72, 60, 24, 12],
-      "note": "Many mice handle this button inside the mouse and send nothing the computer can see. Capturing it will tell."
+      "id": "btn-dpi", "label": "Legacy DPI assignment", "short": "Legacy DPI",
+      "box": [80, 81, 16, 12],
+      "note": "Existing generic DPI assignments are preserved here. Use the separate upper-left DPI stage up/down positions for guided setup."
     }
   ]
 }

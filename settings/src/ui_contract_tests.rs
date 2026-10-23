@@ -1,6 +1,52 @@
 const UI: &str = include_str!("../ui/main.slint");
 
 #[test]
+fn mouse_identify_and_learning_have_live_controls_and_diagram_selection() {
+    assert!(UI.contains("root.ms-identify(!root.ms-identifying)"));
+    assert!(UI.contains("root.ms-learn()"));
+    assert!(UI.contains("root.ms-cancel-learn()"));
+    assert!(UI.contains("enabled: root.ms-backend-ready;"));
+    assert!(!UI.contains("Button assignments are a preview:"));
+    let wiring = include_str!("mouse/ui.rs");
+    assert!(wiring.contains("st.buttons.select_input(&status.last_slot)"));
+    assert!(wiring.contains("Command::Leave"));
+    assert!(wiring.contains("st.buttons.reread()"));
+}
+
+#[test]
+fn side_grid_calibration_is_in_mouse_buttons_not_the_keypad_wizard() {
+    let buttons = UI
+        .split("ms-buttons-card := Rectangle {")
+        .nth(1)
+        .unwrap()
+        .split("// ── Assignment:")
+        .next()
+        .unwrap();
+    let calibration = buttons.find("clicked => { root.ms-calibrate(); }").unwrap();
+    assert!(calibration < buttons.find("DeviceCanvas {").unwrap());
+    assert_eq!(UI.matches("clicked => { root.ms-calibrate(); }").count(), 1);
+}
+
+#[test]
+fn full_mouse_setup_has_visible_entry_and_confirmation_controls() {
+    let buttons = UI
+        .split("ms-buttons-card := Rectangle {")
+        .nth(1)
+        .unwrap()
+        .split("// ── Assignment:")
+        .next()
+        .unwrap();
+    assert!(buttons.contains("root.ms-start-setup()"));
+    let wizard = UI.split("if root.ms-setup-active: Rectangle {").nth(1).unwrap()
+        .split("// ── Help overlay").next().unwrap();
+    for action in ["arm", "retry", "skip", "next", "save", "cancel"] {
+        assert!(wizard.contains(&format!("root.ms-{action}-setup()")), "missing visible setup action: {action}");
+    }
+    assert!(wizard.contains("root.ms-setup-phase == \"review\""));
+    assert!(UI.contains("else if root.ms-setup-active {\n            root.ms-cancel-setup();"));
+}
+
+#[test]
 fn backgrounds_use_glass_without_fading_foreground_controls() {
     assert!(UI.contains("background: Theme.bg.transparentize(1.0 - Theme.opacity)"));
     assert!(UI.contains("panel: bg_light.transparentize(88%)"));
@@ -1083,6 +1129,6 @@ fn mouse_page_shows_the_model_and_only_reports_changes() {
         assert!(!after.starts_with('=') || after.starts_with("=="), "the page assigns {}", &code[start..end]);
         from = end;
     }
-    // Nothing on the page is a made-up control: capture is not available yet.
-    assert!(page.contains("KeypadButton { text: \"Press a button to identify it\"; enabled: false; }"));
+    assert!(page.contains("root.ms-identifying ? \"Stop identifying\" : \"Identify buttons\""));
+    assert!(page.contains("enabled: root.ms-backend-ready;"));
 }

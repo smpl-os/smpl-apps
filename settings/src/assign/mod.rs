@@ -5,6 +5,7 @@
 //! brings its own controls, its own wording and its own storage.
 
 pub mod action;
+pub mod catalog;
 pub mod flow;
 pub mod json;
 pub mod picker;

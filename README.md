@@ -740,8 +740,9 @@ pixels or blur.
 
 ### Mouse settings
 
-Settings → Mouse (`settings --tab mouse`) has a pointer card that works and a
-buttons card that is still a preview.
+Settings → Mouse (`settings --tab mouse`) has live pointer controls and native
+button remapping for the **Razer Naga V2 HyperSpeed, USB `1532:00b4`**.
+Other mouse models remain editable previews.
 
 Pointer: speed (`input:sensitivity`, −1 to 1), acceleration (system default,
 flat or adaptive), scroll direction (traditional or natural) and scroll speed
@@ -778,20 +779,88 @@ under hyprlang), and `smplos-os-update` has to leave the file alone. Until it
 does, the options apply live but are not restored at login. Publish the
 matching OS update first.
 
-Buttons (preview): each mouse is a device profile, which is data
-(`settings/src/mouse/devices/*.json`, schema in `devices.rs`), so adding a
-mouse is adding a file. A generic mouse and a 12-button thumb-grid MMO mouse
-ship as examples, labelled as previews until real buttons are captured. The
+Buttons: each mouse's diagram is a device profile
+(`settings/src/mouse/devices/*.json`, schema in `devices.rs`). A new diagram
+alone does not add native hardware support. The generic diagram remains a preview;
+the MMO diagram now names the supported Razer while retaining its `mmo-12`
+configuration ID, so existing assignments survive. The
 assignments use the Keypad tab's editor (`settings/src/assign`): global and
 per-app profiles, an action picker, "unset buttons use Global" and Advanced
 entries kept as written. They are saved per device, each change at once, in
 `$HOME/.config/smplos/mouse.json`; the previous version of the file is kept in
-`backups/` beside it. **Nothing acts on the assignments yet**: there is no
-button capture and no remap backend. Left and right click accept only "Mouse
-button", so a mistake cannot lock the user out.
+`backups/` beside it. The daemon uses the same HOME path even when
+`XDG_CONFIG_HOME` is set. "Saved" describes persistence; the separate live
+status reports whether the daemon can apply it. Left/right assignments on the
+Razer are restricted to left/right clicks, preserving a way to operate Settings.
+
+The Razer editor starts with a button selected, exposing shortcut, mouse,
+media and command assignments immediately. For Kdenlive, add its app profile
+and enable **Kdenlive control surface API**, then choose the Kdenlive category
+and a concrete action. Mouse and Keypad share action discovery, the assignment
+editor, the native Engine and Kdenlive plugin dispatch; API actions are not
+converted to shortcuts. Enable **Control surface interface** in Kdenlive
+itself. Missing/pending plugin availability is reported separately from
+compiled support (`mouse-remapperd features --json` must include
+`"kdenliveApi":true`). Re-enter the tab or Refresh to reload the catalog.
+Normal status polling does not replace open assignment dropdown models.
+
+**Identify buttons** pauses assigned actions and selects/highlights known
+physical buttons and wheel/tilt directions on the diagram for editing.
+Primary clicks and movement still work in this mode; side typing,
+back/forward navigation and wheel scrolling are suppressed so they cannot
+edit or scroll Settings. Unknown side-key codes are never guessed:
+choose **Set up this mouse** above the Mouse diagram. The visible wizard
+highlights each physical control: primary clicks, wheel directions, the
+12-button side grid, separate upper-left DPI-stage controls and scroll mode.
+Click **Capture next press**, move the pointer over the diagram, then press
+and release the highlighted physical control. Inspect the captured code and
+choose **Next**, **Try again** or **Skip**. Navigation clicks are ignored
+until capture is explicitly armed, and captures are staged until the final
+**Review** / **Save setup** confirmation. Skip retains that control's existing
+mapping; Cancel/Escape discards all staged changes. No-input steps can be
+retried or skipped without inventing a source code. Existing Back/Forward
+and generic DPI assignment slots remain intact for compatibility; they are
+not assumed to describe the physical upper-left DPI-stage buttons.
+The daemon advertises this complete workflow as `"guidedSetup":true`;
+matching Settings and daemon builds are required.
+
+For side-grid-only setup, choose **Calibrate side grid**, then press/release buttons 1 through 12 as
+the diagram highlights each position. All 12 source/code pairs are saved
+atomically only when complete; Cancel discards the incomplete capture.
+**Learn selected button** overrides a single changed grid or extra button.
+Learning stores its evdev key (or relative axis and direction) and mouse-only
+interface beside the profiles, with a verified, uniquely named backup before
+each replacement. Learn times out after 15 seconds; Cancel, leaving the tab,
+closing Settings, losing the bus client or a 10-second heartbeat timeout
+clears the mode and releases held actions. An armed wizard step also times
+out after 15 seconds, but retains earlier staging so Retry/Skip remain available.
+Tilt/DPI positions are optional:
+buttons handled internally by the mouse and chord/macro-emitting buttons
+cannot be identified from a nonexistent single-key event. Wheel up/down and
+relative-axis tilt, including high-resolution reports on Naga keyboard
+interfaces, already have dedicated map positions and need no key learning.
+No onboard settings or firmware are changed.
+
+The separate `mouse-remapperd run` daemon is built/installed by
+`control-surface/CMakeLists.txt` and shipped in the control-surface release
+asset. It does not start the CH552 backend, claim the keypad D-Bus name or
+change keypad files/icons. The matching smplOS integration provides exact-device
+access and `mouse-remap.service`; install that integration and the matching
+Settings/daemon binaries together. See
+[the runtime/API contract](control-surface/docs/mouse-remapping.md).
+Global remaps use evdev/uinput on all compositors; app profiles use the shared
+Hyprland focus tracker. Other compositors show an explicit Global-only warning.
+Unassigned keys/buttons, motion and normal/high-resolution scrolling pass
+through; single shortcuts and mouse clicks stay held until physical release.
+Focus/config/mode changes, disconnects and shutdown release generated holds.
 
 Headless checks (temporary directories and mocked command runners):
 `cargo test -p settings --bin settings -- mouse:: assign:: ui_contract_tests::mouse`.
+Native checks: `ctest --test-dir target/control-surface --output-on-failure
+-R '^(mouse|mouse_features|config|engine|decoder|hyprland|settings)$'`.
+Native dropdown interaction: `python tests/run_mouse_editor_probe.py`.
+These do not grab the real mouse. Physical learn/identify and compositor
+passthrough acceptance still require a coordinated local run.
 
 ### Taskbar workspace preferences
 

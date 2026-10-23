@@ -191,7 +191,9 @@ std::optional<Binding> parseBinding(const QJsonValue &v, QString *error);
 // A valid "icon" value: a Tabler Icons outline name, kebab-case without "ti-"
 // (player-play, brand-github), or "none". Unknown names are accepted.
 bool isIconName(const QString &name);
-std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDir, QString *error);
+// Other input surfaces supply their stable slot names; empty preserves pad validation.
+std::optional<Config> parseConfig(const QByteArray &jsonc, const QString &baseDir, QString *error,
+                                 const QStringList &inputSlots = {});
 std::optional<Config> loadConfig(const QString &path, QString *error);
 // Semantic checks run by parseConfig: errors fail, warnings go to cfg.warnings.
 bool checkConfig(Config &cfg, QString *error);

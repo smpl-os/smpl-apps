@@ -76,6 +76,13 @@ add_executable(control-surfaced src/daemon/main.cpp)
 target_link_libraries(control-surfaced PRIVATE cs_core)
 qt_add_resources(control-surfaced "defaults" PREFIX "/control-surface" BASE data FILES data/config.example.jsonc)
 
+# The mouse has its own process and bus name; it never starts the pad backend.
+add_library(cs_mouse STATIC src/mouse/mapping.cpp src/mouse/device.cpp src/mouse/service.cpp)
+target_include_directories(cs_mouse PUBLIC src/mouse)
+target_link_libraries(cs_mouse PUBLIC cs_core)
+add_executable(mouse-remapperd src/mouse/main.cpp)
+target_link_libraries(mouse-remapperd PRIVATE cs_mouse)
+
 # Mock Kdenlive implementing docs/kdenlive-api-contract.md
 add_library(cs_mock STATIC src/mock/mockkdenlive.cpp)
 target_include_directories(cs_mock PUBLIC src/mock src/daemon)
@@ -92,7 +99,7 @@ add_executable(mock-control-surfaced src/mock/surface_main.cpp)
 target_link_libraries(mock-control-surfaced PRIVATE cs_mocksurface)
 qt_add_resources(mock-control-surfaced "mockdefaults" PREFIX "/control-surface" BASE data FILES data/config.example.jsonc)
 
-install(TARGETS control-surfaced ch552-padprog RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS control-surfaced ch552-padprog mouse-remapperd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
@@ -128,6 +135,10 @@ if(BUILD_TESTING)
     add_dependencies(tst_kdenlive_bus mock-kdenlive)
     # Multi-subscriber and ownership tests need a real bus: always a private one.
     find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
+    add_executable(tst_mouse tests/tst_mouse.cpp)
+    target_link_libraries(tst_mouse PRIVATE cs_mouse cs_mock Qt6::Test)
+    add_test(NAME mouse COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_mouse>)
+    add_test(NAME mouse_features COMMAND mouse-remapperd features --json)
     add_test(NAME kdenlive_bus COMMAND ${CMAKE_COMMAND} -E env CS_PRIVATE_BUS=1 ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_kdenlive_bus>)
     # Settings API, its building blocks and the mock; bus parts on a private bus.
     add_executable(tst_settings tests/tst_settings.cpp)
