@@ -38,6 +38,12 @@ private Q_SLOTS:
     void identifySuppressesCompositeKeyboardAndExtraButtons();
     void wheelDirectionsIdentifyWithoutScrolling();
     void mappedWheelHighResolutionPairsOnlyDispatchOnce();
+    void tiltNavigationGroupsMeasuredBursts_data();
+    void tiltNavigationGroupsMeasuredBursts();
+    void tiltNavigationIdleBoundary_data();
+    void tiltNavigationIdleBoundary();
+    void tiltNavigationPreservesOtherBindingsAndLifecycle();
+    void tiltNavigationUsesSharedProfileLayerAndSequenceResolution();
     void guidedCalibrationCapturesAllTwelveAndReplacesAtomically();
     void fullSetupCapturesKeysAndWheelDirectionsAfterArming();
     void fullSetupRetrySkipCancelAndConcurrentEdits();
@@ -619,6 +625,226 @@ void MouseTest::mappedWheelHighResolutionPairsOnlyDispatchOnce() {
     router.identify = true;
     router.consume("input0/pointer", true, {EV_SYN, SYN_REPORT, 0});
     QCOMPARE(commands.size(), before + 1);
+}
+
+void MouseTest::tiltNavigationGroupsMeasuredBursts_data() {
+    QTest::addColumn<int>("reports");
+    QTest::newRow("fastest-two-reports-20ms") << 2;
+    QTest::newRow("quick-five-reports-80ms") << 5;
+    QTest::newRow("held-136-reports-2700ms") << 136;
+}
+
+void MouseTest::tiltNavigationGroupsMeasuredBursts() {
+    QFETCH(int, reports);
+    QString error;
+    const auto mapping = Mapping::parse(R"({"devices":{"mmo-12":{"profiles":[{"name":"Global","bindings":{
+      "wheel-tilt-left":{"mouse":"back"},"wheel-tilt-right":{"mouse":"forward"}}}]}}})", &error);
+    QVERIFY2(mapping, qPrintable(error));
+    qint64 now = 0;
+    Router router(nullptr, [&] { return now; });
+    router.setMapping(*mapping);
+    QList<InputTriple> output;
+    router.output = [&](bool pointer, const InputTriple &event) {
+        QVERIFY(pointer); // No Home, keyboard shortcut or modifier is emitted.
+        output << event;
+    };
+    auto frame = [&](int direction, bool highResolution) {
+        QVERIFY(router.consume("input0/pointer", true, {EV_REL, REL_HWHEEL, direction}));
+        if (highResolution)
+            QVERIFY(router.consume("input0/pointer", true, {EV_REL, REL_HWHEEL_HI_RES, direction * 120}));
+        QVERIFY(!router.consume("input0/pointer", true, {EV_SYN, SYN_REPORT, 0}));
+    };
+    auto clickCount = [&](int code) {
+        return std::count_if(output.begin(), output.end(), [=](const InputTriple &event) {
+            return event.type == EV_KEY && event.code == code && event.value == 1;
+        });
+    };
+    frame(-1, true);
+    QTRY_COMPARE(clickCount(BTN_SIDE), 1);
+    QCOMPARE(output.size(), 4);
+    QCOMPARE(output[0].type, EV_KEY);
+    QCOMPARE(output[0].code, BTN_SIDE);
+    QCOMPARE(output[0].value, 1);
+    QCOMPARE(output[1].type, EV_SYN);
+    QCOMPARE(output[2].type, EV_KEY);
+    QCOMPARE(output[2].code, BTN_SIDE);
+    QCOMPARE(output[2].value, 0);
+    QCOMPARE(output[3].type, EV_SYN);
+    for (int i = 1; i < reports; ++i) {
+        now += 20;
+        frame(-1, i % 2 == 0);
+    }
+    QTest::qWait(20);
+    QCOMPARE(clickCount(BTN_SIDE), 1);
+    QCOMPARE(output.size(), 4);
+    now += Router::TiltNavigationIdleMs;
+    frame(-1, true);
+    QTRY_COMPARE(clickCount(BTN_SIDE), 2);
+    QCOMPARE(output.size(), 8);
+    // Reversing direction is immediately available, without a quiet gap.
+    frame(1, true);
+    QTRY_COMPARE(clickCount(BTN_EXTRA), 1);
+    QCOMPARE(output.size(), 12);
+    QVERIFY(router.consume("input1/keyboard", false, {EV_REL, REL_HWHEEL, 1}));
+    router.consume("input1/keyboard", false, {EV_SYN, SYN_REPORT, 0});
+    QTRY_COMPARE(clickCount(BTN_EXTRA), 2); // Source-specific gesture state.
+    QCOMPARE(output.size(), 16);
+    for (const auto &event : output)
+        QVERIFY(event.type == EV_SYN || (event.type == EV_KEY && (event.code == BTN_SIDE || event.code == BTN_EXTRA)));
+    QVERIFY(!router.consume("input0/pointer", true, {EV_REL, REL_WHEEL, -1}));
+    QVERIFY(!router.consume("input0/pointer", true, {EV_REL, REL_X, 3}));
+}
+
+void MouseTest::tiltNavigationIdleBoundary_data() {
+    QTest::addColumn<int>("gap");
+    QTest::addColumn<int>("clicks");
+    QTest::newRow("below") << 99 << 1;
+    QTest::newRow("at") << 100 << 2;
+    QTest::newRow("above") << 101 << 2;
+}
+
+void MouseTest::tiltNavigationIdleBoundary() {
+    QFETCH(int, gap);
+    QFETCH(int, clicks);
+    QString error;
+    const auto mapping = Mapping::parse(R"({"devices":{"mmo-12":{"profiles":[{"bindings":{
+        "wheel-tilt-left":{"mouse":"back"}}}]}}})", &error);
+    QVERIFY2(mapping, qPrintable(error));
+    qint64 now = 0;
+    Router router(nullptr, [&] { return now; });
+    router.setMapping(*mapping);
+    int presses = 0;
+    router.output = [&](bool, const InputTriple &event) {
+        if (event.type == EV_KEY && event.value == 1) ++presses;
+    };
+    const auto frame = [&](int value) {
+        QVERIFY(router.consume("input0/pointer", true, {EV_REL, REL_HWHEEL_HI_RES, value}));
+        router.consume("input0/pointer", true, {EV_SYN, SYN_REPORT, 0});
+    };
+    frame(-240); // A multi-detent report is still one navigation gesture.
+    QTRY_COMPARE(presses, 1);
+    now += gap;
+    frame(-120);
+    QTest::qWait(20);
+    QCOMPARE(presses, clicks);
+    // Fractions keep an active gesture alive without producing extra clicks.
+    for (int i = 0; i < 16; ++i) {
+        now += 20;
+        frame(-15);
+    }
+    QTest::qWait(20);
+    QCOMPARE(presses, clicks);
+    now += 100;
+    for (int i = 0; i < 8; ++i) {
+        frame(-15);
+        now += 20;
+    }
+    QTRY_COMPARE(presses, clicks + 1);
+}
+
+void MouseTest::tiltNavigationPreservesOtherBindingsAndLifecycle() {
+    QString error;
+    const auto parse = [&](const QByteArray &binding) {
+        return Mapping::parse("{\"devices\":{\"mmo-12\":{\"profiles\":[{\"bindings\":{" + binding + "}}]}}}", &error);
+    };
+    const auto navigation = parse(R"("wheel-tilt-left":{"mouse":"back"})");
+    QVERIFY2(navigation, qPrintable(error));
+    qint64 now = 0;
+    Router router(nullptr, [&] { return now; });
+    router.setMapping(*navigation);
+    QList<InputTriple> events;
+    router.output = [&](bool, const InputTriple &event) { events << event; };
+    const auto frame = [&](int axis = REL_HWHEEL, int value = -1) {
+        QVERIFY(router.consume("input0/pointer", true, {EV_REL, axis, value}));
+        router.consume("input0/pointer", true, {EV_SYN, SYN_REPORT, 0});
+    };
+    frame();
+    QCOMPARE(events.size(), 4);
+    frame();
+    QCOMPARE(events.size(), 4);
+    router.releaseAll();
+    frame();
+    QTRY_COMPARE(events.size(), 8);
+    router.disconnected();
+    frame();
+    QTRY_COMPARE(events.size(), 12);
+    router.releaseAll();
+    router.identify = true;
+    frame();
+    QCOMPARE(events.size(), 12);
+    router.releaseAll();
+    router.identify = false;
+    frame();
+    QTRY_COMPARE(events.size(), 16);
+
+    const auto scroll = parse(R"("wheel-tilt-left":{"mouse":"wheel-left"},"wheel-down":{"mouse":"back"})");
+    QVERIFY2(scroll, qPrintable(error));
+    router.setMapping(*scroll);
+    for (int i = 0; i < 5; ++i) frame();
+    QTRY_COMPARE(events.size(), 26); // Each genuine mapped scroll detent is retained.
+    for (int i = 0; i < 5; ++i) frame(REL_WHEEL);
+    QTRY_COMPARE(events.size(), 46); // Vertical actions are never tilt-debounced.
+    const auto command = parse(R"("wheel-tilt-left":{"command":["left"]})");
+    QVERIFY2(command, qPrintable(error));
+    router.setMapping(*command);
+    int commands = 0;
+    router.command = [&](const Binding &) { ++commands; };
+    for (int i = 0; i < 5; ++i) frame();
+    QCOMPARE(commands, 5);
+    router.setMapping(*navigation);
+    frame();
+    QTRY_COMPARE(events.size(), 50);
+    const auto unmapped = parse("");
+    QVERIFY2(unmapped, qPrintable(error));
+    router.setMapping(*unmapped);
+    for (int axis : {REL_HWHEEL, REL_HWHEEL_HI_RES, REL_WHEEL, REL_WHEEL_HI_RES})
+        QVERIFY(!router.consume("input0/pointer", true, {EV_REL, axis, -120}));
+}
+
+void MouseTest::tiltNavigationUsesSharedProfileLayerAndSequenceResolution() {
+    QString error;
+    const auto mapping = Mapping::parse(R"({"devices":{"mmo-12":{"profiles":[
+      {"name":"Browser","match":{"class":"browser"},"modes":{"nav":["base","alternate"]},
+       "layers":[{"name":"Alternate","when":{"$mode.nav":"alternate"},
+                  "bindings":{"wheel-tilt-left":{"mouse":"forward"}}}],
+       "bindings":{"wheel-tilt-left":{"do":[{"mouse":"back"}]},
+                   "grid-1":{"mode":"nav","set":"alternate","notify":""}}},
+      {"name":"Global","bindings":{"wheel-tilt-left":{"command":["global"]}}}
+    ]}}})", &error);
+    QVERIFY2(mapping, qPrintable(error));
+    qint64 now = 0;
+    Router router(nullptr, [&] { return now; });
+    router.setMapping(*mapping);
+    router.setWindow({"browser", "", 1, "browser1"}, true);
+    QList<int> presses;
+    router.output = [&](bool pointer, const InputTriple &event) {
+        QVERIFY(pointer);
+        if (event.type == EV_KEY && event.value == 1) presses << event.code;
+    };
+    const auto frame = [&] {
+        QVERIFY(router.consume("input0/pointer", true, {EV_REL, REL_HWHEEL, -1}));
+        router.consume("input0/pointer", true, {EV_SYN, SYN_REPORT, 0});
+    };
+    for (int i = 0; i < 5; ++i) {
+        frame();
+        now += 20;
+    }
+    QTRY_COMPARE(presses, QList<int>{BTN_SIDE}); // Nested sequence, via shared dispatch.
+    router.engine().handle({"grid-1", PadEvent::KeyDown, 0, 0});
+    router.engine().handle({"grid-1", PadEvent::KeyUp, 0, 0});
+    frame();
+    QTRY_COMPARE(presses, (QList<int>{BTN_SIDE, BTN_EXTRA}));
+    frame();
+    QTest::qWait(20);
+    QCOMPARE(presses.size(), 2);
+    int commands = 0;
+    router.command = [&](const Binding &) { ++commands; };
+    router.setWindow({"other", "", 2, "other1"}, true);
+    for (int i = 0; i < 5; ++i) frame();
+    QCOMPARE(commands, 5);
+    router.setWindow({"browser", "", 1, "browser1"}, true);
+    frame();
+    QTRY_COMPARE(presses.size(), 3);
 }
 
 void MouseTest::guidedCalibrationCapturesAllTwelveAndReplacesAtomically() {

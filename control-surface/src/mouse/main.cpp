@@ -25,6 +25,7 @@ int main(int argc, char **argv) {
                                                          {"learning", true},
                                                          {"identify", true},
                                                          {"identifyWheels", true},
+                                                         {"tiltNavigationGestures", true},
                                                          {"guidedCalibration", true},
                                                          {"guidedSetup", true},
                                                          {"onboardBackup", true},

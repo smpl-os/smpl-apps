@@ -3,6 +3,7 @@
 #include "installed.h"
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <chrono>
 #include <linux/input.h>
 
 namespace cs::mouse {
@@ -46,6 +47,16 @@ bool validInput(const QString &slot, const SourceKey &input) {
     if (primary)
         return input.code == primary;
     return input.code != BTN_LEFT && input.code != BTN_RIGHT && input.code != BTN_MIDDLE;
+}
+
+bool containsMouseNavigation(const Binding &binding) {
+    if (binding.kind == Binding::Mouse && (binding.name == "back" || binding.name == "forward"))
+        return true;
+    if (binding.kind == Binding::Sequence)
+        for (const auto &step : binding.steps)
+            if (containsMouseNavigation(step))
+                return true;
+    return false;
 }
 } // namespace
 
@@ -325,7 +336,11 @@ void Router::send(bool pointer, int type, int code, int value) {
     output(pointer, {EV_SYN, SYN_REPORT, 0});
 }
 
-Router::Router(KdenliveClient *client) : m_engine(this, client) {
+Router::Router(KdenliveClient *client, std::function<qint64()> now)
+    : m_now(now ? std::move(now) : [] {
+          return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+      }),
+      m_engine(this, client) {
     m_engine.setApiFallbackAllowed(false);
     QObject::connect(&m_engine, &Engine::runCommand, this, [this](const QStringList &argv) {
         Binding binding;
@@ -526,6 +541,27 @@ void Router::flushWheels(const QString &source) {
             steps = remaining / 120;
             remaining %= 120;
         }
+        const int delta = it->hasHighResolution ? it->highResolution : it->legacy;
+        const QString slot = mapping.relativeSlot(source, it.key().second, delta);
+        const auto resolved = m_engine.resolve(slot);
+        if (it.key().second == REL_HWHEEL && delta != 0) {
+            if (resolved && containsMouseNavigation(resolved->binding)) {
+                const qint64 now = m_now();
+                auto &gesture = m_tiltNavigation[source];
+                const int direction = delta > 0 ? 1 : -1;
+                const QStringList binding{resolved->profile, resolved->layer, resolved->binding.describe()};
+                const bool repeated = gesture.dispatched && gesture.direction == direction && gesture.binding == binding &&
+                                      now - gesture.lastReport < TiltNavigationIdleMs;
+                gesture = {direction, now, repeated, binding};
+                // Tilt is a repeating REL stream, not a button with a release.
+                if (steps != 0 && !repeated) {
+                    gesture.dispatched = true;
+                    dispatchPulse(slot);
+                }
+                continue;
+            }
+            m_tiltNavigation.remove(source);
+        }
         for (int count = 0; count < qAbs(steps); ++count)
             dispatchPulse(mapping.relativeSlot(source, it.key().second, steps));
     }
@@ -543,6 +579,7 @@ void Router::releaseAll() {
     m_wheels.clear();
     m_wheelRemainder.clear();
     m_identifiedWheels.clear();
+    m_tiltNavigation.clear();
     // Keep consumed inputs suppressed until their physical release; a config,
     // focus or mode change must never leak an unmatched release to the desktop.
     for (auto &held : m_held)

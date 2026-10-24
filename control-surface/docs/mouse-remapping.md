@@ -163,6 +163,20 @@ high-resolution reports for the same direction in a synchronization frame
 identify once; mapped scrolling dispatches through the shared Engine once
 per 120 high-resolution units, without doubling legacy/high-res pairs.
 Unmapped scrolling remains unchanged outside Identify.
+When horizontal tilt resolves to mouse Back/Forward (including a step of a
+shared action sequence), it instead runs once per tilt gesture. The Naga
+repeats relative reports roughly every 20 ms while tilted, even during a
+quick tap; treating each report as another Back click sweeps browser history.
+The first complete detent acts immediately, and subsequent reports keep
+that source/direction latched until at least 100 ms without a report.
+Direction reversal acts immediately. Because relative axes have no release
+event, distinct tilts less than 100 ms apart can merge. This policy is limited
+to horizontal Back/Forward bindings; vertical wheels, horizontal scroll
+actions, other bindings and unmapped passthrough retain detent behavior.
+Profile/layer resolution still uses the shared Engine; a changed resolved
+binding re-arms the gesture. Focus/config changes, capture-mode changes and
+disconnect cleanup clear pending gesture state, and Identify
+does not emit navigation. Offline features expose `tiltNavigationGestures:true`.
 Optional DPI controls may emit no evdev input in their current onboard mode.
 Razer's manual says its DPI-stage assignments can be reconfigured in Synapse;
 that does not imply an evdev event is available for their current assignment.

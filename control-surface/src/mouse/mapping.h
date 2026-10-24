@@ -92,7 +92,8 @@ struct Mapping {
 // host.
 class Router : public KeySink {
 public:
-    explicit Router(KdenliveClient *client = nullptr);
+    explicit Router(KdenliveClient *client = nullptr, std::function<qint64()> now = {});
+    static constexpr qint64 TiltNavigationIdleMs = 100;
     Mapping mapping;
     Engine &engine() { return m_engine; }
     void setMapping(const Mapping &value);
@@ -128,6 +129,14 @@ private:
     QMap<QPair<QString, int>, WheelFrame> m_wheels;
     QMap<QPair<QString, int>, int> m_wheelRemainder;
     QMap<QString, QSet<QPair<int, int>>> m_identifiedWheels;
+    struct TiltNavigation {
+        int direction = 0;
+        qint64 lastReport = 0;
+        bool dispatched = false;
+        QStringList binding;
+    };
+    QMap<QString, TiltNavigation> m_tiltNavigation;
+    std::function<qint64()> m_now;
     Engine m_engine;
     bool m_focusAvailable = false;
     void applyMapping();
