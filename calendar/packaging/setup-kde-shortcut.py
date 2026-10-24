@@ -43,7 +43,11 @@ class KdeShortcuts:
         return self.dbus.Array(action, signature="s")
 
     def sequence(self, sequence):
-        return self.dbus.Struct((self.dbus.Array(sequence, signature="i"),), signature="ai")
+        if not 1 <= len(sequence) <= 4:
+            raise ValueError("KDE key sequences must contain one to four key codes")
+        # Older KDE readers unconditionally read four integers, even for one key.
+        padded = tuple(sequence) + (0,) * (4 - len(sequence))
+        return self.dbus.Struct((self.dbus.Array(padded, signature="i"),), signature="ai")
 
     def sequences(self, sequences):
         return self.dbus.Array([self.sequence(key) for key in sequences], signature="(ai)")

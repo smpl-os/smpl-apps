@@ -1063,6 +1063,10 @@ live bindings under `$XDG_STATE_HOME/smplos/calendar/backups/kde-shortcut.*/`.
 It uses KDE's live shortcut API, verifies the assignment and its saved config,
 and attempts to restore the previous bindings if setup fails. Failure is
 reported explicitly even if the RPM installation itself succeeded.
+Shortcut sequences use KDE's four-integer D-Bus format, including zero padding;
+short arrays can abort older KDE shortcut services, including the Wayland
+compositor. The v0.8.35 RPM's shortcut helper is affected; use the corrected RPM
+before retrying automatic shortcut setup on those systems.
 Use `bash install-calendar-rpm.sh --no-kde-shortcut` to leave shortcuts alone,
 or `--kde-shortcut` to request setup explicitly from a KDE desktop user's session.
 Outside KDE, automatic setup is skipped with a message. The installed

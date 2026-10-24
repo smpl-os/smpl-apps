@@ -16,6 +16,43 @@ OTHER = ("fixture", "open", "Other application", "Existing action")
 ALTERNATIVE = (0x0C00004C,)
 
 
+class KdeKeySequenceWireTests(unittest.TestCase):
+    def setUp(self):
+        self.api = shortcut.KdeShortcuts.__new__(shortcut.KdeShortcuts)
+        self.api.dbus = mock.Mock()
+        self.api.dbus.Array.side_effect = lambda values, signature: list(values)
+        self.api.dbus.Struct.side_effect = lambda values, signature: tuple(values)
+
+    def test_every_sequence_has_exactly_four_int32_slots(self):
+        for length in range(1, 5):
+            sequence = (shortcut.KEY[0], ord("D"), ord("E"), ord("F"))[:length]
+            with self.subTest(length=length):
+                wire = self.api.sequence(sequence)
+                self.assertEqual(wire, (list(sequence) + [0] * (4 - length),))
+                self.api.dbus.Array.assert_called_with(
+                    tuple(sequence) + (0,) * (4 - length), signature="i")
+                self.api.dbus.Struct.assert_called_with((wire[0],), signature="ai")
+
+    def test_target_and_alternative_sequences_are_padded_in_shortcut_list(self):
+        self.assertEqual(
+            self.api.sequences((shortcut.KEY, ALTERNATIVE)),
+            [([shortcut.KEY[0], 0, 0, 0],), ([ALTERNATIVE[0], 0, 0, 0],)],
+        )
+        self.assertEqual(self.api.dbus.Array.call_args.kwargs, {"signature": "(ai)"})
+
+    def test_clearing_shortcuts_uses_empty_list_not_empty_sequence(self):
+        self.assertEqual(self.api.sequences(()), [])
+        self.api.dbus.Struct.assert_not_called()
+
+    def test_invalid_sequence_lengths_are_rejected_before_marshalling(self):
+        for sequence in ((), (1, 2, 3, 4, 5)):
+            with self.subTest(sequence=sequence):
+                with self.assertRaisesRegex(ValueError, "one to four"):
+                    self.api.sequence(sequence)
+        self.api.dbus.Array.assert_not_called()
+        self.api.dbus.Struct.assert_not_called()
+
+
 class FakeKde:
     def __init__(self, assignments=None):
         self.assignments = dict(assignments or {})
