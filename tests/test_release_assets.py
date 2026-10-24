@@ -189,6 +189,105 @@ class ReleaseAssetsTests(unittest.TestCase):
         path.write_text(json.dumps(metadata))
         assets.verify_uploaded(self.dist, self.bundle, path, [extra])
 
+    def test_calendar_rpm_upload_is_required_and_digest_checked(self):
+        assets.collect(self.source, self.dist)
+        self.pack()
+        rpm = self.root / "smpl-calendar-0.8.23-1.fc43.x86_64.rpm"
+        rpm.write_bytes(b"rpm fixture")
+        path = self.root / "metadata.json"
+        metadata = self.upload_metadata()
+        path.write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError):
+            assets.verify_uploaded(self.dist, self.bundle, path, [rpm])
+        metadata["assets"].append({
+            "name": rpm.name, "state": "uploaded", "size": rpm.stat().st_size,
+            "digest": f"sha256:{assets.digest(rpm)}",
+        })
+        path.write_text(json.dumps(metadata))
+        assets.verify_uploaded(self.dist, self.bundle, path, [rpm])
+        rpm.write_bytes(b"bad fixture")
+        with self.assertRaises(ValueError):
+            assets.verify_uploaded(self.dist, self.bundle, path, [rpm])
+
+    def test_calendar_rpm_contains_only_calendar_and_uses_native_persistent_unit(self):
+        destination = self.root / "calendar-rpm"
+
+        def rpmbuild(command, **kwargs):
+            self.assertEqual(command[:2], ["rpmbuild", "-bb"])
+            output = destination / "RPMS/x86_64"
+            output.mkdir(parents=True)
+            (output / "smpl-calendar-0.8.23-1.fc43.x86_64.rpm").write_bytes(b"fixture")
+
+        versions = ["smpl-calendar v0.8.23\n", "smpl-calendar-alertd 0.8.23\n"]
+        original_service = self.service.read_bytes()
+        with patch.object(assets.subprocess, "check_output", side_effect=versions), \
+                patch.object(assets.subprocess, "run", side_effect=rpmbuild):
+            assets.build_calendar_rpm(self.source, destination, "0.8.23")
+        with tarfile.open(destination / "SOURCES/smpl-calendar.tar.gz") as archive:
+            members = {member.name: member for member in archive.getmembers()}
+            self.assertEqual(set(members), {
+                "smpl-calendar/smpl-calendar", "smpl-calendar/smpl-calendar-alertd",
+                "smpl-calendar/smpl-calendar.desktop", "smpl-calendar/DSEG-LICENSE.txt",
+                "smpl-calendar/smpl-calendar-reminders.desktop",
+                "smpl-calendar/setup-kde-shortcut.py",
+                "smpl-calendar/smpl-calendar-alertd.service",
+            })
+            self.assertEqual(
+                archive.extractfile("smpl-calendar/setup-kde-shortcut.py").read(),
+                (assets.CALENDAR_SOURCE / "packaging/setup-kde-shortcut.py").read_bytes(),
+            )
+            for name in assets.CALENDAR_BINARIES:
+                self.assertEqual(members[f"smpl-calendar/{name}"].mode, 0o755)
+            service = members[f"smpl-calendar/{assets.SERVICE}"]
+            self.assertEqual(service.mode, 0o644)
+            text = archive.extractfile(service).read().decode()
+            self.assertIn("ExecStart=/usr/bin/smpl-calendar-alertd --foreground --persistent\n", text)
+            self.assertIn("WantedBy=default.target\n", text)
+            self.assertNotIn("/usr/local/bin", text)
+            self.assertEqual(self.service.read_bytes(), original_service)
+            desktop = archive.extractfile(members["smpl-calendar/smpl-calendar.desktop"]).read().decode()
+            self.assertIn("Exec=smpl-calendar --details --autostart-reminders\n", desktop)
+            autostart = archive.extractfile(
+                members["smpl-calendar/smpl-calendar-reminders.desktop"]).read().decode()
+            self.assertIn("Exec=smpl-calendar-alertd --autostart\n", autostart)
+        spec = (assets.CALENDAR_SOURCE / "packaging/smpl-calendar.spec").read_text()
+        self.assertIn("%systemd_user_preun smpl-calendar-alertd.service", spec)
+        self.assertIn("%systemd_user_postun_with_restart smpl-calendar-alertd.service", spec)
+        self.assertIn("%{_sysconfdir}/xdg/autostart/smpl-calendar-reminders.desktop", spec)
+        self.assertNotIn("rm ", spec)
+
+    def test_calendar_rpm_rejects_invalid_version_and_wrong_binary_version(self):
+        destination = self.root / "calendar-rpm"
+        for version in ("", "0.8", "0.8.23;command"):
+            with self.assertRaises(ValueError):
+                assets.build_calendar_rpm(self.source, destination, version)
+        with patch.object(assets.subprocess, "check_output", return_value="smpl-calendar v0.8.22"):
+            with self.assertRaisesRegex(ValueError, "version mismatch"):
+                assets.build_calendar_rpm(self.source, destination, "0.8.23")
+        self.assertFalse(destination.exists())
+        (self.source / "smpl-calendar").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing or invalid calendar binary"):
+            assets.build_calendar_rpm(self.source, destination, "0.8.23")
+
+    def test_calendar_pipeline_builds_on_fedora_and_is_required_for_publication(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        calendar = (ROOT / ".github/workflows/calendar-rpm.yml").read_text()
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("needs: [control-surface, calendar-rpm]", workflow)
+        self.assertIn("source-sha: ${{ needs.control-surface.outputs.source-sha }}", workflow)
+        self.assertIn("release: true", workflow)
+        self.assertIn("${{ env.CALENDAR_RPM }}", workflow)
+        self.assertIn('--asset "$CS_ASSET" --asset "$CALENDAR_RPM"', workflow)
+        self.assertIn("smpl-calendar-${{ steps.version.outputs.new }}-1.fc43.x86_64.rpm", workflow)
+        self.assertIn("uses: ./.github/workflows/calendar-rpm.yml", ci)
+        self.assertIn("image: fedora:43", calendar)
+        self.assertIn("cargo build --release -p smpl-calendar --bins", calendar)
+        self.assertNotIn("cargo build --release --workspace", calendar)
+        self.assertIn("dnf -y install ./target/calendar-rpm/RPMS/x86_64/*.rpm", calendar)
+        self.assertIn("runuser -u calendar-tester -- xvfb-run", calendar)
+        self.assertIn("runuser -u calendar-tester -- dbus-run-session", calendar)
+        self.assertLess(calendar.index("smoke_calendar_notifications.py"), calendar.index("actions/upload-artifact"))
+
     def test_wrong_tag_or_already_published_release_is_rejected(self):
         assets.collect(self.source, self.dist)
         self.pack()
@@ -455,7 +554,7 @@ class ControlSurfaceRuntimeTests(unittest.TestCase):
         self.assertLess(build.index("release_assets.py control-surface control-surface-install"), smoke)
         self.assertLess(smoke, build.index("actions/upload-artifact"))
         # The release job publishes that exact build; rolling Arch never rebuilds it.
-        self.assertIn("needs: control-surface", release)
+        self.assertIn("needs: [control-surface, calendar-rpm]", release)
         self.assertIn("ref: ${{ needs.control-surface.outputs.source-sha }}", release)
         self.assertNotIn("cmake -S control-surface", release)
         self.assertNotIn("qt6-base", release)

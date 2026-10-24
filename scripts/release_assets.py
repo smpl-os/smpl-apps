@@ -11,6 +11,7 @@ files and `control-surface-smoke` runs them on the baseline system.
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,8 @@ BINARIES = (
 )
 SERVICE = "smpl-calendar-alertd.service"
 SERVICE_SOURCE = Path(__file__).resolve().parents[1] / "calendar/systemd" / SERVICE
+CALENDAR_SOURCE = Path(__file__).resolve().parents[1] / "calendar"
+CALENDAR_BINARIES = ("smpl-calendar", "smpl-calendar-alertd")
 
 CONTROL_SURFACE_SOURCE = Path(__file__).resolve().parents[1] / "control-surface"
 CONTROL_SURFACE_BINARIES = ("control-surfaced", "ch552-padprog", "mouse-remapperd")
@@ -124,6 +127,59 @@ def verify_bundle(directory, bundle):
 
 def control_surface_asset(version):
     return f"control-surface-{version}-x86_64.tar.gz"
+
+
+def build_calendar_rpm(source, destination, version):
+    """Build a native RPM from calendar-only Fedora binaries, never Arch ones."""
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError(f"Invalid calendar RPM version: {version}")
+    files = {}
+    for name in CALENDAR_BINARIES:
+        path = source / name
+        if (path.is_symlink() or not path.is_file() or not path.stat().st_size
+                or not path.stat().st_mode & 0o111):
+            raise ValueError(f"Missing or invalid calendar binary: {name}")
+        output = subprocess.check_output([str(path.resolve()), "--version"], text=True).strip()
+        expected = f"{name} v{version}" if name == "smpl-calendar" else f"{name} {version}"
+        if output != expected:
+            raise ValueError(f"Calendar RPM binary version mismatch: {output}")
+        files[name] = path
+    validate_service(SERVICE_SOURCE)
+    service = SERVICE_SOURCE.read_text()
+    entry = "ExecStart=/usr/local/bin/smpl-calendar-alertd --foreground\n"
+    if service.count(entry) != 1:
+        raise ValueError("Calendar service no longer has its expected executable entry")
+    service = service.replace(
+        entry, "ExecStart=/usr/bin/smpl-calendar-alertd --foreground --persistent\n")
+    files["smpl-calendar.desktop"] = CALENDAR_SOURCE / "packaging/smpl-calendar.desktop"
+    files["smpl-calendar-reminders.desktop"] = CALENDAR_SOURCE / "packaging/smpl-calendar-reminders.desktop"
+    files["setup-kde-shortcut.py"] = CALENDAR_SOURCE / "packaging/setup-kde-shortcut.py"
+    files["DSEG-LICENSE.txt"] = CALENDAR_SOURCE / "ui/assets/DSEG-LICENSE.txt"
+    destination.mkdir(parents=True, exist_ok=False)
+    topdir = destination.resolve()
+    (topdir / "SOURCES").mkdir()
+    with tarfile.open(topdir / "SOURCES/smpl-calendar.tar.gz", "w:gz") as archive:
+        for name, path in files.items():
+            info = archive.gettarinfo(path, arcname=f"smpl-calendar/{name}")
+            info.mode = 0o755 if name in CALENDAR_BINARIES else 0o644
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            with path.open("rb") as stream:
+                archive.addfile(info, stream)
+        data = service.encode()
+        info = tarfile.TarInfo(f"smpl-calendar/{SERVICE}")
+        info.size = len(data)
+        info.mode = 0o644
+        archive.addfile(info, io.BytesIO(data))
+    subprocess.run([
+        "rpmbuild", "-bb", "--define", f"_topdir {topdir}",
+        "--define", f"calendar_version {version}",
+        str(CALENDAR_SOURCE / "packaging/smpl-calendar.spec"),
+    ], check=True)
+    packages = list((topdir / "RPMS/x86_64").glob(f"smpl-calendar-{version}-1*.x86_64.rpm"))
+    if len(packages) != 1:
+        raise ValueError("Expected exactly one calendar RPM")
+    print(f"Calendar RPM: {packages[0]}")
 
 
 def current_firmware(source):
@@ -390,6 +446,10 @@ def main():
     stage_args = commands.add_parser("control-surface")
     stage_args.add_argument("install_root", type=Path)
     stage_args.add_argument("tarball", type=Path)
+    calendar_args = commands.add_parser("calendar-rpm")
+    calendar_args.add_argument("source", type=Path)
+    calendar_args.add_argument("destination", type=Path)
+    calendar_args.add_argument("version")
     for command in ("control-surface-check", "control-surface-smoke"):
         commands.add_parser(command).add_argument("tarball", type=Path)
     args = parser.parse_args()
@@ -400,6 +460,8 @@ def main():
             verify_bundle(args.directory, args.bundle)
         elif args.command == "control-surface":
             stage_control_surface(args.install_root, args.tarball)
+        elif args.command == "calendar-rpm":
+            build_calendar_rpm(args.source, args.destination, args.version)
         elif args.command == "control-surface-check":
             describe(check_control_surface(args.tarball))
         elif args.command == "control-surface-smoke":

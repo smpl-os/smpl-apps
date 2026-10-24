@@ -95,9 +95,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  calendar-rpm:
+    needs: control-surface
+    uses: ./.github/workflows/calendar-rpm.yml
+    with:
+      source-sha: ${{ needs.control-surface.outputs.source-sha }}
+      release: true
+
   bump-and-release:
     name: Bump version, build, release
-    needs: control-surface
+    needs: [control-surface, calendar-rpm]
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -181,6 +188,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: control-surface
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: calendar-rpm
+          path: calendar-rpm
+
+      - name: Require the matching standalone calendar RPM
+        run: |
+          CALENDAR_RPM="calendar-rpm/smpl-calendar-${{ steps.version.outputs.new }}-1.fc43.x86_64.rpm"
+          test -s "$CALENDAR_RPM"
+          sha256sum "$CALENDAR_RPM"
+          echo "CALENDAR_RPM=$CALENDAR_RPM" >> "$GITHUB_ENV"
 
       - name: Name and re-check the control-surface asset
         # Built, tested and smoke-tested on its Qt baseline by the
@@ -277,6 +296,7 @@ jobs:
           files: |
             ${{ env.BUNDLE }}
             ${{ env.CS_ASSET }}
+            ${{ env.CALENDAR_RPM }}
             dist/start-menu
             dist/notif-center
             dist/settings
@@ -297,6 +317,6 @@ jobs:
         run: |
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > uploaded-release.json
           python scripts/release_assets.py uploaded dist "$BUNDLE" uploaded-release.json \
-            --asset "$CS_ASSET"
+            --asset "$CS_ASSET" --asset "$CALENDAR_RPM"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             -F draft=false -f make_latest=true --jq .html_url

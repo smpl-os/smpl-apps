@@ -1011,6 +1011,112 @@ Focused headless checks (stub commands, no package installation):
 
 ### Publishing
 
+Each release also builds **smpl Calendar for Nobara 43 KDE** separately in a
+Fedora 43 container and attaches
+`smpl-calendar-<VERSION>-1.fc43.x86_64.rpm` beside the smplOS suite bundle.
+It uses the same source commit and release version, but never reuses the
+Arch-built binaries: their glibc baseline may be newer than Nobara's.
+The RPM contains only the calendar, reminder daemon, KDE application-menu
+entry, login autostart entry, user service, KDE shortcut helper and embedded-font license. No smplOS installation,
+Hyprland, EWW or theme file is required; without a smplOS palette it uses the
+built-in opaque theme. Open **smpl Calendar** from KDE's application menu for
+the full calendar; its **Clock and weather** action opens the compact view.
+Wayland and X11 use the existing FemtoVG renderer and native window controls.
+
+Install the downloaded RPM with
+`pkexec dnf install ./smpl-calendar-<VERSION>-1.fc43.x86_64.rpm`.
+For an install/update command that automatically finds the latest release,
+download and review the Bash installer, then run it as the desktop user:
+
+```bash
+curl -fSL https://raw.githubusercontent.com/smpl-os/smpl-apps/main/scripts/install-calendar-rpm.sh \
+  -o install-calendar-rpm.sh
+less install-calendar-rpm.sh
+bash install-calendar-rpm.sh
+```
+
+The short hosted-script equivalent is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/smpl-os/smpl-apps/main/scripts/install-calendar-rpm.sh \
+  -o install-calendar-rpm.sh && bash install-calendar-rpm.sh
+```
+
+Only run hosted scripts from a source you trust; reviewing a downloaded copy
+first is safer. The same installer command installs a missing package or
+updates it in place through DNF, without an uninstall/reset step. It verifies
+the GitHub asset's size/SHA-256 and RPM identity before asking for graphical
+administrator authentication. With existing data, it reuses the released
+SQLite backup helper to capture and integrity-check events/reminder receipts,
+and copies/verifies saved calendar preferences alongside the snapshot under
+`$XDG_STATE_HOME/smplos/calendar/backups/`. A backup/download/validation failure
+aborts before DNF. Backups are retained, including if installation fails.
+It does not silently skip to an older release if the latest has no RPM.
+This is an on-demand update command, not an unattended update scheduler.
+Backups reduce risk; they are not a guarantee against every failure.
+
+On KDE, the Bash installer also assigns **Meta+Alt+C** (Windows/Super + Alt + C)
+to open the full calendar. If another action uses that combination, it
+**reassigns it**, reports the displaced action and preserves its other shortcuts.
+Before changing bindings it saves and verifies KDE settings and the affected
+live bindings under `$XDG_STATE_HOME/smplos/calendar/backups/kde-shortcut.*/`.
+It uses KDE's live shortcut API, verifies the assignment and its saved config,
+and attempts to restore the previous bindings if setup fails. Failure is
+reported explicitly even if the RPM installation itself succeeded.
+Use `bash install-calendar-rpm.sh --no-kde-shortcut` to leave shortcuts alone,
+or `--kde-shortcut` to request setup explicitly from a KDE desktop user's session.
+Outside KDE, automatic setup is skipped with a message. The installed
+`smpl-calendar-kde-shortcut` command can also configure it without reinstalling.
+Installing the RPM directly does not change shortcuts automatically.
+
+Reminders start automatically at desktop login through the packaged XDG
+autostart entry, or immediately when opening the application-menu entry.
+No manual service enablement is needed. Autostart starts the managed user
+unit, not an unmanaged daemon, and does not unmask a masked service.
+The installer never runs a user service as root or deletes events/preferences.
+The unit uses
+`/usr/bin` in the RPM; the smplOS release's `/usr/local/bin` unit is unchanged.
+Restart an already-running calendar/reminder service after upgrading to use
+the new binaries. Data retains the existing calendar paths, including
+`~/.local/share/smplos/calendar/events.db`.
+
+The RPM's reminder unit passes `--foreground --persistent`. Reminders request
+critical urgency, no expiry (`expire_timeout=0`), resident/non-transient hints,
+and the calendar's desktop-entry identity so KDE can retain them until dismissed.
+The existing smplOS unit keeps its ordinary-notification behavior.
+Reminders work with every calendar window closed, but only while logged in;
+they do not wake a sleeping computer.
+KDE notification permissions, Do Not Disturb and user overrides still apply.
+The reminder daemon does not rewrite KDE notification settings or claim to bypass them.
+To opt out permanently, run
+`systemctl --user mask --now smpl-calendar-alertd.service`.
+Unmask it to allow the next login/application launch to start reminders again.
+The calendar's `--autostart-reminders` option is used only by the RPM desktop
+entry; ordinary launches and the smplOS package retain their existing policy.
+Uninstall with `pkexec dnf remove smpl-calendar`. Fedora's standard systemd
+RPM hooks stop/disable the managed reminder service for running users on
+removal; the package removes its binaries, application/autostart entries and
+unit. Upgrades use the standard user-service restart hooks. Events, reminder
+receipts, weather preferences/cache and user-created KDE overrides are not
+package-owned and are retained on uninstall.
+
+The shared `.github/workflows/calendar-rpm.yml` builds only
+`cargo build --release -p smpl-calendar --bins`, creates the RPM using
+`scripts/release_assets.py calendar-rpm target/release target/calendar-rpm <VERSION>`,
+installs it and opens both window modes on a private Xvfb as an unprivileged
+user with disposable data. CI runs the same job on pull requests.
+It also runs the installed reminder daemon against an isolated D-Bus
+notification server, without any calendar process, and checks the actual
+urgency, expiry and hints, failed-delivery retries and restart deduplication.
+An isolated KDE shortcut daemon/Xvfb session also checks conflict reassignment,
+preservation of alternate bindings, actual key-triggered launching and
+persistence across a shortcut-daemon restart.
+Finally it uninstalls the RPM, verifies its owned files are gone and retains
+private user-data fixtures.
+This verifies Fedora ABI/package dependencies and X11 window startup, not
+an interactive KDE Wayland session. The RPM is mandatory for publication:
+its uploaded size and SHA-256 are verified before the release becomes latest.
+
 Pre-built binaries are published to [Releases](../../releases) and consumed by the smplOS ISO builder.
 Run the **Release** workflow (`.github/workflows/release.yml`, `workflow_dispatch`)
 from `main` after the changes are merged. It increments the workspace patch

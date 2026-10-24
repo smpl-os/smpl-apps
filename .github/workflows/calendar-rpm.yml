@@ -1,0 +1,126 @@
+name: Calendar RPM
+
+on:
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        required: true
+      release:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  calendar-rpm:
+    name: Build standalone calendar for Nobara 43 KDE
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:43
+    steps:
+      - name: Install Fedora build dependencies
+        run: |
+          dnf -y install git rust cargo gcc gcc-c++ make pkgconf-pkg-config \
+            fontconfig-devel freetype-devel libxkbcommon-devel libxkbcommon-x11-devel \
+            wayland-devel libX11-devel libXcursor-devel libXi-devel libXrandr-devel \
+            mesa-libEGL-devel mesa-libGL-devel \
+            rpm-build systemd-rpm-macros python3 python3-dbus python3-gobject desktop-file-utils \
+            xorg-x11-server-Xvfb xorg-x11-xauth xdotool mesa-dri-drivers \
+            libnotify systemd dbus-daemon util-linux kglobalacceld kf6-kservice
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source-sha }}
+
+      - name: Select matching workspace version
+        id: version
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          version = tomllib.loads(text)["workspace"]["package"]["version"]
+          if os.environ["RELEASE"] == "true":
+              major, minor, patch = map(int, version.split("."))
+              bumped = f"{major}.{minor}.{patch + 1}"
+              text = text.replace(f'version    = "{version}"', f'version    = "{bumped}"', 1)
+              if tomllib.loads(text)["workspace"]["package"]["version"] != bumped:
+                  raise SystemExit("Failed to select the release version")
+              path.write_text(text)
+              version = bumped
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\n")
+          PY
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release/
+          key: calendar-fedora43-v1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: calendar-fedora43-v1-
+
+      - name: Build only the calendar and reminder daemon
+        run: |
+          python3 -m unittest discover -s calendar/tests -p 'test_*.py' -v
+          cargo build --release -p smpl-calendar --bins
+          cargo test --release -p smpl-calendar --bin smpl-calendar-alertd
+
+      - name: Package native RPM
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          desktop-file-validate calendar/packaging/*.desktop
+          python3 scripts/release_assets.py calendar-rpm target/release target/calendar-rpm "$VERSION"
+
+      - name: Install and smoke-test the RPM on its runtime baseline
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dnf -y install ./target/calendar-rpm/RPMS/x86_64/*.rpm
+          rpm -V smpl-calendar
+          useradd -m calendar-tester
+          runuser -u calendar-tester -- xvfb-run -a \
+            -s "-screen 0 1400x900x24 -nolisten tcp" \
+            python3 scripts/smoke_calendar_rpm.py "$VERSION"
+          runuser -u calendar-tester -- dbus-run-session -- \
+            python3 scripts/smoke_calendar_notifications.py
+          runuser -u calendar-tester -- dbus-run-session -- xvfb-run -a \
+            -s "-screen 0 1400x900x24 -nolisten tcp" \
+            python3 scripts/smoke_calendar_kde_shortcut.py
+
+      - name: Verify clean uninstall without deleting user data
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import tempfile
+          with tempfile.TemporaryDirectory(prefix="calendar-uninstall-") as home:
+              data = Path(home) / ".local/share/smplos/calendar/events.db"
+              config = Path(home) / ".config/smplos/calendar.json"
+              for path in (data, config):
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_bytes(b"private user data fixture")
+              owned = subprocess.check_output(["rpm", "-ql", "smpl-calendar"], text=True).splitlines()
+              scripts = subprocess.check_output(["rpm", "-q", "--scripts", "smpl-calendar"], text=True)
+              assert "remove-user-units smpl-calendar-alertd.service" in scripts
+              subprocess.run(["dnf", "-y", "remove", "smpl-calendar"], check=True)
+              for path in owned:
+                  assert not Path(path).is_file(), f"Package file left behind: {path}"
+              for path in (data, config):
+                  assert path.read_bytes() == b"private user data fixture"
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calendar-rpm
+          path: target/calendar-rpm/RPMS/x86_64/*.rpm
+          if-no-files-found: error
+          retention-days: 7

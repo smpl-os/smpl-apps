@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, PartialEq)]
 enum Invocation {
     Service,
-    Foreground,
+    Autostart,
+    Foreground { persistent: bool },
     Version,
     Check,
     Help,
@@ -26,13 +27,17 @@ fn invocation(args: &[String]) -> Result<Invocation> {
     match args {
         [] => Ok(Invocation::Service),
         [arg] => match arg.as_str() {
-            "--foreground" => Ok(Invocation::Foreground),
+            "--foreground" => Ok(Invocation::Foreground { persistent: false }),
+            "--autostart" => Ok(Invocation::Autostart),
             "--version" | "-V" => Ok(Invocation::Version),
             "--check" => Ok(Invocation::Check),
             "--help" | "-h" => Ok(Invocation::Help),
             _ => bail!("Unknown reminder daemon option; use --help"),
         },
-        _ => bail!("Expected at most one reminder daemon option; use --help"),
+        [foreground, persistent] if foreground == "--foreground" && persistent == "--persistent" => {
+            Ok(Invocation::Foreground { persistent: true })
+        }
+        _ => bail!("Invalid reminder daemon options; use --help"),
     }
 }
 
@@ -79,7 +84,7 @@ fn service_state(properties: &str) -> ServiceState {
     }
 }
 
-fn check_user_service() -> Result<()> {
+fn query_user_service() -> Result<ServiceState> {
     let output = Command::new("systemctl")
         .args([
             "--user",
@@ -94,9 +99,13 @@ fn check_user_service() -> Result<()> {
         .context("User reminder service could not be queried")?;
     ensure!(
         output.status.success(),
-        "User reminder service is unavailable; no daemon was started"
+        "User reminder service is unavailable"
     );
-    match service_state(&String::from_utf8_lossy(&output.stdout)) {
+    Ok(service_state(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn check_user_service() -> Result<()> {
+    match query_user_service()? {
         ServiceState::Running => Ok(()),
         ServiceState::Stopped => {
             eprintln!(
@@ -108,6 +117,23 @@ fn check_user_service() -> Result<()> {
             bail!("Install and explicitly enable/start the calendar reminder user service")
         }
     }
+}
+
+fn autostart_service() -> Result<()> {
+    let status = Command::new("systemctl")
+        .args(["--user", "start", "smpl-calendar-alertd.service"])
+        .stdin(Stdio::null())
+        .status()
+        .context("Could not start the calendar reminder user service")?;
+    ensure!(
+        status.success(),
+        "Calendar reminders could not start; check systemctl --user status smpl-calendar-alertd.service"
+    );
+    ensure!(
+        query_user_service()? == ServiceState::Running,
+        "Calendar reminder user service did not stay running"
+    );
+    Ok(())
 }
 
 fn check_configuration() -> Result<()> {
@@ -129,7 +155,23 @@ fn check_configuration() -> Result<()> {
     Ok(())
 }
 
-fn send_notification(reminder: &alarm::Reminder) -> Result<()> {
+fn notification_command(persistent: bool) -> Command {
+    let mut command = Command::new("notify-send");
+    command.args(["-a", "smpl-calendar", "-i", "x-office-calendar"]);
+    if persistent {
+        command.args([
+            "-u", "critical", "-t", "0",
+            "-h", "boolean:resident:true",
+            "-h", "boolean:transient:false",
+            "-h", "string:desktop-entry:smpl-calendar",
+        ]);
+    } else {
+        command.args(["-u", "normal"]);
+    }
+    command
+}
+
+fn send_notification(reminder: &alarm::Reminder, persistent: bool) -> Result<()> {
     let now = Local::now().timestamp();
     if now < reminder.due_ts || now.saturating_sub(reminder.due_ts) > alarm::MAX_LATENESS_SECONDS {
         bail!("Reminder delivery window has expired");
@@ -139,18 +181,8 @@ fn send_notification(reminder: &alarm::Reminder) -> Result<()> {
         .single()
         .context("Invalid reminder timestamp")?;
     let body = format!("Starts at {}", start.format("%H:%M on %A, %B %e"));
-    let mut child = Command::new("notify-send")
-        .args([
-            "-a",
-            "smpl-calendar",
-            "-i",
-            "x-office-calendar",
-            "-u",
-            "normal",
-            "--",
-            &reminder.title,
-            &body,
-        ])
+    let mut child = notification_command(persistent)
+        .args(["--", &reminder.title, &body])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -173,7 +205,7 @@ fn send_notification(reminder: &alarm::Reminder) -> Result<()> {
     }
 }
 
-fn run() -> Result<()> {
+fn run(persistent: bool) -> Result<()> {
     let Some(_lock) = alarm::acquire_lock(&alarm::lock_path()?)? else {
         return Ok(());
     };
@@ -189,7 +221,9 @@ fn run() -> Result<()> {
         std::thread::sleep(Duration::from_secs(1));
     };
     loop {
-        match alarm::tick(&conn, &Local, Local::now().timestamp(), send_notification) {
+        match alarm::tick(&conn, &Local, Local::now().timestamp(), |reminder| {
+            send_notification(reminder, persistent)
+        }) {
             Ok(report) => {
                 if report.failed > 0 {
                     eprintln!("smpl-calendar-alertd: delivery failed; retrying recent reminders on the next tick");
@@ -251,7 +285,8 @@ fn execute() -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     match invocation(&args)? {
         Invocation::Service => check_user_service(),
-        Invocation::Foreground => run(),
+        Invocation::Autostart => autostart_service(),
+        Invocation::Foreground { persistent } => run(persistent),
         Invocation::Version => {
             println!("smpl-calendar-alertd {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -259,9 +294,11 @@ fn execute() -> Result<()> {
         Invocation::Check => check_configuration(),
         Invocation::Help => {
             println!(
-                "Usage: smpl-calendar-alertd [--foreground | --version | --check | --help]\n\
+                "Usage: smpl-calendar-alertd [--foreground [--persistent] | --autostart | --version | --check | --help]\n\
                 No arguments: check the existing user service; never start an unmanaged daemon.\n\
+                --autostart: start the managed user service without changing enablement or masks.\n\
                 --foreground: run the daemon (service/explicit administration only).\n\
+                --persistent: request critical, non-expiring notifications until dismissed.\n\
                 --check: read-only dependency/configuration check; never open the database.\n\
                 --version: print version; never open the database."
             );
@@ -285,7 +322,8 @@ mod tests {
     fn only_explicit_foreground_can_enter_database_runtime() {
         assert_eq!(invocation(&[]).unwrap(), Invocation::Service);
         for (option, expected) in [
-            ("--foreground", Invocation::Foreground),
+            ("--foreground", Invocation::Foreground { persistent: false }),
+            ("--autostart", Invocation::Autostart),
             ("--version", Invocation::Version),
             ("--check", Invocation::Check),
             ("--help", Invocation::Help),
@@ -294,6 +332,28 @@ mod tests {
         }
         assert!(invocation(&["--unknown".into()]).is_err());
         assert!(invocation(&["--foreground".into(), "--check".into()]).is_err());
+        assert_eq!(
+            invocation(&["--foreground".into(), "--persistent".into()]).unwrap(),
+            Invocation::Foreground { persistent: true }
+        );
+        assert!(invocation(&["--persistent".into()]).is_err());
+        assert!(invocation(&["--version".into(), "--persistent".into()]).is_err());
+    }
+
+    #[test]
+    fn persistent_notifications_request_no_expiry_and_kde_desktop_identity() {
+        let command = notification_command(true);
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        assert_eq!(args, [
+            "-a", "smpl-calendar", "-i", "x-office-calendar",
+            "-u", "critical", "-t", "0",
+            "-h", "boolean:resident:true",
+            "-h", "boolean:transient:false",
+            "-h", "string:desktop-entry:smpl-calendar",
+        ]);
+        let command = notification_command(false);
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        assert_eq!(args, ["-a", "smpl-calendar", "-i", "x-office-calendar", "-u", "normal"]);
     }
 
     #[test]
