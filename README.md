@@ -1,6 +1,6 @@
 # smpl-apps
 
-**Current workspace version: v0.8.34**
+**Current workspace version: v0.8.35**
 
 Rust GUI apps for [smplOS](https://github.com/smpl-os/smplos).
 
@@ -1194,7 +1194,7 @@ Headless delivery checks:
 
 ```bash
 # Download a published version's bundle for the ISO build:
-VERSION=0.8.34
+VERSION=0.8.35
 curl -fSL "https://github.com/smpl-os/smpl-apps/releases/download/v${VERSION}/smpl-apps-${VERSION}-x86_64.tar.gz" \
   | tar -xz -C ~/.cache/smpl-apps/
 ```
