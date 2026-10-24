@@ -40,6 +40,7 @@ class CalendarInstallerTests(unittest.TestCase):
             TMPDIR=str(self.root / "tmp"), FIXTURE=str(self.root),
             XDG_CONFIG_HOME=str(self.home / ".config"),
             XDG_STATE_HOME=str(self.home / ".local/state"),
+            XDG_CURRENT_DESKTOP="",
         )
         self.helper("id", 'print(os.environ.get("FIXTURE_UID", "1000"))')
         self.helper("uname", 'print("Linux" if sys.argv[1] == "-s" else "x86_64")')
@@ -72,6 +73,11 @@ configs = sorted(str(path) for path in backup_base.glob("*/calendar.json"))
 sys.exit(int(os.environ.get("INSTALL_STATUS", "0")))
 ''')
         self.env["BACKUP_HELPER"] = str(ROOT / "scripts/backup-calendar-data.py")
+        self.helper("smpl-calendar-kde-shortcut", '''
+assert (root / "install.json").exists(), "Shortcut setup must follow successful installation"
+(root / "shortcut-called").touch()
+sys.exit(int(os.environ.get("SHORTCUT_STATUS", "0")))
+''')
 
     def helper(self, name, body):
         path = self.bin / name
@@ -81,9 +87,9 @@ sys.exit(int(os.environ.get("INSTALL_STATUS", "0")))
         )
         path.chmod(0o755)
 
-    def run_installer(self):
+    def run_installer(self, *args):
         (self.root / "release.json").write_text(json.dumps(self.metadata))
-        return subprocess.run(["bash", str(INSTALLER)], env=self.env,
+        return subprocess.run(["bash", str(INSTALLER), *args], env=self.env,
                               text=True, capture_output=True, timeout=20)
 
     def create_data(self):
@@ -184,6 +190,45 @@ sys.exit(int(os.environ.get("INSTALL_STATUS", "0")))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not root", result.stderr)
         self.assertFalse((self.root / "install.json").exists())
+
+    def test_kde_automatically_sets_shortcut_after_install(self):
+        self.env["XDG_CURRENT_DESKTOP"] = "fedora:KDE"
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root / "shortcut-called").exists())
+        self.assertIn("conflicting bindings", result.stdout)
+
+    def test_shortcut_can_be_skipped_on_kde_or_requested_explicitly(self):
+        self.env["XDG_CURRENT_DESKTOP"] = "KDE"
+        result = self.run_installer("--no-kde-shortcut")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "shortcut-called").exists())
+        self.env.pop("XDG_CURRENT_DESKTOP")
+        result = self.run_installer("--kde-shortcut")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root / "shortcut-called").exists())
+
+    def test_non_kde_and_unset_desktop_do_not_change_shortcuts(self):
+        self.env.pop("XDG_CURRENT_DESKTOP")
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "shortcut-called").exists())
+        self.assertIn("shortcut setup skipped", result.stdout)
+
+    def test_shortcut_failure_is_explicit_without_claiming_full_success(self):
+        self.env["XDG_CURRENT_DESKTOP"] = "KDE"
+        self.env["SHORTCUT_STATUS"] = "1"
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Calendar is installed, but KDE shortcut setup failed", result.stderr)
+        self.assertNotIn("installation/update completed", result.stdout)
+
+    def test_failed_dnf_never_changes_shortcuts(self):
+        self.env["XDG_CURRENT_DESKTOP"] = "KDE"
+        self.env["INSTALL_STATUS"] = "1"
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "shortcut-called").exists())
 
 
 if __name__ == "__main__":

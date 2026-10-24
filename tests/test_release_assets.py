@@ -229,8 +229,13 @@ class ReleaseAssetsTests(unittest.TestCase):
                 "smpl-calendar/smpl-calendar", "smpl-calendar/smpl-calendar-alertd",
                 "smpl-calendar/smpl-calendar.desktop", "smpl-calendar/DSEG-LICENSE.txt",
                 "smpl-calendar/smpl-calendar-reminders.desktop",
+                "smpl-calendar/setup-kde-shortcut.py",
                 "smpl-calendar/smpl-calendar-alertd.service",
             })
+            self.assertEqual(
+                archive.extractfile("smpl-calendar/setup-kde-shortcut.py").read(),
+                (assets.CALENDAR_SOURCE / "packaging/setup-kde-shortcut.py").read_bytes(),
+            )
             for name in assets.CALENDAR_BINARIES:
                 self.assertEqual(members[f"smpl-calendar/{name}"].mode, 0o755)
             service = members[f"smpl-calendar/{assets.SERVICE}"]

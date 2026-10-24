@@ -11,6 +11,7 @@ ExclusiveArch:  x86_64
 
 Requires:       libnotify
 Requires:       systemd
+Requires:       python3-dbus
 Requires:       fontconfig%{?_isa}
 Requires:       freetype%{?_isa}
 Requires:       libxkbcommon%{?_isa}
@@ -43,6 +44,7 @@ install -Dpm0755 smpl-calendar-alertd %{buildroot}%{_bindir}/smpl-calendar-alert
 install -Dpm0644 smpl-calendar.desktop %{buildroot}%{_datadir}/applications/smpl-calendar.desktop
 install -Dpm0644 smpl-calendar-reminders.desktop %{buildroot}%{_sysconfdir}/xdg/autostart/smpl-calendar-reminders.desktop
 install -Dpm0644 smpl-calendar-alertd.service %{buildroot}%{_userunitdir}/smpl-calendar-alertd.service
+install -Dpm0755 setup-kde-shortcut.py %{buildroot}%{_bindir}/smpl-calendar-kde-shortcut
 
 %post
 %systemd_user_post smpl-calendar-alertd.service
@@ -60,3 +62,4 @@ install -Dpm0644 smpl-calendar-alertd.service %{buildroot}%{_userunitdir}/smpl-c
 %{_datadir}/applications/smpl-calendar.desktop
 %{_sysconfdir}/xdg/autostart/smpl-calendar-reminders.desktop
 %{_userunitdir}/smpl-calendar-alertd.service
+%{_bindir}/smpl-calendar-kde-shortcut

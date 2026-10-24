@@ -153,6 +153,7 @@ def build_calendar_rpm(source, destination, version):
         entry, "ExecStart=/usr/bin/smpl-calendar-alertd --foreground --persistent\n")
     files["smpl-calendar.desktop"] = CALENDAR_SOURCE / "packaging/smpl-calendar.desktop"
     files["smpl-calendar-reminders.desktop"] = CALENDAR_SOURCE / "packaging/smpl-calendar-reminders.desktop"
+    files["setup-kde-shortcut.py"] = CALENDAR_SOURCE / "packaging/setup-kde-shortcut.py"
     files["DSEG-LICENSE.txt"] = CALENDAR_SOURCE / "ui/assets/DSEG-LICENSE.txt"
     destination.mkdir(parents=True, exist_ok=False)
     topdir = destination.resolve()

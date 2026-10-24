@@ -5,16 +5,21 @@ umask 077
 
 if [[ "${1:-}" == --help && $# == 1 ]]; then
     printf '%s\n' \
-        'Usage: bash install-calendar-rpm.sh' \
+        'Usage: bash install-calendar-rpm.sh [--kde-shortcut | --no-kde-shortcut]' \
         'Install/update the latest smpl Calendar RPM for Nobara 43 KDE (x86_64).' \
         'Existing events and preferences are backed up before DNF is invoked.' \
+        'On KDE, Meta+Alt+C is assigned to the calendar; conflicting bindings are backed up and reassigned.' \
+        '--no-kde-shortcut leaves all KDE bindings unchanged.' \
         'Run as your desktop user, not as root.'
     exit 0
 fi
-if (( $# != 0 )); then
-    printf 'Unknown arguments; use --help.\n' >&2
-    exit 1
-fi
+shortcut=auto
+case "$#:${1:-}" in
+    0:) ;;
+    1:--kde-shortcut) shortcut=yes ;;
+    1:--no-kde-shortcut) shortcut=no ;;
+    *) printf 'Unknown arguments; use --help.\n' >&2; exit 1 ;;
+esac
 for command in curl python3 pkexec dnf rpm uname id mktemp; do
     command -v "$command" >/dev/null || {
         printf 'Required command is missing: %s\n' "$command" >&2
@@ -142,6 +147,22 @@ PY
 
 printf 'Installing/updating smpl Calendar %s through DNF...\n' "$version"
 pkexec dnf install --assumeyes "$workdir/calendar.rpm"
+if [[ "$shortcut" == auto ]]; then
+    desktop="${XDG_CURRENT_DESKTOP:-}"
+    case ":${desktop^^}:" in
+        *:KDE:*) shortcut=yes ;;
+        *) shortcut=no ;;
+    esac
+fi
+if [[ "$shortcut" == yes ]]; then
+    printf 'Assigning KDE Meta+Alt+C to smpl Calendar; conflicting bindings will be backed up and reassigned.\n'
+    if ! smpl-calendar-kde-shortcut; then
+        printf 'Calendar is installed, but KDE shortcut setup failed. No shortcut success is being reported.\n' >&2
+        exit 1
+    fi
+else
+    printf 'KDE shortcut setup skipped. Use --kde-shortcut to request it explicitly.\n'
+fi
 printf '%s\n' \
     'Calendar installation/update completed. Existing calendar data was not reset.' \
     'Open smpl Calendar from the application menu. Reminders start at login or app launch.' \

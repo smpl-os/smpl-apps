@@ -28,7 +28,7 @@ jobs:
             mesa-libEGL-devel mesa-libGL-devel \
             rpm-build systemd-rpm-macros python3 python3-dbus python3-gobject desktop-file-utils \
             xorg-x11-server-Xvfb xorg-x11-xauth xdotool mesa-dri-drivers \
-            libnotify systemd dbus-daemon util-linux
+            libnotify systemd dbus-daemon util-linux kglobalacceld kf6-kservice
 
       - uses: actions/checkout@v5
         with:
@@ -92,6 +92,9 @@ jobs:
             python3 scripts/smoke_calendar_rpm.py "$VERSION"
           runuser -u calendar-tester -- dbus-run-session -- \
             python3 scripts/smoke_calendar_notifications.py
+          runuser -u calendar-tester -- dbus-run-session -- xvfb-run -a \
+            -s "-screen 0 1400x900x24 -nolisten tcp" \
+            python3 scripts/smoke_calendar_kde_shortcut.py
 
       - name: Verify clean uninstall without deleting user data
         run: |
