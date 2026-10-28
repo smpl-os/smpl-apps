@@ -159,7 +159,7 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel rust cargo mold \
+            base-devel rust cargo mold clang ninja \
             fontconfig freetype2 \
             libxkbcommon wayland wayland-protocols \
             pixman libglvnd mesa \

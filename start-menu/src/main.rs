@@ -814,7 +814,7 @@ impl Launcher {
         }
         trace("hide");
         // Wayland cannot unmap a window: Slint destroys it and recreates it on
-        // show, keeping the component, fonts and loaded GL libraries.
+        // show, keeping the component, fonts and CPU renderer caches.
         if let Err(error) = ui.hide() {
             eprintln!("start-menu: cannot hide the menu: {error}");
         }
@@ -1292,9 +1292,9 @@ fn trace_rendering(ui: &MainWindow) {
         return;
     }
     let _ = ui.window().set_rendering_notifier(|state, _| match state {
-        slint::RenderingState::RenderingSetup => trace("GL context ready"),
+        slint::RenderingState::RenderingSetup => trace("CPU renderer ready"),
         slint::RenderingState::AfterRendering => trace("frame rendered"),
-        slint::RenderingState::RenderingTeardown => trace("GL context released"),
+        slint::RenderingState::RenderingTeardown => trace("CPU renderer released"),
         _ => {}
     });
 }

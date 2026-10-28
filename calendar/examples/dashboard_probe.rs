@@ -1,4 +1,4 @@
-//! Isolated real-FemtoVG UI fixture; run through calendar/tests/run_dashboard_probe.py.
+//! Isolated native CPU UI fixture; run through calendar/tests/run_dashboard_probe.py.
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -417,7 +417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 println!(
-                    "stage={stage} snapshot={}x{} native-femtovg",
+                    "stage={stage} snapshot={}x{} native-cpu",
                     image.width(),
                     image.height()
                 );

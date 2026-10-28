@@ -22,7 +22,7 @@ jobs:
     steps:
       - name: Install Fedora build dependencies
         run: |
-          dnf -y install git rust cargo gcc gcc-c++ make pkgconf-pkg-config \
+          dnf -y install git rust cargo gcc gcc-c++ make clang ninja-build pkgconf-pkg-config \
             fontconfig-devel freetype-devel libxkbcommon-devel libxkbcommon-x11-devel \
             wayland-devel libX11-devel libXcursor-devel libXi-devel libXrandr-devel \
             mesa-libEGL-devel mesa-libGL-devel \
@@ -88,7 +88,7 @@ jobs:
           rpm -V smpl-calendar
           useradd -m calendar-tester
           runuser -u calendar-tester -- xvfb-run -a \
-            -s "-screen 0 1400x900x24 -nolisten tcp" \
+            -s "-screen 0 1400x900x24 -nolisten tcp -extension GLX" \
             python3 scripts/smoke_calendar_rpm.py "$VERSION"
           runuser -u calendar-tester -- dbus-run-session -- \
             python3 scripts/smoke_calendar_notifications.py

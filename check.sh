@@ -6,6 +6,7 @@
 #   ./check.sh          # quick mode: guardrails + check + clippy
 #   ./check.sh --full   # full mode:  + release build + YAML lint
 #   ./check.sh --release # release mode: everything that the Release workflow does
+#   SMPL_NATIVE_CPU_CHECK=1 ./check.sh # include private Xvfb/Weston pixel checks
 #
 # Exit code 0 = safe to push/release. Non-zero = fix before pushing.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -44,19 +45,18 @@ warn() {
 
 # ── 1. Guardrails (transparency) ────────────────────────────────────────────
 
-step "Guardrails: renderer-femtovg"
+step "Guardrails: alpha-safe CPU rendering"
 
-if grep -q 'renderer-software\|renderer-skia' Cargo.toml; then
-    fail "Workspace Cargo.toml uses wrong renderer -- transparency will break!"
-    echo "       The Slint feature MUST be 'renderer-femtovg', not 'renderer-software' or 'renderer-skia'."
+if grep -q '"renderer-femtovg"\|"renderer-software"' Cargo.toml; then
+    fail "Use Skia CPU rendering with the pinned alpha patches, not a GPU or incomplete renderer."
 else
-    pass "Cargo.toml uses renderer-femtovg"
+    pass "Cargo.toml excludes the GPU and incomplete software renderers"
 fi
 
-if ! grep -q 'with_renderer_name("femtovg")' smpl-common/src/lib.rs; then
-    fail "smpl-common/src/lib.rs missing .with_renderer_name(\"femtovg\")"
+if ! grep -q 'with_renderer_name("skia-software")' smpl-common/src/lib.rs; then
+    fail "smpl-common/src/lib.rs must select skia-software without probing the GPU"
 else
-    pass "smpl-common init uses femtovg renderer"
+    pass "smpl-common selects CPU rendering from launch"
 fi
 
 if ! grep -q 'with_decorations(false)' smpl-common/src/lib.rs; then
@@ -167,6 +167,20 @@ if cargo clippy --workspace -- -D warnings 2>&1; then
     pass "No clippy warnings"
 else
     fail "clippy found warnings (CI uses -D warnings, these WILL fail CI)"
+fi
+
+# ── Native CPU presentation (opt-in: requires Xvfb and Weston) ────────────────
+
+if [[ "${SMPL_NATIVE_CPU_CHECK:-0}" == "1" ]]; then
+    step "Native CPU alpha: private X11 and Wayland"
+    if cargo test --locked -p softbuffer --lib \
+        && cargo build --locked -p smpl-common --example cpu_alpha_probe \
+        && python3 tests/run_cpu_alpha_probe.py \
+        && python3 tests/run_cpu_wayland_probe.py; then
+        pass "CPU rendering preserves alpha without GPU drivers"
+    else
+        fail "Native CPU presentation checks failed"
+    fi
 fi
 
 # ── 4b. control-surface (keypad daemon, CMake/Qt6) ─────────────────────────

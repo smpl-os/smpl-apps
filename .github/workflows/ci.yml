@@ -34,11 +34,12 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel rust cargo \
+            base-devel rust cargo clang ninja \
             fontconfig freetype2 \
             libxkbcommon wayland wayland-protocols \
             pixman libglvnd mesa \
-            gtk4 gtk4-layer-shell libadwaita python curl
+            gtk4 gtk4-layer-shell libadwaita python curl \
+            xorg-server-xvfb libx11 weston
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -51,21 +52,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-ci-
 
-      - name: Guardrail — renderer-femtovg is mandatory for transparency
+      - name: Guardrail — CPU rendering must preserve native alpha and themes
         run: |
-          # Workspace Cargo.toml must use renderer-femtovg, never software/skia
-          # renderer-software uses softbuffer which hardcodes XRGB on Wayland (no alpha)
-          if grep -q 'renderer-software\|renderer-skia' Cargo.toml; then
-                echo "::error::Workspace Cargo.toml uses wrong renderer — transparency will break!"
-                echo "The Slint feature MUST be 'renderer-femtovg', not 'renderer-software' or 'renderer-skia'."
-                exit 1
-          fi
-          # smpl-common must use .with_renderer_name("femtovg")
-          if ! grep -q 'with_renderer_name("femtovg")' smpl-common/src/lib.rs; then
-                echo "::error::smpl-common/src/lib.rs is missing .with_renderer_name(\"femtovg\")"
-            exit 1
-          fi
-          echo "✓ Transparency guardrails passed"
+          python3 -m unittest discover -s tests -p test_theme_contracts.py -v
 
       # ── Feature inventory guardrails ──────────────────────────────────────
       # These grep checks catch accidental deletion of important features during
@@ -255,6 +244,16 @@ jobs:
 
       - name: Build (debug, for compile-time errors only — not stripped)
         run: cargo build --workspace
+
+      - name: Verify native CPU alpha without GPU drivers
+        run: |
+          cargo test --locked -p softbuffer --lib
+          cargo build --locked -p smpl-common --example cpu_alpha_probe
+          useradd -m renderer-tester
+          mkdir -p target/native-cpu-alpha-probe
+          chown -R renderer-tester target/native-cpu-alpha-probe
+          runuser -u renderer-tester -- python3 tests/run_cpu_alpha_probe.py
+          runuser -u renderer-tester -- python3 tests/run_cpu_wayland_probe.py
 
       - name: Test
         # --lib --bins --tests: include UI contracts, skip doctests referring to consuming crates

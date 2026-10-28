@@ -1,7 +1,7 @@
 //! Slint transparent overlay window.
 //!
 //! Full-screen, layer-shell top overlay, click-through outside hint
-//! labels. Uses the exact `smpl_common::init()` FemtoVG + no-decorations
+//! labels. Uses the shared alpha-safe CPU renderer + no-decorations
 //! setup that every other smplOS app uses, so transparency + blur just
 //! work.
 //!
@@ -26,7 +26,7 @@
 //! Slint transparent overlay window.
 //!
 //! Full-screen, layer-shell top overlay, click-through outside hint
-//! labels. Uses the exact `smpl_common::init()` FemtoVG + no-decorations
+//! labels. Uses the shared alpha-safe CPU renderer + no-decorations
 //! setup that every other smplOS app uses, so transparency + blur just
 //! work.
 //!
@@ -139,11 +139,11 @@ impl Overlay {
     }
 
     /// Populate the label model and show the overlay in select mode.
-    pub fn show_select(&self, labels: &[HintLabel]) {
+    pub fn show_select(&self, labels: &[HintLabel]) -> Result<(), slint::PlatformError> {
         self.set_visual_mode(VisualMode::Select);
         let items: Vec<HintItem> = labels.iter().map(HintItem::from).collect();
         self.model.set_vec(items);
-        let _ = self.ui.show();
+        self.ui.show()
     }
 
     /// Refresh the hint pills in place (typed-prefix filtering).
@@ -153,12 +153,12 @@ impl Overlay {
     }
 
     /// Show the overlay in cursor mode (crosshair at (x, y)).
-    pub fn show_cursor(&self, x: f32, y: f32) {
+    pub fn show_cursor(&self, x: f32, y: f32) -> Result<(), slint::PlatformError> {
         self.set_visual_mode(VisualMode::Cursor);
         self.model.set_vec(Vec::new());
         self.ui.set_cursor_x(x);
         self.ui.set_cursor_y(y);
-        let _ = self.ui.show();
+        self.ui.show()
     }
 
     /// Update cursor crosshair position without re-showing.
@@ -168,15 +168,17 @@ impl Overlay {
     }
 
     /// Show the overlay in scroll mode (no visible UI, just focus catcher).
-    pub fn show_scroll(&self) {
+    pub fn show_scroll(&self) -> Result<(), slint::PlatformError> {
         self.set_visual_mode(VisualMode::Scroll);
         self.model.set_vec(Vec::new());
-        let _ = self.ui.show();
+        self.ui.show()
     }
 
     /// Hide the overlay without destroying it.
     pub fn hide(&self) {
-        let _ = self.ui.hide();
+        if let Err(error) = self.ui.hide() {
+            tracing::error!(%error, "Cannot hide hints overlay");
+        }
     }
 
     /// Wire the key-pressed callback. Argument is the raw text of the

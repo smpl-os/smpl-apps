@@ -2,6 +2,7 @@
 
 import pathlib
 import re
+import tomllib
 import unittest
 
 
@@ -36,7 +37,7 @@ class ThemeContractTests(unittest.TestCase):
     def test_backend_is_centralized_and_preserves_alpha_requirements(self):
         backend = (ROOT / "smpl-common/src/lib.rs").read_text()
         for requirement in [
-            '.with_renderer_name("femtovg")',
+            '.with_renderer_name("skia-software")',
             ".with_decorations(false)",
             ".with_name(app_id, app_id)",
         ]:
@@ -47,14 +48,41 @@ class ThemeContractTests(unittest.TestCase):
                     "Backend::builder()", source.read_text(), str(source)
                 )
         manifest = (ROOT / "Cargo.toml").read_text()
-        self.assertNotIn("renderer-software", manifest)
-        self.assertNotIn("renderer-skia", manifest)
+        self.assertIn('"renderer-skia"', manifest)
+        self.assertNotIn('"renderer-femtovg"', manifest)
+        self.assertNotIn('"renderer-software"', manifest)
+        self.assertIn('softbuffer = { path = "vendor/softbuffer" }', manifest)
+        self.assertIn('i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }', manifest)
 
-    def test_mouse_probe_backend_is_test_only_and_private_femtovg(self):
+    def test_slint_versions_match_the_patched_renderer_exactly(self):
+        manifest = tomllib.loads((ROOT / "Cargo.toml").read_text())
+        renderer = tomllib.loads(
+            (ROOT / "vendor/i-slint-renderer-skia/Cargo.toml").read_text()
+        )
+        for crate in ("slint", "slint-build", "i-slint-backend-winit"):
+            dependency = manifest["workspace"]["dependencies"][crate]
+            version = dependency["version"] if isinstance(dependency, dict) else dependency
+            self.assertEqual(version, "=" + renderer["package"]["version"], crate)
+
+    def test_cpu_presentation_preserves_premultiplied_alpha(self):
+        skia = (ROOT / "vendor/i-slint-renderer-skia/software_surface.rs").read_text()
+        self.assertIn("skia_safe::AlphaType::Premul", skia)
+        self.assertNotIn("skia_safe::AlphaType::Opaque", skia)
+        manifest = (ROOT / "vendor/i-slint-renderer-skia/Cargo.toml").read_text()
+        self.assertIn('features = ["wayland-alpha"]', manifest)
+        wayland = (ROOT / "vendor/softbuffer/src/backends/wayland/buffer.rs").read_text()
+        self.assertIn('cfg!(feature = "wayland-alpha")', wayland)
+        self.assertIn("wl_shm::Format::Argb8888", wayland)
+        self.assertEqual(len(re.findall(
+            r"\.create_buffer\(\s*0,\s*width,\s*height,\s*width\s*\*\s*4,\s*pixel_format\(\)",
+            wayland,
+        )), 2)
+
+    def test_mouse_probe_backend_is_test_only_and_private_cpu(self):
         module = (ROOT / "settings/src/mouse/mod.rs").read_text()
         self.assertRegex(module, r"#\[cfg\(test\)\]\s+mod native_tests;")
         source = PRIVATE_MOUSE_PROBE.read_text()
-        self.assertIn('.with_renderer_name("femtovg")', source)
+        self.assertIn('.with_renderer_name("skia-software")', source)
         self.assertIn('std::env::var("SMPL_MOUSE_PROBE_PRIVATE_DISPLAY").as_deref(), Ok("1")', source)
         self.assertIn('std::env::var("DISPLAY").unwrap().starts_with("127.0.0.1:")', source)
 

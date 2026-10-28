@@ -44,14 +44,15 @@ def main():
         env.pop(key, None)
     env.update(DISPLAY=f"127.0.0.1:{number}", XAUTHORITY=str(authority),
                SMPL_CALENDAR_PRIVATE_DISPLAY="1", SMPL_CALENDAR_PROBE_OUTPUT=str(output),
-               LIBGL_ALWAYS_SOFTWARE="1", SLINT_SCALE_FACTOR="1", WINIT_X11_SCALE_FACTOR="1")
+               SLINT_SCALE_FACTOR="1", WINIT_X11_SCALE_FACTOR="1")
     server = None
     try:
         with (output / "xvfb.log").open("w") as log:
             server = subprocess.Popen(
                 ["Xvfb", f":{number}", "-screen", "0", "1200x900x24", "-nolock",
                  "-nolisten", "unix", "-nolisten", "local", "-listen", "tcp",
-                 "-auth", str(authority), "-noreset"], stdout=log, stderr=log, env=env)
+                 "-auth", str(authority), "-noreset", "-extension", "GLX"],
+                stdout=log, stderr=log, env=env)
             for _ in range(50):
                 if server.poll() is not None:
                     raise RuntimeError("Private Xvfb exited")

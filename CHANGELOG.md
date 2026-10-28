@@ -6,6 +6,17 @@ All notable changes to smpl-apps are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **All Rust GUIs render on the CPU from launch.** Start menu (including
+  resident mode), notifications, Settings, App Center, Web App Center, Sync
+  Center, both calendar modes and the hints overlay no longer initialize a
+  GPU context or depend on free VRAM. Skia CPU rendering preserves shadows,
+  gradients and paths. Pinned Skia/softbuffer alpha patches retain translucent
+  backgrounds, opaque text/icons and the transparent hints root on Wayland
+  and X11, including resize/reopen. Compositor blur remains compositor-owned;
+  system RAM exhaustion is not solved by CPU rendering.
+
 ### Added
 
 - **control-surface: the keypad daemon moved into smpl-apps.** The C++20/Qt6

@@ -35,7 +35,7 @@ def main():
                 "SLINT_BACKEND", "SLINT_RENDERER"):
         env.pop(key, None)
     env.update(DISPLAY=f"127.0.0.1:{number}", XAUTHORITY=str(authority),
-               SMPL_AGENDA_PROBE_PRIVATE_DISPLAY="1", LIBGL_ALWAYS_SOFTWARE="1",
+               SMPL_AGENDA_PROBE_PRIVATE_DISPLAY="1",
                SLINT_SCALE_FACTOR="1", WINIT_X11_SCALE_FACTOR="1")
     server = None
     try:
@@ -43,7 +43,7 @@ def main():
             server = subprocess.Popen(
                 ["Xvfb", f":{number}", "-screen", "0", "800x800x24", "-nolock",
                  "-nolisten", "unix", "-nolisten", "local", "-listen", "tcp",
-                 "-auth", str(authority), "-noreset"],
+                 "-auth", str(authority), "-noreset", "-extension", "GLX"],
                 stdout=log, stderr=subprocess.STDOUT, env=env, cwd=root,
             )
             for _ in range(50):

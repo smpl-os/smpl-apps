@@ -25,7 +25,9 @@ def main():
         env.update(HOME=home, XDG_CONFIG_HOME=home + "/.config",
                    XDG_DATA_HOME=home + "/.local/share", XDG_CACHE_HOME=home + "/.cache",
                    XDG_STATE_HOME=home + "/.local/state", XDG_RUNTIME_DIR=str(runtime),
-                   LIBGL_ALWAYS_SOFTWARE="1")
+                   LIBGL_DRIVERS_PATH="/nonexistent/smpl-probe/no-dri-drivers",
+                   __EGL_VENDOR_LIBRARY_FILENAMES="/nonexistent/smpl-probe/no-egl-vendors",
+                   VK_DRIVER_FILES="/nonexistent/smpl-probe/no-vulkan-drivers")
         for name in ("smpl-calendar", "smpl-calendar-alertd"):
             output = subprocess.check_output([f"/usr/bin/{name}", "--version"],
                                              env=env, text=True).strip()

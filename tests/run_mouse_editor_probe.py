@@ -2,7 +2,7 @@
 """Interact with the actual shared Slint editor on authenticated private Xvfb.
 
 Builds the Settings test binary, never launches Settings on the user's desktop,
-captures live input or reads/writes the user's mappings. FemtoVG remains active.
+captures live input or reads/writes the user's mappings. Uses the shared CPU renderer.
 """
 import json
 import os
@@ -61,14 +61,14 @@ def main():
             DISPLAY=f"127.0.0.1:{number}", XAUTHORITY=str(authority),
             HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"),
             TMPDIR=str(private / "tmp"),
-            SMPL_MOUSE_PROBE_PRIVATE_DISPLAY="1", LIBGL_ALWAYS_SOFTWARE="1",
+            SMPL_MOUSE_PROBE_PRIVATE_DISPLAY="1",
             SLINT_SCALE_FACTOR="1", WINIT_X11_SCALE_FACTOR="1",
         )
         with (private / "xvfb.log").open("w+") as log:
             server = subprocess.Popen(
                 ["Xvfb", f":{number}", "-screen", "0", "800x600x24", "-nolock",
                  "-nolisten", "unix", "-nolisten", "local", "-listen", "tcp",
-                 "-auth", str(authority), "-noreset"],
+                 "-auth", str(authority), "-noreset", "-extension", "GLX"],
                 stdout=log, stderr=subprocess.STDOUT, env=env, cwd=root,
             )
             try:

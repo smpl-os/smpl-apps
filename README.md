@@ -23,7 +23,10 @@ Rust GUI apps for [smplOS](https://github.com/smpl-os/smplos).
 - **CI guardrails** prevent the above three regressions from returning silently.
   See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
-All apps use [Slint](https://slint.dev) with the FemtoVG renderer + Winit/Wayland backend for composited transparency.
+All Rust GUI apps use [Slint](https://slint.dev) with Skia CPU rasterization and
+the Winit Wayland/X11 backend. They do not initialize a GPU context or allocate
+application rendering textures in VRAM. Native per-pixel alpha is preserved
+for composited transparency.
 
 | App | Description |
 |-----|-------------|
@@ -116,11 +119,27 @@ panels may retain opaque readability backgrounds. Setting the base opacity
 to `1.0` restores a solid surface; transparent space outside hint badges
 remains transparent.
 
-Do not replace the shared FemtoVG backend, enable software/Skia rendering,
-add a second backend builder, or remove the no-decoration/app-ID setup in
-`smpl_common::init`. Window background alpha is intentional and does not
-fade its descendants. Intrinsic image transparency and glyph antialiasing
-are normal; solid text/icon interiors must not inherit a window/control fade.
+All GUI entrypoints select `skia-software` in `smpl_common::init`, including
+the resident start menu, both calendar modes and the hints daemon's overlay.
+This is CPU rendering from launch, not a GPU probe followed by a retry, so
+GPU failure cannot force a renderer restart or discard an open editor.
+No Mesa software OpenGL driver or GPU environment overrides are needed, and
+apps launched by the menu retain their normal GPU environment.
+
+The pinned renderer patches under `vendor/` are essential: Skia must wrap the
+CPU pixels as **premultiplied alpha**, and softbuffer must present **ARGB8888**,
+not XRGB8888, on Wayland (including resized buffers). X11 uses an ARGB visual.
+Unpatched Skia's CPU surface discards alpha; Slint's lightweight software
+renderer also omits shadows used by our UIs. Do not select either instead,
+remove the patches, or remove the shared no-decoration/app-ID setup.
+See [the patch inventory](vendor/README.md) when updating Slint.
+Window background alpha is intentional and does not fade descendants. Solid
+text/icon interiors remain opaque; glyph antialias edges remain normal.
+
+The compositor still provides blur and needs its own resources; this does not
+repair a GPU-starved or crashed compositor. CPU rendering also needs system
+RAM and can be slower for large windows or animations on a busy CPU. It
+eliminates these apps' GPU-context/VRAM failure path, not system-wide OOM.
 
 Focused headless checks:
 `cargo test -p smpl-common --lib` and
@@ -129,21 +148,30 @@ These cover parser/reload and UI structure, not compositor pixel output.
 Native visual checks must use isolated fixtures rather than capturing the
 user's desktop or running application actions against real data.
 
-The optional native fixture reads RGBA from FemtoVG's actual default OpenGL
-framebuffer on an authenticated private Xvfb display. It checks the opacity
-round trip, opaque glyph/icon interiors, normal antialias edges, native focus
-loss/regain, and the transparent hint-overlay case:
+The native CPU fixture reads actual presented ARGB pixels on an authenticated
+private Xvfb, with GLX disabled and GPU driver discovery deliberately broken.
+It checks opacity round trips, opaque glyph/icon interiors, antialias edges,
+shadows, light/dark palettes, native focus loss/regain, transparent overlay
+space, resize and hide/reopen with retained editor state. It also checks that
+the process loaded no GPU driver:
 
 ```bash
-cargo build -p smpl-common --example femtovg_alpha_probe
-python tests/run_femtovg_alpha_probe.py
+cargo build -p smpl-common --example cpu_alpha_probe
+python tests/run_cpu_alpha_probe.py
+python tests/run_cpu_wayland_probe.py
+# Or include both private-display checks in the normal local check:
+SMPL_NATIVE_CPU_CHECK=1 ./check.sh
+# Optional optimized startup fixture measurements (not an all-app benchmark):
+cargo build --release -p smpl-common --example cpu_alpha_probe
+python tests/run_cpu_alpha_probe.py --release --samples 10
 ```
 
-This requires Xvfb and Mesa OpenGL support. `LIBGL_ALWAYS_SOFTWARE=1` selects
-Mesa's CPU OpenGL driver for the fixture, **not** Slint's software renderer;
-the renderer remains FemtoVG. Logs are written under `target/native-alpha-probe/`.
-This is native framebuffer evidence, not proof of Wayland compositor blur,
-compositor rules, or every live application layout.
+The X11 fixture requires Xvfb and libX11. The Wayland fixture requires Weston;
+it starts a private headless Pixman compositor, checks renderer snapshots and
+the actual ARGB `wl_shm` protocol buffers through resize and window recreation.
+Neither connects to the user's compositor or reads real application data.
+Logs are under `target/native-cpu-alpha-probe/`. This is not proof of desktop
+compositor blur/rules, every live app layout, or a particular app launch time.
 
 Ship the matching smplOS palette-generator/compositor integration before the
 app release so the new application token and all self-managed-alpha IDs are
@@ -327,7 +355,7 @@ python calendar/tests/run_details_probe.py
 ```
 
 The dashboard fixture renders synthetic 1/2/3-clock, weather, preferences and
-light/dark fixtures on an authenticated private Xvfb using actual FemtoVG.
+light/dark fixtures on an authenticated private Xvfb using the shared CPU renderer.
 It never opens the user's events database or captures their desktop.
 Screenshots are written under `target/calendar-probe/`. This is native
 rendering evidence, not proof of compositor blur.
@@ -457,7 +485,7 @@ Icon fixtures use temporary directories, not the user's HOME.
 
 Plain `start-menu` is unchanged: it shows the menu and exits on close or
 launch. `start-menu --resident` keeps one process alive, so later opens skip
-process startup, the system font scan and NVIDIA EGL initialization.
+process startup and the system font scan. Neither mode initializes EGL.
 
 | Command | Effect |
 |---|---|
@@ -516,7 +544,7 @@ and usage reload the same way; the search field gets focus. The theme watcher
 keeps running; hidden, the process only wakes for it every two seconds.
 
 Wayland cannot unmap a window, so Slint destroys it on hide and recreates it on
-show. Fonts and loaded GL libraries stay in the process, and the resident
+show. Fonts and CPU renderer caches stay in the process, and the resident
 reapplies the `start-menu` app ID to each new window. `--hidden` also creates
 the unmapped window and loads the font collection during the preload, so the
 first show is as fast as later ones. Launched apps are children of the
@@ -524,7 +552,8 @@ resident; it reaps them when they exit. They inherit its environment, so start
 it once the session environment is complete. Under a systemd unit that stops
 its whole cgroup, launched apps would stop with the menu.
 
-On Hyprland 0.56.2 with the NVIDIA 615 open driver, a show took a median of
+Historical GPU-rendered measurements (before CPU rendering): on Hyprland
+0.56.2 with the NVIDIA 615 open driver, a show took a median of
 13–25 ms from signal to compositor map, depending on system load (window and
 EGL context about 7 ms, first frame about 14 ms). A hide took about 2 ms. The
 first show after `--hidden` took about 15 ms, versus about 180 ms without the
@@ -1021,7 +1050,7 @@ entry, login autostart entry, user service, KDE shortcut helper and embedded-fon
 Hyprland, EWW or theme file is required; without a smplOS palette it uses the
 built-in opaque theme. Open **smpl Calendar** from KDE's application menu for
 the full calendar; its **Clock and weather** action opens the compact view.
-Wayland and X11 use the existing FemtoVG renderer and native window controls.
+Wayland and X11 use the shared alpha-safe CPU renderer and native window controls.
 
 Install the downloaded RPM with
 `pkexec dnf install ./smpl-calendar-<VERSION>-1.fc43.x86_64.rpm`.

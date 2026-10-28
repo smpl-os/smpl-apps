@@ -287,6 +287,11 @@ fn enter_hint_mode(
 
     let labels = hint::generate(widgets.len(), &hint_chars);
     let hint_labels = build_hint_labels(&widgets, &labels, "");
+    if let Err(error) = overlay.show_select(&hint_labels) {
+        return Reply::Error {
+            message: format!("Cannot show hints: {error}"),
+        };
+    }
 
     {
         let mut d = daemon.borrow_mut();
@@ -299,24 +304,31 @@ fn enter_hint_mode(
         d.widgets = widgets;
     }
 
-    overlay.show_select(&hint_labels);
     tracing::info!(?target, "entered hint mode");
     Reply::Ok
 }
 
 fn enter_cursor_mode(daemon: &Rc<RefCell<Daemon>>, overlay: &Rc<Overlay>) -> Reply {
     let cursor = daemon.borrow().cursor;
+    if let Err(error) = overlay.show_cursor(cursor.0 as f32, cursor.1 as f32) {
+        return Reply::Error {
+            message: format!("Cannot show cursor: {error}"),
+        };
+    }
     {
         let mut d = daemon.borrow_mut();
         d.mode = State::Cursor;
     }
-    overlay.show_cursor(cursor.0 as f32, cursor.1 as f32);
     Reply::Ok
 }
 
 fn enter_scroll_mode(daemon: &Rc<RefCell<Daemon>>, overlay: &Rc<Overlay>) -> Reply {
+    if let Err(error) = overlay.show_scroll() {
+        return Reply::Error {
+            message: format!("Cannot show scroll overlay: {error}"),
+        };
+    }
     daemon.borrow_mut().mode = State::Scroll;
-    overlay.show_scroll();
     Reply::Ok
 }
 

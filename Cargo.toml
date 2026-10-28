@@ -11,6 +11,11 @@ members = [
     "hints",
 ]
 resolver = "2"
+exclude = ["vendor/softbuffer", "vendor/i-slint-renderer-skia"]
+
+[patch.crates-io]
+softbuffer = { path = "vendor/softbuffer" }
+i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }
 
 [workspace.package]
 version    = "0.8.36"
@@ -23,9 +28,9 @@ repository = "https://github.com/smpl-os/smpl-apps"
 # Bump here to update all apps at once.
 [workspace.dependencies]
 # UI
-slint                 = { version = "1.8", default-features = false, features = ["backend-winit", "renderer-femtovg", "compat-1-2"] }
-i-slint-backend-winit = "1.8"
-slint-build           = "1.8"
+slint                 = { version = "=1.15.1", default-features = false, features = ["backend-winit", "renderer-skia", "compat-1-2"] }
+i-slint-backend-winit = "=1.15.1"
+slint-build           = "=1.15.1"
 smpl-common           = { path = "smpl-common" }
 
 # Serialization

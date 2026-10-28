@@ -1,7 +1,7 @@
 //! smpl-common — shared initialisation code for all smplOS Slint/Winit apps.
 //!
 //! Every smplOS GUI app needs:
-//!   1. FemtoVG renderer (OpenGL/EGL with ARGB visuals — supports transparency)
+//!   1. Skia CPU rasterization with premultiplied ARGB presentation (no GPU context)
 //!   2. `with_decorations(false)` — no CSD frame
 //!   3. `with_name(app_id, app_id)` — sets Wayland app_id for windowrulev2
 //!   4. A fixed logical size so Hyprland can float + size it via windowrule
@@ -9,11 +9,11 @@
 //!      through zbus, which is built for Tokio and panics (and aborts) without one
 //!   6. A crash log, because these apps are launched with stderr discarded
 //!
-//! NEVER use renderer-software — it uses softbuffer which hardcodes
-//! wl_shm::Format::Xrgb8888 on Wayland, making alpha completely ignored.
+//! The pinned Skia/softbuffer patches preserve alpha on the CPU path. Do not
+//! replace them with upstream opaque software surfaces or select a GPU renderer.
 //!
 //! Without ALL of these, either the blur breaks, the window gets decorated,
-//! or Hyprland can't target it with windowrulev2. See copilot-instructions.md.
+//! or Hyprland can't target it with windowrulev2.
 
 pub mod crash_log;
 pub mod keybindings;
@@ -48,10 +48,9 @@ pub fn init(app_id: &'static str, width: f64, height: f64) -> Result<(), Platfor
     runtime::enter_ui_thread()?;
 
     let backend = i_slint_backend_winit::Backend::builder()
-        // FemtoVG renderer: uses OpenGL/EGL with ARGB visuals on Wayland,
-        // so the compositor sees real alpha and can blur through it.
-        // NEVER use "software" — softbuffer hardcodes XRGB on Wayland (no alpha).
-        .with_renderer_name("femtovg")
+        // CPU from the first frame: no GPU probe, VRAM allocations, or lost state
+        // on renderer restart. Patched Skia/softbuffer retain per-pixel alpha.
+        .with_renderer_name("skia-software")
         .with_window_attributes_hook(move |attrs| {
             attrs
                 // Sets Wayland app_id so `windowrulev2 = float, initialClass:start-menu`

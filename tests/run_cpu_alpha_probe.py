@@ -1,29 +1,39 @@
 #!/usr/bin/env python3
 """Run only the GUI fixture on authenticated private Xvfb, never the desktop.
 
-Requires an already-built `cargo build -p smpl-common --example femtovg_alpha_probe`.
+Requires an already-built `cargo build -p smpl-common --example cpu_alpha_probe`.
 No compositor screenshot, application action, user config, or package install occurs.
 The server disables Unix sockets and lockfiles to avoid temporary-directory writes.
 """
 
 import os
+import argparse
 from pathlib import Path
 import secrets
 import shutil
 import socket
 import struct
 import subprocess
+import statistics
+import tempfile
 import time
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--release", action="store_true")
+    parser.add_argument("--samples", type=int, default=5)
+    args = parser.parse_args()
+    if args.samples < 1:
+        parser.error("--samples must be positive")
     root = Path(__file__).resolve().parents[1]
-    binary = root / "target/debug/examples/femtovg_alpha_probe"
+    profile = "release" if args.release else "debug"
+    binary = root / f"target/{profile}/examples/cpu_alpha_probe"
     if not binary.is_file():
-        raise SystemExit("First run: cargo build -p smpl-common --example femtovg_alpha_probe")
+        raise SystemExit("First build smpl-common --example cpu_alpha_probe in the chosen profile")
     if not shutil.which("Xvfb"):
         raise SystemExit("Xvfb is required for this optional native test")
-    artifacts = root / "target/native-alpha-probe"
+    artifacts = root / "target/native-cpu-alpha-probe"
     artifacts.mkdir(parents=True, exist_ok=True)
     os.chmod(artifacts, 0o700)
     # Binding chooses an unused TCP display without touching any existing X server.
@@ -53,7 +63,9 @@ def main():
         DISPLAY=f"127.0.0.1:{number}",
         XAUTHORITY=str(authority),
         SMPL_ALPHA_PROBE_PRIVATE_DISPLAY="1",
-        LIBGL_ALWAYS_SOFTWARE="1",
+        LIBGL_DRIVERS_PATH="/nonexistent/smpl-probe/no-dri-drivers",
+        __EGL_VENDOR_LIBRARY_FILENAMES="/nonexistent/smpl-probe/no-egl-vendors",
+        VK_DRIVER_FILES="/nonexistent/smpl-probe/no-vulkan-drivers",
         SLINT_SCALE_FACTOR="1",
         WINIT_X11_SCALE_FACTOR="1",
     )
@@ -63,7 +75,7 @@ def main():
             server = subprocess.Popen(
                 ["Xvfb", f":{number}", "-screen", "0", "400x240x24", "-nolock",
                  "-nolisten", "unix", "-nolisten", "local", "-listen", "tcp",
-                 "-auth", str(authority), "-noreset"],
+                 "-auth", str(authority), "-noreset", "-extension", "GLX"],
                 stdout=log, stderr=subprocess.STDOUT, env=env, cwd=root,
             )
             for _ in range(50):
@@ -76,14 +88,40 @@ def main():
                     time.sleep(0.1)
             else:
                 raise RuntimeError("Private Xvfb failed to become responsive")
-            result = subprocess.run(
-                [str(binary)], cwd=root, env=env, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20,
-            )
-            (artifacts / "result.log").write_text(result.stdout)
-            print(result.stdout, end="")
-            if result.returncode:
-                raise SystemExit(result.returncode)
+            with tempfile.TemporaryDirectory(prefix="smpl-cpu-probe-") as private:
+                for key, name in (
+                    ("HOME", "home"), ("XDG_CONFIG_HOME", "config"),
+                    ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"),
+                    ("XDG_CACHE_HOME", "cache"), ("XDG_RUNTIME_DIR", "runtime"),
+                ):
+                    path = Path(private) / name
+                    path.mkdir(mode=0o700)
+                    env[key] = str(path)
+                result = subprocess.run(
+                    [str(binary)], cwd=root, env=env, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20,
+                )
+                (artifacts / "result.log").write_text(result.stdout)
+                print(result.stdout, end="")
+                if result.returncode:
+                    raise SystemExit(result.returncode)
+                if "PASS: native CPU ARGB" not in result.stdout:
+                    raise RuntimeError("CPU probe exited before completing its native pixel checks")
+                timings = []
+                for _ in range(args.samples):
+                    started = time.monotonic()
+                    result = subprocess.run(
+                        [str(binary), "--startup-only"], cwd=root, env=env, text=True,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10,
+                    )
+                    if result.returncode or "first_present_ms=" not in result.stdout:
+                        raise RuntimeError(result.stdout)
+                    timings.append((time.monotonic() - started) * 1000)
+                print(
+                    f"CPU fixture process-launch-to-exit after first present ({profile}, "
+                    f"{args.samples} warm-cache samples): median={statistics.median(timings):.1f}ms "
+                    f"min={min(timings):.1f}ms max={max(timings):.1f}ms; not an all-app launch benchmark"
+                )
     finally:
         if server is not None and server.poll() is None:
             server.terminate()

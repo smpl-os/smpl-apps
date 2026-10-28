@@ -68,7 +68,7 @@ fn init_private_backend() {
     let mut event_loop = i_slint_backend_winit::winit::event_loop::EventLoop::with_user_event();
     event_loop.with_any_thread(true);
     let backend = i_slint_backend_winit::Backend::builder()
-        .with_renderer_name("femtovg")
+        .with_renderer_name("skia-software")
         .with_event_loop_builder(event_loop)
         .build().unwrap();
     slint::platform::set_platform(Box::new(backend)).unwrap();

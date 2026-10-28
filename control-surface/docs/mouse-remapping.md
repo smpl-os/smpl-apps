@@ -262,7 +262,7 @@ It uses temporary configurations and an injected event sink, not live input.
 The Settings model and UI-contract tests cover diagram selection and live
 control wiring. `python tests/run_mouse_editor_probe.py` exercises the actual
 shared Slint editor's category and concrete Kdenlive action popups under
-authenticated private Xvfb/FemtoVG, including selection/persistence across
+authenticated private Xvfb/CPU rendering, including selection/persistence across
 status heartbeats. The native mouse suite also exercises real private-bus
 plugin dispatch for actions, controls, requests and context layers, absent
 plugins, focus loss and cancellation of delayed work when identifying.
