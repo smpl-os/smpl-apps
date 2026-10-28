@@ -48,7 +48,7 @@ fn action_for_notification(appname: &str, summary: &str, body: &str) -> String {
     String::new()
 }
 
-fn debug_log(msg: &str) {
+pub(crate) fn debug_log(msg: &str) {
     let home = std::env::var("HOME").unwrap_or_default();
     let cache = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{home}/.cache"));
     let ts = chrono::Local::now().format("%F %T%.3f");
@@ -57,6 +57,35 @@ fn debug_log(msg: &str) {
     let cache_path = format!("{cache}/smplos/notif-center-debug.log");
     let _ = std::fs::OpenOptions::new().create(true).append(true).open(&cache_path)
         .map(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+}
+
+/// Session environment forwarded to a detached action child on top of
+/// the fixed PATH/HOME after `env_clear`.
+///
+/// The installed focus-or-launch helper contract requires the session
+/// discriminators: its IS_HYPRLAND flag is true only when
+/// HYPRLAND_INSTANCE_SIGNATURE is nonempty (its envs.conf fallback may
+/// not carry the runtime-generated signature), and gtk-launch
+/// D-Bus activation needs DBUS_SESSION_BUS_ADDRESS. Empty values are
+/// omitted so the child never receives empty discriminators.
+pub fn session_env_passthrough(
+    wayland_display: &str,
+    display: &str,
+    xdg_runtime_dir: &str,
+    hyprland_signature: &str,
+    dbus_session_bus_address: &str,
+) -> Vec<(String, String)> {
+    [
+        ("WAYLAND_DISPLAY", wayland_display),
+        ("DISPLAY", display),
+        ("XDG_RUNTIME_DIR", xdg_runtime_dir),
+        ("HYPRLAND_INSTANCE_SIGNATURE", hyprland_signature),
+        ("DBUS_SESSION_BUS_ADDRESS", dbus_session_bus_address),
+    ]
+    .iter()
+    .filter(|(_, value)| !value.is_empty())
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect()
 }
 
 fn spawn_detached(args: &[&str]) -> bool {
@@ -83,6 +112,14 @@ fn spawn_detached(args: &[&str]) -> bool {
     let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
     let display = std::env::var("DISPLAY").unwrap_or_default();
     let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+    // Session discriminators the installed focus-or-launch helper contract
+    // needs: its IS_HYPRLAND flag is true only when the signature is
+    // nonempty (its envs.conf fallback may not carry the runtime-generated
+    // signature), and gtk-launch D-Bus activation needs the session bus.
+    let hyprland_signature =
+        std::env::var("HYPRLAND_INSTANCE_SIGNATURE").unwrap_or_default();
+    let dbus_session_bus_address =
+        std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
     let path = std::env::var("PATH")
         .unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
@@ -94,7 +131,8 @@ fn spawn_detached(args: &[&str]) -> bool {
 
     debug_log(&format!(
         "spawn_detached: env WAYLAND={wayland_display:?} DISPLAY={display:?} \
-         XDG_RUNTIME_DIR={xdg_runtime_dir:?} HOME={home:?} PATH={path:?}"
+         XDG_RUNTIME_DIR={xdg_runtime_dir:?} HYPRLAND={hyprland_signature:?} \
+         DBUS={dbus_session_bus_address:?} HOME={home:?} PATH={path:?}"
     ));
 
     // Redirect stderr to cache debug log file so we can see child process errors
@@ -118,9 +156,15 @@ fn spawn_detached(args: &[&str]) -> bool {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(stderr_file);
-    if !wayland_display.is_empty() { cmd.env("WAYLAND_DISPLAY", &wayland_display); }
-    if !display.is_empty() { cmd.env("DISPLAY", &display); }
-    if !xdg_runtime_dir.is_empty() { cmd.env("XDG_RUNTIME_DIR", &xdg_runtime_dir); }
+    for (key, value) in session_env_passthrough(
+        &wayland_display,
+        &display,
+        &xdg_runtime_dir,
+        &hyprland_signature,
+        &dbus_session_bus_address,
+    ) {
+        cmd.env(&key, &value);
+    }
 
     let result = cmd.spawn();
     match &result {
@@ -313,21 +357,46 @@ pub fn clear_all_notifications() {
     let _ = Command::new("dunstctl").arg("history-clear").status();
 }
 
-pub fn open_notification(appname: &str, desktop_entry: &str, action: &str) -> bool {
-    debug_log(&format!(
-        "open_notification: appname={appname:?} desktop_entry={desktop_entry:?} action={action:?}"
-    ));
+/// Outcome of dispatching a notification click.
+///
+/// `Dispatched` only proves the resolved command was started; it is not
+/// proof that the helper/app finished its work. `Failed` means no effect
+/// could be started (nothing to dispatch, or the executor reported
+/// failure). `Stale` means the clicked id is no longer in the current
+/// list/history snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchOutcome {
+    Dispatched,
+    Failed,
+    Stale,
+}
 
+/// Resolved effect for a notification click.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchCmd {
+    /// `__OPEN_WEBAPP_LOG__` special action: open the web-app error log.
+    WebappLog,
+    /// Named shell action (e.g. `smplos-update`) run via `sh -lc`.
+    ShellAction { action: String },
+    /// Default path: installed focus-or-launch helper with best target.
+    FocusOrLaunch { target: String },
+    /// No action, no desktop-entry, no appname: nothing to dispatch.
+    None,
+}
+
+/// Pure decision: map a notification's dispatch fields to an effect.
+///
+/// No side effects, so unit tests can verify the precedence
+/// (special action > named action > desktop_entry > appname) without
+/// touching the real helper, bus, apps or history.
+pub fn decide_dispatch(appname: &str, desktop_entry: &str, action: &str) -> DispatchCmd {
     if action == "__OPEN_WEBAPP_LOG__" {
-        return open_webapp_log();
+        return DispatchCmd::WebappLog;
     }
 
     // 1. Named action command (e.g. smplos-update)
     if !action.is_empty() {
-        let result = Command::new("sh").arg("-lc").arg(action).spawn();
-        let ok = result.is_ok();
-        debug_log(&format!("open_notification: action cmd ok={ok}"));
-        return ok;
+        return DispatchCmd::ShellAction { action: action.to_string() };
     }
 
     // 2. Use focus-or-launch which handles both focusing existing windows
@@ -338,12 +407,63 @@ pub fn open_notification(appname: &str, desktop_entry: &str, action: &str) -> bo
     } else if !appname.is_empty() {
         appname.to_string()
     } else {
-        return false;
+        return DispatchCmd::None;
+    };
+    DispatchCmd::FocusOrLaunch { target }
+}
+
+/// Execute a resolved effect for real (production path only; tests
+/// inject their own `run` instead of calling this).
+pub fn execute_dispatch(cmd: &DispatchCmd) -> bool {
+    match cmd {
+        DispatchCmd::WebappLog => open_webapp_log(),
+        DispatchCmd::ShellAction { action } => {
+            Command::new("sh").arg("-lc").arg(action).spawn().is_ok()
+        }
+        DispatchCmd::FocusOrLaunch { target } => {
+            debug_log(&format!(
+                "execute_dispatch: calling focus-or-launch {target:?}"
+            ));
+            let fol = "/usr/local/bin/focus-or-launch";
+            spawn_detached(&[fol, target])
+        }
+        DispatchCmd::None => false,
+    }
+}
+
+/// Shared click-to-effect wiring used by the Slint `activate` callback:
+/// look the clicked id up in the current notification list, resolve its
+/// effect and hand it to `run`.
+///
+/// `run` is injected so tests can fake every process effect. The
+/// outcome distinguishes stale ids from dispatch failures so the click
+/// path can no longer fail silently.
+pub fn dispatch_notification(
+    notifications: &[Notification],
+    id: i32,
+    run: &mut dyn FnMut(&DispatchCmd) -> bool,
+) -> DispatchOutcome {
+    let Some(n) = notifications.iter().find(|n| n.id == id) else {
+        debug_log(&format!("dispatch_notification: stale id={id} not in current list"));
+        return DispatchOutcome::Stale;
     };
 
-    debug_log(&format!("open_notification: calling focus-or-launch {target:?}"));
-    let fol = "/usr/local/bin/focus-or-launch";
-    let ok = spawn_detached(&[fol, &target]);
-    debug_log(&format!("open_notification: focus-or-launch spawn ok={ok}"));
-    true
+    let cmd = decide_dispatch(&n.appname, &n.desktop_entry, &n.action);
+    if matches!(cmd, DispatchCmd::None) {
+        debug_log(&format!(
+            "dispatch_notification: id={} appname={} desktop_entry={} has no target",
+            n.id, n.appname, n.desktop_entry
+        ));
+        return DispatchOutcome::Failed;
+    }
+
+    let started = run(&cmd);
+    debug_log(&format!(
+        "dispatch_notification: id={id} cmd={cmd:?} started={started}"
+    ));
+    if started {
+        DispatchOutcome::Dispatched
+    } else {
+        DispatchOutcome::Failed
+    }
 }

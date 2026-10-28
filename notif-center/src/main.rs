@@ -1,6 +1,12 @@
 mod backend;
 
-use backend::{clear_all_notifications, dismiss_notification, get_notifications, open_notification, Notification};
+#[cfg(test)]
+mod action_dispatch_tests;
+
+use backend::{
+    clear_all_notifications, debug_log, dismiss_notification, dispatch_notification,
+    execute_dispatch, get_notifications, Notification,
+};
 use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{Model, ModelRc, VecModel};
@@ -126,18 +132,26 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     {
-        // Debug callback kept for compatibility with UI wiring.
-        ui.on_debug_pointer(|_, _| {});
+        // Row pointer trace (down/up per id) into the existing debug log,
+        // so a live click can be correlated with the on_activate outcome.
+        // move/other are skipped so mouse movement does not add
+        // synchronous per-event filesystem writes.
+        ui.on_debug_pointer(|id, kind| {
+            if kind != "down" && kind != "up" {
+                return;
+            }
+            debug_log(&format!("debug_pointer: id={id} kind={kind:?}"));
+        });
     }
 
     {
         let state = state.clone();
         ui.on_activate(move |id| {
-            let _ = state
-                .borrow()
-                .iter()
-                .find(|n| n.id == id)
-                .map(|n| open_notification(&n.appname, &n.desktop_entry, &n.action));
+            let outcome = {
+                let state = state.borrow();
+                dispatch_notification(&state, id, &mut execute_dispatch)
+            };
+            debug_log(&format!("on_activate: id={id} outcome={outcome:?}"));
         });
     }
 

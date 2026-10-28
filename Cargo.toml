@@ -18,7 +18,7 @@ softbuffer = { path = "vendor/softbuffer" }
 i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }
 
 [workspace.package]
-version    = "0.8.36"
+version    = "0.8.37"
 edition    = "2021"
 authors    = ["smplOS <https://github.com/smpl-os>"]
 license    = "MIT"
