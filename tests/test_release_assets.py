@@ -83,6 +83,13 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.assertIn("ExecStart=/usr/local/bin/smpl-calendar-alertd --foreground\n", service)
         self.assertIn("WantedBy=default.target\n", service)
 
+    def test_cargo_cache_hashes_only_the_workspace_lockfile(self):
+        for name in ("ci.yml", "release.yml", "calendar-rpm.yml"):
+            with self.subTest(workflow=name):
+                workflow = (ROOT / ".github/workflows" / name).read_text()
+                self.assertIn("hashFiles('Cargo.lock')", workflow)
+                self.assertNotIn("hashFiles('**/Cargo.lock')", workflow)
+
     def test_missing_or_executable_service_fails_before_collection(self):
         original = self.service.read_bytes()
         self.service.unlink()
