@@ -767,6 +767,78 @@ Focused headless checks:
 The preview checks enforce source wiring and numeric contracts, not compositor
 pixels or blur.
 
+### Printing settings
+
+Settings → **Printing** (`settings --tab printing`, also `--tab printers`)
+shows native CUPS printer status, active jobs and retained history. Printing,
+Printers, Print Queue, Print Jobs, Print History, Printer Status, Printer
+Connectivity and CUPS are searchable from Settings and the start menu.
+The Print History deep link selects history in both cold and already-running
+windows. There is no embedded CUPS web interface.
+
+Each configured/discovered entry remains a separate queue, even when two names
+describe the same physical printer. Job rows retain their exact queue identity,
+including temporary, removed or unlisted queues. The page labels the default
+and accepting/stopped state without changing either. An idle CUPS queue is not
+proof that its physical printer is reachable; a completed job is not proof of
+paper output. CUPS permissions, redacted job details, retention and truncated
+history are reported, not disguised as empty successful lists.
+
+Only supported actions on the current user's jobs are enabled: **Hold**,
+**Release** and **Cancel job…**. Cancellation opens a separate confirmation;
+Keep job, Escape and leaving Printing dismiss it. The command carries the
+exact job ID, queue and opaque identity, and the OS revalidates ownership,
+identity and state immediately before acting. Missing identities disable
+controls. There is no automatic resend, retry, purge, printer removal, default
+change or test page. Settings never modifies VPN/firewall/network policy.
+VPN LAN-policy warnings explain that the user should review local-network
+sharing only on a trusted network; the helper does not claim that every
+connectivity failure is caused by the VPN.
+
+The OS-owned `smplos-printing` helper must be installed by the matching smplOS
+update **before** releasing these Settings binaries. Settings consumes only
+protocol version 1:
+
+```text
+smplos-printing status --json
+smplos-printing job hold|release|cancel --id N --printer QUEUE --identity TOKEN --json
+# Cancellation additionally requires --confirm (only after the native confirmation).
+```
+
+Status returns `protocol_version:1`, `ok:true`, `server:"local"`, `printers`,
+`jobs`, `warnings`, `active_complete`, `history_complete`, and `history_limit`.
+The synthetic contract fixture is
+`settings/src/printing/fixtures/status-v1.json`. Error responses use `ok:false`
+and `error:{code,message}` with a failed exit status; action success echoes
+`action` and `id`. The native consumer rejects missing/unsupported contracts.
+It does not parse `lpstat` or duplicate CUPS/VPN discovery logic. The OS owns
+pycups, local UNIX-socket CUPS access, discovery and service packaging.
+
+One bounded background request runs at a time; status refreshes every five
+seconds while Printing is open and pauses during cancellation confirmation.
+Actions always trigger readback, including on failure or unknown outcome.
+There are no automatic action retries. Failed reads keep clearly labelled
+last-known data with actions disabled. Titles/owners are displayed locally
+but never logged; fixtures contain synthetic data only.
+
+Focused checks (no live print actions):
+
+```bash
+cargo test -p settings --bin settings printing
+cargo test -p settings --bin settings ui_contract_tests
+python tests/run_printing_probe.py
+# Optional read-only check after the matching OS helper has been installed:
+cargo test -p settings --bin settings printing_local_status_read_only -- --ignored --nocapture
+```
+
+The native fixture uses authenticated private Xvfb, the shared CPU renderer
+and a fake backend. It exercises confirmation buttons, Escape, hold/release
+readback, stale-identity refusal, history navigation and stale/error recovery
+without connecting to live CUPS or the desktop. The normal shared
+renderer/theme/alpha initialization is unchanged.
+Source readiness is not deployment: publish the complete normal suite release
+with all mandatory binaries/assets after the coordinated OS integration.
+
 ### Mouse settings
 
 Settings → Mouse (`settings --tab mouse`) has live pointer controls and native

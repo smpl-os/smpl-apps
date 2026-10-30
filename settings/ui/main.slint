@@ -57,6 +57,23 @@ struct SearchResult {
     tab-index: int,
 }
 
+struct PrintPrinter {
+    name: string,
+    summary: string,
+    detail: string,
+}
+
+struct PrintJob {
+    id: int,
+    printer-id: string,
+    identity: string,
+    title: string,
+    detail: string,
+    can-hold: bool,
+    can-release: bool,
+    can-cancel: bool,
+}
+
 struct BindingEntry {
     idx: int,
     combo: string,
@@ -1995,6 +2012,20 @@ export component MainWindow inherits Window {
 
     // ── Tab state ──
     in-out property <int> active-tab: 0;
+    in property <[PrintPrinter]> print-printers;
+    in property <[PrintJob]> print-jobs;
+    in property <string> print-status: "Open Printing to check the local print service.";
+    in property <string> print-warning;
+    in property <string> print-scope;
+    in property <bool> print-busy: false;
+    in property <bool> print-ready: false;
+    in property <bool> print-jobs-complete: false;
+    in-out property <bool> print-history: false;
+    in property <string> print-confirmation;
+    callback print-refresh();
+    callback print-action(int, string, string, string);
+    callback print-confirm();
+    callback print-dismiss();
     callback dropdown-scroll-offset(int, float, float, float, float, float) -> float;
 
     // ── Deep-link highlight ──
@@ -2623,6 +2654,15 @@ export component MainWindow inherits Window {
     // Search
     callback filter-search(string);
 
+    function open-search-result(result: SearchResult) {
+        if result.tab-index == 13 {
+            root.print-dismiss();
+            root.print-history = result.label == "Print History";
+        }
+        root.active-tab = result.tab-index;
+        if result.tab-index == 13 { root.print-refresh(); }
+    }
+
     // ── Keep UI in sync with on-disk configuration ────────────────────────
     // Every path that changes `active-tab` (sidebar click, keyboard shortcut,
     // search-jump Enter, programmatic set from Rust) fires this handler, so
@@ -2645,13 +2685,17 @@ export component MainWindow inherits Window {
         if root.active-tab == 9 { root.xr-refresh(); }
         if root.active-tab == 11 { root.kp-refresh(); }
         if root.active-tab == 12 { root.ms-entered(); }
+        if root.active-tab == 13 { root.print-refresh(); }
+        if root.active-tab != 13 { root.print-dismiss(); }
     }
 
     // Escape steps back one layer: the top-most overlay if there is one,
     // otherwise the window. Search boxes call this too when Escape finds
     // nothing left to clear.
     function dismiss-top-layer() {
-        if root.dropdown-open {
+        if root.print-confirmation != "" {
+            root.print-dismiss();
+        } else if root.dropdown-open {
             root.dropdown-open = false;
         } else if root.dictation-lang-dropdown-open {
             root.dictation-lang-dropdown-open = false;
@@ -2779,7 +2823,7 @@ export component MainWindow inherits Window {
                     return accept;
                 }
                 if e.text == Key.Return {
-                    root.active-tab = root.search-results[root.search-selected-index].tab-index;
+                    root.open-search-result(root.search-results[root.search-selected-index]);
                     root.global-search-text = "";
                     root.search-selected-index = 0;
                     root.filter-search("");
@@ -2896,7 +2940,7 @@ export component MainWindow inherits Window {
                                 dismissed => { root.dismiss-top-layer(); }
                                 accepted => {
                                     if root.search-results.length > 0 {
-                                        root.active-tab = root.search-results[root.search-selected-index].tab-index;
+                                        root.open-search-result(root.search-results[root.search-selected-index]);
                                         self.text = "";
                                         root.global-search-text = "";
                                         root.search-selected-index = 0;
@@ -3041,6 +3085,17 @@ export component MainWindow inherits Window {
                     }
 
                     TabButton {
+                        label: "Printing";
+                        icon: "\u{1F5A8}";
+                        active: root.active-tab == 13;
+                        clicked => {
+                            root.active-tab = 13;
+                            root.dropdown-open = false;
+                            focus-scope.focus();
+                        }
+                    }
+
+                    TabButton {
                         label: "Display";
                         icon: "\u{1F5B5}";
                         active: root.active-tab == 3;
@@ -3136,6 +3191,142 @@ export component MainWindow inherits Window {
 
             // Sidebar separator
             Rectangle { width: 1px; background: Theme.bg_lighter; }
+
+            // ══════════════════════════════════════════════════════════════
+            // PRINTING TAB
+            // ══════════════════════════════════════════════════════════════
+            if root.active-tab == 13: Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                clip: true;
+                border-width: root.highlight-setting != "" && root.highlight-blink-on ? 2px : 0px;
+                border-color: Theme.accent;
+                print-flick := Flickable {
+                    width: parent.width - 6px;
+                    height: parent.height;
+                    viewport-width: max(self.width, 500px);
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+                        alignment: start;
+                        HorizontalLayout {
+                            Text { text: "Printing"; color: Theme.fg; font-size: Typography.title; font-weight: 600; }
+                            KeypadButton {
+                                text: root.print-busy ? "Checking..." : "Refresh";
+                                enabled: !root.print-busy;
+                                clicked => { root.print-refresh(); }
+                            }
+                        }
+                        Text { text: root.print-status; color: Theme.fg; wrap: word-wrap; }
+                        if root.print-warning != "": Rectangle {
+                            background: Theme.panel;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 12px;
+                                Text { text: root.print-warning; color: Theme.warning; wrap: word-wrap; }
+                            }
+                        }
+                        Text {
+                            text: "Configured printers";
+                            color: Theme.fg;
+                            font-size: Typography.heading;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: "Each entry is a separate CUPS queue. Different names or job URIs can refer to the same physical printer; entries are never merged or removed here.";
+                            color: Theme.fg_dim;
+                            wrap: word-wrap;
+                            font-size: Typography.secondary;
+                        }
+                        if root.print-ready && root.print-printers.length == 0: Text {
+                            text: "No configured printers were reported by CUPS.";
+                            color: Theme.fg_dim;
+                            wrap: word-wrap;
+                        }
+                        for printer in root.print-printers: Rectangle {
+                            background: Theme.panel;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 6px;
+                                Text { text: printer.name; color: Theme.fg; font-weight: 600; wrap: word-wrap; }
+                                Text { text: printer.summary; color: Theme.fg; wrap: word-wrap; }
+                                Text { text: printer.detail; color: Theme.fg_dim; font-size: Typography.secondary; wrap: word-wrap; }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            KeypadButton {
+                                text: "Active jobs";
+                                primary: !root.print-history;
+                                clicked => { root.print-history = false; root.print-dismiss(); root.print-refresh(); }
+                            }
+                            KeypadButton {
+                                text: "History";
+                                primary: root.print-history;
+                                clicked => { root.print-history = true; root.print-dismiss(); root.print-refresh(); }
+                            }
+                        }
+                        Text { text: root.print-scope; color: Theme.fg_dim; font-size: Typography.secondary; wrap: word-wrap; }
+                        if root.print-ready && root.print-jobs.length == 0: Text {
+                            text: !root.print-jobs-complete
+                                ? (root.print-history ? "History could not be fully listed or is limited by retention. Check the warnings above." : "Active jobs could not be fully listed. Check CUPS access and the warnings above, then Refresh.")
+                                : (root.print-history ? "No retained jobs in this history scope. CUPS may not retain completed jobs." : "No active jobs in this queue scope.");
+                            color: Theme.fg_dim;
+                            wrap: word-wrap;
+                        }
+                        for job in root.print-jobs: Rectangle {
+                            background: Theme.panel;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+                                Text { text: job.title; color: Theme.fg; font-weight: 600; wrap: word-wrap; }
+                                Text { text: job.detail; color: Theme.fg_dim; wrap: word-wrap; font-size: Typography.secondary; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    if job.can-hold: KeypadButton {
+                                        text: "Hold";
+                                        enabled: root.print-ready && !root.print-busy && root.print-confirmation == "";
+                                        clicked => { root.print-action(job.id, job.printer-id, job.identity, "hold"); }
+                                    }
+                                    if job.can-release: KeypadButton {
+                                        text: "Release";
+                                        enabled: root.print-ready && !root.print-busy && root.print-confirmation == "";
+                                        clicked => { root.print-action(job.id, job.printer-id, job.identity, "release"); }
+                                    }
+                                    if job.can-cancel: KeypadButton {
+                                        text: "Cancel job...";
+                                        enabled: root.print-ready && !root.print-busy && root.print-confirmation == "";
+                                        clicked => { root.print-action(job.id, job.printer-id, job.identity, "cancel"); }
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Settings never sends test pages, resends jobs, changes defaults or adjusts VPN/network policy. A completed CUPS job means the service finished processing, not proof that paper was printed.";
+                            color: Theme.fg_dim;
+                            font-size: Typography.secondary;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                ScrollIndicator {
+                    x: parent.width - 5px;
+                    height: parent.height;
+                    viewport-height: print-flick.viewport-height;
+                    viewport-y: print-flick.viewport-y;
+                    visible-height: print-flick.height;
+                }
+                HorizontalScrollIndicator {
+                    y: parent.height - 5px;
+                    width: parent.width;
+                    viewport-width: print-flick.viewport-width;
+                    viewport-x <=> print-flick.viewport-x;
+                    visible-width: print-flick.width;
+                }
+            }
 
             // ══════════════════════════════════════════════════════════════
             // KEYBOARD TAB
@@ -11069,6 +11260,37 @@ export component MainWindow inherits Window {
         }
     }
 
+    // Cancellation stays visible above a scrolled queue and blocks click-through.
+    if root.print-confirmation != "": Rectangle {
+        background: #00000080;
+        TouchArea { }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(460px, parent.width - 24px);
+            height: confirmation-layout.preferred-height;
+            background: Theme.bg;
+            border-color: Theme.warning;
+            border-width: 1px;
+            border-radius: 6px;
+            confirmation-layout := VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                Text { text: "Cancel print job?"; color: Theme.fg; font-size: Typography.heading; font-weight: 600; }
+                Text { text: root.print-confirmation; color: Theme.fg; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    KeypadButton { text: "Keep job"; clicked => { root.print-dismiss(); } }
+                    KeypadButton {
+                        text: "Confirm cancellation";
+                        enabled: !root.print-busy;
+                        clicked => { root.print-confirm(); }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Help overlay ─────────────────────────────────────────────────────────
 
     Rectangle {
@@ -11193,7 +11415,7 @@ export component MainWindow inherits Window {
 
                     sr-touch := TouchArea {
                         clicked => {
-                            root.active-tab = result.tab-index;
+                            root.open-search-result(result);
                             root.global-search-text = "";
                             root.filter-search("");
                             focus-scope.focus();
