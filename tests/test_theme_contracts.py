@@ -8,6 +8,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PRIVATE_MOUSE_PROBE = ROOT / "settings/src/mouse/native_tests.rs"
+PRIVATE_PRINTING_PROBE = ROOT / "settings/src/printing/ui/native_tests.rs"
 GUI_SOURCES = {
     "start-menu/src/main.rs": ("start-menu", "Popup"),
     "notif-center/src/main.rs": ("notif-center", "Popup"),
@@ -43,7 +44,11 @@ class ThemeContractTests(unittest.TestCase):
         ]:
             self.assertIn(requirement, backend)
         for source in ROOT.glob("*/src/**/*.rs"):
-            if source not in {ROOT / "smpl-common/src/lib.rs", PRIVATE_MOUSE_PROBE}:
+            if source not in {
+                ROOT / "smpl-common/src/lib.rs",
+                PRIVATE_MOUSE_PROBE,
+                PRIVATE_PRINTING_PROBE,
+            }:
                 self.assertNotIn(
                     "Backend::builder()", source.read_text(), str(source)
                 )
@@ -85,6 +90,18 @@ class ThemeContractTests(unittest.TestCase):
         self.assertIn('.with_renderer_name("skia-software")', source)
         self.assertIn('std::env::var("SMPL_MOUSE_PROBE_PRIVATE_DISPLAY").as_deref(), Ok("1")', source)
         self.assertIn('std::env::var("DISPLAY").unwrap().starts_with("127.0.0.1:")', source)
+
+    def test_printing_probe_backend_is_test_only_and_private_cpu(self):
+        module = (ROOT / "settings/src/printing/ui.rs").read_text()
+        self.assertRegex(module, r"#\[cfg\(test\)\]\s+mod native_tests;")
+        source = PRIVATE_PRINTING_PROBE.read_text()
+        self.assertIn('.with_renderer_name("skia-software")', source)
+        self.assertRegex(
+            source,
+            r'std::env::var\("SMPL_SETTINGS_PROBE_PRIVATE_DISPLAY"\)\.as_deref\(\),\s*Ok\("1"\)',
+        )
+        self.assertIn('std::env::var("DISPLAY").unwrap().starts_with("127.0.0.1:")', source)
+        self.assertIn('#[ignore = "Requires authenticated private Xvfb;', source)
 
     def test_ui_does_not_fade_foreground_or_ancestors(self):
         for source in ROOT.glob("*/ui/*.slint"):

@@ -1,6 +1,31 @@
 const UI: &str = include_str!("../ui/main.slint");
 
 #[test]
+fn printing_is_native_searchable_and_actions_use_exact_job_identity() {
+    let main = include_str!("main.rs");
+    for label in [
+        "Printing", "Printers", "Print Queue", "Print Jobs", "Print History",
+        "Printer Status", "Printer Connectivity", "CUPS",
+    ] {
+        assert!(main.contains(&format!("(\"{label}\", \"printing\", 13)")));
+    }
+    assert!(main.contains("\"printing\" | \"printers\" => 13"));
+    assert!(main.contains("printing::ui::install(&ui)"));
+    assert!(UI.contains("label: \"Printing\""));
+    assert!(UI.contains("if root.active-tab == 13: Rectangle"));
+    assert!(UI.contains("viewport-x <=> print-flick.viewport-x"));
+    assert!(UI.contains("root.print-history = result.label == \"Print History\""));
+    assert_eq!(UI.matches("root.open-search-result(").count(), 3);
+    assert!(UI.contains("root.print-action(job.id, job.printer-id, job.identity, \"cancel\")"));
+    assert!(UI.contains("text: \"Confirm cancellation\""));
+    assert!(UI.contains("text: !root.print-jobs-complete"));
+    assert!(UI.contains("Active jobs could not be fully listed."));
+    assert!(UI.contains("text: \"Keep job\""));
+    assert!(UI.contains("if root.print-confirmation != \"\" {\n            root.print-dismiss();"));
+    assert!(!include_str!("printing/ui.rs").contains("xdg-open"));
+}
+
+#[test]
 fn mouse_identify_and_learning_have_live_controls_and_diagram_selection() {
     assert!(UI.contains("root.ms-identify(!root.ms-identifying)"));
     assert!(UI.contains("root.ms-learn()"));

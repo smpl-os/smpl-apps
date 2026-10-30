@@ -15,7 +15,7 @@ import tempfile
 import time
 
 
-def main():
+def run_private_settings_probe(cases, name="mouse-editor"):
     root = Path(__file__).resolve().parents[1]
     build = subprocess.run(
         ["cargo", "test", "-p", "settings", "--bin", "settings", "--no-run", "--message-format=json"],
@@ -34,7 +34,7 @@ def main():
     ]
     if not binaries:
         raise RuntimeError("Settings test executable was not produced")
-    with tempfile.TemporaryDirectory(prefix="smpl-mouse-editor-probe-") as scratch:
+    with tempfile.TemporaryDirectory(prefix=f"smpl-{name}-probe-") as scratch:
         private = Path(scratch)
         for number in range(170, 220):
             try:
@@ -62,6 +62,7 @@ def main():
             HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"),
             TMPDIR=str(private / "tmp"),
             SMPL_MOUSE_PROBE_PRIVATE_DISPLAY="1",
+            SMPL_SETTINGS_PROBE_PRIVATE_DISPLAY="1",
             SLINT_SCALE_FACTOR="1", WINIT_X11_SCALE_FACTOR="1",
         )
         with (private / "xvfb.log").open("w+") as log:
@@ -83,12 +84,10 @@ def main():
                         time.sleep(0.1)
                 else:
                     raise RuntimeError("Private Xvfb did not become responsive")
-                for case in ("mouse_editor_native_dropdown_selection_survives_status_polling",
-                             "mouse_identify_native_selects_diagram",
-                             "mouse_setup_native_visible_workflow"):
+                for case in cases:
                     subprocess.run([
                         "dbus-run-session", "--", binaries[-1],
-                        f"mouse::native_tests::{case}",
+                        case,
                         "--exact", "--ignored", "--nocapture", "--test-threads=1",
                     ], cwd=root, env=env, check=True, timeout=90)
             finally:
@@ -98,6 +97,16 @@ def main():
                 except subprocess.TimeoutExpired:
                     server.kill()
                     server.wait()
+
+
+def main():
+    run_private_settings_probe([
+        f"mouse::native_tests::{case}" for case in (
+            "mouse_editor_native_dropdown_selection_survives_status_polling",
+            "mouse_identify_native_selects_diagram",
+            "mouse_setup_native_visible_workflow",
+        )
+    ])
 
 
 if __name__ == "__main__":

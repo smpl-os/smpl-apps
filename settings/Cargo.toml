@@ -11,6 +11,7 @@ smpl-common           = { workspace = true }
 xkbcommon             = { workspace = true }
 serde                 = { workspace = true }
 serde_json            = { workspace = true }
+chrono                = { workspace = true }
 libc                  = { workspace = true }
 dirs                  = { workspace = true }
 qrcode                = { workspace = true }

@@ -1,0 +1,72 @@
+{
+  "protocol_version": 1,
+  "ok": true,
+  "server": "local",
+  "printers": [
+    {
+      "id": "Office",
+      "display_name": "Office printer",
+      "uri": "ipp://localhost/printers/Office",
+      "state": "processing",
+      "accepting_jobs": true,
+      "is_default": true,
+      "is_temporary": false,
+      "state_reasons": ["connecting-to-device"],
+      "state_message": "Connecting to the printer."
+    },
+    {
+      "id": "Office_IPP",
+      "display_name": "Office printer",
+      "uri": "ipp://localhost/printers/Office_IPP",
+      "state": "idle",
+      "accepting_jobs": true,
+      "is_default": false,
+      "is_temporary": true,
+      "state_reasons": ["none"],
+      "state_message": ""
+    }
+  ],
+  "jobs": [
+    {
+      "id": 41,
+      "printer_id": "Office",
+      "printer_uri": "ipp://localhost/printers/Office",
+      "identity": "urn:uuid:00000000-0000-4000-8000-000000000041",
+      "title": "Synthetic queue fixture",
+      "user": "fixture",
+      "state": "pending",
+      "state_reasons": ["job-incoming"],
+      "own": true,
+      "can_hold": true,
+      "can_release": false,
+      "can_cancel": true,
+      "created_at": 1760000000,
+      "completed_at": null
+    },
+    {
+      "id": 42,
+      "printer_id": "Old_queue",
+      "printer_uri": "ipp://localhost/printers/Old_queue",
+      "identity": "urn:uuid:00000000-0000-4000-8000-000000000042",
+      "title": "Synthetic history fixture",
+      "user": "fixture",
+      "state": "completed",
+      "state_reasons": ["job-completed-successfully"],
+      "own": true,
+      "can_hold": false,
+      "can_release": false,
+      "can_cancel": false,
+      "created_at": 1759999900,
+      "completed_at": 1760000000
+    }
+  ],
+  "warnings": [
+    {
+      "code": "vpn_lan_blocked",
+      "message": "VPN local-network sharing is disabled; a LAN printer may be unreachable."
+    }
+  ],
+  "active_complete": true,
+  "history_complete": false,
+  "history_limit": 100
+}

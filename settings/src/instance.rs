@@ -306,6 +306,14 @@ impl Navigation for MainWindow {
     }
 
     fn blink_setting(&self, label: &str) {
+        if self.get_active_tab() == 13 {
+            match label {
+                "Print History" => self.set_print_history(true),
+                "Print Queue" | "Print Jobs" => self.set_print_history(false),
+                _ => {}
+            }
+            self.invoke_print_refresh();
+        }
         self.set_highlight_setting(label.into());
         crate::start_highlight_blink(self);
     }

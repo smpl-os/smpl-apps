@@ -10,6 +10,7 @@ mod keypad;
 mod layouts;
 mod mouse;
 mod power;
+mod printing;
 mod taskbar;
 mod wifi;
 mod xkb_labels;
@@ -115,6 +116,15 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("MMO Mouse", "mouse", 12),
         ("Razer Naga", "mouse", 12),
         ("Redragon Mouse", "mouse", 12),
+        // Printing
+        ("Printing", "printing", 13),
+        ("Printers", "printing", 13),
+        ("Print Queue", "printing", 13),
+        ("Print Jobs", "printing", 13),
+        ("Print History", "printing", 13),
+        ("Printer Status", "printing", 13),
+        ("Printer Connectivity", "printing", 13),
+        ("CUPS", "printing", 13),
         // Dictation
         ("Dictation", "dictation", 2),
         ("Speech to Text", "dictation", 2),
@@ -653,6 +663,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         "bluetooth" => 8,
                         "keypad" => 11,
                         "mouse" => 12,
+                        "printing" | "printers" => 13,
                         _ => 0,
                     };
                     requested_tab = Some(initial_tab);
@@ -912,6 +923,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // ── Taskbar tab init ──────────────────────────────────────────────────────
 
     taskbar::ui::install(&ui);
+    let _printing = printing::ui::install(&ui);
 
     // ── Wi-Fi tab init (background) ────────────────────────────────────────────
     {
@@ -2610,6 +2622,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 "glasses" => "Glasses",
                 "keypad" => "Keypad",
                 "mouse" => "Mouse",
+                "printing" => "Printing",
                 _ => key,
             }
         }
