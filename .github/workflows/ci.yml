@@ -268,6 +268,9 @@ jobs:
         # and so is skipped by the Test step above.
         run: scripts/check-smplos-stock-hypridle.sh
 
+      - name: Verify native Printing with private queues and display
+        run: python tests/run_printing_probe.py
+
   control-surface:
     name: control-surface (CMake + ctest)
     runs-on: ubuntu-latest
