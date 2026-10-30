@@ -74,6 +74,11 @@ struct PrintJob {
     can-cancel: bool,
 }
 
+struct PrintButtonPosition {
+    x: float,
+    y: float,
+}
+
 struct BindingEntry {
     idx: int,
     combo: string,
@@ -2022,6 +2027,14 @@ export component MainWindow inherits Window {
     in property <bool> print-jobs-complete: false;
     in-out property <bool> print-history: false;
     in property <string> print-confirmation;
+    out property <PrintButtonPosition> print-keep-position: {
+        x: (print-dialog.x + confirmation-layout.x + print-confirm-buttons.x + print-keep-button.x + print-keep-button.width / 2) / 1px,
+        y: (print-dialog.y + confirmation-layout.y + print-confirm-buttons.y + print-keep-button.y + print-keep-button.height / 2) / 1px,
+    };
+    out property <PrintButtonPosition> print-cancel-position: {
+        x: (print-dialog.x + confirmation-layout.x + print-confirm-buttons.x + print-cancel-button.x + print-cancel-button.width / 2) / 1px,
+        y: (print-dialog.y + confirmation-layout.y + print-confirm-buttons.y + print-cancel-button.y + print-cancel-button.height / 2) / 1px,
+    };
     callback print-refresh();
     callback print-action(int, string, string, string);
     callback print-confirm();
@@ -11261,10 +11274,11 @@ export component MainWindow inherits Window {
     }
 
     // Cancellation stays visible above a scrolled queue and blocks click-through.
-    if root.print-confirmation != "": Rectangle {
+    Rectangle {
+        visible: root.print-confirmation != "";
         background: #00000080;
         TouchArea { }
-        Rectangle {
+        print-dialog := Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             width: min(460px, parent.width - 24px);
@@ -11278,10 +11292,10 @@ export component MainWindow inherits Window {
                 spacing: 12px;
                 Text { text: "Cancel print job?"; color: Theme.fg; font-size: Typography.heading; font-weight: 600; }
                 Text { text: root.print-confirmation; color: Theme.fg; wrap: word-wrap; }
-                HorizontalLayout {
+                print-confirm-buttons := HorizontalLayout {
                     spacing: 8px;
-                    KeypadButton { text: "Keep job"; clicked => { root.print-dismiss(); } }
-                    KeypadButton {
+                    print-keep-button := KeypadButton { text: "Keep job"; clicked => { root.print-dismiss(); } }
+                    print-cancel-button := KeypadButton {
                         text: "Confirm cancellation";
                         enabled: !root.print-busy;
                         clicked => { root.print-confirm(); }

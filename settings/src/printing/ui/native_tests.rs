@@ -119,14 +119,15 @@ fn printing_native_queue_workflow() {
                 action(&ui, "cancel");
             }
             2 => {
-                // Keep job is on the left of the centered, production dialog.
-                click(&ui, 335., 345.);
+                let position = ui.get_print_keep_position();
+                click(&ui, position.x, position.y);
                 assert!(ui.get_print_confirmation().is_empty(), "Keep job must dismiss the native dialog");
                 assert!(fixture.actions.lock().unwrap().is_empty());
                 action(&ui, "cancel");
             }
             3 => {
-                click(&ui, 560., 345.);
+                let position = ui.get_print_cancel_position();
+                click(&ui, position.x, position.y);
             }
             4 => {
                 assert!(ui.get_print_confirmation().is_empty());
