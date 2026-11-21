@@ -160,7 +160,7 @@ fn run_resident(
     let server = Rc::new(RefCell::new(server));
     let telemetry = Rc::new(telemetry);
 
-    bind_bar_callbacks(&bar, &state, &popups, &children, &compositor, &telemetry);
+    bind_bar_callbacks(&bar, &state, &children, &compositor);
     apply_config(&bar, &state.borrow().config);
     apply_system(&bar, &state.borrow().system, &state.borrow().config);
     apply_compositor(&bar, &state.borrow().compositor, &state.borrow().config);
@@ -289,49 +289,22 @@ fn run_resident(
 fn bind_bar_callbacks(
     bar: &BarWindow,
     state: &Rc<RefCell<UiState>>,
-    popups: &Rc<RefCell<PopupWindows>>,
     children: &Rc<RefCell<Vec<Child>>>,
     compositor: &Rc<CompositorHandle>,
-    telemetry: &Rc<Telemetry>,
 ) {
+    let popup_coordinator = Rc::new(PopupCoordinator::new(children.clone()));
     let children_action = children.clone();
     bar.on_open_start(move || spawn(&children_action, ["toggle-start-menu"]));
     let compositor_action = compositor.clone();
     bar.on_select_workspace(move |workspace| {
         compositor_action.send(Action::SelectWorkspace(workspace));
     });
-    let state_overview = state.clone();
-    let popups_overview = popups.clone();
-    let children_overview = children.clone();
-    let telemetry_overview = telemetry.clone();
-    bar.on_open_overview(move || {
-        open_overview(
-            &state_overview,
-            &popups_overview,
-            &children_overview,
-            &telemetry_overview,
-        );
-    });
-    let state_quick = state.clone();
-    let popups_quick = popups.clone();
-    let children_quick = children.clone();
-    let telemetry_quick = telemetry.clone();
-    bar.on_open_quick_settings(move || {
-        open_quick_settings(
-            &state_quick,
-            &popups_quick,
-            &children_quick,
-            &telemetry_quick,
-        );
-        refresh_external_async(&state_quick, &popups_quick, &telemetry_quick);
-    });
-    let state_usb = state.clone();
-    let popups_usb = popups.clone();
-    let children_usb = children.clone();
-    let telemetry_usb = telemetry.clone();
-    bar.on_open_usb(move || {
-        open_usb(&state_usb, &popups_usb, &children_usb, &telemetry_usb);
-    });
+    let overview = popup_coordinator.clone();
+    bar.on_open_overview(move || overview.request(PopupTarget::WorkspaceOverview));
+    let quick = popup_coordinator.clone();
+    bar.on_open_quick_settings(move || quick.request(PopupTarget::QuickSettings));
+    let usb = popup_coordinator.clone();
+    bar.on_open_usb(move || usb.request(PopupTarget::Usb));
     let keypad_children = children.clone();
     bar.on_open_keypad(move || spawn(&keypad_children, ["smplos-settings", "keypad"]));
     let sync_children = children.clone();
@@ -344,10 +317,10 @@ fn bind_bar_callbacks(
     bar.on_open_keyboard_settings(move || {
         spawn(&keyboard_children, ["smplos-settings", "keyboard"])
     });
-    let calendar_children = children.clone();
-    bar.on_open_calendar(move || spawn(&calendar_children, ["toggle-calendar"]));
-    let notification_children = children.clone();
-    bar.on_open_notifications(move || spawn(&notification_children, ["toggle-notif-center"]));
+    let calendar = popup_coordinator.clone();
+    bar.on_open_calendar(move || calendar.request(PopupTarget::Calendar));
+    let notifications = popup_coordinator.clone();
+    bar.on_open_notifications(move || notifications.request(PopupTarget::Notifications));
     let clear_children = children.clone();
     bar.on_clear_notifications(move || spawn(&clear_children, ["dunstctl", "history-clear"]));
     let volume_children = children.clone();
@@ -369,6 +342,41 @@ fn bind_bar_callbacks(
             );
         }
     });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PopupTarget {
+    QuickSettings,
+    Usb,
+    WorkspaceOverview,
+    Calendar,
+    Notifications,
+}
+
+impl PopupTarget {
+    fn argument(self) -> &'static str {
+        match self {
+            Self::QuickSettings => "quick-settings",
+            Self::Usb => "usb-popup",
+            Self::WorkspaceOverview => "workspace-overview",
+            Self::Calendar => "calendar-popup",
+            Self::Notifications => "notification-hub",
+        }
+    }
+}
+
+struct PopupCoordinator {
+    children: Rc<RefCell<Vec<Child>>>,
+}
+
+impl PopupCoordinator {
+    fn new(children: Rc<RefCell<Vec<Child>>>) -> Self {
+        Self { children }
+    }
+
+    fn request(&self, target: PopupTarget) {
+        spawn(&self.children, ["popup-toggle", target.argument()]);
+    }
 }
 
 fn handle_request(
@@ -410,11 +418,15 @@ fn handle_request(
         }
         Request::Popup { name } => {
             match name {
-                Popup::QuickSettings => open_quick_settings(state, popups, children, telemetry),
+                Popup::QuickSettings => {
+                    open_quick_settings(state, popups, children, telemetry);
+                    refresh_external_async(state, popups, telemetry);
+                }
                 Popup::Usb => open_usb(state, popups, children, telemetry),
                 Popup::WorkspaceOverview => open_overview(state, popups, children, telemetry),
                 Popup::KeypadCheatsheet => {}
             }
+
             Response::ok(None)
         }
         Request::Identify => {
@@ -1629,6 +1641,18 @@ impl Arguments {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn popup_callbacks_use_the_authoritative_os_coordinator() {
+        assert_eq!(PopupTarget::QuickSettings.argument(), "quick-settings");
+        assert_eq!(PopupTarget::Usb.argument(), "usb-popup");
+        assert_eq!(
+            PopupTarget::WorkspaceOverview.argument(),
+            "workspace-overview"
+        );
+        assert_eq!(PopupTarget::Calendar.argument(), "calendar-popup");
+        assert_eq!(PopupTarget::Notifications.argument(), "notification-hub");
+    }
 
     #[test]
     fn percentage_probe_does_not_confuse_multiple_values() {

@@ -46,6 +46,21 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn("acceptance-gated: generic StatusNotifierItem", config)
         self.assertIn("Module::Sni", config)
 
+    def test_popup_callbacks_route_through_os_mutual_exclusion(self):
+        source = (BAR / "src/main.rs").read_text()
+        callbacks = source[source.index("fn bind_bar_callbacks"):source.index("fn handle_request")]
+        self.assertIn('["popup-toggle", target.argument()]', callbacks)
+        for target in (
+            "quick-settings",
+            "usb-popup",
+            "workspace-overview",
+            "calendar-popup",
+            "notification-hub",
+        ):
+            self.assertIn(f'"{target}"', callbacks)
+        self.assertNotIn('["toggle-calendar"]', callbacks)
+        self.assertNotIn('["toggle-notif-center"]', callbacks)
+
 
 if __name__ == "__main__":
     unittest.main()
