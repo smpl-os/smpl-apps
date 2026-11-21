@@ -68,7 +68,8 @@ class ReleaseAssetsTests(unittest.TestCase):
         assets.verify_uploaded(self.dist, self.bundle, path)
 
     def test_complete_payload_and_optional_xr_are_preserved(self):
-        self.assertEqual(len(assets.BINARIES), 11)
+        self.assertEqual(len(assets.BINARIES), 12)
+        self.assertIn("smpl-bar", assets.BINARIES)
         assets.collect(self.source, self.dist)
         for name in ("xr-workspace", "xrctl", "xr-game", "xr-glasses-hotplugd", ".xr-version"):
             (self.dist / name).write_text("optional fixture")

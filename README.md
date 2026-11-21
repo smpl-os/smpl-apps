@@ -30,6 +30,7 @@ for composited transparency.
 
 | App | Description |
 |-----|-------------|
+| `smpl-bar` | Resident native Rust/Slint taskbar (side-by-side EWW migration) |
 | `start-menu` | App launcher |
 | `notif-center` | Notification center |
 | `settings` | Settings panel |
@@ -99,7 +100,7 @@ until a valid theme arrives.
 
 | GUI surface / Wayland app ID | Background opacity source |
 |---|---|
-| `settings`, `app-center`, `webapp-center`, `sync-center` | `$theme-app-background-opacity`, then legacy `$theme-popup-opacity`, then `1.0` |
+| `smpl-bar`, `settings`, `app-center`, `webapp-center`, `sync-center` | `$theme-app-background-opacity`, then legacy `$theme-popup-opacity`, then `1.0` |
 | `start-menu`, `notif-center`, `smpl-calendar`, `smpl-calendar-details` | `$theme-popup-opacity`, then `1.0` |
 | `hints-overlay` | Popup opacity for painted badges/toasts only; the fullscreen root stays transparent |
 
@@ -566,6 +567,33 @@ pidfile and instance detection (temporary directories and a fake `/proc`),
 reload decisions, signal mapping, view reset, version text, the stall
 watchdog's accounting, and the signal state of launched processes (in a
 separate test process).
+
+## Native smpl-bar migration
+
+`smpl-bar` is a separate resident Slint process; it does not embed the EWW bar
+or start-menu. `smpl-shell` owns the shared app-cache/icon/launch parser,
+typed `bar.json`/legacy `bar.conf` reader, compositor adapters, monitor model,
+Unix-socket IPC and opt-in telemetry. Hyprland state uses its command/event
+sockets directly; X11 uses X11/EWMH property events. Niri currently keeps an
+explicit process-backed event-stream gate because direct `NIRI_SOCKET` request
+compatibility has not been accepted.
+
+The vertical slice implements start-menu launch, grouped workspaces and title,
+status controls, a native Quick Settings panel, USB eject, workspace overview,
+identify, and keypad-cheatsheet windows. It deliberately keeps generic
+StatusNotifierItem/SNI, true layer-shell exclusivity and multi-monitor identify
+behind separate acceptance gates. See [smpl-bar/README.md](smpl-bar/README.md)
+for the full parity matrix, IPC contract, benchmark, and exact smplOS-side
+requirements. The app-suite change alone does not replace or stop EWW.
+
+Focused checks:
+
+```bash
+cargo test -p smpl-shell --lib
+cargo test -p smpl-bar --bin smpl-bar
+python3 -m unittest discover -s smpl-bar/tests -p 'test_*.py' -v
+smpl-bar/scripts/benchmark.sh
+```
 
 ## Releases
 
@@ -1227,7 +1255,7 @@ Run the **Release** workflow (`.github/workflows/release.yml`, `workflow_dispatc
 from `main` after the changes are merged. It increments the workspace patch
 version itself, commits the version/lockfile change, and publishes tag
 `v<VERSION>`, bundle `smpl-apps-<VERSION>-x86_64.tar.gz`, and individual binaries
-including `start-menu`. It also builds and tests control-surface and publishes
+including `smpl-bar` and `start-menu`. It also builds and tests control-surface and publishes
 `control-surface-<VERSION>-x86_64.tar.gz`: a `usr/` tree with `control-surfaced`,
 `ch552-padprog`, the example config, example unit and udev rule, the current
 firmware images with their manifests, docs and licences (GPL-2.0 text and the
@@ -1236,7 +1264,7 @@ stay in the source tree only. It is not in the app bundle: smplOS installs it
 with pacman (its `control-surface` package pins this asset's SHA-256) and ships
 its own user unit and udev rules. Do not manually bump or tag to prepare that workflow.
 The workflow only runs from `main` and serializes releases. It refuses to publish
-if main advances during the build, validates all 11 mandatory binaries plus
+if main advances during the build, validates all 12 mandatory binaries plus
 the canonical `smpl-calendar-alertd.service`, and checks bundle contents against
 the standalone assets. The service is a root-level archive member and standalone
 asset with mode `0644`, never an executable. Its `--foreground` entry and

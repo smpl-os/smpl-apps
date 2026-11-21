@@ -1,0 +1,730 @@
+export global Theme {
+    in-out property <color> bg: #1e1e2e;
+    in-out property <color> fg: #cdd6f4;
+    in-out property <color> fg-dim: #a6adc8;
+    in-out property <color> accent: #89b4fa;
+    in-out property <color> bg-light: #45475a;
+    in-out property <color> bg-lighter: #585b70;
+    in-out property <color> danger: #f38ba8;
+    in-out property <color> success: #a6e3a1;
+    in-out property <color> warning: #f9e2af;
+    in-out property <color> info: #94e2d5;
+    in-out property <float> opacity: 0.95;
+    in-out property <float> popup-opacity: 0.92;
+}
+
+export struct WorkspaceUi {
+    id: int,
+    label: string,
+    occupied: bool,
+    visible: bool,
+    focused: bool,
+    temporary: bool,
+}
+
+export struct UsbUi {
+    name: string,
+    label: string,
+    path: string,
+    size: string,
+    mounted: bool,
+}
+
+export struct MonitorUi {
+    connector: string,
+    description: string,
+    active_workspace: int,
+    focused: bool,
+}
+
+export struct KeypadItemUi {
+    control: string,
+    label: string,
+    icon: string,
+    active: bool,
+    bound: bool,
+    state: string,
+    row: int,
+    column: int,
+}
+
+component IconButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> tip;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    callback clicked;
+    callback secondary-clicked;
+    callback scrolled(float);
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    background: root.enabled && touch.has-hover ? Theme.bg-light : transparent;
+    accessible-role: button;
+    accessible-label: tip;
+    Text {
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        text: root.icon;
+        font-size: 13px;
+        font-family: "JetBrains Mono Nerd Font";
+        color: root.active ? Theme.accent : Theme.fg;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                root.secondary-clicked();
+            }
+        }
+        scroll-event(event) => {
+            root.scrolled(event.delta-y / 1px);
+            return accept;
+        }
+    }
+}
+
+component WorkspaceButton inherits Rectangle {
+    in property <WorkspaceUi> item;
+    in property <bool> squares;
+    in property <bool> active: item.focused;
+    callback clicked(int);
+    width: squares ? 9px : 22px;
+    height: squares ? 9px : 24px;
+    border-radius: squares ? 2px : 5px;
+    border-width: squares && item.visible && !item.focused ? 1px : 0px;
+    border-color: Theme.fg;
+    background: item.focused ? Theme.accent
+        : item.occupied ? Theme.accent.transparentize(0.55)
+        : Theme.fg-dim.transparentize(squares ? 0.82 : 0.94);
+    accessible-role: button;
+    accessible-label: "Workspace " + item.id;
+    if !squares: Text {
+        text: item.label;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: item.focused ? 14px : 11px;
+        color: item.focused ? Theme.bg : Theme.fg;
+    }
+    if item.temporary: Rectangle {
+        y: parent.height - 2px;
+        width: 100%;
+        height: 1px;
+        background: Theme.warning;
+    }
+    TouchArea {
+        clicked => { root.clicked(item.id); }
+    }
+}
+
+component TogglePill inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> active;
+    in property <bool> show: true;
+    callback clicked;
+    height: 40px;
+    border-radius: 20px;
+    background: active ? Theme.accent : Theme.bg-light.transparentize(0.20);
+    visible: show;
+    accessible-role: button;
+    accessible-label: label;
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: icon;
+            font-size: 15px;
+            color: active ? Theme.bg : Theme.fg;
+        }
+        Text {
+            text: label;
+            overflow: elide;
+            font-size: 12px;
+            color: active ? Theme.bg : Theme.fg;
+        }
+    }
+    TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+}
+
+export component BarWindow inherits Window {
+    in-out property <[WorkspaceUi]> workspaces;
+    in-out property <bool> workspace-squares: false;
+    in-out property <bool> workspace-center: false;
+    in-out property <length> workspace-spacing: 2px;
+    in-out property <string> window-title;
+    in-out property <string> monitor-label: "M1";
+    in-out property <string> compositor: "native";
+    in-out property <string> clock-main: "00:00";
+    in-out property <string> clock-sub;
+    in-out property <int> volume: 0;
+    in-out property <bool> volume-muted: false;
+    in-out property <int> battery: 0;
+    in-out property <bool> battery-visible: false;
+    in-out property <bool> battery-low: false;
+    in-out property <bool> battery-charging: false;
+    in-out property <bool> usb-visible: false;
+    in-out property <bool> keypad-visible: false;
+    in-out property <bool> sync-visible: false;
+    in-out property <bool> dictation-visible: false;
+    in-out property <bool> keyboard-visible: false;
+    in-out property <bool> wifi-available: true;
+    in-out property <bool> bluetooth-available: true;
+    in-out property <bool> network-online: false;
+    in-out property <bool> wifi-on: false;
+    in-out property <bool> bluetooth-on: false;
+    in-out property <bool> vpn-on: false;
+    in-out property <int> notification-count: 0;
+    in-out property <bool> notifications-paused: false;
+    in-out property <string> keyboard-code;
+    in-out property <bool> show-start: true;
+    in-out property <bool> show-workspaces: true;
+    in-out property <bool> show-title: true;
+    in-out property <bool> show-usb: true;
+    in-out property <bool> show-keypad: true;
+    in-out property <bool> show-sync: true;
+    in-out property <bool> show-dictation: true;
+    in-out property <bool> show-keyboard: true;
+    in-out property <bool> show-bluetooth: true;
+    in-out property <bool> show-wifi: true;
+    in-out property <bool> show-network: true;
+    in-out property <bool> show-volume: true;
+    in-out property <bool> show-battery: true;
+    in-out property <bool> show-clock: true;
+    in-out property <bool> show-notifications: true;
+
+    callback open-start;
+    callback select-workspace(int);
+    callback open-overview;
+    callback open-quick-settings;
+    callback open-usb;
+    callback open-keypad;
+    callback open-sync;
+    callback toggle-dictation;
+    callback next-keyboard;
+    callback open-keyboard-settings;
+    callback open-calendar;
+    callback open-notifications;
+    callback clear-notifications;
+    callback volume-scroll(float);
+
+    title: "smpl-bar";
+    no-frame: true;
+    min-width: 800px;
+    min-height: 24px;
+    preferred-width: 1600px;
+    preferred-height: 32px;
+    background: transparent;
+
+    surface := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: 1px;
+        border-color: Theme.bg-lighter.transparentize(0.55);
+        border-radius: 3px;
+        background: Theme.bg.transparentize(1.0 - Theme.opacity);
+        HorizontalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            spacing: 3px;
+
+            if show-start: IconButton {
+                icon: "󰍜";
+                tip: "Start menu";
+                clicked => { root.open-start(); }
+            }
+
+            if show-workspaces && !workspace-center: HorizontalLayout {
+                spacing: root.workspace-spacing;
+                for workspace in root.workspaces: WorkspaceButton {
+                    item: workspace;
+                    squares: root.workspace-squares;
+                    clicked(id) => { root.select-workspace(id); }
+                }
+                IconButton {
+                    icon: root.monitor-label;
+                    tip: "Workspace overview";
+                    width: 34px;
+                    clicked => { root.open-overview(); }
+                }
+            }
+
+            if show-title: Text {
+                text: root.window-title;
+                color: Theme.fg-dim;
+                vertical-alignment: center;
+                overflow: elide;
+                max-width: 480px;
+                horizontal-stretch: 1;
+            }
+            if !show-title || root.workspace-center: Rectangle { horizontal-stretch: 1; }
+
+            if show-workspaces && workspace-center: HorizontalLayout {
+                spacing: root.workspace-spacing;
+                for workspace in root.workspaces: WorkspaceButton {
+                    item: workspace;
+                    squares: root.workspace-squares;
+                    clicked(id) => { root.select-workspace(id); }
+                }
+                IconButton {
+                    icon: root.monitor-label;
+                    tip: "Workspace overview";
+                    width: 34px;
+                    clicked => { root.open-overview(); }
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            if show-usb && usb-visible: IconButton {
+                icon: "󰕓";
+                tip: "Removable drives";
+                clicked => { root.open-usb(); }
+            }
+            if show-keypad && keypad-visible: IconButton {
+                icon: "󰌌";
+                tip: "Macro keypad";
+                clicked => { root.open-keypad(); }
+            }
+            if show-sync && sync-visible: IconButton {
+                icon: "󰓦";
+                tip: "Sync in progress";
+                clicked => { root.open-sync(); }
+            }
+            if show-dictation && dictation-visible: IconButton {
+                icon: "󰍬";
+                tip: "Toggle dictation";
+                active: true;
+                clicked => { root.toggle-dictation(); }
+            }
+            if show-keyboard && keyboard-visible: IconButton {
+                icon: keyboard-code;
+                tip: "Switch keyboard layout";
+                clicked => { root.next-keyboard(); }
+                secondary-clicked => { root.open-keyboard-settings(); }
+            }
+            if show-bluetooth && bluetooth-available: IconButton {
+                icon: bluetooth-on ? "󰂯" : "󰂲";
+                tip: "Bluetooth";
+                active: bluetooth-on;
+                clicked => { root.open-quick-settings(); }
+            }
+            if show-wifi && wifi-available: IconButton {
+                icon: wifi-on ? "󰤨" : "󰤮";
+                tip: "Wi-Fi";
+                active: wifi-on;
+                clicked => { root.open-quick-settings(); }
+            }
+            if show-network: IconButton {
+                icon: vpn-on ? "󰖂" : (network-online ? "󰒍" : "󰣴");
+                tip: vpn-on ? "VPN active" : (network-online ? "Network connected" : "Network offline");
+                clicked => { root.open-quick-settings(); }
+                active: network-online || vpn-on;
+            }
+            if show-volume: IconButton {
+                icon: volume-muted || volume == 0 ? "󰖁" : (volume < 50 ? "󰖀" : "󰕾");
+                tip: "Volume " + volume + "%";
+                active: !volume-muted;
+                clicked => { root.open-quick-settings(); }
+                scrolled(delta) => { root.volume-scroll(delta); }
+            }
+            if show-battery && battery-visible: IconButton {
+                icon: battery-charging ? "󰂄" : (battery-low ? "󰂃" : "󰁹");
+                tip: "Battery " + battery + "%";
+                active: !battery-low;
+                clicked => { root.open-quick-settings(); }
+            }
+            if show-clock: Rectangle {
+                width: 62px;
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: clock-main;
+                        horizontal-alignment: center;
+                        color: Theme.fg;
+                        font-size: 11px;
+                    }
+                    if clock-sub != "": Text {
+                        text: clock-sub;
+                        horizontal-alignment: center;
+                        color: Theme.fg-dim;
+                        font-size: 8px;
+                    }
+                }
+                TouchArea {
+                    clicked => { root.open-calendar(); }
+                    mouse-cursor: pointer;
+                }
+            }
+            if show-notifications: IconButton {
+                icon: notifications-paused ? "󰂛" : (notification-count > 0 ? "󰂞" : "󰂜");
+                tip: notification-count + " notifications";
+                active: notification-count > 0;
+                clicked => { root.open-notifications(); }
+                secondary-clicked => { root.clear-notifications(); }
+            }
+        }
+    }
+}
+
+export component QuickSettingsWindow inherits Window {
+    in-out property <bool> wifi-available;
+    in-out property <bool> bluetooth-available;
+    in-out property <bool> wired-available;
+    in-out property <bool> wifi-on;
+    in-out property <bool> bluetooth-on;
+    in-out property <bool> wired-on;
+    in-out property <bool> airplane-on;
+    in-out property <bool> nightlight-on;
+    in-out property <bool> nightlight-available;
+    in-out property <bool> dnd-on;
+    in-out property <bool> dictation-on;
+    in-out property <bool> dictation-available;
+    in-out property <int> volume: 50;
+    in-out property <int> brightness: 100;
+    in-out property <string> network-label: "Offline";
+    in-out property <string> bluetooth-label: "Off";
+    callback close;
+    callback toggle(string);
+    callback open-tool(string);
+    callback set-volume(int);
+    callback set-brightness(int);
+    callback action(string);
+    title: "smpl-bar:quick-settings";
+    no-frame: true;
+    preferred-width: 430px;
+    preferred-height: 340px;
+    background: transparent;
+    Rectangle {
+        background: Theme.bg.transparentize(1.0 - Theme.popup-opacity);
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.bg-lighter.transparentize(0.55);
+        VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+            HorizontalLayout {
+                Text {
+                    text: "System Menu";
+                    font-size: 16px;
+                    font-weight: 600;
+                    color: Theme.fg;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    icon: "×";
+                    tip: "Close";
+                    clicked => { root.close(); }
+                }
+            }
+            GridLayout {
+                spacing: 8px;
+                Row {
+                    TogglePill { icon: "󰤨"; label: network-label; active: wifi-on; show: wifi-available; clicked => root.toggle("wifi"); }
+                    TogglePill { icon: "󰂯"; label: bluetooth-label; active: bluetooth-on; show: bluetooth-available; clicked => root.toggle("bluetooth"); }
+                    TogglePill { icon: "󰈁"; label: wired-on ? "Wired" : "Off"; active: wired-on; show: wired-available; clicked => root.toggle("wired"); }
+                }
+                Row {
+                    TogglePill { icon: "󰀝"; label: "Airplane"; active: airplane-on; show: wifi-available || bluetooth-available; clicked => root.toggle("airplane"); }
+                    TogglePill { icon: "󰛨"; label: "Night light"; active: nightlight-on; show: nightlight-available; clicked => root.toggle("nightlight"); }
+                    TogglePill { icon: "󰂛"; label: "DND"; active: dnd-on; clicked => root.toggle("dnd"); }
+                }
+                Row {
+                    TogglePill {
+                        icon: "󰍬";
+                        label: dictation-on ? "Recording" : "Dictation";
+                        active: dictation-on;
+                        show: dictation-available;
+                        clicked => root.toggle("dictation");
+                    }
+                }
+            }
+            Rectangle {
+                height: 42px;
+                background: Theme.bg-light.transparentize(0.75);
+                border-radius: 8px;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    Text { text: "󰕾"; color: Theme.fg; vertical-alignment: center; }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.fg.transparentize(0.88);
+                        Rectangle {
+                            width: root.volume * parent.width / 100;
+                            height: 100%;
+                            border-radius: 3px;
+                            background: Theme.accent;
+                        }
+                        TouchArea {
+                            pointer-event(event) => {
+                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                                    root.volume = clamp(round((self.mouse-x / self.width) * 100), 0, 100);
+                                    root.set-volume(root.volume);
+                                }
+                            }
+                        }
+                    }
+                    Text { text: volume + "%"; width: 40px; color: Theme.fg-dim; vertical-alignment: center; horizontal-alignment: right; }
+                }
+            }
+            Rectangle {
+                height: 42px;
+                background: Theme.bg-light.transparentize(0.75);
+                border-radius: 8px;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    Text { text: "󰃠"; color: Theme.fg; vertical-alignment: center; }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.fg.transparentize(0.88);
+                        Rectangle {
+                            width: root.brightness * parent.width / 100;
+                            height: 100%;
+                            border-radius: 3px;
+                            background: Theme.accent;
+                        }
+                        TouchArea {
+                            pointer-event(event) => {
+                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                                    root.brightness = clamp(round((self.mouse-x / self.width) * 100), 1, 100);
+                                    root.set-brightness(root.brightness);
+                                }
+                            }
+                        }
+                    }
+                    Text { text: brightness + "%"; width: 40px; color: Theme.fg-dim; vertical-alignment: center; horizontal-alignment: right; }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                IconButton { icon: "󰒓"; tip: "Settings"; clicked => root.open-tool("settings"); }
+                IconButton { icon: "󰗽"; tip: "Log out"; clicked => root.action("logout"); }
+                IconButton { icon: "⏻"; tip: "Power off"; active: true; clicked => root.action("poweroff"); }
+            }
+        }
+    }
+}
+
+export component UsbWindow inherits Window {
+    in-out property <[UsbUi]> devices;
+    callback close;
+    callback eject(string, bool);
+    title: "smpl-bar:usb";
+    no-frame: true;
+    preferred-width: 360px;
+    preferred-height: 220px;
+    background: transparent;
+    Rectangle {
+        background: Theme.bg.transparentize(1.0 - Theme.popup-opacity);
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.bg-lighter.transparentize(0.55);
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+            HorizontalLayout {
+                Text { text: "Removable Drives"; font-size: 15px; font-weight: 600; color: Theme.fg; horizontal-stretch: 1; }
+                IconButton { icon: "×"; tip: "Close"; clicked => root.close(); }
+            }
+            if devices.length == 0: Text {
+                text: "No mounted removable drives";
+                color: Theme.fg-dim;
+                vertical-alignment: center;
+                vertical-stretch: 1;
+            }
+            if devices.length > 0: VerticalLayout {
+                spacing: 6px;
+                for device in devices: Rectangle {
+                    height: 54px;
+                    border-radius: 6px;
+                    background: Theme.bg-light.transparentize(0.72);
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        Text { text: "󰕓"; font-size: 18px; color: Theme.info; vertical-alignment: center; }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text { text: device.label; color: Theme.fg; overflow: elide; font-size: 12px; }
+                            Text { text: device.size + " · " + device.path; color: Theme.fg-dim; overflow: elide; font-size: 9px; }
+                        }
+                        IconButton {
+                            icon: "󰆴";
+                            tip: device.mounted ? "Safely eject" : "Power off";
+                            clicked => root.eject(device.name, device.mounted);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component WorkspaceOverviewWindow inherits Window {
+    in-out property <[WorkspaceUi]> workspaces;
+    in-out property <[MonitorUi]> monitors;
+    in-out property <string> focused-monitor;
+    in-out property <string> error;
+    callback close;
+    callback select(int);
+    title: "smpl-bar:workspace-overview";
+    no-frame: true;
+    preferred-width: 620px;
+    preferred-height: 220px;
+    background: transparent;
+    Rectangle {
+        background: Theme.bg.transparentize(1.0 - Theme.popup-opacity);
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.bg-lighter.transparentize(0.55);
+        VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+            HorizontalLayout {
+                Text { text: "Workspaces · " + focused-monitor; color: Theme.fg; font-size: 15px; font-weight: 600; horizontal-stretch: 1; }
+                IconButton { icon: "×"; tip: "Close"; clicked => root.close(); }
+            }
+            if error != "": Text { text: error; color: Theme.warning; wrap: word-wrap; }
+            for monitor in monitors: Rectangle {
+                height: 44px;
+                border-radius: 6px;
+                border-width: monitor.focused ? 2px : 1px;
+                border-color: monitor.focused ? Theme.accent : Theme.bg-lighter;
+                background: Theme.bg-light.transparentize(0.78);
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    Text {
+                        text: monitor.connector;
+                        color: monitor.focused ? Theme.accent : Theme.fg;
+                        font-weight: monitor.focused ? 600 : 400;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: monitor.description;
+                        color: Theme.fg-dim;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "WS " + monitor.active-workspace;
+                        color: Theme.fg;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 6px;
+                for workspace in workspaces: WorkspaceButton {
+                    item: workspace;
+                    width: 48px;
+                    height: 42px;
+                    clicked(id) => root.select(id);
+                }
+            }
+            Text {
+                text: "Filled: focused · Outline: visible · Accent dot: occupied";
+                color: Theme.fg-dim;
+                horizontal-alignment: center;
+                font-size: 10px;
+            }
+        }
+    }
+}
+
+export component KeypadCheatsheetWindow inherits Window {
+    in-out property <string> sheet-title: "Keypad";
+    in-out property <string> notice;
+    in-out property <[KeypadItemUi]> keys;
+    in-out property <bool> click-through: false;
+    callback close;
+    title: "smpl-bar:keypad-cheatsheet";
+    no-frame: true;
+    preferred-width: 720px;
+    preferred-height: 360px;
+    background: transparent;
+    Rectangle {
+        background: Theme.bg.transparentize(0.68);
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.bg-lighter.transparentize(0.45);
+        VerticalLayout {
+            padding: 14px;
+            spacing: 8px;
+            Text { text: sheet-title; color: Theme.fg; font-size: 16px; font-weight: 600; }
+            if notice != "": Text { text: notice; color: Theme.warning; wrap: word-wrap; }
+            GridLayout {
+                spacing: 6px;
+                for item in keys: Rectangle {
+                    row: item.row;
+                    col: item.column;
+                    min-width: 100px;
+                    height: 74px;
+                    border-radius: 6px;
+                    border-width: item.active ? 2px : 1px;
+                    border-color: item.active ? Theme.accent : Theme.fg-dim.transparentize(0.45);
+                    background: item.active ? Theme.accent.transparentize(0.86) : transparent;
+                    VerticalLayout {
+                        padding: 7px;
+                        spacing: 2px;
+                        Text { text: item.control; color: Theme.fg-dim; font-size: 9px; }
+                        Text { text: item.bound ? item.label : "·"; color: Theme.fg; font-size: 11px; overflow: elide; }
+                        Text { text: item.state; color: Theme.fg-dim; font-size: 8px; overflow: elide; }
+                    }
+                }
+            }
+            Text {
+                text: click-through ? "Hides automatically or with the cheatsheet key" : "Click to close";
+                color: Theme.fg-dim;
+                font-size: 10px;
+            }
+        }
+        TouchArea {
+            enabled: !click-through;
+            clicked => root.close();
+        }
+    }
+}
+
+export component IdentifyWindow inherits Window {
+    in-out property <string> label: "Monitor";
+    title: "smpl-bar:identify";
+    no-frame: true;
+    preferred-width: 380px;
+    preferred-height: 140px;
+    background: transparent;
+    Rectangle {
+        background: Theme.bg.transparentize(0.06);
+        border-radius: 20px;
+        border-width: 2px;
+        border-color: Theme.accent;
+        Text {
+            text: label;
+            color: Theme.accent;
+            font-size: 42px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}

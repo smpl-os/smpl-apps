@@ -4612,6 +4612,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "smpl-bar"
+version = "0.8.39"
+dependencies = [
+ "chrono",
+ "i-slint-backend-winit",
+ "libc",
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "smpl-common",
+ "smpl-shell",
+ "tempfile",
+]
+
+[[package]]
 name = "smpl-calendar"
 version = "0.8.39"
 dependencies = [
@@ -4642,6 +4658,18 @@ dependencies = [
  "slint",
  "tokio",
  "zbus",
+]
+
+[[package]]
+name = "smpl-shell"
+version = "0.8.39"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "smpl-common",
+ "tempfile",
+ "x11rb",
 ]
 
 [[package]]
@@ -4730,6 +4758,7 @@ dependencies = [
  "slint",
  "slint-build",
  "smpl-common",
+ "smpl-shell",
  "tempfile",
 ]
 

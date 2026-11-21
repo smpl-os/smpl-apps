@@ -297,6 +297,7 @@ jobs:
             ${{ env.BUNDLE }}
             ${{ env.CS_ASSET }}
             ${{ env.CALENDAR_RPM }}
+            dist/smpl-bar
             dist/start-menu
             dist/notif-center
             dist/settings

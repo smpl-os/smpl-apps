@@ -23,7 +23,7 @@ if [[ "$1" == "--build" ]]; then
     cargo build --release --manifest-path "$(dirname "$0")/Cargo.toml"
 fi
 
-BINS=(settings start-menu notif-center app-center webapp-center sync-center-gui smpl-calendar smpl-calendar-alertd smpl-hints smpl-hintsd)
+BINS=(settings smpl-bar start-menu notif-center app-center webapp-center sync-center-gui smpl-calendar smpl-calendar-alertd smpl-hints smpl-hintsd)
 
 if [[ -x "$RELEASE/smpl-calendar" && -x "$RELEASE/smpl-calendar-alertd" ]]; then
     python3 "$(dirname "$0")/scripts/deploy-calendar-reminders-local.py"

@@ -9,10 +9,7 @@
 //! SIGTERM and logout. Every process the menu starts must therefore be built
 //! with [`command`]; clippy rejects `Command::new` elsewhere in this crate.
 
-use std::ffi::OsStr;
 use std::io;
-use std::os::unix::process::CommandExt;
-use std::process::Command;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -88,29 +85,8 @@ pub fn block() -> io::Result<Blocked> {
 /// module handles (the menu may itself have been started with SIGINT ignored,
 /// as background jobs of scripts are). Other dispositions are inherited as
 /// usual; std resets SIGPIPE itself.
-pub fn command(program: impl AsRef<OsStr>) -> Command {
-    // Resolved here: only async-signal-safe calls may run in the child.
-    let signals = handled();
-    #[allow(clippy::disallowed_methods)] // The one sanctioned constructor.
-    let mut command = Command::new(program);
-    // SAFETY: the closure runs in the child between fork and exec and only
-    // calls async-signal-safe functions (signal, sigemptyset, pthread_sigmask).
-    unsafe {
-        command.pre_exec(move || {
-            for signal in signals {
-                if libc::signal(signal, libc::SIG_DFL) == libc::SIG_ERR {
-                    return Err(io::Error::last_os_error());
-                }
-            }
-            let mut empty = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
-            libc::sigemptyset(empty.as_mut_ptr());
-            match libc::pthread_sigmask(libc::SIG_SETMASK, empty.as_ptr(), std::ptr::null_mut()) {
-                0 => Ok(()),
-                error => Err(io::Error::from_raw_os_error(error)),
-            }
-        });
-    }
-    command
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    smpl_shell::launch::command_with_signals(program, &handled())
 }
 
 /// Wait for the blocked signals on a dedicated thread. `deliver` runs on that

@@ -8,6 +8,7 @@ mod usage;
 use i_slint_backend_winit::WinitWindowAccessor;
 use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
+use smpl_shell::app_cache::AppEntry;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -23,22 +24,6 @@ use crate::stamp::FileStamp;
 use crate::usage::Usage;
 
 slint::include_modules!();
-
-// ── App index entry (parsed from ~/.cache/smplos/app_index) ──
-
-#[derive(Clone, Debug)]
-struct AppEntry {
-    name: String,
-    exec: String,
-    category: String,
-    #[allow(dead_code)]
-    icon: String,
-    /// True when this entry should appear in search results but NOT in the
-    /// browse (category) view.  Used for settings card-level keywords so users
-    /// can type "resolution" or "power saver" and land on the right tab without
-    /// cluttering the Settings category list.
-    search_only: bool,
-}
 
 // ── Category definitions ──
 
@@ -89,41 +74,7 @@ fn read_app_index(
 }
 
 fn parse_app_index(content: &str) -> Vec<AppEntry> {
-    let mut apps = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.splitn(5, ';').collect();
-        if parts.len() < 3 {
-            continue;
-        }
-
-        let name = parts[0].to_string();
-        let exec = parts[1].to_string();
-        let category = parts[2].to_string();
-        let icon = parts.get(3).unwrap_or(&"").to_string();
-        let search_only = parts.get(4).map(|s| s.trim() == "1").unwrap_or(false);
-
-        // Deduplicate by lowercase name
-        if !seen.insert(name.to_lowercase()) {
-            continue;
-        }
-
-        apps.push(AppEntry {
-            name,
-            exec,
-            category,
-            icon,
-            search_only,
-        });
-    }
-
-    apps
+    smpl_shell::app_cache::parse(content)
 }
 
 // ── Pinned apps persistence ──

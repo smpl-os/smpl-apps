@@ -24,7 +24,7 @@ import tempfile
 
 
 BINARIES = (
-    "start-menu", "notif-center", "settings", "app-center", "webapp-center",
+    "smpl-bar", "start-menu", "notif-center", "settings", "app-center", "webapp-center",
     "sync-center-daemon", "sync-center-gui", "smpl-calendar",
     "smpl-calendar-alertd", "smpl-hints", "smpl-hintsd",
 )
