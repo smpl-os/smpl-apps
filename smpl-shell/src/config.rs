@@ -336,7 +336,48 @@ pub fn validate(config: &BarConfigFile) -> Result<(), String> {
     if left_layout + right_layout == 0 {
         return Err("a layout needs start, workspaces or window-title".to_owned());
     }
+    const LEFT_ORDER: &[Module] = &[Module::Start, Module::Workspaces, Module::WindowTitle];
+    const RIGHT_ORDER: &[Module] = &[
+        Module::Usb,
+        Module::Keypad,
+        Module::Sync,
+        Module::Dictation,
+        Module::Keyboard,
+        Module::Bluetooth,
+        Module::Wifi,
+        Module::Network,
+        Module::Volume,
+        Module::Battery,
+        Module::Clock,
+        Module::Notifications,
+    ];
+    if !is_ordered_subset(&config.left, LEFT_ORDER) {
+        return Err(format!(
+            "left modules must preserve the native order {:?}",
+            LEFT_ORDER
+        ));
+    }
+    if !is_ordered_subset(&config.right, RIGHT_ORDER) {
+        return Err(format!(
+            "right modules must preserve the native order {:?}",
+            RIGHT_ORDER
+        ));
+    }
     Ok(())
+}
+
+fn is_ordered_subset(actual: &[Module], supported: &[Module]) -> bool {
+    let mut next = 0;
+    for module in actual {
+        let Some(index) = supported[next..]
+            .iter()
+            .position(|candidate| candidate == module)
+        else {
+            return false;
+        };
+        next += index + 1;
+    }
+    true
 }
 
 fn locale_is_us() -> bool {
@@ -394,5 +435,17 @@ mod tests {
         let mut config = BarConfigFile::default();
         config.right.push(Module::Sni);
         assert!(validate(&config).unwrap_err().contains("acceptance-gated"));
+    }
+
+    #[test]
+    fn module_permutations_and_side_moves_are_rejected() {
+        let mut config = BarConfigFile::default();
+        config.right.swap(0, 1);
+        assert!(validate(&config).unwrap_err().contains("right modules"));
+
+        let mut config = BarConfigFile::default();
+        let notifications = config.right.pop().unwrap();
+        config.left.push(notifications);
+        assert!(validate(&config).unwrap_err().contains("left modules"));
     }
 }

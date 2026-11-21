@@ -161,15 +161,18 @@ release measurements were:
 
 | State | smpl-bar RSS | PSS | HWM | Threads | Binary | Slint paint |
 |---|---:|---:|---:|---:|---:|---:|
-| Hidden resident | 23,776 KiB | 15,797 KiB | 23,776 KiB | 4 | 13,588,152 B | not mapped |
-| Mapped bar | 35,836 KiB | 26,040 KiB | 35,836 KiB | 4 | 13,588,152 B | 182,002 us |
+| Hidden resident | 23,788 KiB | 13,225 KiB | 23,788 KiB | 4 | 13,596,856 B | not mapped |
+| Mapped bar | 35,940 KiB | 23,681 KiB | 36,176 KiB | 4 | 13,596,856 B | 266,045 us |
 | Bar + Quick Settings | 41,168 KiB | 29,557 KiB | 41,308 KiB | 4 | 13,588,152 B | popup 27,705 us |
 
 The binary is 75.6% of EWW and thread count is 5.5%. Mapped RSS remains below
 the contemporaneous EWW sample, but neither hidden nor mapped RSS meets the
 23 MiB absolute acceptance target, so the script reports that failure
 truthfully and `--enforce` remains a rollout gate.
-The EWW process is only sampled, so the script does not invent a cold-start
+The generic Weston fixture measures the normal mapped bar; `--preview` is
+Hyprland-only and is rejected on Niri/X11/unknown sessions rather than risking
+an overlapping side-by-side window. The EWW process is only sampled, so the
+script does not invent a cold-start
 ratio from an already-running process. A dedicated, isolated EWW cold-start
 fixture and `first_paint <= 0.8x` comparison are still acceptance work.
 

@@ -610,6 +610,7 @@ impl NiriEventStream {
                 < 0
         {
             let _ = child.kill();
+            let _ = child.wait();
             return Err(std::io::Error::last_os_error());
         }
         Ok(Self {
@@ -639,6 +640,15 @@ impl NiriEventStream {
             }
             Err(error) => Err(error),
         }
+    }
+}
+
+impl Drop for NiriEventStream {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
     }
 }
 
@@ -690,20 +700,32 @@ impl X11Worker {
                 Ok(state) => publish(&state_tx, state),
                 Err(error) => publish(&state_tx, error_state(CompositorKind::X11, error)),
             }
+            let mut last_snapshot = std::time::Instant::now();
             loop {
                 match connection.connection.poll_for_event() {
                     Ok(Some(_event)) => break,
-                    Ok(None) => match actions.recv_timeout(Duration::from_millis(50)) {
-                        Ok(Action::Quit) => return,
-                        Ok(Action::SelectWorkspace(workspace)) => {
-                            let _ = connection.select_workspace(workspace);
+                    Ok(None) => {
+                        if x11_snapshot_due(last_snapshot, std::time::Instant::now()) {
+                            match connection.snapshot() {
+                                Ok(state) => publish(&state_tx, state),
+                                Err(error) => {
+                                    publish(&state_tx, error_state(CompositorKind::X11, error))
+                                }
+                            }
+                            last_snapshot = std::time::Instant::now();
                         }
-                        Ok(Action::FocusMonitor(_)) => {}
-                        Ok(Action::NextKeyboardLayout) => {
-                            let _ = launch::command("xkb-switch").arg("-n").status();
+                        match actions.recv_timeout(Duration::from_millis(50)) {
+                            Ok(Action::Quit) => return,
+                            Ok(Action::SelectWorkspace(workspace)) => {
+                                let _ = connection.select_workspace(workspace);
+                            }
+                            Ok(Action::FocusMonitor(_)) => {}
+                            Ok(Action::NextKeyboardLayout) => {
+                                let _ = launch::command("xkb-switch").arg("-n").status();
+                            }
+                            Err(_) => {}
                         }
-                        Err(_) => {}
-                    },
+                    }
                     Err(error) => {
                         publish(&state_tx, error_state(CompositorKind::X11, error));
                         std::thread::sleep(Duration::from_millis(250));
@@ -713,6 +735,10 @@ impl X11Worker {
             }
         }
     }
+}
+
+fn x11_snapshot_due(last: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(last) >= Duration::from_millis(500)
 }
 
 struct X11Context {
@@ -1021,5 +1047,30 @@ mod tests {
         let state = error_state(CompositorKind::Unavailable, "no session");
         assert_eq!(state.kind, CompositorKind::Unavailable);
         assert!(state.error.contains("no session"));
+    }
+
+    #[test]
+    fn niri_event_stream_drop_kills_and_reaps_its_child() {
+        let mut child = launch::command("sh")
+            .args(["-c", "exec sleep 10"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let stdout = child.stdout.take().unwrap();
+        let stream = NiriEventStream {
+            child,
+            reader: BufReader::new(stdout),
+        };
+        drop(stream);
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn x11_poll_catches_title_only_changes() {
+        let now = std::time::Instant::now();
+        assert!(!x11_snapshot_due(now, now + Duration::from_millis(499)));
+        assert!(x11_snapshot_due(now, now + Duration::from_millis(500)));
     }
 }

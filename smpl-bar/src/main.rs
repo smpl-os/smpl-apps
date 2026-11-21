@@ -4,7 +4,7 @@ use chrono::Local;
 use i_slint_backend_winit::winit::dpi::LogicalSize;
 use i_slint_backend_winit::WinitWindowAccessor;
 use serde::Deserialize;
-use slint::{ModelRc, VecModel};
+use slint::{ModelRc, PhysicalPosition, VecModel, WindowPosition};
 use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use smpl_shell::compositor::{self, Action, CompositorHandle};
 use smpl_shell::config::{
@@ -12,13 +12,14 @@ use smpl_shell::config::{
 };
 use smpl_shell::ipc::{self, Popup, Request, Response, Server};
 use smpl_shell::launch;
-use smpl_shell::monitor::CompositorState;
+use smpl_shell::monitor::{CompositorKind, CompositorState};
 use smpl_shell::telemetry::Telemetry;
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::path::Path;
-use std::process::{Child, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use system::{SystemSampler, SystemState, UsbDevice};
@@ -29,6 +30,23 @@ const INITIAL_WIDTH: f64 = 1600.0;
 const CONTROL_INTERVAL: Duration = Duration::from_millis(50);
 const EXTERNAL_PROBE_INTERVAL: Duration = Duration::from_secs(15);
 const PROCESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+const EXTERNAL_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
+const APP_ID: &str = "smpl-bar";
+const PREVIEW_APP_ID: &str = "smpl-bar-preview";
+
+fn preview_app_id(preview: bool, compositor: CompositorKind) -> Result<&'static str, io::Error> {
+    if preview && compositor != CompositorKind::Hyprland {
+        return Err(io::Error::other(format!(
+            "preview requires Hyprland; {} cannot safely place a side-by-side bar",
+            compositor.as_str()
+        )));
+    }
+    Ok(if preview { PREVIEW_APP_ID } else { APP_ID })
+}
+
+fn duplicate_handoff(hidden: bool) -> Option<Request> {
+    (!hidden).then_some(Request::Show)
+}
 
 fn main() {
     if let Err(error) = real_main() {
@@ -109,11 +127,17 @@ fn run_resident(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let process_started = Instant::now();
     let bar_height = config.height;
-    let socket = ipc::socket_path().ok_or_else(|| io::Error::other("XDG runtime unavailable"))?;
+    let compositor_kind = compositor::detect();
+    let app_id = preview_app_id(preview, compositor_kind)?;
+    let socket =
+        ipc::socket_path_for(app_id).ok_or_else(|| io::Error::other("XDG runtime unavailable"))?;
     let server = match Server::bind(&socket) {
         Ok(server) => server,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            let response = ipc::send(&socket, &Request::Show)?;
+            let Some(request) = duplicate_handoff(hidden) else {
+                return Ok(());
+            };
+            let response = ipc::send(&socket, &request)?;
             if !response.ok {
                 return Err(io::Error::other(
                     response
@@ -144,12 +168,21 @@ fn run_resident(
 
     // TODO(layer-shell): smpl_common currently creates an xdg-toplevel. Replace
     // this with a shared layer-shell platform before claiming exclusive EWW parity.
-    smpl_common::init("smpl-bar", INITIAL_WIDTH, config.height as f64)?;
+    smpl_common::init(app_id, INITIAL_WIDTH, config.height as f64)?;
+    slint::set_xdg_app_id(app_id)?;
     telemetry.emit(
         "backend_initialized",
         [("renderer", serde_json::json!("skia-software"))],
     );
     let bar = BarWindow::new()?;
+    bar.set_window_title_label(
+        if preview {
+            "smpl-bar preview"
+        } else {
+            "smpl-bar"
+        }
+        .into(),
+    );
     let state = Rc::new(RefCell::new(UiState::new(config, paths)));
     let popups = Rc::new(RefCell::new(PopupWindows::default()));
     let children = Rc::new(RefCell::new(Vec::<Child>::new()));
@@ -185,6 +218,7 @@ fn run_resident(
     let mut last_external = Instant::now() - EXTERNAL_PROBE_INTERVAL;
     let mut last_sample = Instant::now() - PROCESS_SAMPLE_INTERVAL;
     let mut trimmed_heap = false;
+    let preview_shown = Rc::new(Cell::new(false));
     let control_timer = slint::Timer::default();
     let bar_weak = bar.as_weak();
     control_timer.start(slint::TimerMode::Repeated, CONTROL_INTERVAL, {
@@ -194,6 +228,7 @@ fn run_resident(
         let compositor = compositor.clone();
         let server = server.clone();
         let telemetry = telemetry.clone();
+        let preview_shown = preview_shown.clone();
         move || {
             let loop_started = Instant::now();
             let loop_gap = tick.elapsed();
@@ -208,7 +243,19 @@ fn run_resident(
                 if let Some(snapshot) = compositor.latest() {
                     state.borrow_mut().compositor = snapshot.clone();
                     apply_compositor(&bar, &snapshot, &state.borrow().config);
-                    fit_bar_to_monitor(&bar, &snapshot, state.borrow().config.height, preview);
+                    if fit_bar_to_monitor(
+                        &bar,
+                        &snapshot,
+                        state.borrow().config.height,
+                        preview,
+                        state.borrow().config.preview_offset_y,
+                    ) && preview
+                        && !preview_shown.replace(true)
+                    {
+                        let _ = bar.show();
+                        bar.window().request_redraw();
+                        telemetry.emit("preview_geometry_ready", []);
+                    }
                 }
                 let external_changed = state.borrow_mut().refresh_system();
                 let system = state.borrow().system.clone();
@@ -259,7 +306,7 @@ fn run_resident(
 
     if hidden {
         telemetry.emit("resident_hidden", []);
-    } else {
+    } else if !preview {
         resize_window(bar.window(), INITIAL_WIDTH, bar_height as f64);
         bar.show()?;
         bar.window().request_redraw();
@@ -293,8 +340,8 @@ fn bind_bar_callbacks(
     compositor: &Rc<CompositorHandle>,
 ) {
     let popup_coordinator = Rc::new(PopupCoordinator::new(children.clone()));
-    let children_action = children.clone();
-    bar.on_open_start(move || spawn(&children_action, ["toggle-start-menu"]));
+    let start = popup_coordinator.clone();
+    bar.on_open_start(move || start.request(PopupTarget::Start));
     let compositor_action = compositor.clone();
     bar.on_select_workspace(move |workspace| {
         compositor_action.send(Action::SelectWorkspace(workspace));
@@ -346,6 +393,7 @@ fn bind_bar_callbacks(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PopupTarget {
+    Start,
     QuickSettings,
     Usb,
     WorkspaceOverview,
@@ -356,6 +404,7 @@ enum PopupTarget {
 impl PopupTarget {
     fn argument(self) -> &'static str {
         match self {
+            Self::Start => "start-menu",
             Self::QuickSettings => "quick-settings",
             Self::Usb => "usb-popup",
             Self::WorkspaceOverview => "workspace-overview",
@@ -375,7 +424,61 @@ impl PopupCoordinator {
     }
 
     fn request(&self, target: PopupTarget) {
+        if target == PopupTarget::Start {
+            spawn_after_global_close(["toggle-start-menu"]);
+            return;
+        }
         spawn(&self.children, ["popup-toggle", target.argument()]);
+    }
+}
+
+fn spawn_after_global_close<const N: usize>(arguments: [&'static str; N]) {
+    let _ = std::thread::Builder::new()
+        .name("popup-coordinator".into())
+        .spawn(move || {
+            let mut close = launch::command("popup-toggle");
+            close
+                .arg("--close")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            match bounded_status(close, Duration::from_secs(2)) {
+                Some(status) if status.success() => {
+                    let mut open = launch::command(arguments[0]);
+                    open.args(&arguments[1..])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
+                    if let Err(error) = open.spawn() {
+                        eprintln!("smpl-bar: cannot launch {}: {error}", arguments[0]);
+                    }
+                }
+                Some(status) => {
+                    eprintln!("smpl-bar: popup-toggle --close failed: {status}");
+                }
+                None => eprintln!("smpl-bar: popup-toggle --close timed out"),
+            }
+        });
+}
+
+fn bounded_status(
+    mut command: std::process::Command,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
 }
 
@@ -424,7 +527,15 @@ fn handle_request(
                 }
                 Popup::Usb => open_usb(state, popups, children, telemetry),
                 Popup::WorkspaceOverview => open_overview(state, popups, children, telemetry),
-                Popup::KeypadCheatsheet => {}
+                Popup::KeypadCheatsheet => {
+                    let sheet = match retained_keypad_sheet(state) {
+                        Ok(sheet) => sheet,
+                        Err(error) => return Response::error(error),
+                    };
+                    if let Err(error) = apply_keypad_sheet(&sheet, state, popups, telemetry) {
+                        return Response::error(error.to_string());
+                    }
+                }
             }
 
             Response::ok(None)
@@ -443,11 +554,13 @@ fn handle_request(
             Response::ok(None)
         }
         Request::KeypadSheet { sheet } => {
+            state.borrow_mut().keypad_sheet = Some(sheet.clone());
             match apply_keypad_sheet(&sheet, state, popups, telemetry) {
                 Ok(()) => Response::ok(None),
                 Err(error) => Response::error(error.to_string()),
             }
         }
+
         Request::TelemetrySample => {
             telemetry.emit_process_sample("ipc");
             Response::ok(None)
@@ -459,6 +572,14 @@ fn handle_request(
             Response::ok(None)
         }
     }
+}
+
+fn retained_keypad_sheet(state: &Rc<RefCell<UiState>>) -> Result<serde_json::Value, &'static str> {
+    state
+        .borrow()
+        .keypad_sheet
+        .clone()
+        .ok_or("no keypad cheatsheet is available")
 }
 
 fn apply_config(bar: &BarWindow, config: &BarConfigFile) {
@@ -553,13 +674,27 @@ fn trim_allocator_caches() {
     }
 }
 
-fn fit_bar_to_monitor(bar: &BarWindow, state: &CompositorState, height: usize, preview: bool) {
+fn fit_bar_to_monitor(
+    bar: &BarWindow,
+    state: &CompositorState,
+    height: usize,
+    preview: bool,
+    preview_offset_y: usize,
+) -> bool {
     let Some(monitor) = state.primary_monitor() else {
-        return;
+        return false;
     };
     let scale = monitor.scale.max(0.5);
     let logical_width = (monitor.width as f64 / scale) * if preview { 0.72 } else { 0.997 };
     resize_window(bar.window(), logical_width, height as f64);
+    if preview {
+        bar.window()
+            .set_position(WindowPosition::Physical(PhysicalPosition::new(
+                monitor.x,
+                monitor.y + preview_offset_y as i32,
+            )));
+    }
+    true
 }
 
 fn resize_window(window: &slint::Window, width: f64, height: f64) {
@@ -1161,13 +1296,18 @@ fn refresh_external_async(
     _popups: &Rc<RefCell<PopupWindows>>,
     telemetry: &Rc<Telemetry>,
 ) {
+    let running = state.borrow().external_probe_running.clone();
+    if !begin_external_probe(&running) {
+        return;
+    }
     let slot = state.borrow().external_probe.clone();
+    let thread_running = running.clone();
     let telemetry = (**telemetry).clone();
     telemetry.emit(
         "module_discovery",
         [("phase", serde_json::json!("external-probe-start"))],
     );
-    let _ = std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("module-probe".to_owned())
         .spawn(move || {
             let probe = probe_external_state();
@@ -1182,7 +1322,17 @@ fn refresh_external_async(
             *slot
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(probe);
+            thread_running.store(false, Ordering::Release);
         });
+    if spawned.is_err() {
+        running.store(false, Ordering::Release);
+    }
+}
+
+fn begin_external_probe(running: &AtomicBool) -> bool {
+    running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 #[derive(Default)]
@@ -1199,27 +1349,25 @@ fn probe_external_state() -> ExternalProbe {
         volume: 50,
         ..ExternalProbe::default()
     };
-    if let Ok(output) = launch::command("pactl")
+    let mut command = launch::command("pactl");
+    command
         .args(["get-sink-volume", "@DEFAULT_SINK@"])
-        .stderr(Stdio::null())
-        .output()
-    {
+        .stderr(Stdio::null());
+    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
         if output.status.success() {
             probe.volume = first_percentage(&String::from_utf8_lossy(&output.stdout)).unwrap_or(50);
         }
     }
-    if let Ok(output) = launch::command("pactl")
+    let mut command = launch::command("pactl");
+    command
         .args(["get-sink-mute", "@DEFAULT_SINK@"])
-        .stderr(Stdio::null())
-        .output()
-    {
+        .stderr(Stdio::null());
+    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
         probe.muted = String::from_utf8_lossy(&output.stdout).contains("yes");
     }
-    if let Ok(output) = launch::command("dunstctl")
-        .args(["count", "history"])
-        .stderr(Stdio::null())
-        .output()
-    {
+    let mut command = launch::command("dunstctl");
+    command.args(["count", "history"]).stderr(Stdio::null());
+    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
         if output.status.success() {
             probe.notification_count = String::from_utf8_lossy(&output.stdout)
                 .trim()
@@ -1227,14 +1375,13 @@ fn probe_external_state() -> ExternalProbe {
                 .unwrap_or(0);
         }
     }
-    if let Ok(output) = launch::command("dunstctl")
-        .arg("is-paused")
-        .stderr(Stdio::null())
-        .output()
-    {
+    let mut command = launch::command("dunstctl");
+    command.arg("is-paused").stderr(Stdio::null());
+    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
         probe.notifications_paused = String::from_utf8_lossy(&output.stdout).trim() == "true";
     }
-    if let Ok(output) = launch::command("busctl")
+    let mut command = launch::command("busctl");
+    command
         .args([
             "--user",
             "get-property",
@@ -1243,9 +1390,8 @@ fn probe_external_state() -> ExternalProbe {
             "org.smpl.SyncCenter",
             "IsActive",
         ])
-        .stderr(Stdio::null())
-        .output()
-    {
+        .stderr(Stdio::null());
+    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
         probe.sync_active = output.status.success()
             && String::from_utf8_lossy(&output.stdout)
                 .split_whitespace()
@@ -1253,6 +1399,25 @@ fn probe_external_state() -> ExternalProbe {
                 == Some("true");
     }
     probe
+}
+
+fn bounded_output(mut command: std::process::Command, timeout: Duration) -> Option<Output> {
+    command.stdout(Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 fn first_percentage(source: &str) -> Option<u8> {
@@ -1401,8 +1566,10 @@ struct UiState {
     app_theme: ThemePalette,
     popup_theme: ThemePalette,
     keypad_override: Option<bool>,
+    keypad_sheet: Option<serde_json::Value>,
     last_system_sample: Instant,
     external_probe: Arc<Mutex<Option<ExternalProbe>>>,
+    external_probe_running: Arc<AtomicBool>,
 }
 
 impl UiState {
@@ -1417,8 +1584,10 @@ impl UiState {
             app_theme: ThemePalette::default(),
             popup_theme: ThemePalette::default(),
             keypad_override: None,
+            keypad_sheet: None,
             last_system_sample: Instant::now(),
             external_probe: Arc::new(Mutex::new(None)),
+            external_probe_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1460,7 +1629,7 @@ impl UiState {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 struct KeypadSheet {
     #[serde(default)]
     visible: bool,
@@ -1476,7 +1645,7 @@ struct KeypadSheet {
     options: Option<KeypadOptions>,
 }
 
-#[derive(Default, Deserialize, Debug)]
+#[derive(Clone, Default, Deserialize, Debug)]
 struct KeypadBinding {
     #[serde(default)]
     control: String,
@@ -1496,7 +1665,7 @@ struct KeypadBinding {
     column: i32,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 struct KeypadKnob {
     control: String,
     #[serde(default)]
@@ -1511,7 +1680,7 @@ struct KeypadKnob {
     cw: KeypadBinding,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 struct KeypadOptions {
     #[serde(rename = "clickThrough", default)]
     click_through: Option<bool>,
@@ -1652,6 +1821,53 @@ mod tests {
         );
         assert_eq!(PopupTarget::Calendar.argument(), "calendar-popup");
         assert_eq!(PopupTarget::Notifications.argument(), "notification-hub");
+        assert_eq!(PopupTarget::Start.argument(), "start-menu");
+    }
+
+    #[test]
+    fn preview_is_only_supported_with_explicit_hyprland_geometry() {
+        assert_eq!(
+            preview_app_id(true, CompositorKind::Hyprland).unwrap(),
+            PREVIEW_APP_ID
+        );
+        assert!(preview_app_id(true, CompositorKind::Niri).is_err());
+        assert!(preview_app_id(true, CompositorKind::X11).is_err());
+        assert!(preview_app_id(true, CompositorKind::Unavailable).is_err());
+        assert_eq!(
+            preview_app_id(false, CompositorKind::Unavailable).unwrap(),
+            APP_ID
+        );
+    }
+
+    #[test]
+    fn hidden_duplicate_handoff_does_not_show_the_resident() {
+        assert_eq!(duplicate_handoff(true), None);
+        assert_eq!(duplicate_handoff(false), Some(Request::Show));
+    }
+
+    #[test]
+    fn probe_is_single_flight_and_deadlines_are_bounded() {
+        let running = AtomicBool::new(false);
+        assert!(begin_external_probe(&running));
+        assert!(!begin_external_probe(&running));
+        running.store(false, Ordering::Release);
+
+        let started = Instant::now();
+        let mut command = launch::command("sh");
+        command.args(["-c", "exec sleep 10"]);
+        assert!(bounded_output(command, Duration::from_millis(80)).is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn keypad_popup_rejects_without_a_retained_sheet() {
+        let state = Rc::new(RefCell::new(UiState::new(
+            BarConfigFile::default(),
+            ConfigPaths::from_home(Some(Path::new("/tmp"))).unwrap(),
+        )));
+        assert!(retained_keypad_sheet(&state).is_err());
+        state.borrow_mut().keypad_sheet = Some(serde_json::json!({"visible": true}));
+        assert!(retained_keypad_sheet(&state).is_ok());
     }
 
     #[test]

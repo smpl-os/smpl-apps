@@ -61,6 +61,10 @@ impl Response {
 }
 
 pub fn socket_path() -> Option<PathBuf> {
+    socket_path_for("smpl-bar")
+}
+
+pub fn socket_path_for(app_id: &str) -> Option<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -69,7 +73,18 @@ pub fn socket_path() -> Option<PathBuf> {
                 libc::getuid()
             })))
         })?;
-    Some(runtime.join("smplos/smpl-bar.sock"))
+    socket_path_from_runtime(runtime, app_id)
+}
+
+fn socket_path_from_runtime(runtime: PathBuf, app_id: &str) -> Option<PathBuf> {
+    if !runtime.is_absolute()
+        || !app_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return None;
+    }
+    Some(runtime.join(format!("smplos/{app_id}.sock")))
 }
 
 pub struct Server {
@@ -220,6 +235,18 @@ mod tests {
         assert_eq!(request, Request::Popup { name: Popup::Usb });
         write_response(&mut stream, &Response::ok(None)).unwrap();
         assert!(client.join().unwrap().unwrap().ok);
+    }
+
+    #[test]
+    fn preview_has_a_separate_socket_namespace() {
+        assert_eq!(
+            socket_path_from_runtime(PathBuf::from("/tmp/runtime"), "smpl-bar").unwrap(),
+            PathBuf::from("/tmp/runtime/smplos/smpl-bar.sock")
+        );
+        assert_eq!(
+            socket_path_from_runtime(PathBuf::from("/tmp/runtime"), "smpl-bar-preview").unwrap(),
+            PathBuf::from("/tmp/runtime/smplos/smpl-bar-preview.sock")
+        );
     }
 
     #[test]

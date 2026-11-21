@@ -157,7 +157,7 @@ def private_run(binary, duration, output_dir, hidden, popup):
                 "SMPL_BAR_TELEMETRY_FILE": str(telemetry_path),
             }
         )
-        arguments = [str(binary), "--preview"]
+        arguments = [str(binary), "--resident"]
         if hidden:
             arguments = [str(binary), "--resident", "--hidden"]
         with bar_log_path.open("wb") as bar_log:

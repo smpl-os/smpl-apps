@@ -11,9 +11,10 @@ BAR = ROOT / "smpl-bar"
 class SmplBarContracts(unittest.TestCase):
     def test_native_shell_uses_shared_backend_and_keeps_sni_gated(self):
         source = (BAR / "src/main.rs").read_text()
-        self.assertIn('smpl_common::init("smpl-bar"', source)
+        self.assertIn("smpl_common::init(app_id", source)
         self.assertIn("ThemeRole::Application", source)
         self.assertIn("ThemeRole::Popup", source)
+        self.assertIn("slint::set_xdg_app_id(app_id)", source)
         self.assertIn('"generic_sni_gate": "not-implemented"', source)
         self.assertNotIn("std::process::Command::new", source)
 
@@ -51,6 +52,7 @@ class SmplBarContracts(unittest.TestCase):
         callbacks = source[source.index("fn bind_bar_callbacks"):source.index("fn handle_request")]
         self.assertIn('["popup-toggle", target.argument()]', callbacks)
         for target in (
+            "start-menu",
             "quick-settings",
             "usb-popup",
             "workspace-overview",
@@ -58,8 +60,17 @@ class SmplBarContracts(unittest.TestCase):
             "notification-hub",
         ):
             self.assertIn(f'"{target}"', callbacks)
+        self.assertIn('spawn_after_global_close(["toggle-start-menu"])', callbacks)
         self.assertNotIn('["toggle-calendar"]', callbacks)
         self.assertNotIn('["toggle-notif-center"]', callbacks)
+
+    def test_preview_has_distinct_identity_and_rejects_non_hyprland(self):
+        source = (BAR / "src/main.rs").read_text()
+        self.assertIn('PREVIEW_APP_ID: &str = "smpl-bar-preview"', source)
+        self.assertIn(
+            "preview requires Hyprland", source
+        )
+        self.assertIn("preview_offset_y", source)
 
 
 if __name__ == "__main__":

@@ -155,6 +155,7 @@ component TogglePill inherits Rectangle {
 }
 
 export component BarWindow inherits Window {
+    in-out property <string> window-title-label: "smpl-bar";
     in-out property <[WorkspaceUi]> workspaces;
     in-out property <bool> workspace-squares: false;
     in-out property <bool> workspace-center: false;
@@ -215,7 +216,7 @@ export component BarWindow inherits Window {
     callback clear-notifications;
     callback volume-scroll(float);
 
-    title: "smpl-bar";
+    title: root.window-title-label;
     no-frame: true;
     min-width: 800px;
     min-height: 24px;
