@@ -99,6 +99,7 @@ atspi                 = { version = "0.30", default-features = false, features =
 wayland-client        = "0.31"
 wayland-protocols     = { version = "0.32", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3",  features = ["client"] }
+smithay-client-toolkit = { version = "0.19", default-features = false }
 # xkbcommon keysym → wl_pointer motion; already declared above but kept here
 # as a note that hints depends on it.
 # Async runtime is inherited via `tokio` above.

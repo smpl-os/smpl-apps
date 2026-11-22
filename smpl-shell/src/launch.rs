@@ -1,7 +1,8 @@
 use std::ffi::OsStr;
 use std::io;
 use std::os::unix::process::CommandExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub const RESIDENT_SIGNALS: &[libc::c_int] = &[
     libc::SIGUSR1,
@@ -152,6 +153,43 @@ pub fn toggle_pin(pinned: &mut Vec<String>, exec: &str) {
         pinned.retain(|pin| !equivalent(pin, exec));
     } else {
         pinned.push(exec.to_owned());
+    }
+}
+
+pub fn bounded_status(mut command: Command, timeout: Duration) -> Option<std::process::ExitStatus> {
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+pub fn close_popups() -> io::Result<()> {
+    let mut command = self::command("popup-toggle");
+    command
+        .arg("--close")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match bounded_status(command, Duration::from_secs(2)) {
+        Some(status) if status.success() => Ok(()),
+        Some(status) => Err(io::Error::other(format!(
+            "popup-toggle --close failed: {status}"
+        ))),
+        None => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "popup-toggle --close timed out",
+        )),
     }
 }
 

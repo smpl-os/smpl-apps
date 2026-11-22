@@ -4616,15 +4616,21 @@ name = "smpl-bar"
 version = "0.8.39"
 dependencies = [
  "chrono",
+ "futures",
  "i-slint-backend-winit",
  "libc",
  "serde",
  "serde_json",
  "slint",
  "slint-build",
+ "smithay-client-toolkit 0.19.2",
  "smpl-common",
  "smpl-shell",
  "tempfile",
+ "tokio",
+ "x11rb",
+ "zbus",
+ "zvariant",
 ]
 
 [[package]]

@@ -37,6 +37,20 @@ pub enum ClockDateFormat {
     MonthNameDay,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PanelEdge {
+    Top,
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PanelMode {
+    Pinned,
+    Floating,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Module {
@@ -55,8 +69,6 @@ pub enum Module {
     Battery,
     Clock,
     Notifications,
-    // TODO(smpl-bar-sni): register a StatusNotifierWatcher, host items, DBusMenu
-    // activation/context menus and owner-change recovery before enabling this.
     Sni,
 }
 
@@ -75,6 +87,9 @@ pub struct BarConfigFile {
     pub workspace_spacing: usize,
     pub workspace_style: WorkspaceStyle,
     pub height: usize,
+    pub edge: PanelEdge,
+    pub mode: PanelMode,
+    pub margin: usize,
     pub preview_offset_y: usize,
     pub clock_format: ClockFormat,
     pub clock_24h: bool,
@@ -92,6 +107,9 @@ impl Default for BarConfigFile {
             workspace_spacing: 2,
             workspace_style: WorkspaceStyle::Numbers,
             height: 32,
+            edge: PanelEdge::Bottom,
+            mode: PanelMode::Pinned,
+            margin: 2,
             preview_offset_y: 36,
             clock_format: ClockFormat::Time,
             clock_24h: !locale_is_us(),
@@ -112,6 +130,7 @@ impl Default for BarConfigFile {
                 Module::Network,
                 Module::Volume,
                 Module::Battery,
+                Module::Sni,
                 Module::Clock,
                 Module::Notifications,
             ],
@@ -217,6 +236,9 @@ pub fn merge_legacy(
                 | "ws_position"
                 | "ws_spacing"
                 | "ws_style"
+                | "bar_edge"
+                | "bar_mode"
+                | "bar_margin"
                 | "clock_format"
                 | "clock_24h"
                 | "clock_date_fmt"
@@ -244,6 +266,21 @@ pub fn merge_legacy(
                     _ => return Err(invalid_legacy(path, number, key, value)),
                 }
             }
+            "bar_edge" => {
+                config.edge = match value {
+                    "top" => PanelEdge::Top,
+                    "bottom" => PanelEdge::Bottom,
+                    _ => return Err(invalid_legacy(path, number, key, value)),
+                }
+            }
+            "bar_mode" => {
+                config.mode = match value {
+                    "pinned" => PanelMode::Pinned,
+                    "floating" => PanelMode::Floating,
+                    _ => return Err(invalid_legacy(path, number, key, value)),
+                }
+            }
+            "bar_margin" => config.margin = integer(value, path, number, key)?,
             "clock_format" => {
                 config.clock_format = match value {
                     "time" => ClockFormat::Time,
@@ -305,6 +342,9 @@ pub fn validate(config: &BarConfigFile) -> Result<(), String> {
     if !(24..=48).contains(&config.height) {
         return Err("height must be in 24..=48".to_owned());
     }
+    if config.margin > 24 {
+        return Err("margin must be in 0..=24".to_owned());
+    }
     if config.preview_offset_y > 200 {
         return Err("preview-offset-y must be in 0..=200".to_owned());
     }
@@ -315,12 +355,6 @@ pub fn validate(config: &BarConfigFile) -> Result<(), String> {
     for module in config.left.iter().chain(&config.right) {
         if !modules.insert(module) {
             return Err(format!("module {module:?} appears more than once"));
-        }
-        if *module == Module::Sni {
-            return Err(
-                "module sni is acceptance-gated: generic StatusNotifierItem support is not implemented"
-                    .to_owned(),
-            );
         }
     }
     let left_layout = config
@@ -348,6 +382,7 @@ pub fn validate(config: &BarConfigFile) -> Result<(), String> {
         Module::Network,
         Module::Volume,
         Module::Battery,
+        Module::Sni,
         Module::Clock,
         Module::Notifications,
     ];
@@ -398,7 +433,7 @@ mod tests {
         validate(&config).unwrap();
         assert!(config.right.contains(&Module::Volume));
         assert!(config.right.contains(&Module::Notifications));
-        assert!(!config.right.contains(&Module::Sni));
+        assert!(config.right.contains(&Module::Sni));
     }
 
     #[test]
@@ -425,16 +460,39 @@ mod tests {
     }
 
     #[test]
+    fn legacy_panel_preferences_keep_safe_bounds() {
+        let path = Path::new("/fixture/bar.conf");
+        let mut config = BarConfigFile::default();
+        merge_legacy(
+            &mut config,
+            "bar_edge=top\nbar_mode=floating\nbar_margin=7\nbackend=smpl-bar\n",
+            path,
+        )
+        .unwrap();
+        assert_eq!(config.edge, PanelEdge::Top);
+        assert_eq!(config.mode, PanelMode::Floating);
+        assert_eq!(config.margin, 7);
+        assert!(merge_legacy(&mut config, "bar_margin=25\n", path).is_err());
+    }
+
+    #[test]
     fn native_layout_preserves_unknown_keys_as_errors() {
         let invalid = r#"{"version":1,"untyped":"module"}"#;
         assert!(serde_json::from_str::<BarConfigFile>(invalid).is_err());
     }
 
     #[test]
-    fn sni_is_an_explicit_acceptance_gate() {
+    fn sni_respects_native_module_order() {
         let mut config = BarConfigFile::default();
-        config.right.push(Module::Sni);
-        assert!(validate(&config).unwrap_err().contains("acceptance-gated"));
+        assert!(validate(&config).is_ok());
+        let index = config
+            .right
+            .iter()
+            .position(|module| *module == Module::Sni)
+            .unwrap();
+        config.right[index] = config.right[index + 1];
+        config.right[index + 1] = Module::Sni;
+        assert!(validate(&config).unwrap_err().contains("right modules"));
     }
 
     #[test]

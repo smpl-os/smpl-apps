@@ -574,17 +574,19 @@ separate test process).
 or start-menu. `smpl-shell` owns the shared app-cache/icon/launch parser,
 typed `bar.json`/legacy `bar.conf` reader, compositor adapters, monitor model,
 Unix-socket IPC and opt-in telemetry. Hyprland state uses its command/event
-sockets directly; X11 uses X11/EWMH property events. Niri currently keeps an
-explicit process-backed event-stream gate because direct `NIRI_SOCKET` request
-compatibility has not been accepted.
+sockets directly; Niri uses its native event/request socket; X11 uses native
+EWMH property events and struts.
 
-The vertical slice implements start-menu launch, grouped workspaces and title,
-status controls, a native Quick Settings panel, USB eject, workspace overview,
-identify, and keypad-cheatsheet windows. It deliberately keeps generic
-StatusNotifierItem/SNI, true layer-shell exclusivity and multi-monitor identify
-behind separate acceptance gates. See [smpl-bar/README.md](smpl-bar/README.md)
-for the full parity matrix, IPC contract, benchmark, and exact smplOS-side
-requirements. The app-suite change alone does not replace or stop EWW.
+The native panel supports configured top/bottom and pinned/floating behavior.
+Wayland combines direct compositor placement with a transparent, click-through
+wlr-layer reservation for the exclusive zone; X11 publishes EWMH struts.
+Providers cover NetworkManager, BlueZ, Control Surface, sync, audio and
+notifications, and the generic tray hosts SNI items with DBusMenu, icon
+variants, activation and owner-restart recovery. Identify overlays follow every
+connected monitor. The Start Menu remains resident and is triggered through
+its validated PID/signal IPC. See [smpl-bar/README.md](smpl-bar/README.md) for
+the complete contract and benchmark. The app-suite change alone does not
+replace or stop EWW.
 
 Focused checks:
 

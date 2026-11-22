@@ -70,6 +70,7 @@ pub struct CompositorState {
     pub kind: CompositorKind,
     pub monitors: Vec<Monitor>,
     pub workspaces: Vec<Workspace>,
+    pub policy_primary: String,
     pub focused_workspace: i32,
     pub focused_monitor: String,
     pub active_window_title: String,
@@ -83,6 +84,7 @@ impl Default for CompositorState {
             kind: CompositorKind::Unavailable,
             monitors: Vec::new(),
             workspaces: Vec::new(),
+            policy_primary: String::new(),
             focused_workspace: 1,
             focused_monitor: String::new(),
             active_window_title: String::new(),
@@ -96,7 +98,29 @@ impl CompositorState {
     pub fn primary_monitor(&self) -> Option<&Monitor> {
         self.monitors
             .iter()
-            .find(|monitor| monitor.connector == self.focused_monitor)
+            .find(|monitor| {
+                !self.policy_primary.is_empty() && monitor.connector == self.policy_primary
+            })
+            .or_else(|| {
+                self.monitors
+                    .iter()
+                    .find(|monitor| monitor.active_workspace == 1)
+            })
+            .or_else(|| {
+                self.workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == 1)
+                    .and_then(|workspace| {
+                        self.monitors
+                            .iter()
+                            .find(|monitor| monitor.connector == workspace.monitor)
+                    })
+            })
+            .or_else(|| {
+                self.monitors
+                    .iter()
+                    .find(|monitor| monitor.connector == self.focused_monitor)
+            })
             .or_else(|| {
                 self.monitors
                     .iter()
@@ -205,5 +229,30 @@ mod tests {
         assert_eq!(layout_code("English (US)"), "EN");
         assert_eq!(layout_code("Russian"), "RU");
         assert_eq!(layout_code("Norwegian"), "NO");
+    }
+
+    #[test]
+    fn panel_monitor_follows_workspace_one_instead_of_keyboard_focus() {
+        let mut state = CompositorState {
+            focused_monitor: "DP-2".to_owned(),
+            monitors: vec![
+                Monitor {
+                    connector: "DP-1".to_owned(),
+                    active_workspace: 1,
+                    ..Monitor::default()
+                },
+                Monitor {
+                    connector: "DP-2".to_owned(),
+                    focused: true,
+                    active_workspace: 4,
+                    ..Monitor::default()
+                },
+            ],
+            policy_primary: "DP-2".to_owned(),
+            ..CompositorState::default()
+        };
+        assert_eq!(state.primary_monitor().unwrap().connector, "DP-2");
+        state.policy_primary.clear();
+        assert_eq!(state.primary_monitor().unwrap().connector, "DP-1");
     }
 }

@@ -82,11 +82,14 @@ def terminate_exact(process):
             process.wait(timeout=3)
 
 
-def private_run(binary, duration, output_dir, hidden, popup):
+def private_run(binary, duration, output_dir, hidden, popup, recreate):
     weston = shutil.which("weston")
     if not weston:
         raise SystemExit("weston is required for the private headless measurement")
-    runtime = (output_dir / "runtime").resolve()
+    dbus_daemon = shutil.which("dbus-daemon")
+    if not dbus_daemon:
+        raise SystemExit("dbus-daemon is required for the private provider fixture")
+    runtime = (ROOT / "target" / f"r-{os.getpid()}").resolve()
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     runtime.chmod(0o700)
     telemetry_path = output_dir / "smpl-bar-telemetry.jsonl"
@@ -95,6 +98,7 @@ def private_run(binary, duration, output_dir, hidden, popup):
     bar_log_path.unlink(missing_ok=True)
     socket = "smpl-bar-benchmark"
     weston_log = (output_dir / "weston.log").open("wb")
+    dbus_log = (output_dir / "dbus.log").open("wb")
     environment = os.environ.copy()
     home = output_dir / "home"
     config_home = output_dir / "config"
@@ -103,6 +107,15 @@ def private_run(binary, duration, output_dir, hidden, popup):
     cache_home = output_dir / "cache"
     for directory in (home, config_home, data_home, state_home, cache_home):
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    theme_dir = config_home / "eww"
+    theme_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    (theme_dir / "theme-colors.scss").write_text(
+        "$theme-bg: #1e1e2e;\n"
+        "$theme-fg: #cdd6f4;\n"
+        "$theme-accent: #89b4fa;\n"
+        "$theme-app-background-opacity: 0.7;\n"
+        "$theme-popup-opacity: 0.65;\n"
+    )
     environment.update(
         {
             "XDG_RUNTIME_DIR": str(runtime),
@@ -124,6 +137,22 @@ def private_run(binary, duration, output_dir, hidden, popup):
         "SLINT_RENDERER",
     ):
         environment.pop(key, None)
+    bus_socket = runtime / "bus"
+    bus_address = f"unix:path={bus_socket}"
+    bus = subprocess.Popen(
+        [
+            dbus_daemon,
+            "--session",
+            "--nofork",
+            "--nopidfile",
+            f"--address={bus_address}",
+        ],
+        env=environment,
+        stdout=dbus_log,
+        stderr=subprocess.STDOUT,
+    )
+    environment["DBUS_SESSION_BUS_ADDRESS"] = bus_address
+    environment["SMPL_BAR_PRIVATE"] = "1"
     headless = subprocess.Popen(
         [
             weston,
@@ -144,10 +173,12 @@ def private_run(binary, duration, output_dir, hidden, popup):
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if (runtime / socket).exists():
+            if (runtime / socket).exists() and bus_socket.exists():
                 break
             if headless.poll() is not None:
                 raise RuntimeError("private Weston exited before creating its socket")
+            if bus.poll() is not None:
+                raise RuntimeError("private D-Bus exited before creating its socket")
             time.sleep(0.025)
         else:
             raise RuntimeError("private Weston socket timeout")
@@ -190,6 +221,32 @@ def private_run(binary, duration, output_dir, hidden, popup):
                 )
                 popup_sent = True
             time.sleep(0.05)
+        control_environment = environment.copy()
+        control_environment.pop("SMPL_BAR_TELEMETRY", None)
+        control_environment.pop("SMPL_BAR_TELEMETRY_FILE", None)
+        if recreate:
+            for action, pause in (("hide", 0.15), ("show", 0.9)):
+                subprocess.run(
+                    [str(binary), action],
+                    env=control_environment,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3,
+                    check=False,
+                )
+                time.sleep(pause)
+        status_result = subprocess.run(
+            [str(binary), "status"],
+            env=control_environment,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        try:
+            status = json.loads(status_result.stdout)
+        except (json.JSONDecodeError, TypeError):
+            status = {}
         sample = read_process(app.pid)
         events = telemetry(telemetry_path)
         startup = next(
@@ -199,6 +256,9 @@ def private_run(binary, duration, output_dir, hidden, popup):
         paint = next(
             (event["elapsed_us"] for event in events if event["event"] == "first_paint"),
             None,
+        )
+        alpha_event = next(
+            (event for event in events if event["event"] == "first_paint"), None
         )
         sample.update(
             {
@@ -217,11 +277,27 @@ def private_run(binary, duration, output_dir, hidden, popup):
                     ),
                     None,
                 ),
+                "app_id": status.get("app_id"),
+                "renderer_ready_count": sum(
+                    event["event"] == "renderer_ready" for event in events
+                ),
+                "renderer_teardown_count": sum(
+                    event["event"] == "renderer_teardown" for event in events
+                ),
+                "wayland_window_created_count": sum(
+                    event["event"] == "wayland_window_created" for event in events
+                ),
+                "wayland_window_destroyed_count": sum(
+                    event["event"] == "wayland_window_destroyed" for event in events
+                ),
+                "opaque_foreground_pixels": (
+                    alpha_event.get("opaque_pixels") if alpha_event else None
+                ),
+                "partial_alpha_pixels": (
+                    alpha_event.get("partial_alpha_pixels") if alpha_event else None
+                ),
             }
         )
-        control_environment = environment.copy()
-        control_environment.pop("SMPL_BAR_TELEMETRY", None)
-        control_environment.pop("SMPL_BAR_TELEMETRY_FILE", None)
         subprocess.run(
             [str(binary), "quit"],
             env=control_environment,
@@ -239,7 +315,10 @@ def private_run(binary, duration, output_dir, hidden, popup):
         if app is not None and app.poll() is None:
             terminate_exact(app)
         terminate_exact(headless)
+        terminate_exact(bus)
         weston_log.close()
+        dbus_log.close()
+        shutil.rmtree(runtime, ignore_errors=True)
 
 
 def main():
@@ -248,6 +327,7 @@ def main():
     parser.add_argument("--eww-pid", type=int)
     parser.add_argument("--duration", type=float, default=8.0)
     parser.add_argument("--hidden", action="store_true")
+    parser.add_argument("--recreate", action="store_true")
     parser.add_argument(
         "--popup",
         choices=("quick-settings", "usb", "workspace-overview", "keypad-cheatsheet"),
@@ -264,7 +344,9 @@ def main():
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     eww = installed_baseline(args.eww_pid)
-    bar, events = private_run(binary, args.duration, output, args.hidden, args.popup)
+    bar, events = private_run(
+        binary, args.duration, output, args.hidden, args.popup, args.recreate
+    )
     report = {
         "eww": eww,
         "smpl_bar": bar,
@@ -279,6 +361,17 @@ def main():
             "first_paint_at_most_0_8_eww": None,
             "first_paint_recorded": bar["first_paint_us"] is not None,
             "popup_first_paint_recorded": bar["popup_first_paint_us"] is not None,
+            "wayland_app_id_retained": bar["app_id"] == "smpl-bar",
+            "wayland_window_recreated": (
+                bar["wayland_window_created_count"] >= 2
+                and bar["wayland_window_destroyed_count"] >= 1
+                if args.recreate
+                else None
+            ),
+            "opaque_foreground_and_partial_background": (
+                (bar["opaque_foreground_pixels"] or 0) > 0
+                and (bar["partial_alpha_pixels"] or 0) > 0
+            ),
         },
         "telemetry": events,
     }
@@ -289,6 +382,11 @@ def main():
         [
             report["targets"]["rss_at_most_23_mib"],
             report["targets"]["first_paint_recorded"],
+            report["targets"]["wayland_app_id_retained"],
+            report["targets"]["opaque_foreground_and_partial_background"],
+            report["targets"]["wayland_window_recreated"]
+            if args.recreate
+            else True,
         ]
     ):
         return 1

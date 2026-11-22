@@ -1,35 +1,55 @@
 # smpl-bar
 
-Resident native Rust/Slint taskbar for the smplOS EWW migration. The binary is
-standalone: Start Menu and the other smpl-apps remain separate processes.
-`smpl-shell` contains the reusable desktop primitives.
+Resident native Rust/Slint taskbar for the smplOS EWW migration. It remains
+an opt-in, side-by-side backend; EWW and its release/fallback contracts are not
+changed. Start Menu and the other smpl-apps remain separate processes.
 
-## Status and side-by-side contract
+## Runtime architecture
 
-This checkout implements a real vertical slice. It is **not** an in-place EWW
-replacement yet and must remain opt-in until the OS integration gates below are
-complete. Nothing here starts, stops, patches, or deploys EWW.
+The Slint surface still uses `smpl_common::init("smpl-bar", ...)`, which selects
+the patched alpha-safe Skia CPU renderer from the first frame. The bar paints
+alpha only in backing rectangles; foreground colors remain opaque. Hiding and
+showing a Wayland window destroys/recreates the Winit adapter while retaining the
+same Slint model, `smpl-bar` application ID, renderer and compositor-rule
+contract.
 
-| EWW feature | Native status | Notes / gate |
-|---|---|---|
-| Start menu | Implemented | Launches the existing `toggle-start-menu` interface |
-| Hyprland workspaces/title | Implemented | Direct `.socket.sock` queries and `.socket2.sock` event subscription; no `hyprctl`/`socat` in the event path |
-| Niri workspaces/title | Process-backed gate | Persistent `niri msg event-stream` and bounded snapshots; direct `NIRI_SOCKET` decoding is still required for full acceptance |
-| X11 fallback | Implemented | Native `x11rb` EWMH roots, PropertyNotify and direct `_NET_CURRENT_DESKTOP` action |
-| USB/keypad/sync/dictation/keyboard | Implemented / integration snapshot | Sysfs/procfs plus existing launch/service interfaces; live service adapters are bounded and replaceable |
-| Bluetooth/Wi-Fi/network/VPN | Implemented snapshot | Direct sysfs/rfkill/route state; SSID/device details still need native NM/BlueZ adapters |
-| Volume/battery/clock/notifications | Implemented snapshot | Battery/clock are native; audio and dunst state probes run off the UI path; history/actions remain in native `notif-center` |
-| Quick Settings | Implemented | Connectivity, airplane, night light, DND, dictation, volume, brightness, settings/logout/power actions |
-| Calendar | Implemented | Launches the existing resident-capable native `toggle-calendar`/calendar process |
-| USB eject | Implemented | Native popup and `udisksctl` action |
-| Workspace overview/identify | Implemented, limited | One native overview and identify window; one identify window per monitor and stable-policy overview projection remain gated |
-| Keypad cheatsheet | Implemented IPC/UI | Accepts typed sheet JSON; click-through rendering is gated by compositor input-region support |
-| Generic SNI tray | **Acceptance gate** | No host, icon pixel, context-menu, DBusMenu, activation, watcher or owner-restart semantics are claimed |
-| Exclusive layer bar | **Acceptance gate** | Winit creates a transparent borderless toplevel; a true Wayland layer-shell/strut is not implemented |
+Wayland uses a split panel architecture rather than treating Winit's
+`xdg-toplevel` as an exclusive panel:
 
-Unknown, unavailable, or explicitly gated modules do not pretend to be present:
-typed `sni` configuration is rejected by `smpl-shell::config` with an
-acceptance-gated error.
+* the resident Slint window owns rendering and pointer callbacks;
+* a transparent, click-through `zwlr_layer_surface_v1` reserves the configured
+  edge with an exclusive zone when the panel is pinned;
+* direct Hyprland IPC or Niri IPC moves the Slint surface to the selected output
+  and exact edge coordinates;
+* floating mode keeps the layer reservation out of the work area;
+* hotplug/output changes recreate the reservation on the connector selected by
+  the saved smplOS workspace policy.
+
+The layer reservation protocol is real. Its namespace is
+`smpl-bar-reservation`. The visible Slint surface remains `smpl-bar` for the
+alpha, blur and window-rule contracts; it is not represented as an untested
+custom Skia platform.
+
+On X11, smpl-bar sets `_NET_WM_WINDOW_TYPE_DOCK`,
+`_NET_WM_STATE_STICKY`/`ABOVE` and the matching `_NET_WM_STRUT` and
+`_NET_WM_STRUT_PARTIAL` ranges for a pinned panel. Floating mode uses a normal
+window and clears the strut.
+
+Top/bottom and pinned/floating behavior is configured by:
+
+```json
+{
+  "version": 1,
+  "edge": "bottom",
+  "mode": "pinned",
+  "margin": 2,
+  "height": 32
+}
+```
+
+Older `bar.conf` files can use `bar_edge=top|bottom`,
+`bar_mode=pinned|floating`, and `bar_margin=0..24`. Unknown legacy keys remain
+untouched.
 
 ## Run
 
@@ -42,11 +62,7 @@ target/release/smpl-bar status
 target/release/smpl-bar quit
 ```
 
-`--preview` requests a smaller width for a private side-by-side comparison.
-Positioning still belongs to the compositor because Slint/Winit does not provide
-a Wayland layer-shell.
-
-Compatible `bar-ctl`-style commands are:
+Compatible `bar-ctl` commands:
 
 ```text
 start|show|open
@@ -59,43 +75,68 @@ popup quick-settings|usb|workspace-overview|keypad-cheatsheet
 popup --close
 set-keypad-present yes|no
 keypad-sheet FILE|JSON|-
+close-popups|telemetry-sample
 quit|kill
 ```
 
-## IPC
+The resident owns `${XDG_RUNTIME_DIR:-/run/user/$UID}/smplos/smpl-bar.sock`.
+IPC accepts bounded 128 KiB newline JSON and returns bounded newline JSON.
+Socket permissions are `0600`; the directory is `0700`.
 
-The resident owns one Unix stream socket:
+## Features
 
-```text
-${XDG_RUNTIME_DIR:-/run/user/$UID}/smplos/smpl-bar.sock
-```
+| Area | Implementation |
+|---|---|
+| Start menu | Closes native/OS popups, then signals the resident Start Menu PID with `SIGUSR1`; hidden state, position and cache remain resident |
+| Workspaces/title | Hyprland direct sockets, direct Niri socket event stream, X11 EWMH PropertyNotify |
+| Geometry | Per-output top/bottom placement, direct compositor positioning, Wayland exclusive reservation, X11 EWMH struts, workspace-policy primary monitor |
+| Monitor overview | Native monitor geometry plus active/focused workspace state |
+| Monitor identify | One independent overlay on every connected output, placed by Hyprland/Niri IPC or X11 positioning |
+| USB/keypad/dictation/sync/keyboard | Native sysfs/procfs plus D-Bus event providers; bounded fallback probes |
+| Wi-Fi/network/VPN | NetworkManager session/system D-Bus properties and active-connection events |
+| Bluetooth | BlueZ ObjectManager and `Powered` property events |
+| Volume | One bounded `pactl subscribe` process; no process per UI frame |
+| Notifications | Native sync/D-Bus provider state plus bounded `dunstctl` refresh |
+| Battery/brightness/clock | Native sysfs/state and UI-local formatting |
+| Generic tray | Real `org.kde.StatusNotifierWatcher` fallback, host registration, item lifecycle, owner restart/removal, icon name/pixmap/attention/overlay variants, activation, scroll and native DBusMenu |
+| Tray formats | SNI and DBusMenu; legacy XEmbed/arrow-key tray emulation is intentionally not claimed |
+| Calendar/notification center | Delegates to the existing canonical `popup-toggle` grammar, retaining mutual exclusion and app ownership |
+| Quick Settings | Existing connectivity, airplane, night light, DND, dictation, audio, brightness, settings and power controls |
+| Keypad cheatsheet | Typed JSON UI plus Control Surface `CheatsheetChanged`/`CheatsheetVisibilityChanged`; real X11 input-shape pass-through |
+| Keypad safety | Wayland click-through requests are rejected unless a real compositor input region is available; the JSON flag never makes an unsafe claim |
 
-Requests are one bounded (128 KiB) newline-terminated JSON object; replies are
-newline-terminated `{"ok":...}` responses. The socket directory and socket use
-0700 and 0600 permissions. The CLI above is the supported client.
+## StatusNotifier host
 
-Representative requests:
+smpl-bar first registers as a host with an existing watcher. If no watcher owns
+`org.kde.StatusNotifierWatcher`, the bar owns that name and serves the watcher
+interface itself. Registrations are limited to 32 items. Icon buffers are
+limited to 128×128 pixels and 64 KiB per variant. The host observes
+`NameOwnerChanged`, SNI property signals, registration/unregistration and watcher
+restarts, so an item owner restart does not leave a stale icon.
 
-```json
-{"command":"show"}
-{"command":"popup","name":"quick-settings"}
-{"command":"apply"}
-{"command":"set-keypad-present","present":true}
-{"command":"keypad-sheet","sheet":{"visible":true,"title":"Editor","keys":[]}}
-{"command":"quit"}
-```
+Left click calls `Activate`; `ItemIsMenu` and secondary click use DBusMenu.
+Menu data is rendered natively, with bounded flattened depth, visibility,
+enabled, separator and checked state. Menu activation is sent through
+`com.canonical.dbusmenu.Event`. Icon-name, IconPixmap, attention and overlay
+variants are supported. No XEmbed parity is fabricated.
 
-The `sheet` object follows control-surface's existing cheatsheet shape:
-`visible`, `title`, `notice`, `keys` grouped as rows, and `options`. Click-through
-is a capability field only; `smpl-bar` does not silently claim the compositor
-input region was installed.
+## Popup and lifecycle contracts
+
+Calendar and notification surfaces remain owned by the resident
+`smpl-calendar` and `notif-center` processes. The native bar closes its own
+popups, then uses `popup-toggle`; that script closes external resident popups
+only when their exact process exists. A global close does not launch a hidden
+application.
+
+Start Menu is different: the bar validates the private
+`$XDG_RUNTIME_DIR/smplos/start-menu.pid`, confirms the exact process name and
+UID, and sends POSIX `SIGUSR1`. It does not spawn another Start Menu and does
+not replace the window, therefore hidden state and position survive.
 
 ## Typed customization
 
-The existing `~/.config/smplos/bar.conf` keys remain authoritative for
-`ws_count`, `ws_position`, `ws_spacing`, and `ws_style`, with duplicate/invalid
-managed values rejected. A native, fully typed overlay may be saved as
-`~/.config/smplos/bar.json`:
+The existing `ws_count`, `ws_position`, `ws_spacing`, and `ws_style` values
+remain authoritative. A fully typed native overlay may be saved as:
 
 ```json
 {
@@ -105,6 +146,9 @@ managed values rejected. A native, fully typed overlay may be saved as
   "workspace-spacing": 2,
   "workspace-style": "numbers",
   "height": 32,
+  "edge": "bottom",
+  "mode": "pinned",
+  "margin": 2,
   "preview-offset-y": 36,
   "clock-format": "time",
   "clock-24h": true,
@@ -113,122 +157,95 @@ managed values rejected. A native, fully typed overlay may be saved as
   "right": [
     "usb", "keypad", "sync", "dictation", "keyboard",
     "bluetooth", "wifi", "network", "volume", "battery",
-    "clock", "notifications"
+    "sni", "clock", "notifications"
   ]
 }
 ```
 
-Native config rejects unknown fields, duplicate modules, out-of-range values,
-and `sni`. Applying it reloads the layout without replacing or reinstalling a
-bar process.
-
-## Theme and alpha
-
-The bar calls `smpl_common::init("smpl-bar", ...)`, so CPU Skia, shared alpha
-patches, no CSD, the Tokio UI-thread context and the `smpl-bar` Wayland app ID
-remain centralized. The bar watches the existing EWW palette with
-`ThemeRole::Application`; popups independently use `ThemeRole::Popup`.
-Foregrounds stay opaque and only the backing rectangles apply background
-alpha.
+Unknown native fields and duplicate modules are errors. Managed module order is
+validated because UI spacing and notification-area semantics depend on it.
+Applying configuration reloads the layout and panel contract without replacing
+the resident process.
 
 ## Telemetry and benchmark
 
-Telemetry is off unless `SMPL_BAR_TELEMETRY=1`. `SMPL_BAR_TELEMETRY_FILE` writes
-0600 JSON lines; without it lines go to stderr. Recorded milestones are:
+Telemetry is disabled by default. `SMPL_BAR_TELEMETRY=1` enables bounded JSON
+events; `SMPL_BAR_TELEMETRY_FILE` selects an append-only `0600` file.
+Milestones cover:
 
-* process/config/backend/IPC startup;
-* compositor detection, subscribe and snapshot;
-* first map request and first Slint snapshot paint;
-* popup open latency and first snapshot paint;
+* process/config/backend/IPC start;
+* compositor and panel transport setup;
+* direct Niri socket and monitor/panel actions;
+* SNI watcher/host/item and DBusMenu failures;
+* provider changes and bounded-probe failures;
+* first map, renderer setup and first Slint snapshot paint;
+* popup open and first paint;
 * RSS, PSS, HWM and thread count;
 * loop and UI-poll stalls;
-* module discovery/probe completion.
+* wayland adapter teardown/recreation across hide/show.
 
-The measurement script never connects to the user's compositor. It starts a
-private headless Weston under the repository's `target/`, samples the existing
-installed EWW process without changing it, runs smpl-bar, and writes a JSON
-report:
+Private measurements never connect to the user's compositor or installed
+bar:
 
 ```bash
 smpl-bar/scripts/benchmark.sh
 smpl-bar/scripts/benchmark.sh --duration 12 --output target/my-bar-bench
+smpl-bar/scripts/benchmark.sh --recreate
 smpl-bar/scripts/benchmark.sh --hidden
 ```
 
-The installed baseline read on the development machine was 46,508 KiB RSS,
-70,508 KiB HWM, 73 threads and a 17,982,992-byte EWW binary. The final isolated
-release measurements were:
+The script samples an explicitly supplied EWW PID (or the one installed EWW
+process), then starts smpl-bar in a private Weston headless compositor. It
+retains raw telemetry and compares RSS, PSS, HWM, threads and release binary
+size. It does not invent an EWW cold-start paint ratio from an already-running
+process.
 
-| State | smpl-bar RSS | PSS | HWM | Threads | Binary | Slint paint |
+The absolute stretch target remains 23 MiB mapped RSS. The alpha-safe patched
+Skia/softbuffer CPU stack, Slint scene, icon/SNI surfaces and resident desktop
+adapters can exceed that. The renderer is never weakened to meet RSS or paint
+targets, and current measurements do not turn an adverse RSS comparison into a
+pass.
+
+Current private fixture (2026-11-21, resident SNI/provider buses, same-session
+EWW sample):
+
+| State | RSS | PSS | HWM | Threads | Binary | First paint |
 |---|---:|---:|---:|---:|---:|---:|
-| Hidden resident | 23,788 KiB | 13,225 KiB | 23,788 KiB | 4 | 13,596,856 B | not mapped |
-| Mapped bar | 35,940 KiB | 23,681 KiB | 36,176 KiB | 4 | 13,596,856 B | 266,045 us |
-| Bar + Quick Settings | 41,168 KiB | 29,557 KiB | 41,308 KiB | 4 | 13,588,152 B | popup 27,705 us |
+| EWW baseline | 34,324 KiB | 14,711 KiB | 70,508 KiB | 73 | 17,982,992 B | not isolated |
+| smpl-bar mapped | 39,124 KiB | 30,352 KiB | 40,064 KiB | 9 | 16,438,152 B | 456,929 us |
+| Bar + Quick Settings | 44,748 KiB | 34,316 KiB | 44,748 KiB | 9 | 16,438,152 B | popup 34,904 us |
 
-The binary is 75.6% of EWW and thread count is 5.5%. Mapped RSS remains below
-the contemporaneous EWW sample, but neither hidden nor mapped RSS meets the
-23 MiB absolute acceptance target, so the script reports that failure
-truthfully and `--enforce` remains a rollout gate.
-The generic Weston fixture measures the normal mapped bar; `--preview` is
-Hyprland-only and is rejected on Niri/X11/unknown sessions rather than risking
-an overlapping side-by-side window. The EWW process is only sampled, so the
-script does not invent a cold-start
-ratio from an already-running process. A dedicated, isolated EWW cold-start
-fixture and `first_paint <= 0.8x` comparison are still acceptance work.
+The hide/show fixture recorded one destroy and two creates, including a
+post-recreate `smpl-bar` app ID. The 0.7-alpha snapshot contained 37,833
+partial-alpha pixels and 567 opaque foreground pixels; it did not alpha-fade
+the full image. The bar release binary remains smaller, HWM is 56% of EWW and
+threads are 12% of EWW. On this installed EWW build, mapped RSS is 14.0%
+higher (39,124 vs 34,324 KiB), so no RSS comparison pass is claimed.
+Meeting 23 MiB with the required alpha-safe Skia presentation, Slint scene and
+resident D-Bus services was not feasible without weakening that renderer or
+removing accepted native providers.
 
-## OS-side requirements (not implemented here)
+## Compositor/OS contracts
 
-1. **Opt-in coexistence:** install the release `smpl-bar` but keep EWW's current
-   autostart and `bar-ctl` untouched until an explicit setting switches owners.
-   A side-by-side test may start
-   `smpl-bar --resident --hidden` and use IPC to show it while EWW remains.
-2. **Wayland placement:** add compositor rules for Wayland app ID `smpl-bar`
-   and preview titles `smpl-bar:*`. Position the 30–48 px bar at bottom center,
-   disable CSD/borders/focus as appropriate, and use neutral window opacity
-   `1.0 override` for self-managed alpha.
-3. **Exclusive reservation:** a Winit toplevel cannot claim a layer-shell
-   exclusive zone. Before replacing EWW, either add a Slint custom layer-shell
-   platform (preferred for exact geometry/exclusivity) or prove a compositor
-   strut/rule that reserves the selected height without blocking its popups.
-4. **`bar-ctl` bridge:** route `start|toggle|stop|ensure|reload|apply|refresh`
-   to the smpl-bar CLI/socket in native mode. Keep `bar.conf` and the
-   `workspace-ctl`/Settings response contract unchanged.
-5. **Popup bridge:** route `quick-settings`, `usb-popup`, and
-   `workspace-overview` in `popup-toggle`; close native popups before opening
-   another. Existing `toggle-calendar`/`toggle-notif-center` remain separate
-   application toggles.
-6. **Workspace policy:** preserve monitor-owned IDs by translating
-   `workspace-ctl watch/status` into `smpl-bar` state, or move that policy
-   projection into `smpl-shell`. The native vertical slice currently groups
-   raw IDs and does not synchronize policy files.
-7. **Keypad:** replace systemd `eww update keypad-present=...` with
-   `smpl-bar set-keypad-present yes|no`; replace `eww update pad_sheet=...`
-   and `eww open/close pad-cheatsheet` with the `keypad-sheet` JSON request.
-   Do not remove the existing owner service or click-to-hide policy.
-8. **Click-through:** map the cheatsheet click-through mode to an actual empty
-   Wayland/X11 input region. Setting the JSON flag alone is not acceptance.
-9. **Monitor services:** one identify window must be mapped on every connected
-   output, following the selected primary monitor and workspace policy.
-10. **Lifecycle:** add a user unit or compositor autostart only after the above
-    switch exists. It must terminate `smpl-bar` cleanly, wait for its socket and
-    never run a second owner alongside EWW by default.
-11. **No false tray parity:** SNI is not required for the opt-in preview but is
-    an explicit release gate for EWW replacement: watcher registration, item
-    discovery/removal, owner changes, icon variants, activation and DBusMenu.
+The app owns direct placement, monitor selection and strut/exclusive behavior.
+The smplOS integration still owns:
 
-These requirements intentionally live in app documentation; this task does not
-modify the smplOS repository.
+* opt-in `bar-ctl` backend selection and EWW fallback;
+* `self-managed-alpha`, blur and neutral-opacity rules for `smpl-bar`;
+* popup/title rules for non-panel windows and `popup-toggle` routing;
+* no-focus and no-shadow treatment for the reservation's Winit panel;
+* the resident user service/autostart switch only after explicit backend opt-in.
 
-## Acceptance gaps
+Niri implementation uses its documented native socket protocol; no `niri msg`
+helper process runs in the event or input path. Exact new app-side panel and
+identify titles must be included in smplOS compositor rules when their source
+is qualified.
 
-The implementation tests do not turn these TODOs into passing claims:
+## Remaining qualification work
 
-* direct Niri socket adapter with no helper process;
-* native PulseAudio/PipeWire, NetworkManager, BlueZ and dictation event
-  subscriptions (the current external probe is bounded/off the UI path);
-* stable workspace-policy projection and per-monitor identify;
-* Winit-compatible Wayland layer-shell/exclusive-zone support;
-* click-through keypad input-region support;
-* generic SNI;
-* mapped-window steady RSS `<= 23 MiB`;
-* a safe, isolated EWW cold-start baseline and the `< 0.8x` first-paint gate.
+No application gate remains for SNI, panel reservation/strut, providers,
+resident Start Menu IPC, keypad D-Bus state, or monitor placement. The
+remaining measurements are environmental: compositor-specific blur/pixel
+capture, an isolated EWW cold-start fixture for a fair `0.8×` first-paint
+comparison, and proving 23 MiB with real SNI traffic. These are reported by
+the benchmark rather than converted into passing claims.

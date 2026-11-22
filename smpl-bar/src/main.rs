@@ -1,26 +1,31 @@
+mod panel;
+mod providers;
+mod sni;
 mod system;
 
 use chrono::Local;
 use i_slint_backend_winit::winit::dpi::LogicalSize;
 use i_slint_backend_winit::WinitWindowAccessor;
+use panel::{PanelGeometry, PanelReservation, PanelUpdate, X11Panel};
+use providers::{ProviderAction, ProviderHandle, ProviderState};
 use serde::Deserialize;
-use slint::{ModelRc, PhysicalPosition, VecModel, WindowPosition};
+use slint::{Image, ModelRc, PhysicalPosition, VecModel, WindowPosition};
 use smpl_common::theme::{self, ThemePalette, ThemeRole};
 use smpl_shell::compositor::{self, Action, CompositorHandle};
 use smpl_shell::config::{
-    self, BarConfigFile, ClockDateFormat, ClockFormat, ConfigPaths, Module, WorkspaceStyle,
+    self, BarConfigFile, ClockDateFormat, ClockFormat, ConfigPaths, Module, PanelEdge, PanelMode,
+    WorkspaceStyle,
 };
 use smpl_shell::ipc::{self, Popup, Request, Response, Server};
 use smpl_shell::launch;
 use smpl_shell::monitor::{CompositorKind, CompositorState};
 use smpl_shell::telemetry::Telemetry;
+use sni::{SniAction, SniHandle, SniSnapshot, TrayIcon};
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::path::Path;
-use std::process::{Child, Output, Stdio};
+use std::process::{Child, Stdio};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use system::{SystemSampler, SystemState, UsbDevice};
 
@@ -28,9 +33,7 @@ slint::include_modules!();
 
 const INITIAL_WIDTH: f64 = 1600.0;
 const CONTROL_INTERVAL: Duration = Duration::from_millis(50);
-const EXTERNAL_PROBE_INTERVAL: Duration = Duration::from_secs(15);
 const PROCESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
-const EXTERNAL_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 const APP_ID: &str = "smpl-bar";
 const PREVIEW_APP_ID: &str = "smpl-bar-preview";
 
@@ -61,7 +64,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     if arguments.version {
         println!("smpl-bar v{}", env!("CARGO_PKG_VERSION"));
         println!(
-            "features: resident hyprland x11 niri-process-gate typed-config telemetry sni-gated"
+            "features: resident hyprland x11 niri typed-config layer-reservation ewmh-strut telemetry sni"
         );
         return Ok(());
     }
@@ -166,8 +169,6 @@ fn run_resident(
         )],
     );
 
-    // TODO(layer-shell): smpl_common currently creates an xdg-toplevel. Replace
-    // this with a shared layer-shell platform before claiming exclusive EWW parity.
     smpl_common::init(app_id, INITIAL_WIDTH, config.height as f64)?;
     slint::set_xdg_app_id(app_id)?;
     telemetry.emit(
@@ -175,25 +176,26 @@ fn run_resident(
         [("renderer", serde_json::json!("skia-software"))],
     );
     let bar = BarWindow::new()?;
-    bar.set_window_title_label(
-        if preview {
-            "smpl-bar preview"
-        } else {
-            "smpl-bar"
-        }
-        .into(),
-    );
-    let state = Rc::new(RefCell::new(UiState::new(config, paths)));
+    bar.set_window_title_label(panel_title(&config, preview).into());
+    let mut ui_state = UiState::new(config, paths);
+    ui_state.preview = preview;
+    let state = Rc::new(RefCell::new(ui_state));
     let popups = Rc::new(RefCell::new(PopupWindows::default()));
     let children = Rc::new(RefCell::new(Vec::<Child>::new()));
+    let panel_reservation = Rc::new(PanelReservation::spawn());
+    state.borrow_mut().x11_panel = (compositor_kind == CompositorKind::X11)
+        .then(X11Panel::connect)
+        .flatten();
     let compositor = Rc::new(compositor::spawn(
         state.borrow().config.clone(),
         telemetry.clone(),
     ));
     let server = Rc::new(RefCell::new(server));
     let telemetry = Rc::new(telemetry);
+    let sni = Rc::new(SniHandle::spawn((*telemetry).clone()));
+    let providers = Rc::new(ProviderHandle::spawn((*telemetry).clone()));
 
-    bind_bar_callbacks(&bar, &state, &children, &compositor);
+    bind_bar_callbacks(&bar, &state, &children, &compositor, &sni, &providers);
     apply_config(&bar, &state.borrow().config);
     apply_system(&bar, &state.borrow().system, &state.borrow().config);
     apply_compositor(&bar, &state.borrow().compositor, &state.borrow().config);
@@ -215,7 +217,6 @@ fn run_resident(
     });
 
     let mut tick = Instant::now();
-    let mut last_external = Instant::now() - EXTERNAL_PROBE_INTERVAL;
     let mut last_sample = Instant::now() - PROCESS_SAMPLE_INTERVAL;
     let mut trimmed_heap = false;
     let preview_shown = Rc::new(Cell::new(false));
@@ -229,6 +230,9 @@ fn run_resident(
         let server = server.clone();
         let telemetry = telemetry.clone();
         let preview_shown = preview_shown.clone();
+        let panel_reservation = panel_reservation.clone();
+        let sni = sni.clone();
+        let providers = providers.clone();
         move || {
             let loop_started = Instant::now();
             let loop_gap = tick.elapsed();
@@ -243,28 +247,66 @@ fn run_resident(
                 if let Some(snapshot) = compositor.latest() {
                     state.borrow_mut().compositor = snapshot.clone();
                     apply_compositor(&bar, &snapshot, &state.borrow().config);
-                    if fit_bar_to_monitor(
-                        &bar,
-                        &snapshot,
-                        state.borrow().config.height,
-                        preview,
-                        state.borrow().config.preview_offset_y,
-                    ) && preview
-                        && !preview_shown.replace(true)
-                    {
+                    let geometry =
+                        fit_bar_to_monitor(&bar, &snapshot, &state.borrow().config, preview);
+                    if geometry.is_some() && preview && !preview_shown.replace(true) {
                         let _ = bar.show();
                         bar.window().request_redraw();
                         telemetry.emit("preview_geometry_ready", []);
                     }
                 }
-                let external_changed = state.borrow_mut().refresh_system();
+                synchronize_panel(
+                    &bar,
+                    &state,
+                    &compositor,
+                    &panel_reservation,
+                    preview,
+                    &telemetry,
+                );
+                let revision = state.borrow().sni_revision;
+                if let Some(snapshot) = sni.changed_since(revision) {
+                    state.borrow_mut().sni_revision = snapshot.revision;
+                    state.borrow_mut().sni_status = snapshot.status.clone();
+                    apply_sni(&bar, &snapshot);
+                    if let Some(menu) = snapshot.menu {
+                        open_tray_menu(&menu, state.clone(), &popups, &sni, &telemetry);
+                    }
+                }
+                let provider_revision = state.borrow().provider_revision;
+                let provider_changed = providers.changed_since(provider_revision);
+                if let Some(snapshot) = provider_changed {
+                    state.borrow_mut().provider_revision = snapshot.revision;
+                    state.borrow_mut().provider_state = snapshot.state;
+                    state.borrow_mut().provider_error = snapshot.error;
+                    if let Some(sheet) = snapshot.keypad_sheet {
+                        if let Err(error) = apply_keypad_sheet(&sheet, &state, &popups, &telemetry)
+                        {
+                            state.borrow_mut().provider_error = error;
+                        }
+                    }
+                }
+                state.borrow_mut().refresh_system();
                 let system = state.borrow().system.clone();
                 apply_system(&bar, &system, &state.borrow().config);
-                if external_changed {
-                    if let Some(ui) = &popups.borrow().quick {
-                        ui.set_volume(system.volume.into());
-                        ui.set_dnd_on(system.notifications_paused);
-                    }
+                if let Some(ui) = &popups.borrow().quick {
+                    ui.set_volume(system.volume.into());
+                    ui.set_dnd_on(system.notifications_paused);
+                    ui.set_wifi_on(system.wifi_on);
+                    ui.set_bluetooth_on(system.bluetooth_on);
+                    ui.set_bluetooth_label(if system.bluetooth_on { "On" } else { "Off" }.into());
+                    ui.set_wired_on(system.wired);
+                    ui.set_network_label(
+                        if system.ssid.is_empty() {
+                            if system.wifi_on {
+                                "Connected".to_owned()
+                            } else {
+                                "Off".to_owned()
+                            }
+                        } else {
+                            system.ssid.clone()
+                        }
+                        .into(),
+                    );
                 }
                 reap_children(&mut children.borrow_mut());
                 let requests = server.borrow().drain();
@@ -280,10 +322,7 @@ fn run_resident(
                     );
                     let _ = ipc::write_response(&mut stream, &response);
                 }
-            }
-            if last_external.elapsed() >= EXTERNAL_PROBE_INTERVAL {
-                last_external = Instant::now();
-                refresh_external_async(&state, &popups, &telemetry);
+                observe_wayland_window(&bar, &state, app_id, &telemetry);
             }
             if last_sample.elapsed() >= PROCESS_SAMPLE_INTERVAL {
                 last_sample = Instant::now();
@@ -338,6 +377,8 @@ fn bind_bar_callbacks(
     state: &Rc<RefCell<UiState>>,
     children: &Rc<RefCell<Vec<Child>>>,
     compositor: &Rc<CompositorHandle>,
+    sni: &Rc<SniHandle>,
+    providers: &Rc<ProviderHandle>,
 ) {
     let popup_coordinator = Rc::new(PopupCoordinator::new(children.clone()));
     let start = popup_coordinator.clone();
@@ -352,8 +393,10 @@ fn bind_bar_callbacks(
     bar.on_open_quick_settings(move || quick.request(PopupTarget::QuickSettings));
     let usb = popup_coordinator.clone();
     bar.on_open_usb(move || usb.request(PopupTarget::Usb));
-    let keypad_children = children.clone();
-    bar.on_open_keypad(move || spawn(&keypad_children, ["smplos-settings", "keypad"]));
+    let keypad_providers = providers.clone();
+    bar.on_open_keypad(move || {
+        keypad_providers.send(ProviderAction::ToggleCheatsheet);
+    });
     let sync_children = children.clone();
     bar.on_open_sync(move || spawn(&sync_children, ["sync-center-gui"]));
     let dictation_children = children.clone();
@@ -388,6 +431,30 @@ fn bind_bar_callbacks(
                 &state_volume.borrow().config,
             );
         }
+    });
+    let activate = sni.clone();
+    bar.on_sni_activate(move |key| {
+        activate.send(SniAction::Activate {
+            key: key.to_string(),
+            x: 0,
+            y: 0,
+        });
+    });
+    let secondary = sni.clone();
+    bar.on_sni_secondary(move |key| {
+        secondary.send(SniAction::Secondary {
+            key: key.to_string(),
+            x: 0,
+            y: 0,
+        });
+    });
+    let scroll = sni.clone();
+    bar.on_sni_scroll(move |key, delta| {
+        scroll.send(SniAction::Scroll {
+            key: key.to_string(),
+            delta: delta.round() as i32,
+            horizontal: false,
+        });
     });
 }
 
@@ -425,61 +492,95 @@ impl PopupCoordinator {
 
     fn request(&self, target: PopupTarget) {
         if target == PopupTarget::Start {
-            spawn_after_global_close(["toggle-start-menu"]);
+            toggle_start_menu_after_global_close();
             return;
         }
         spawn(&self.children, ["popup-toggle", target.argument()]);
     }
 }
 
-fn spawn_after_global_close<const N: usize>(arguments: [&'static str; N]) {
+fn toggle_start_menu_after_global_close() {
     let _ = std::thread::Builder::new()
         .name("popup-coordinator".into())
         .spawn(move || {
-            let mut close = launch::command("popup-toggle");
-            close
-                .arg("--close")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            match bounded_status(close, Duration::from_secs(2)) {
-                Some(status) if status.success() => {
-                    let mut open = launch::command(arguments[0]);
-                    open.args(&arguments[1..])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null());
-                    if let Err(error) = open.spawn() {
-                        eprintln!("smpl-bar: cannot launch {}: {error}", arguments[0]);
-                    }
+            if let Err(error) = launch::close_popups() {
+                eprintln!("smpl-bar: cannot close popups before Start Menu: {error}");
+                return;
+            }
+            if let Err(error) = signal_start_menu(libc::SIGUSR1) {
+                let mut command = launch::command("toggle-start-menu");
+                command
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                if let Err(fallback) = command.spawn() {
+                    eprintln!(
+                        "smpl-bar: cannot toggle resident start menu ({error}) or launch fallback ({fallback})"
+                    );
                 }
-                Some(status) => {
-                    eprintln!("smpl-bar: popup-toggle --close failed: {status}");
-                }
-                None => eprintln!("smpl-bar: popup-toggle --close timed out"),
             }
         });
 }
 
-fn bounded_status(
-    mut command: std::process::Command,
-    timeout: Duration,
-) -> Option<std::process::ExitStatus> {
-    let mut child = command.spawn().ok()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+fn signal_start_menu(signal: libc::c_int) -> io::Result<()> {
+    let runtime = ipc_runtime();
+    let path = runtime.join("smplos/start-menu.pid");
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::other("start-menu pidfile is not a regular file"));
     }
+    if metadata.len() > 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "start-menu pidfile is unreasonably large",
+        ));
+    }
+    let source = std::fs::read_to_string(&path)?;
+    let pid = source
+        .trim()
+        .parse::<libc::pid_t>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if pid <= 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid start-menu pid",
+        ));
+    }
+    let process = format!("/proc/{pid}");
+    if std::fs::read_to_string(format!("{process}/comm"))?
+        .trim()
+        .ne("start-menu")
+    {
+        return Err(io::Error::other("start-menu pid does not own the process"));
+    }
+    if !process_uid(&process)?.is_some_and(|uid| uid == unsafe { libc::getuid() }) {
+        return Err(io::Error::other("start-menu pid belongs to another user"));
+    }
+    // SAFETY: kill targets one validated positive PID from the user's private
+    // runtime pidfile, and refuses reused/unowned processes above.
+    if unsafe { libc::kill(pid, signal) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn ipc_runtime() -> std::path::PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
+        })
+}
+
+fn process_uid(process: &str) -> io::Result<Option<libc::uid_t>> {
+    let status = std::fs::read_to_string(Path::new(process).join("status"))?;
+    Ok(status.lines().find_map(|line| {
+        line.strip_prefix("Uid:")
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse().ok())
+    }))
 }
 
 fn handle_request(
@@ -497,16 +598,23 @@ fn handle_request(
             Response::ok(None)
         }
         Request::Hide => {
+            popups.borrow_mut().close_all();
             let _ = bar.hide();
             Response::ok(None)
         }
         Request::Toggle => {
             let visible = bar.window().is_visible();
-            let _ = if visible { bar.hide() } else { bar.show() };
+            let _ = if visible {
+                popups.borrow_mut().close_all();
+                bar.hide()
+            } else {
+                bar.show()
+            };
             Response::ok(None)
         }
         Request::Apply => match reload_config(&state.borrow().paths) {
             Ok(config) => {
+                bar.set_window_title_label(panel_title(&config, state.borrow().preview).into());
                 state.borrow_mut().config = config.clone();
                 apply_config(bar, &config);
                 apply_compositor(bar, &state.borrow().compositor, &config);
@@ -523,7 +631,6 @@ fn handle_request(
             match name {
                 Popup::QuickSettings => {
                     open_quick_settings(state, popups, children, telemetry);
-                    refresh_external_async(state, popups, telemetry);
                 }
                 Popup::Usb => open_usb(state, popups, children, telemetry),
                 Popup::WorkspaceOverview => open_overview(state, popups, children, telemetry),
@@ -533,7 +640,7 @@ fn handle_request(
                         Err(error) => return Response::error(error),
                     };
                     if let Err(error) = apply_keypad_sheet(&sheet, state, popups, telemetry) {
-                        return Response::error(error.to_string());
+                        return Response::error(error);
                     }
                 }
             }
@@ -541,7 +648,7 @@ fn handle_request(
             Response::ok(None)
         }
         Request::Identify => {
-            open_identify(state, popups, telemetry);
+            open_identify(state, popups, compositor, telemetry);
             Response::ok(None)
         }
         Request::SetKeypadPresent { present } => {
@@ -557,7 +664,7 @@ fn handle_request(
             state.borrow_mut().keypad_sheet = Some(sheet.clone());
             match apply_keypad_sheet(&sheet, state, popups, telemetry) {
                 Ok(()) => Response::ok(None),
-                Err(error) => Response::error(error.to_string()),
+                Err(error) => Response::error(error),
             }
         }
 
@@ -599,6 +706,7 @@ fn apply_config(bar: &BarWindow, config: &BarConfigFile) {
     bar.set_show_network(contains(Module::Network));
     bar.set_show_volume(contains(Module::Volume));
     bar.set_show_battery(contains(Module::Battery));
+    bar.set_show_sni(contains(Module::Sni));
     bar.set_show_clock(contains(Module::Clock));
     bar.set_show_notifications(contains(Module::Notifications));
     bar.set_workspace_squares(config.workspace_style == WorkspaceStyle::Squares);
@@ -630,6 +738,55 @@ fn apply_system(bar: &BarWindow, system: &SystemState, config: &BarConfigFile) {
     bar.set_notification_count(system.notification_count as i32);
     bar.set_notifications_paused(system.notifications_paused);
     update_clock(bar, config);
+}
+
+fn apply_provider_state(system: &mut SystemState, provider: &ProviderState) {
+    if let Some(value) = provider.wifi_available {
+        system.wifi_available = value;
+    }
+    if let Some(value) = provider.wifi_on {
+        system.wifi_on = value;
+    }
+    if let Some(value) = provider.wired_available {
+        system.wired_available = value;
+    }
+    if let Some(value) = provider.wired {
+        system.wired = value;
+    }
+    if let Some(value) = provider.online {
+        system.online = value;
+    }
+    if let Some(value) = provider.vpn {
+        system.vpn = value;
+    }
+    if let Some(value) = provider.ssid.as_ref() {
+        system.ssid = value.clone();
+    }
+    if let Some(value) = provider.bluetooth_available {
+        system.bluetooth_available = value;
+    }
+    if let Some(value) = provider.bluetooth_on {
+        system.bluetooth_on = value;
+    }
+    if let Some(value) = provider.volume {
+        system.volume = value;
+    }
+    if let Some(value) = provider.volume_muted {
+        system.volume_muted = value;
+    }
+    if let Some(value) = provider.notification_count {
+        system.notification_count = value;
+    }
+    if let Some(value) = provider.notifications_paused {
+        system.notifications_paused = value;
+    }
+    if let Some(value) = provider.sync_active {
+        system.sync_active = value;
+    }
+    if let Some(value) = provider.keypad_present {
+        system.keypad_present = value;
+    }
+    system.airplane = system.wifi_available && !system.wifi_on && !system.bluetooth_on;
 }
 
 fn apply_compositor(bar: &BarWindow, state: &CompositorState, config: &BarConfigFile) {
@@ -664,6 +821,54 @@ fn apply_compositor(bar: &BarWindow, state: &CompositorState, config: &BarConfig
     bar.set_workspaces(ModelRc::new(VecModel::from_slice(&workspaces)));
 }
 
+fn apply_sni(bar: &BarWindow, snapshot: &SniSnapshot) {
+    let items: Vec<_> = snapshot
+        .items
+        .iter()
+        .filter(|item| item.visible())
+        .map(|item| {
+            let (icon_image, has_icon) = tray_image(&item.icon);
+            let (overlay_image, has_overlay) = tray_image(&item.overlay);
+            TrayItemUi {
+                key: item.key.clone().into(),
+                title: if item.title.trim().is_empty() {
+                    item.id.clone().into()
+                } else {
+                    item.title.clone().into()
+                },
+                icon_image,
+                has_icon,
+                overlay_image,
+                has_overlay,
+                attention: item.needs_attention(),
+                item_is_menu: item.item_is_menu,
+            }
+        })
+        .collect();
+    bar.set_sni_items(ModelRc::new(VecModel::from_slice(&items)));
+}
+
+fn tray_image(icon: &TrayIcon) -> (Image, bool) {
+    match icon {
+        TrayIcon::Empty => (Image::default(), false),
+        TrayIcon::File(path) => Image::load_from_path(path)
+            .map(|image| (image, true))
+            .unwrap_or_else(|_| (Image::default(), false)),
+        TrayIcon::Pixmap {
+            width,
+            height,
+            rgba,
+        } => {
+            let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(*width, *height);
+            if buffer.make_mut_bytes().len() != rgba.len() {
+                return (Image::default(), false);
+            }
+            buffer.make_mut_bytes().copy_from_slice(rgba);
+            (Image::from_rgba8(buffer), true)
+        }
+    }
+}
+
 fn trim_allocator_caches() {
     // The IPC snapshots and first module probe allocate short-lived JSON and
     // command buffers. Releasing glibc's top chunk keeps a resident preload
@@ -677,24 +882,221 @@ fn trim_allocator_caches() {
 fn fit_bar_to_monitor(
     bar: &BarWindow,
     state: &CompositorState,
-    height: usize,
+    config: &BarConfigFile,
     preview: bool,
-    preview_offset_y: usize,
-) -> bool {
-    let Some(monitor) = state.primary_monitor() else {
-        return false;
-    };
-    let scale = monitor.scale.max(0.5);
-    let logical_width = (monitor.width as f64 / scale) * if preview { 0.72 } else { 0.997 };
-    resize_window(bar.window(), logical_width, height as f64);
+) -> Option<PanelGeometry> {
+    let monitor = state.primary_monitor()?;
+    let mut geometry = PanelGeometry::for_monitor(
+        monitor,
+        config.edge,
+        config.mode,
+        config.margin,
+        config.height,
+    );
     if preview {
-        bar.window()
-            .set_position(WindowPosition::Physical(PhysicalPosition::new(
-                monitor.x,
-                monitor.y + preview_offset_y as i32,
-            )));
+        geometry.width = (geometry.width as f64 * 0.72).round().max(640.0) as u32;
+        geometry.y = monitor.y + config.preview_offset_y as i32;
     }
-    true
+    resize_window(bar.window(), geometry.width as f64, config.height as f64);
+    if preview {
+        set_window_position(bar.window(), geometry.x, geometry.y);
+    }
+    Some(geometry)
+}
+
+fn panel_title(config: &BarConfigFile, preview: bool) -> String {
+    if preview {
+        return "smpl-bar-preview".to_owned();
+    }
+    if config.edge == PanelEdge::Bottom && config.mode == PanelMode::Pinned {
+        return APP_ID.to_owned();
+    }
+    format!(
+        "smpl-bar:panel-{}-{}",
+        match config.edge {
+            PanelEdge::Top => "top",
+            PanelEdge::Bottom => "bottom",
+        },
+        match config.mode {
+            PanelMode::Pinned => "pinned",
+            PanelMode::Floating => "floating",
+        }
+    )
+}
+
+fn set_window_position(window: &slint::Window, x: i32, y: i32) {
+    window.set_position(WindowPosition::Physical(PhysicalPosition::new(x, y)));
+}
+
+fn observe_wayland_window(
+    window: &BarWindow,
+    state: &Rc<RefCell<UiState>>,
+    app_id: &str,
+    telemetry: &Rc<Telemetry>,
+) {
+    use i_slint_backend_winit::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let token = window.window().with_winit_window(
+        |native: &i_slint_backend_winit::winit::window::Window| {
+            native
+                .window_handle()
+                .ok()
+                .and_then(|handle| match handle.as_raw() {
+                    RawWindowHandle::Wayland(handle) => Some(handle.surface.as_ptr() as usize),
+                    _ => None,
+                })
+        },
+    );
+    let token = token.flatten();
+    let mut state = state.borrow_mut();
+    if state.wayland_window_token == token {
+        return;
+    }
+    let previous = state.wayland_window_token;
+    state.wayland_window_token = token;
+    if previous.is_some() && token.is_none() {
+        telemetry.emit(
+            "wayland_window_destroyed",
+            [("app_id", serde_json::json!(app_id))],
+        );
+    } else if let Some(token) = token {
+        let recreated = state.wayland_window_seen;
+        state.wayland_window_seen = true;
+        telemetry.emit(
+            "wayland_window_created",
+            [
+                ("app_id", serde_json::json!(app_id)),
+                ("surface_token", serde_json::json!(token as u64)),
+                ("recreated", serde_json::json!(recreated)),
+            ],
+        );
+    }
+}
+
+fn synchronize_panel(
+    bar: &BarWindow,
+    state: &Rc<RefCell<UiState>>,
+    compositor: &Rc<CompositorHandle>,
+    reservation: &Rc<PanelReservation>,
+    preview: bool,
+    telemetry: &Rc<Telemetry>,
+) {
+    let Some(geometry) = ({
+        let state = state.borrow();
+        state.compositor.primary_monitor().map(|monitor| {
+            PanelGeometry::for_monitor(
+                monitor,
+                state.config.edge,
+                state.config.mode,
+                state.config.margin,
+                state.config.height,
+            )
+        })
+    }) else {
+        return;
+    };
+    let update = PanelUpdate {
+        geometry: geometry.clone(),
+        visible: !preview && bar.window().is_visible(),
+    };
+    let changed = {
+        let mut state = state.borrow_mut();
+        if state.panel_update.as_ref() == Some(&update) {
+            false
+        } else {
+            state.panel_update = Some(update.clone());
+            true
+        }
+    };
+    if changed {
+        telemetry.emit(
+            "panel_contract",
+            [
+                ("visible", serde_json::json!(update.visible)),
+                ("monitor", serde_json::json!(geometry.monitor)),
+                (
+                    "edge",
+                    serde_json::json!(match geometry.edge {
+                        PanelEdge::Top => "top",
+                        PanelEdge::Bottom => "bottom",
+                    }),
+                ),
+                (
+                    "mode",
+                    serde_json::json!(match geometry.mode {
+                        PanelMode::Pinned => "pinned",
+                        PanelMode::Floating => "floating",
+                    }),
+                ),
+            ],
+        );
+        reservation.update(update.clone());
+        if update.visible {
+            resize_window(bar.window(), geometry.width as f64, geometry.height as f64);
+            state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(100);
+            send_panel_placement(compositor, &geometry);
+            bar.window().with_winit_window(
+                |window: &i_slint_backend_winit::winit::window::Window| {
+                    if state.borrow().compositor.kind == CompositorKind::X11 {
+                        set_window_position(bar.window(), geometry.x, geometry.y);
+                    }
+                    if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
+                        if let Err(error) = panel.apply(window, &geometry, true) {
+                            telemetry.emit(
+                                "panel_error",
+                                [("error", serde_json::json!(error.to_string()))],
+                            );
+                        }
+                    }
+                    if update.visible {
+                        let target = compositor::PanelPlacementTarget {
+                            monitor: geometry.monitor.clone(),
+                            x: geometry.x,
+                            y: geometry.y,
+                            width: geometry.width,
+                            height: geometry.height,
+                        };
+                        let retry = {
+                            let state = state.borrow();
+                            Instant::now() >= state.panel_retry_at
+                        };
+                        if retry && !compositor.panel_acknowledged(&target) {
+                            state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(150);
+                            send_panel_placement(compositor, &geometry);
+                        }
+                    }
+                },
+            );
+        } else if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
+            let _ = panel.hide();
+        }
+
+        fn send_panel_placement(compositor: &CompositorHandle, geometry: &PanelGeometry) {
+            compositor.send(Action::PlacePanel {
+                monitor: geometry.monitor.clone(),
+                x: geometry.x,
+                y: geometry.y,
+                width: geometry.width,
+                height: geometry.height,
+                edge: geometry.edge,
+                mode: geometry.mode,
+            });
+        }
+    }
+    if let Some(status) = reservation.latest_status() {
+        let changed = state.borrow_mut().panel_status.as_ref() != Some(&status);
+        state.borrow_mut().panel_status = Some(status.clone());
+        if changed {
+            telemetry.emit(
+                "panel_transport",
+                [
+                    ("active", serde_json::json!(status.active)),
+                    ("transport", serde_json::json!(status.transport)),
+                    ("message", serde_json::json!(status.message)),
+                ],
+            );
+        }
+    }
 }
 
 fn resize_window(window: &slint::Window, width: f64, height: f64) {
@@ -744,7 +1146,10 @@ fn apply_popup_theme(windows: &PopupWindows, palette: &ThemePalette) {
     if let Some(window) = &windows.keypad {
         apply_theme_values(&window.global::<Theme>(), palette);
     }
-    if let Some(window) = &windows.identify {
+    for window in &windows.identify {
+        apply_theme_values(&window.global::<Theme>(), palette);
+    }
+    if let Some(window) = &windows.tray_menu {
         apply_theme_values(&window.global::<Theme>(), palette);
     }
 }
@@ -807,15 +1212,30 @@ fn record_snapshot_paint(
     event: &'static str,
 ) {
     match window.take_snapshot() {
-        Ok(snapshot) => telemetry.duration_since(
-            started,
-            event,
-            &[
-                ("source", serde_json::json!("slint-snapshot")),
-                ("width", serde_json::json!(snapshot.width())),
-                ("height", serde_json::json!(snapshot.height())),
-            ],
-        ),
+        Ok(snapshot) => {
+            let (pixels, remainder) = snapshot.as_bytes().as_chunks::<4>();
+            debug_assert!(remainder.is_empty());
+            let (opaque, partial, transparent) = pixels.iter().fold(
+                (0_u64, 0_u64, 0_u64),
+                |(opaque, partial, transparent), pixel| match pixel[3] {
+                    0 => (opaque, partial, transparent + 1),
+                    255 => (opaque + 1, partial, transparent),
+                    _ => (opaque, partial + 1, transparent),
+                },
+            );
+            telemetry.duration_since(
+                started,
+                event,
+                &[
+                    ("source", serde_json::json!("slint-snapshot")),
+                    ("width", serde_json::json!(snapshot.width())),
+                    ("height", serde_json::json!(snapshot.height())),
+                    ("opaque_pixels", serde_json::json!(opaque)),
+                    ("partial_alpha_pixels", serde_json::json!(partial)),
+                    ("transparent_pixels", serde_json::json!(transparent)),
+                ],
+            );
+        }
         Err(error) => telemetry.emit(
             "paint_snapshot_failed",
             [("error", serde_json::json!(error.to_string()))],
@@ -1158,39 +1578,68 @@ fn open_overview(
 fn open_identify(
     state: &Rc<RefCell<UiState>>,
     popups: &Rc<RefCell<PopupWindows>>,
+    compositor: &Rc<CompositorHandle>,
     telemetry: &Rc<Telemetry>,
 ) {
     let started = Instant::now();
-    let mut windows = popups.borrow_mut();
-    windows.close_all();
-    if windows.identify.is_none() {
+    let monitors = state.borrow().compositor.monitors.clone();
+    {
+        let mut windows = popups.borrow_mut();
+        windows.close_all();
+        windows.identify.clear();
+    }
+    let mut identify = Vec::with_capacity(monitors.len());
+    for (index, monitor) in monitors.iter().enumerate() {
         let ui = IdentifyWindow::new().expect("identify window");
         apply_theme_values(&ui.global::<Theme>(), &state.borrow().popup_theme);
-        windows.identify = Some(ui);
-    }
-    let ui = windows.identify.as_ref().expect("identify");
-    let label = state.borrow().compositor.focused_monitor.clone();
-    ui.set_label(if label.is_empty() {
-        "Monitor".into()
-    } else {
-        label.into()
-    });
-    install_render_telemetry(ui.window(), telemetry, Some(started));
-    resize_window(ui.window(), 380.0, 140.0);
-    let _ = ui.show();
-    if telemetry.enabled() {
-        let weak = ui.as_weak();
-        let paint_telemetry = telemetry.clone();
-        slint::Timer::single_shot(Duration::from_millis(25), move || {
-            if let Some(ui) = weak.upgrade() {
-                record_snapshot_paint(ui.window(), &paint_telemetry, started, "popup_first_paint");
+        let title = format!("smpl-bar:identify:{}", monitor.connector);
+        ui.set_window_title_label(title.clone().into());
+        ui.set_label(
+            if monitor.connector.is_empty() {
+                format!("M{}", index + 1)
+            } else {
+                monitor.connector.clone()
             }
+            .into(),
+        );
+        install_render_telemetry(ui.window(), telemetry, Some(started));
+        resize_window(ui.window(), 380.0, 140.0);
+        let _ = ui.show();
+        let scale = monitor.scale.max(0.5);
+        let logical_width = monitor.width as f64 / scale;
+        let logical_height = monitor.height as f64 / scale;
+        let x = monitor.x + ((logical_width - 380.0) / 2.0).round() as i32;
+        let y = monitor.y + ((logical_height - 140.0) / 2.0).round() as i32;
+        set_window_position(ui.window(), x, y);
+        compositor.send(Action::PlacePopup {
+            title,
+            monitor: monitor.connector.clone(),
+            x,
+            y,
+            width: 380,
+            height: 140,
         });
+        if telemetry.enabled() {
+            let weak = ui.as_weak();
+            let paint_telemetry = telemetry.clone();
+            slint::Timer::single_shot(Duration::from_millis(25), move || {
+                if let Some(ui) = weak.upgrade() {
+                    record_snapshot_paint(
+                        ui.window(),
+                        &paint_telemetry,
+                        started,
+                        "popup_first_paint",
+                    );
+                }
+            });
+        }
+        identify.push(ui);
     }
+    popups.borrow_mut().identify = identify;
     slint::Timer::single_shot(Duration::from_secs(3), {
         let popups = popups.clone();
         move || {
-            if let Some(window) = popups.borrow().identify.as_ref() {
+            for window in &popups.borrow().identify {
                 let _ = window.hide();
             }
         }
@@ -1202,11 +1651,38 @@ fn apply_keypad_sheet(
     state: &Rc<RefCell<UiState>>,
     popups: &Rc<RefCell<PopupWindows>>,
     telemetry: &Rc<Telemetry>,
-) -> Result<(), serde_json::Error> {
-    let sheet: KeypadSheet = serde_json::from_value(value.clone())?;
+) -> Result<(), String> {
+    let sheet: KeypadSheet =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    let click_through = sheet
+        .options
+        .as_ref()
+        .and_then(|option| option.click_through)
+        .unwrap_or(false);
+    let kind = state.borrow().compositor.kind;
+    if click_through && kind != CompositorKind::X11 {
+        if let Some(window) = popups.borrow().keypad.as_ref() {
+            let _ = window.hide();
+        }
+        let message =
+            "keypad click-through rejected: this Wayland backend cannot safely set an empty input region"
+                .to_owned();
+        telemetry.emit(
+            "keypad_click_through_rejected",
+            [("compositor", serde_json::json!(kind.as_str()))],
+        );
+        return Err(message);
+    }
     let mut windows = popups.borrow_mut();
     if !sheet.visible {
         if let Some(window) = &windows.keypad {
+            window.window().with_winit_window(
+                |native: &i_slint_backend_winit::winit::window::Window| {
+                    if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
+                        let _ = panel.set_input_passthrough(native, false, 720, 360);
+                    }
+                },
+            );
             let _ = window.hide();
         }
         return Ok(());
@@ -1222,12 +1698,7 @@ fn apply_keypad_sheet(
     let ui = windows.keypad.as_ref().expect("keypad sheet");
     ui.set_sheet_title(sheet.title.into());
     ui.set_notice(sheet.notice.unwrap_or_default().into());
-    ui.set_click_through(
-        sheet
-            .options
-            .and_then(|option| option.click_through)
-            .unwrap_or(false),
-    );
+    ui.set_click_through(click_through);
     let mut keys: Vec<_> = sheet
         .keys
         .into_iter()
@@ -1265,6 +1736,17 @@ fn apply_keypad_sheet(
     let started = Instant::now();
     install_render_telemetry(ui.window(), telemetry, Some(started));
     let _ = ui.show();
+    ui.window()
+        .with_winit_window(|native: &i_slint_backend_winit::winit::window::Window| {
+            if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
+                if let Err(error) = panel.set_input_passthrough(native, click_through, 720, 360) {
+                    telemetry.emit(
+                        "keypad_input_region_failed",
+                        [("error", serde_json::json!(error.to_string()))],
+                    );
+                }
+            }
+        });
     if telemetry.enabled() {
         let weak = ui.as_weak();
         let paint_telemetry = telemetry.clone();
@@ -1281,6 +1763,67 @@ fn apply_keypad_sheet(
     Ok(())
 }
 
+fn open_tray_menu(
+    menu: &sni::TrayMenu,
+    state: Rc<RefCell<UiState>>,
+    popups: &Rc<RefCell<PopupWindows>>,
+    sni: &Rc<SniHandle>,
+    telemetry: &Rc<Telemetry>,
+) {
+    let started = Instant::now();
+    let mut windows = popups.borrow_mut();
+    windows.close_all();
+    if windows.tray_menu.is_none() {
+        let ui = TrayMenuWindow::new().expect("tray menu window");
+        apply_theme_values(&ui.global::<Theme>(), &state.borrow().popup_theme);
+        let close = popups.clone();
+        ui.on_close(move || close.borrow_mut().close_all());
+        let action_sni = sni.clone();
+        let weak = ui.as_weak();
+        ui.on_select({
+            let close = popups.clone();
+            move |item_id| {
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                action_sni.send(SniAction::MenuEvent {
+                    key: ui.get_item_key().to_string(),
+                    item_id,
+                });
+                close.borrow_mut().close_all();
+            }
+        });
+        windows.tray_menu = Some(ui);
+    }
+    let ui = windows.tray_menu.as_ref().expect("tray menu window");
+    ui.set_menu_title(menu.title.clone().into());
+    ui.set_item_key(menu.item_key.clone().into());
+    let entries: Vec<_> = menu
+        .entries
+        .iter()
+        .map(|entry| TrayMenuEntryUi {
+            item_id: entry.item_id,
+            label: entry.label.clone().into(),
+            enabled: entry.enabled,
+            checked: entry.checked,
+            separator: entry.separator,
+            level: entry.level as i32,
+        })
+        .collect();
+    ui.set_entries(ModelRc::new(VecModel::from_slice(&entries)));
+    install_render_telemetry(ui.window(), telemetry, Some(started));
+    resize_window(
+        ui.window(),
+        300.0,
+        (80 + menu.entries.len().saturating_mul(34)).min(520) as f64,
+    );
+    let _ = ui.show();
+    telemetry.emit(
+        "popup_open_requested",
+        [("popup", serde_json::json!("tray-menu"))],
+    );
+}
+
 fn usb_model(device: UsbDevice) -> UsbUi {
     UsbUi {
         name: device.name.into(),
@@ -1289,142 +1832,6 @@ fn usb_model(device: UsbDevice) -> UsbUi {
         size: device.size.into(),
         mounted: device.mounted,
     }
-}
-
-fn refresh_external_async(
-    state: &Rc<RefCell<UiState>>,
-    _popups: &Rc<RefCell<PopupWindows>>,
-    telemetry: &Rc<Telemetry>,
-) {
-    let running = state.borrow().external_probe_running.clone();
-    if !begin_external_probe(&running) {
-        return;
-    }
-    let slot = state.borrow().external_probe.clone();
-    let thread_running = running.clone();
-    let telemetry = (**telemetry).clone();
-    telemetry.emit(
-        "module_discovery",
-        [("phase", serde_json::json!("external-probe-start"))],
-    );
-    let spawned = std::thread::Builder::new()
-        .name("module-probe".to_owned())
-        .spawn(move || {
-            let probe = probe_external_state();
-            telemetry.emit(
-                "module_discovery",
-                [
-                    ("phase", serde_json::json!("external-probe-complete")),
-                    ("volume", serde_json::json!(probe.volume)),
-                    ("notifications", serde_json::json!(probe.notification_count)),
-                ],
-            );
-            *slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(probe);
-            thread_running.store(false, Ordering::Release);
-        });
-    if spawned.is_err() {
-        running.store(false, Ordering::Release);
-    }
-}
-
-fn begin_external_probe(running: &AtomicBool) -> bool {
-    running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-}
-
-#[derive(Default)]
-struct ExternalProbe {
-    volume: u8,
-    muted: bool,
-    notification_count: u32,
-    notifications_paused: bool,
-    sync_active: bool,
-}
-
-fn probe_external_state() -> ExternalProbe {
-    let mut probe = ExternalProbe {
-        volume: 50,
-        ..ExternalProbe::default()
-    };
-    let mut command = launch::command("pactl");
-    command
-        .args(["get-sink-volume", "@DEFAULT_SINK@"])
-        .stderr(Stdio::null());
-    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
-        if output.status.success() {
-            probe.volume = first_percentage(&String::from_utf8_lossy(&output.stdout)).unwrap_or(50);
-        }
-    }
-    let mut command = launch::command("pactl");
-    command
-        .args(["get-sink-mute", "@DEFAULT_SINK@"])
-        .stderr(Stdio::null());
-    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
-        probe.muted = String::from_utf8_lossy(&output.stdout).contains("yes");
-    }
-    let mut command = launch::command("dunstctl");
-    command.args(["count", "history"]).stderr(Stdio::null());
-    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
-        if output.status.success() {
-            probe.notification_count = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .parse()
-                .unwrap_or(0);
-        }
-    }
-    let mut command = launch::command("dunstctl");
-    command.arg("is-paused").stderr(Stdio::null());
-    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
-        probe.notifications_paused = String::from_utf8_lossy(&output.stdout).trim() == "true";
-    }
-    let mut command = launch::command("busctl");
-    command
-        .args([
-            "--user",
-            "get-property",
-            "org.smpl.SyncCenter",
-            "/org/smpl/SyncCenter",
-            "org.smpl.SyncCenter",
-            "IsActive",
-        ])
-        .stderr(Stdio::null());
-    if let Some(output) = bounded_output(command, EXTERNAL_PROBE_TIMEOUT) {
-        probe.sync_active = output.status.success()
-            && String::from_utf8_lossy(&output.stdout)
-                .split_whitespace()
-                .last()
-                == Some("true");
-    }
-    probe
-}
-
-fn bounded_output(mut command: std::process::Command, timeout: Duration) -> Option<Output> {
-    command.stdout(Stdio::piped());
-    let mut child = command.spawn().ok()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-}
-
-fn first_percentage(source: &str) -> Option<u8> {
-    source
-        .split(|character: char| !character.is_ascii_digit())
-        .find_map(|number| (!number.is_empty()).then(|| number.parse().ok()).flatten())
-        .map(|value: u8| value.min(100))
 }
 
 fn spawn<const N: usize>(children: &Rc<RefCell<Vec<Child>>>, arguments: [&str; N]) {
@@ -1476,13 +1883,22 @@ fn reload_config(paths: &ConfigPaths) -> Result<BarConfigFile, config::ConfigErr
 fn status_json(state: &Rc<RefCell<UiState>>) -> serde_json::Value {
     let state = state.borrow();
     serde_json::json!({
+        "resident": true,
+        "app_id": if state.preview { PREVIEW_APP_ID } else { APP_ID },
         "config": state.config,
         "compositor": state.compositor.kind.as_str(),
         "focused_workspace": state.compositor.focused_workspace,
         "window_title": state.compositor.active_window_title,
         "system": system_summary(&state.system),
         "compositor_error": state.compositor.error,
-        "generic_sni_gate": "not-implemented",
+        "panel": state.panel_status,
+        "providers_error": state.provider_error,
+        "sni": {
+            "watcher_owned": state.sni_status.watcher_owned,
+            "host_registered": state.sni_status.host_registered,
+            "items": state.sni_status.item_count,
+            "error": state.sni_status.error,
+        },
     })
 }
 
@@ -1534,7 +1950,8 @@ struct PopupWindows {
     usb: Option<UsbWindow>,
     overview: Option<WorkspaceOverviewWindow>,
     keypad: Option<KeypadCheatsheetWindow>,
-    identify: Option<IdentifyWindow>,
+    identify: Vec<IdentifyWindow>,
+    tray_menu: Option<TrayMenuWindow>,
 }
 
 impl PopupWindows {
@@ -1551,9 +1968,14 @@ impl PopupWindows {
         if let Some(window) = &self.keypad {
             let _ = window.hide();
         }
-        if let Some(window) = &self.identify {
+        for window in &self.identify {
             let _ = window.hide();
         }
+        if let Some(window) = &self.tray_menu {
+            let _ = window.hide();
+        }
+        let marker = ipc_runtime().join("smplos/native-popup.active");
+        let _ = std::fs::remove_file(marker);
     }
 }
 
@@ -1567,9 +1989,19 @@ struct UiState {
     popup_theme: ThemePalette,
     keypad_override: Option<bool>,
     keypad_sheet: Option<serde_json::Value>,
+    panel_update: Option<PanelUpdate>,
+    panel_status: Option<panel::PanelStatus>,
+    panel_retry_at: Instant,
+    x11_panel: Option<X11Panel>,
+    preview: bool,
+    wayland_window_token: Option<usize>,
+    wayland_window_seen: bool,
+    sni_revision: u64,
+    sni_status: sni::SniStatus,
+    provider_revision: u64,
+    provider_state: ProviderState,
+    provider_error: String,
     last_system_sample: Instant,
-    external_probe: Arc<Mutex<Option<ExternalProbe>>>,
-    external_probe_running: Arc<AtomicBool>,
 }
 
 impl UiState {
@@ -1585,47 +2017,33 @@ impl UiState {
             popup_theme: ThemePalette::default(),
             keypad_override: None,
             keypad_sheet: None,
+            panel_update: None,
+            panel_status: None,
+            panel_retry_at: Instant::now(),
+            x11_panel: None,
+            preview: false,
+            wayland_window_token: None,
+            wayland_window_seen: false,
+            sni_revision: 0,
+            sni_status: sni::SniStatus::default(),
+            provider_revision: 0,
+            provider_state: ProviderState::default(),
+            provider_error: String::new(),
             last_system_sample: Instant::now(),
-            external_probe: Arc::new(Mutex::new(None)),
-            external_probe_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn refresh_system(&mut self) -> bool {
-        let probe = self
-            .external_probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let external_changed = if let Some(probe) = probe {
-            self.system.volume = probe.volume;
-            self.system.volume_muted = probe.muted;
-            self.system.notification_count = probe.notification_count;
-            self.system.notifications_paused = probe.notifications_paused;
-            self.system.sync_active = probe.sync_active;
-            true
-        } else {
-            false
-        };
+    fn refresh_system(&mut self) {
         if self.last_system_sample.elapsed() < Duration::from_millis(1_000) {
-            return external_changed;
+            apply_provider_state(&mut self.system, &self.provider_state);
+            return;
         }
         self.last_system_sample = Instant::now();
-        let volume = self.system.volume;
-        let volume_muted = self.system.volume_muted;
-        let notification_count = self.system.notification_count;
-        let notifications_paused = self.system.notifications_paused;
-        let sync_active = self.system.sync_active;
         self.system = self.sampler.sample();
-        self.system.volume = volume;
-        self.system.volume_muted = volume_muted;
-        self.system.notification_count = notification_count;
-        self.system.notifications_paused = notifications_paused;
-        self.system.sync_active = sync_active;
+        apply_provider_state(&mut self.system, &self.provider_state);
         if let Some(present) = self.keypad_override {
             self.system.keypad_present = present;
         }
-        external_changed
     }
 }
 
@@ -1846,17 +2264,13 @@ mod tests {
     }
 
     #[test]
-    fn probe_is_single_flight_and_deadlines_are_bounded() {
-        let running = AtomicBool::new(false);
-        assert!(begin_external_probe(&running));
-        assert!(!begin_external_probe(&running));
-        running.store(false, Ordering::Release);
-
-        let started = Instant::now();
-        let mut command = launch::command("sh");
-        command.args(["-c", "exec sleep 10"]);
-        assert!(bounded_output(command, Duration::from_millis(80)).is_none());
-        assert!(started.elapsed() < Duration::from_secs(2));
+    fn panel_title_preserves_default_rules_and_names_dynamic_positions() {
+        let mut config = BarConfigFile::default();
+        assert_eq!(panel_title(&config, false), "smpl-bar");
+        config.edge = PanelEdge::Top;
+        assert_eq!(panel_title(&config, false), "smpl-bar:panel-top-pinned");
+        config.mode = PanelMode::Floating;
+        assert_eq!(panel_title(&config, true), "smpl-bar-preview");
     }
 
     #[test]
@@ -1868,12 +2282,6 @@ mod tests {
         assert!(retained_keypad_sheet(&state).is_err());
         state.borrow_mut().keypad_sheet = Some(serde_json::json!({"visible": true}));
         assert!(retained_keypad_sheet(&state).is_ok());
-    }
-
-    #[test]
-    fn percentage_probe_does_not_confuse_multiple_values() {
-        assert_eq!(first_percentage("Volume: 42% / 42%"), Some(42));
-        assert_eq!(first_percentage("muted"), None);
     }
 
     #[test]

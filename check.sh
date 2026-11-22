@@ -114,9 +114,12 @@ check_feat "start-menu: Rust search-pop-char"          start-menu/src/main.rs   
 check_feat "settings: dropdown bounds check"    settings/ui/main.slint "selected-dropdown-index < root.available-layouts.length"
 check_feat "settings: index reset before model" settings/src/main.rs   "set_selected_dropdown_index(-1)"
 
-# smpl-bar: keep native shell separation and the explicit tray acceptance gate.
-check_feat "smpl-bar: shared backend init" smpl-bar/src/main.rs 'smpl_common::init("smpl-bar"'
-check_feat "smpl-bar: explicit SNI gate" smpl-bar/src/main.rs '"generic_sni_gate": "not-implemented"'
+# smpl-bar: keep native shell separation and the implemented panel/tray gates.
+check_feat "smpl-bar: shared backend init" smpl-bar/src/main.rs 'smpl_common::init(app_id'
+check_feat "smpl-bar: SNI watcher" smpl-bar/src/sni.rs 'org.kde.StatusNotifierWatcher'
+check_feat "smpl-bar: DBusMenu host" smpl-bar/src/sni.rs 'com.canonical.dbusmenu'
+check_feat "smpl-bar: layer reservation" smpl-bar/src/panel.rs 'set_exclusive_zone'
+check_feat "smpl-bar: X11 strut" smpl-bar/src/panel.rs '_NET_WM_STRUT_PARTIAL'
 
 # ── 2. YAML lint (CI workflow files) ────────────────────────────────────────
 

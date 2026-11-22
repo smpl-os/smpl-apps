@@ -1,4 +1,4 @@
-use crate::config::BarConfigFile;
+use crate::config::{BarConfigFile, PanelEdge, PanelMode};
 use crate::launch;
 use crate::monitor::{
     layout_code, CompositorKind, CompositorState, KeyboardState, Monitor, Workspace,
@@ -7,11 +7,10 @@ use crate::telemetry::Telemetry;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdout, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const MAX_REPLY: usize = 8 * 1024 * 1024;
@@ -21,6 +20,23 @@ pub enum Action {
     SelectWorkspace(i32),
     FocusMonitor(String),
     NextKeyboardLayout,
+    PlacePanel {
+        monitor: String,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        edge: PanelEdge,
+        mode: PanelMode,
+    },
+    PlacePopup {
+        title: String,
+        monitor: String,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    },
     Quit,
 }
 
@@ -28,6 +44,39 @@ pub struct CompositorHandle {
     pub kind: CompositorKind,
     pub states: Receiver<CompositorState>,
     actions: SyncSender<Action>,
+    panel_ack: Arc<Mutex<Option<PanelPlacementTarget>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelPlacementTarget {
+    pub monitor: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PanelPlacementTarget {
+    fn from_action(action: &Action) -> Option<Self> {
+        let Action::PlacePanel {
+            monitor,
+            x,
+            y,
+            width,
+            height,
+            ..
+        } = action
+        else {
+            return None;
+        };
+        Some(Self {
+            monitor: monitor.clone(),
+            x: *x,
+            y: *y,
+            width: *width,
+            height: *height,
+        })
+    }
 }
 
 impl CompositorHandle {
@@ -46,6 +95,14 @@ impl CompositorHandle {
             }
         }
     }
+
+    pub fn panel_acknowledged(&self, target: &PanelPlacementTarget) -> bool {
+        self.panel_ack
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            == Some(target)
+    }
 }
 
 pub fn detect() -> CompositorKind {
@@ -62,20 +119,72 @@ pub fn detect() -> CompositorKind {
     }
 }
 
+#[derive(Deserialize, Default)]
+struct WorkspacePolicy {
+    #[serde(default)]
+    enabled: bool,
+    primary: Option<String>,
+    #[serde(default)]
+    monitors: Vec<WorkspacePolicyMonitor>,
+}
+
+#[derive(Deserialize, Default)]
+struct WorkspacePolicyMonitor {
+    id: String,
+    connector: String,
+}
+
+fn policy_primary() -> String {
+    let Some(home) = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    else {
+        return String::new();
+    };
+    let directory = home.join(".config/smplos");
+    if !directory.join("workspace-policy.enabled").is_file() {
+        return String::new();
+    }
+    let Ok(source) = std::fs::read_to_string(directory.join("workspace-policy.json")) else {
+        return String::new();
+    };
+    let Ok(policy) = serde_json::from_str::<WorkspacePolicy>(&source) else {
+        return String::new();
+    };
+    if !policy.enabled {
+        return String::new();
+    }
+    let Some(primary) = policy.primary else {
+        return String::new();
+    };
+    policy
+        .monitors
+        .into_iter()
+        .find(|monitor| monitor.id == primary)
+        .map(|monitor| monitor.connector)
+        .unwrap_or_default()
+}
+
 pub fn spawn(_config: BarConfigFile, telemetry: Telemetry) -> CompositorHandle {
     let kind = detect();
     let (state_tx, states) = mpsc::sync_channel(4);
     let (actions, action_rx) = mpsc::sync_channel(32);
+    let panel_ack = Arc::new(Mutex::new(None));
+    let worker_panel_ack = panel_ack.clone();
     let thread_telemetry = telemetry.clone();
     let thread_kind = kind;
     let _ = std::thread::Builder::new()
         .name("compositor".to_owned())
         .spawn(move || match thread_kind {
             CompositorKind::Hyprland => {
-                HyprlandWorker::new(thread_telemetry).run(state_tx, action_rx)
+                HyprlandWorker::new(thread_telemetry).run(state_tx, action_rx, worker_panel_ack)
             }
-            CompositorKind::Niri => NiriWorker::new(thread_telemetry).run(state_tx, action_rx),
-            CompositorKind::X11 => X11Worker::new(thread_telemetry).run(state_tx, action_rx),
+            CompositorKind::Niri => {
+                NiriWorker::new(thread_telemetry).run(state_tx, action_rx, worker_panel_ack)
+            }
+            CompositorKind::X11 => {
+                X11Worker::new(thread_telemetry).run(state_tx, action_rx, worker_panel_ack)
+            }
             CompositorKind::Unavailable => {
                 let state = CompositorState {
                     error: "No supported compositor session was found".to_owned(),
@@ -89,6 +198,7 @@ pub fn spawn(_config: BarConfigFile, telemetry: Telemetry) -> CompositorHandle {
         kind,
         states,
         actions,
+        panel_ack,
     }
 }
 
@@ -121,7 +231,12 @@ impl HyprlandWorker {
         }
     }
 
-    fn run(self, state_tx: SyncSender<CompositorState>, actions: Receiver<Action>) {
+    fn run(
+        self,
+        state_tx: SyncSender<CompositorState>,
+        actions: Receiver<Action>,
+        panel_ack: Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) {
         self.telemetry.emit(
             "compositor_detected",
             [("kind", serde_json::json!("hyprland"))],
@@ -159,7 +274,7 @@ impl HyprlandWorker {
                             ("error", serde_json::json!(error.to_string())),
                         ],
                     );
-                    if self.wait_for_action(&actions) {
+                    if self.wait_for_action(&actions, &panel_ack) {
                         return;
                     }
                     continue;
@@ -176,7 +291,7 @@ impl HyprlandWorker {
             let mut reader = BufReader::new(stream);
             let mut buffer = Vec::new();
             loop {
-                if self.drain_actions(&actions) {
+                if self.drain_actions(&actions, &panel_ack) {
                     return;
                 }
                 buffer.clear();
@@ -204,28 +319,41 @@ impl HyprlandWorker {
         }
     }
 
-    fn wait_for_action(&self, actions: &Receiver<Action>) -> bool {
+    fn wait_for_action(
+        &self,
+        actions: &Receiver<Action>,
+        panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) -> bool {
         match actions.recv_timeout(Duration::from_millis(500)) {
             Ok(Action::Quit) => true,
             Ok(action) => {
-                self.handle_action(action);
+                self.handle_action(action, panel_ack);
                 false
             }
             Err(_) => false,
         }
     }
 
-    fn drain_actions(&self, actions: &Receiver<Action>) -> bool {
+    fn drain_actions(
+        &self,
+        actions: &Receiver<Action>,
+        panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) -> bool {
         loop {
             match actions.try_recv() {
                 Ok(Action::Quit) => return true,
-                Ok(action) => self.handle_action(action),
+                Ok(action) => self.handle_action(action, panel_ack),
                 Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return false,
             }
         }
     }
 
-    fn handle_action(&self, action: Action) {
+    fn handle_action(
+        &self,
+        action: Action,
+        panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) {
+        let panel_target = PanelPlacementTarget::from_action(&action);
         let started = std::time::Instant::now();
         let result = match action {
             Action::SelectWorkspace(workspace) => self.select_workspace(workspace),
@@ -236,6 +364,23 @@ impl HyprlandWorker {
                 .request("switchxkblayout current next")
                 .map(|_| ())
                 .map_err(WorkerError::from),
+            Action::PlacePanel {
+                monitor,
+                x,
+                y,
+                width: _,
+                height: _,
+                edge: _,
+                mode: _,
+            } => self.place_panel(&monitor, x, y),
+            Action::PlacePopup {
+                title,
+                monitor,
+                x,
+                y,
+                width: _,
+                height: _,
+            } => self.place_window(&title, &monitor, x, y),
             Action::Quit => Ok(()),
         };
         self.telemetry.emit(
@@ -249,6 +394,7 @@ impl HyprlandWorker {
                 (
                     "error",
                     result
+                        .as_ref()
                         .err()
                         .map(|error| error.to_string())
                         .unwrap_or_default()
@@ -256,6 +402,11 @@ impl HyprlandWorker {
                 ),
             ],
         );
+        if result.is_ok() {
+            *panel_ack
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = panel_target;
+        }
     }
 
     fn request(&self, command: &str) -> std::io::Result<Vec<u8>> {
@@ -382,6 +533,7 @@ impl HyprlandWorker {
             kind: CompositorKind::Hyprland,
             monitors,
             workspaces,
+            policy_primary: policy_primary(),
             focused_workspace: active_workspace,
             focused_monitor: active_monitor,
             active_window_title: active.and_then(|window| window.title).unwrap_or_default(),
@@ -412,6 +564,68 @@ impl HyprlandWorker {
         }
         self.dispatch(format!("hl.dsp.focus({{workspace={workspace}}})"))
     }
+
+    fn place_panel(&self, monitor: &str, x: i32, y: i32) -> Result<(), WorkerError> {
+        self.place_matching_window(monitor, x, y, |client| {
+            client.pid == i64::from(std::process::id())
+                && client.class.as_deref() == Some("smpl-bar")
+                && client.title.as_deref().is_some_and(|title| {
+                    title == "smpl-bar" || title.starts_with("smpl-bar:panel-")
+                })
+        })
+    }
+
+    fn place_window(&self, title: &str, monitor: &str, x: i32, y: i32) -> Result<(), WorkerError> {
+        self.place_matching_window(monitor, x, y, |client| {
+            client.pid == i64::from(std::process::id())
+                && client.class.as_deref() == Some("smpl-bar")
+                && client.title.as_deref() == Some(title)
+        })
+    }
+
+    fn place_matching_window(
+        &self,
+        monitor: &str,
+        x: i32,
+        y: i32,
+        matches: impl Fn(&HyprPanelClient) -> bool,
+    ) -> Result<(), WorkerError> {
+        let mut client = None;
+        for _ in 0..4 {
+            let clients: Vec<HyprPanelClient> = self.json("j/clients")?;
+            client = clients.into_iter().find(|candidate| matches(candidate));
+            if client.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let client = client.ok_or_else(|| {
+            WorkerError::Message("native window is not mapped for placement".to_owned())
+        })?;
+        let target_monitor = self
+            .json::<Vec<HyprMonitor>>("j/monitors")?
+            .into_iter()
+            .find(|candidate| candidate.name == monitor);
+        if let Some(target) = target_monitor {
+            if client.monitor != Some(target.id) {
+                self.dispatch(format!(
+                    "hl.dsp.window.move({{window=hl.get_window('address:{}'),monitor={}}})",
+                    client.address, target.id
+                ))?;
+            }
+        }
+        let reply = self.request(&format!(
+            "dispatch movewindowpixel exact {x} {y},address:{}",
+            client.address
+        ))?;
+        if String::from_utf8_lossy(&reply).trim() != "ok" {
+            return Err(WorkerError::Message(format!(
+                "Hyprland rejected native window placement: {}",
+                String::from_utf8_lossy(&reply).trim()
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn event_needs_snapshot(event: &str) -> bool {
@@ -441,214 +655,546 @@ fn event_needs_snapshot(event: &str) -> bool {
 }
 
 struct NiriWorker {
+    socket: PathBuf,
     telemetry: Telemetry,
 }
 
 impl NiriWorker {
     fn new(telemetry: Telemetry) -> Self {
-        Self { telemetry }
+        Self {
+            socket: std::env::var_os("NIRI_SOCKET")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            telemetry,
+        }
     }
 
-    fn run(self, state_tx: SyncSender<CompositorState>, actions: Receiver<Action>) {
+    fn run(
+        self,
+        state_tx: SyncSender<CompositorState>,
+        actions: Receiver<Action>,
+        panel_ack: Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) {
         self.telemetry
             .emit("compositor_detected", [("kind", serde_json::json!("niri"))]);
-        publish(&state_tx, self.snapshot());
-        let mut event_stream = match NiriEventStream::spawn() {
-            Ok(stream) => {
-                self.telemetry.emit(
-                    "compositor_subscribe",
-                    [
-                        ("kind", serde_json::json!("niri")),
-                        ("transport", serde_json::json!("niri-msg-process-gate")),
-                        ("ok", serde_json::json!(true)),
-                    ],
-                );
-                Some(stream)
-            }
-            Err(error) => {
-                let mut state = error_state(CompositorKind::Niri, error);
-                publish(&state_tx, state.clone());
-                self.telemetry.emit(
-                    "compositor_subscribe",
-                    [
-                        ("kind", serde_json::json!("niri")),
-                        ("ok", serde_json::json!(false)),
-                    ],
-                );
-                state
-                    .error
-                    .push_str("; falling back to a one-second native process snapshot");
-                publish(&state_tx, state);
-                None
-            }
-        };
-        let mut last_snapshot = std::time::Instant::now();
+        let mut outputs = self.outputs().unwrap_or_default();
+        let mut live = NiriLiveState::default();
         loop {
-            if let Ok(action) = actions.recv_timeout(Duration::from_millis(100)) {
-                match action {
-                    Action::Quit => break,
-                    Action::SelectWorkspace(workspace) => {
-                        self.command(["msg", "action", "focus-workspace", &workspace.to_string()])
+            let mut stream = match UnixStream::connect(&self.socket) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    publish(
+                        &state_tx,
+                        error_state(
+                            CompositorKind::Niri,
+                            format!("Niri IPC unavailable: {error}"),
+                        ),
+                    );
+                    self.telemetry.emit(
+                        "compositor_subscribe",
+                        [
+                            ("kind", serde_json::json!("niri")),
+                            ("transport", serde_json::json!("niri-socket")),
+                            ("ok", serde_json::json!(false)),
+                        ],
+                    );
+                    if self.wait_for_action(&actions, &mut live, &outputs, &panel_ack) {
+                        return;
                     }
-                    Action::FocusMonitor(_monitor) => {}
-                    Action::NextKeyboardLayout => {
-                        self.command(["msg", "action", "switch-xkb-layout", "next"]);
-                    }
+                    continue;
                 }
-                publish(&state_tx, self.snapshot());
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+            if stream.write_all(b"\"EventStream\"\n").is_err() {
+                if self.wait_for_action(&actions, &mut live, &outputs, &panel_ack) {
+                    return;
+                }
                 continue;
             }
-            if event_stream.is_none() && last_snapshot.elapsed() >= Duration::from_secs(1) {
-                publish(&state_tx, self.snapshot());
-                last_snapshot = std::time::Instant::now();
-            } else if let Some(stream) = event_stream.as_mut() {
-                match stream.poll_line() {
-                    Ok(true) => {
-                        publish(&state_tx, self.snapshot());
-                        last_snapshot = std::time::Instant::now();
+            self.telemetry.emit(
+                "compositor_subscribe",
+                [
+                    ("kind", serde_json::json!("niri")),
+                    ("transport", serde_json::json!("niri-socket")),
+                    ("ok", serde_json::json!(true)),
+                ],
+            );
+            let mut reader = BufReader::new(stream);
+            loop {
+                if self.drain_actions(&actions, &mut live, &outputs, &panel_ack) {
+                    return;
+                }
+                let mut line = Vec::new();
+                match reader.read_until(b'\n', &mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line) else {
+                            continue;
+                        };
+                        if event.get("Ok").is_some() || event.get("Err").is_some() {
+                            continue;
+                        }
+                        let applied = live.apply_event(&event);
+                        if applied.refresh_outputs {
+                            outputs = self.outputs().unwrap_or(outputs);
+                        }
+                        if applied.changed {
+                            publish(&state_tx, live.snapshot(outputs.clone()));
+                            self.telemetry.emit(
+                                "compositor_snapshot",
+                                [("source", serde_json::json!("niri-socket"))],
+                            );
+                        }
                     }
-                    Ok(false) => {}
-                    Err(_) => event_stream = None,
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::TimedOut
+                                | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(_) => break,
                 }
             }
         }
     }
 
-    fn command<const N: usize>(&self, args: [&str; N]) {
-        if let Err(error) = launch::command("niri").args(args).status() {
-            eprintln!("smpl-bar: niri action failed: {error}");
+    fn wait_for_action(
+        &self,
+        actions: &Receiver<Action>,
+        live: &mut NiriLiveState,
+        outputs: &[NiriOutput],
+        panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) -> bool {
+        match actions.recv_timeout(Duration::from_millis(250)) {
+            Ok(Action::Quit) => true,
+            Ok(action) => {
+                let _ = self.handle_action(action, live, outputs, panel_ack);
+                false
+            }
+            Err(_) => false,
         }
     }
 
-    fn output(&self, args: &[&str]) -> Result<Vec<u8>, WorkerError> {
-        let output = launch::command("niri")
-            .args(args)
-            .output()
-            .map_err(WorkerError::from)?;
-        if !output.status.success() {
+    fn drain_actions(
+        &self,
+        actions: &Receiver<Action>,
+        live: &mut NiriLiveState,
+        outputs: &[NiriOutput],
+        panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) -> bool {
+        loop {
+            match actions.try_recv() {
+                Ok(Action::Quit) => return true,
+                Ok(action) => {
+                    let _ = self.handle_action(action, live, outputs, panel_ack);
+                }
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return false,
+            }
+        }
+    }
+
+    fn handle_action(
+        &self,
+        action: Action,
+        live: &NiriLiveState,
+        outputs: &[NiriOutput],
+        panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) -> Result<(), WorkerError> {
+        let panel_target = PanelPlacementTarget::from_action(&action);
+        let result = match action {
+            Action::SelectWorkspace(index) => self.request(serde_json::json!({
+                "Action": {
+                    "FocusWorkspace": {
+                        "reference": {"Index": index}
+                    }
+                }
+            })),
+            Action::FocusMonitor(output) => self.request(serde_json::json!({
+                "Action": {"FocusMonitor": {"output": output}}
+            })),
+            Action::NextKeyboardLayout => self.request(serde_json::json!({
+                "Action": {"SwitchLayout": {"layout": "Next"}}
+            })),
+            Action::PlacePanel {
+                monitor,
+                x,
+                y,
+                width: _,
+                height,
+                edge: _,
+                mode: _,
+            } => self.place_panel(
+                live,
+                outputs,
+                NiriPlacement {
+                    monitor: &monitor,
+                    x,
+                    y,
+                    height,
+                },
+            ),
+            Action::PlacePopup {
+                title,
+                monitor,
+                x,
+                y,
+                width: _,
+                height,
+            } => self.place_popup(
+                live,
+                outputs,
+                &title,
+                NiriPlacement {
+                    monitor: &monitor,
+                    x,
+                    y,
+                    height,
+                },
+            ),
+            Action::Quit => Ok(serde_json::Value::Null),
+        };
+        let result = result.map(|_| ());
+        self.telemetry.emit(
+            "compositor_action",
+            [
+                ("kind", serde_json::json!("niri")),
+                ("ok", serde_json::json!(result.is_ok())),
+            ],
+        );
+        if result.is_ok() {
+            *panel_ack
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = panel_target;
+        }
+        result
+    }
+
+    fn outputs(&self) -> Result<Vec<NiriOutput>, WorkerError> {
+        let response = self.request(serde_json::Value::String("Outputs".to_owned()))?;
+        let outputs = response
+            .get("Ok")
+            .and_then(|ok| ok.get("Outputs"))
+            .cloned()
+            .ok_or_else(|| WorkerError::Message("Niri Outputs reply was malformed".to_owned()))?;
+        Ok(serde_json::from_value(outputs)?)
+    }
+
+    fn request(&self, request: serde_json::Value) -> Result<serde_json::Value, WorkerError> {
+        let mut stream = UnixStream::connect(&self.socket)?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+        serde_json::to_writer(&mut stream, &request)?;
+        stream.write_all(b"\n")?;
+        let mut reply = Vec::new();
+        BufReader::new(&stream)
+            .take((MAX_REPLY + 1) as u64)
+            .read_until(b'\n', &mut reply)?;
+        if reply.len() > MAX_REPLY {
+            return Err(WorkerError::Message(
+                "Niri IPC response exceeded 8 MiB".to_owned(),
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_slice(&reply)?;
+        if let Some(error) = value.get("Err") {
             return Err(WorkerError::Message(format!(
-                "niri msg failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "Niri rejected action: {error}"
             )));
         }
-        Ok(output.stdout)
+        Ok(value)
     }
 
-    fn snapshot(&self) -> CompositorState {
-        let workspaces = self
-            .output(&["msg", "--json", "workspaces"])
-            .ok()
-            .and_then(|reply| serde_json::from_slice::<Vec<NiriWorkspace>>(&reply).ok())
+    fn place_panel(
+        &self,
+        live: &NiriLiveState,
+        outputs: &[NiriOutput],
+        placement: NiriPlacement<'_>,
+    ) -> Result<serde_json::Value, WorkerError> {
+        self.place_matching_window(live, outputs, placement, |window| {
+            window.pid == Some(std::process::id() as i32)
+                && window.app_id.as_deref() == Some("smpl-bar")
+                && window.title.as_deref().is_some_and(|title| {
+                    title == "smpl-bar" || title.starts_with("smpl-bar:panel-")
+                })
+        })
+    }
+
+    fn place_popup(
+        &self,
+        live: &NiriLiveState,
+        outputs: &[NiriOutput],
+        title: &str,
+        placement: NiriPlacement<'_>,
+    ) -> Result<serde_json::Value, WorkerError> {
+        self.place_matching_window(live, outputs, placement, |window| {
+            window.pid == Some(std::process::id() as i32)
+                && window.app_id.as_deref() == Some("smpl-bar")
+                && window.title.as_deref() == Some(title)
+        })
+    }
+
+    fn place_matching_window(
+        &self,
+        live: &NiriLiveState,
+        outputs: &[NiriOutput],
+        placement: NiriPlacement<'_>,
+        matches: impl Fn(&NiriWindow) -> bool,
+    ) -> Result<serde_json::Value, WorkerError> {
+        let mut windows = self.windows().unwrap_or_else(|_| live.windows.clone());
+        let mut window = windows.into_iter().find(|window| matches(window));
+        if window.is_none() {
+            std::thread::sleep(Duration::from_millis(75));
+            windows = self.windows().unwrap_or_else(|_| live.windows.clone());
+            window = windows.into_iter().find(|window| matches(window));
+        }
+        let window = window.ok_or_else(|| {
+            WorkerError::Message("Niri native window is not mapped for placement".to_owned())
+        })?;
+        let output = outputs
+            .iter()
+            .find(|output| output.name == placement.monitor)
+            .and_then(|output| output.logical.as_ref());
+        self.request(serde_json::json!({
+            "Action": {"MoveWindowToMonitor": {"id": window.id, "output": placement.monitor}}
+        }))?;
+        self.request(serde_json::json!({
+            "Action": {"MoveWindowToFloating": {"id": window.id}}
+        }))?;
+        let (local_x, local_y) = if let Some(output) = output {
+            (
+                placement.x.saturating_sub(output.x),
+                placement
+                    .y
+                    .saturating_sub(output.y)
+                    .clamp(0, output.height.saturating_sub(placement.height) as i32),
+            )
+        } else {
+            (placement.x.max(0), placement.y.max(0))
+        };
+        self.request(serde_json::json!({
+            "Action": {
+                "MoveFloatingWindow": {
+                    "id": window.id,
+                    "x": {"SetFixed": local_x as f64},
+                    "y": {"SetFixed": local_y as f64}
+                }
+            }
+        }))
+    }
+
+    fn windows(&self) -> Result<Vec<NiriWindow>, WorkerError> {
+        let response = self.request(serde_json::Value::String("Windows".to_owned()))?;
+        let windows = response
+            .get("Ok")
+            .and_then(|ok| ok.get("Windows"))
+            .cloned()
+            .ok_or_else(|| WorkerError::Message("Niri Windows reply was malformed".to_owned()))?;
+        Ok(serde_json::from_value(windows)?)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NiriPlacement<'a> {
+    monitor: &'a str,
+    x: i32,
+    y: i32,
+    height: u32,
+}
+
+#[derive(Default)]
+struct NiriLiveState {
+    workspaces: Vec<NiriWorkspace>,
+    windows: Vec<NiriWindow>,
+    layouts: NiriKeyboardLayouts,
+}
+
+struct NiriEventUpdate {
+    changed: bool,
+    refresh_outputs: bool,
+}
+
+impl NiriLiveState {
+    fn apply_event(&mut self, event: &serde_json::Value) -> NiriEventUpdate {
+        let mut changed = false;
+        let mut refresh_outputs = false;
+        if let Some(event) = event.get("WorkspacesChanged") {
+            if let Some(workspaces) = event.get("workspaces") {
+                if let Ok(workspaces) = serde_json::from_value(workspaces.clone()) {
+                    self.workspaces = workspaces;
+                    changed = true;
+                    refresh_outputs = true;
+                }
+            }
+        } else if let Some(event) = event.get("WindowsChanged") {
+            if let Some(windows) = event.get("windows") {
+                if let Ok(windows) = serde_json::from_value(windows.clone()) {
+                    self.windows = windows;
+                    changed = true;
+                }
+            }
+        } else if let Some(event) = event.get("WindowOpenedOrChanged") {
+            if let Some(window) = event.get("window") {
+                if let Ok(window) = serde_json::from_value::<NiriWindow>(window.clone()) {
+                    if let Some(existing) = self
+                        .windows
+                        .iter_mut()
+                        .find(|candidate| candidate.id == window.id)
+                    {
+                        *existing = window;
+                    } else {
+                        self.windows.push(window);
+                    }
+                    changed = true;
+                }
+            }
+        } else if let Some(event) = event.get("WindowClosed") {
+            if let Some(id) = event.get("id").and_then(serde_json::Value::as_u64) {
+                self.windows.retain(|window| window.id != id);
+                changed = true;
+            }
+        } else if let Some(event) = event.get("WindowFocusChanged") {
+            let focused = event.get("id").and_then(serde_json::Value::as_u64);
+            for window in &mut self.windows {
+                window.is_focused = Some(window.id) == focused;
+            }
+            changed = true;
+        } else if let Some(event) = event.get("WorkspaceActivated") {
+            let id = event.get("id").and_then(serde_json::Value::as_u64);
+            if let Some(output) = self
+                .workspaces
+                .iter()
+                .find(|workspace| Some(workspace.id) == id)
+                .and_then(|workspace| workspace.output.clone())
+            {
+                for workspace in &mut self.workspaces {
+                    if workspace.output == Some(output.clone()) {
+                        workspace.is_active = Some(workspace.id) == id;
+                    }
+                    if event.get("focused").and_then(serde_json::Value::as_bool) == Some(true) {
+                        workspace.is_focused = Some(workspace.id) == id;
+                    }
+                }
+                changed = true;
+            }
+        } else if let Some(event) = event.get("WorkspaceActiveWindowChanged") {
+            if let (Some(workspace_id), Some(active)) = (
+                event
+                    .get("workspace_id")
+                    .and_then(serde_json::Value::as_u64),
+                event.get("active_window_id"),
+            ) {
+                if let Some(workspace) = self
+                    .workspaces
+                    .iter_mut()
+                    .find(|workspace| workspace.id == workspace_id)
+                {
+                    workspace.active_window_id = active.as_u64();
+                    changed = true;
+                }
+            }
+        } else if let Some(event) = event.get("KeyboardLayoutsChanged") {
+            if let Some(layouts) = event.get("keyboard_layouts") {
+                if let Ok(layouts) = serde_json::from_value(layouts.clone()) {
+                    self.layouts = layouts;
+                    changed = true;
+                }
+            }
+        } else if let Some(event) = event.get("KeyboardLayoutSwitched") {
+            if let Some(index) = event.get("idx").and_then(serde_json::Value::as_u64) {
+                self.layouts.current_idx = index as usize;
+                changed = true;
+            }
+        } else if event.get("ConfigLoaded").is_some() {
+            refresh_outputs = true;
+        }
+        NiriEventUpdate {
+            changed,
+            refresh_outputs,
+        }
+    }
+
+    fn snapshot(&self, outputs: Vec<NiriOutput>) -> CompositorState {
+        let focused_workspace = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.is_focused);
+        let focused_monitor = focused_workspace
+            .and_then(|workspace| workspace.output.clone())
             .unwrap_or_default();
-        let focused_window = self
-            .output(&["msg", "--json", "focused-window"])
-            .ok()
-            .and_then(|reply| serde_json::from_slice::<NiriWindow>(&reply).ok());
-        let mut sorted: Vec<_> = workspaces
+        let active_window_title = self
+            .windows
+            .iter()
+            .find(|window| window.is_focused)
+            .and_then(|window| window.title.clone())
+            .unwrap_or_default();
+        let monitors = outputs
             .into_iter()
+            .filter_map(|output| {
+                let logical = output.logical?;
+                let active_workspace = self
+                    .workspaces
+                    .iter()
+                    .find(|workspace| {
+                        workspace.output.as_deref() == Some(&output.name) && workspace.is_active
+                    })
+                    .map(|workspace| i32::from(workspace.idx))
+                    .unwrap_or(0);
+                Some(Monitor {
+                    id: output.name.clone(),
+                    connector: output.name.clone(),
+                    description: format!("{} {}", output.make, output.model)
+                        .trim()
+                        .to_owned(),
+                    x: logical.x,
+                    y: logical.y,
+                    width: (logical.width as f64 * logical.scale.max(0.5)) as u32,
+                    height: (logical.height as f64 * logical.scale.max(0.5)) as u32,
+                    scale: logical.scale,
+                    focused: output.name == focused_monitor,
+                    active_workspace,
+                })
+            })
+            .collect::<Vec<_>>();
+        let workspaces = self
+            .workspaces
+            .iter()
             .filter(|workspace| workspace.name.as_deref() != Some("scratchpad"))
-            .collect();
-        sorted.sort_by_key(|workspace| workspace.idx);
-        let focused_index = sorted
-            .iter()
-            .position(|workspace| workspace.is_focused)
-            .map(|index| index + 1)
-            .unwrap_or(1);
-        let result = sorted
-            .iter()
-            .enumerate()
-            .map(|(index, workspace)| Workspace {
-                id: (index + 1) as i32,
+            .map(|workspace| Workspace {
+                id: i32::from(workspace.idx),
                 occupied: workspace.active_window_id.is_some(),
                 focused: workspace.is_focused,
-                visible: workspace.is_focused,
+                visible: workspace.is_active,
                 monitor: workspace.output.clone().unwrap_or_default(),
                 windows: u32::from(workspace.active_window_id.is_some()),
                 temporary: false,
             })
             .collect();
+        let current_layout = self
+            .layouts
+            .names
+            .get(self.layouts.current_idx)
+            .cloned()
+            .unwrap_or_default();
         CompositorState {
             kind: CompositorKind::Niri,
-            monitors: Vec::new(),
-            workspaces: result,
-            focused_workspace: focused_index as i32,
-            focused_monitor: sorted
-                .iter()
-                .find(|workspace| workspace.is_focused)
-                .and_then(|workspace| workspace.output.clone())
-                .unwrap_or_default(),
-            active_window_title: focused_window
-                .and_then(|window| window.title)
-                .unwrap_or_default(),
-            keyboard: KeyboardState::default(),
+            monitors,
+            workspaces,
+            policy_primary: policy_primary(),
+            focused_workspace: focused_workspace
+                .map(|workspace| i32::from(workspace.idx))
+                .unwrap_or(1),
+            focused_monitor,
+            active_window_title,
+            keyboard: KeyboardState {
+                visible: self.layouts.names.len() > 1 && !current_layout.is_empty(),
+                code: layout_code(&current_layout),
+                layout: current_layout.clone(),
+                xkb_layout: current_layout,
+                xkb_variant: String::new(),
+            },
             error: String::new(),
         }
-    }
-}
-
-struct NiriEventStream {
-    child: Child,
-    reader: BufReader<ChildStdout>,
-}
-
-impl NiriEventStream {
-    fn spawn() -> std::io::Result<Self> {
-        let mut child = launch::command("niri")
-            .args(["msg", "event-stream"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "niri event stream has no stdout",
-            )
-        })?;
-        let flags = unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL) };
-        if flags < 0
-            || unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
-                < 0
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(Self {
-            child,
-            reader: BufReader::new(stdout),
-        })
-    }
-
-    fn poll_line(&mut self) -> std::io::Result<bool> {
-        let mut line = Vec::new();
-        match self.reader.read_until(b'\n', &mut line) {
-            Ok(0) => match self.child.try_wait()? {
-                Some(_) => Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "niri event stream exited",
-                )),
-                None => Ok(false),
-            },
-            Ok(_) => Ok(true),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                Ok(false)
-            }
-            Err(error) => Err(error),
-        }
-    }
-}
-
-impl Drop for NiriEventStream {
-    fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
     }
 }
 
@@ -661,7 +1207,12 @@ impl X11Worker {
         Self { telemetry }
     }
 
-    fn run(self, state_tx: SyncSender<CompositorState>, actions: Receiver<Action>) {
+    fn run(
+        self,
+        state_tx: SyncSender<CompositorState>,
+        actions: Receiver<Action>,
+        panel_ack: Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) {
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt, EventMask};
         use x11rb::rust_connection::RustConnection;
@@ -723,6 +1274,15 @@ impl X11Worker {
                             Ok(Action::NextKeyboardLayout) => {
                                 let _ = launch::command("xkb-switch").arg("-n").status();
                             }
+                            Ok(action @ Action::PlacePanel { .. }) => {
+                                if let Some(target) = PanelPlacementTarget::from_action(&action) {
+                                    *panel_ack
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                        Some(target);
+                                }
+                            }
+                            Ok(Action::PlacePopup { .. }) => {}
                             Err(_) => {}
                         }
                     }
@@ -837,6 +1397,7 @@ impl X11Context {
                 active_workspace: current,
             }],
             workspaces,
+            policy_primary: String::new(),
             focused_workspace: current,
             focused_monitor: "X11".to_owned(),
             active_window_title: title,
@@ -915,6 +1476,15 @@ struct HyprWindow {
 }
 
 #[derive(Debug, Deserialize)]
+struct HyprPanelClient {
+    address: String,
+    pid: i64,
+    class: Option<String>,
+    title: Option<String>,
+    monitor: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct HyprDevices {
     #[serde(default)]
     keyboards: Vec<HyprKeyboard>,
@@ -944,20 +1514,79 @@ fn split_option(value: &str) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
 struct NiriWorkspace {
-    idx: i32,
+    id: u64,
+    idx: u8,
     name: Option<String>,
     output: Option<String>,
-    #[serde(rename = "is_focused")]
     is_focused: bool,
-    #[serde(rename = "active_window_id")]
+    is_active: bool,
     active_window_id: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+impl Default for NiriWorkspace {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            idx: 1,
+            name: None,
+            output: None,
+            is_focused: false,
+            is_active: false,
+            active_window_id: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
 struct NiriWindow {
+    id: u64,
     title: Option<String>,
+    app_id: Option<String>,
+    pid: Option<i32>,
+    is_focused: bool,
+    workspace_id: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct NiriKeyboardLayouts {
+    names: Vec<String>,
+    current_idx: usize,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct NiriOutput {
+    name: String,
+    make: String,
+    model: String,
+    logical: Option<NiriLogicalOutput>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+struct NiriLogicalOutput {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    scale: f64,
+}
+
+impl Default for NiriLogicalOutput {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            scale: 1.0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1050,21 +1679,36 @@ mod tests {
     }
 
     #[test]
-    fn niri_event_stream_drop_kills_and_reaps_its_child() {
-        let mut child = launch::command("sh")
-            .args(["-c", "exec sleep 10"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        let stdout = child.stdout.take().unwrap();
-        let stream = NiriEventStream {
-            child,
-            reader: BufReader::new(stdout),
-        };
-        drop(stream);
-        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    fn niri_socket_events_replace_full_state_without_helper_processes() {
+        let mut live = NiriLiveState::default();
+        let update = live.apply_event(&serde_json::json!({
+            "WorkspacesChanged": {
+                "workspaces": [{
+                    "id": 91,
+                    "idx": 1,
+                    "output": "DP-1",
+                    "is_active": true,
+                    "is_focused": true,
+                    "active_window_id": 7
+                }]
+            }
+        }));
+        assert!(update.changed);
+        let state = live.snapshot(vec![NiriOutput {
+            name: "DP-1".to_owned(),
+            make: "smplOS".to_owned(),
+            model: "Display".to_owned(),
+            logical: Some(NiriLogicalOutput {
+                x: 10,
+                y: 20,
+                width: 1920,
+                height: 1080,
+                scale: 1.5,
+            }),
+        }]);
+        assert_eq!(state.monitors[0].connector, "DP-1");
+        assert_eq!(state.workspaces[0].id, 1);
+        assert_eq!(state.monitors[0].width, 2880);
     }
 
     #[test]
