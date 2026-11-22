@@ -304,6 +304,7 @@ impl ProviderWorker {
 
     async fn refresh_bluetooth(&self) {
         let Some(system) = &self.system else {
+            self.set_bluetooth_unavailable();
             return;
         };
         let message = system
@@ -316,10 +317,12 @@ impl ProviderWorker {
             )
             .await;
         let Ok(message) = message else {
+            self.set_bluetooth_unavailable();
             return;
         };
         type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
         let Ok(objects) = message.body().deserialize::<Managed>() else {
+            self.set_bluetooth_unavailable();
             return;
         };
         let mut available = false;
@@ -343,6 +346,7 @@ impl ProviderWorker {
 
     async fn refresh_control_surface(&self) {
         if !name_has_owner(&self.session, CONTROL_SERVICE).await {
+            self.clear_control_surface();
             return;
         }
         let keypad_present = property::<bool>(
@@ -406,6 +410,15 @@ impl ProviderWorker {
         )
         .await
         .ok();
+        if active.is_none() {
+            let mut snapshot = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            snapshot.state.sync_active = None;
+            snapshot.revision = snapshot.revision.wrapping_add(1);
+            return;
+        }
         self.update(ProviderState {
             sync_active: active,
             ..ProviderState::default()
@@ -429,6 +442,14 @@ impl ProviderWorker {
                 volume_muted: muted,
                 ..ProviderState::default()
             });
+        } else {
+            let mut snapshot = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            snapshot.state.volume = None;
+            snapshot.state.volume_muted = None;
+            snapshot.revision = snapshot.revision.wrapping_add(1);
         }
     }
 
@@ -439,6 +460,16 @@ impl ProviderWorker {
         let paused = bounded_output(["dunstctl", "is-paused"], SAMPLE_TIMEOUT)
             .await
             .map(|output| String::from_utf8_lossy(&output).trim() == "true");
+        if count.is_none() || paused.is_none() {
+            let mut snapshot = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            snapshot.state.notification_count = count;
+            snapshot.state.notifications_paused = paused;
+            snapshot.revision = snapshot.revision.wrapping_add(1);
+            return;
+        }
         self.update(ProviderState {
             notification_count: count,
             notifications_paused: paused,
@@ -497,7 +528,16 @@ impl ProviderWorker {
             (Some("org.freedesktop.DBus"), Some("NameOwnerChanged")) => {
                 if let Ok((name, _, new)) = message.body().deserialize::<(String, String, String)>()
                 {
-                    if matches!(name.as_str(), CONTROL_SERVICE | SYNC_SERVICE) && !new.is_empty() {
+                    if new.is_empty() && name == CONTROL_SERVICE {
+                        self.clear_control_surface();
+                    } else if new.is_empty() && name == SYNC_SERVICE {
+                        let mut snapshot = self
+                            .state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        snapshot.state.sync_active = None;
+                        snapshot.revision = snapshot.revision.wrapping_add(1);
+                    } else if matches!(name.as_str(), CONTROL_SERVICE | SYNC_SERVICE) {
                         self.refresh_control_surface().await;
                         self.refresh_sync().await;
                     }
@@ -582,6 +622,24 @@ impl ProviderWorker {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         snapshot.keypad_sheet = Some(value);
+        snapshot.revision = snapshot.revision.wrapping_add(1);
+    }
+
+    fn set_bluetooth_unavailable(&self) {
+        self.update(ProviderState {
+            bluetooth_available: Some(false),
+            bluetooth_on: Some(false),
+            ..ProviderState::default()
+        });
+    }
+
+    fn clear_control_surface(&self) {
+        let mut snapshot = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        snapshot.state.keypad_present = Some(false);
+        snapshot.keypad_sheet = Some(serde_json::json!({"visible": false}));
         snapshot.revision = snapshot.revision.wrapping_add(1);
     }
 

@@ -1337,6 +1337,7 @@ impl X11Context {
         let clients_atom = self.atom(b"_NET_CLIENT_LIST")?;
         let active_atom = self.atom(b"_NET_ACTIVE_WINDOW")?;
         let name_atom = self.atom(b"_NET_WM_NAME")?;
+        let wm_name_atom = self.atom(b"WM_NAME")?;
         let desktop_atom = self.atom(b"_NET_WM_DESKTOP")?;
         let utf8_atom = self.atom(b"UTF8_STRING")?;
         let screen = self
@@ -1367,7 +1368,11 @@ impl X11Context {
                 .connection
                 .get_property(false, active_window, name_atom, utf8_atom, 0, 4096)?
                 .reply()?;
-            String::from_utf8_lossy(&property.value).into_owned()
+            if property.value.is_empty() {
+                String::from_utf8_lossy(&self.property(active_window, wm_name_atom)?).into_owned()
+            } else {
+                String::from_utf8_lossy(&property.value).into_owned()
+            }
         } else {
             String::new()
         };

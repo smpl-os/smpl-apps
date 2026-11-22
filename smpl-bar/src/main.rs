@@ -1033,7 +1033,7 @@ fn synchronize_panel(
         reservation.update(update.clone());
         if update.visible {
             resize_window(bar.window(), geometry.width as f64, geometry.height as f64);
-            state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(100);
+            state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(150);
             send_panel_placement(compositor, &geometry);
             bar.window().with_winit_window(
                 |window: &i_slint_backend_winit::winit::window::Window| {
@@ -1048,39 +1048,30 @@ fn synchronize_panel(
                             );
                         }
                     }
-                    if update.visible {
-                        let target = compositor::PanelPlacementTarget {
-                            monitor: geometry.monitor.clone(),
-                            x: geometry.x,
-                            y: geometry.y,
-                            width: geometry.width,
-                            height: geometry.height,
-                        };
-                        let retry = {
-                            let state = state.borrow();
-                            Instant::now() >= state.panel_retry_at
-                        };
-                        if retry && !compositor.panel_acknowledged(&target) {
-                            state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(150);
-                            send_panel_placement(compositor, &geometry);
-                        }
-                    }
                 },
             );
+        } else if preview {
+            resize_window(bar.window(), geometry.width as f64, geometry.height as f64);
+            state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(150);
+            send_panel_placement(compositor, &geometry);
         } else if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
             let _ = panel.hide();
         }
 
-        fn send_panel_placement(compositor: &CompositorHandle, geometry: &PanelGeometry) {
-            compositor.send(Action::PlacePanel {
-                monitor: geometry.monitor.clone(),
-                x: geometry.x,
-                y: geometry.y,
-                width: geometry.width,
-                height: geometry.height,
-                edge: geometry.edge,
-                mode: geometry.mode,
-            });
+    }
+
+    if update.visible || preview {
+        let target = compositor::PanelPlacementTarget {
+            monitor: geometry.monitor.clone(),
+            x: geometry.x,
+            y: geometry.y,
+            width: geometry.width,
+            height: geometry.height,
+        };
+        let retry = Instant::now() >= state.borrow().panel_retry_at;
+        if retry && !compositor.panel_acknowledged(&target) {
+            state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(150);
+            send_panel_placement(compositor, &geometry);
         }
     }
     if let Some(status) = reservation.latest_status() {
@@ -1097,6 +1088,18 @@ fn synchronize_panel(
             );
         }
     }
+}
+
+fn send_panel_placement(compositor: &CompositorHandle, geometry: &PanelGeometry) {
+    compositor.send(Action::PlacePanel {
+        monitor: geometry.monitor.clone(),
+        x: geometry.x,
+        y: geometry.y,
+        width: geometry.width,
+        height: geometry.height,
+        edge: geometry.edge,
+        mode: geometry.mode,
+    });
 }
 
 fn resize_window(window: &slint::Window, width: f64, height: f64) {
@@ -1223,6 +1226,25 @@ fn record_snapshot_paint(
                     _ => (opaque, partial + 1, transparent),
                 },
             );
+            let width = snapshot.width() as usize;
+            let height = snapshot.height() as usize;
+            let background_alpha: Vec<u8> = [
+                (2.min(width.saturating_sub(1)), height.saturating_sub(1)),
+                (width.saturating_sub(3), height.saturating_sub(1)),
+                (width / 2, 0),
+            ]
+            .into_iter()
+            .filter(|(x, y)| *x < width && *y < height)
+            .map(|(x, y)| pixels[y * width + x][3])
+            .collect();
+            let opaque_content = pixels
+                .chunks(width)
+                .enumerate()
+                .skip(3.min(height))
+                .take(height.saturating_sub(6))
+                .flat_map(|(_, row)| row.iter().skip(12.min(width)).take(width.saturating_sub(24)))
+                .filter(|pixel| pixel[3] == 255)
+                .count();
             telemetry.duration_since(
                 started,
                 event,
@@ -1233,6 +1255,8 @@ fn record_snapshot_paint(
                     ("opaque_pixels", serde_json::json!(opaque)),
                     ("partial_alpha_pixels", serde_json::json!(partial)),
                     ("transparent_pixels", serde_json::json!(transparent)),
+                    ("background_alpha_samples", serde_json::json!(background_alpha)),
+                    ("opaque_content_pixels", serde_json::json!(opaque_content)),
                 ],
             );
         }

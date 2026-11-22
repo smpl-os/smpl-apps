@@ -471,6 +471,16 @@ impl SniWorker {
         if new.is_empty() {
             self.registrations
                 .retain(|_, item| item.destination != name || !item.owner.is_empty());
+            if self.watcher_owned {
+                self.watcher_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .items
+                    .retain(|registration, _| {
+                        let (destination, _) = split_registration(registration);
+                        destination != name && !registration.starts_with(&name)
+                    });
+            }
         } else if old != new {
             self.refresh_items().await;
         }

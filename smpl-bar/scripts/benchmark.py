@@ -293,8 +293,14 @@ def private_run(binary, duration, output_dir, hidden, popup, recreate):
                 "opaque_foreground_pixels": (
                     alpha_event.get("opaque_pixels") if alpha_event else None
                 ),
+                "opaque_content_pixels": (
+                    alpha_event.get("opaque_content_pixels") if alpha_event else None
+                ),
                 "partial_alpha_pixels": (
                     alpha_event.get("partial_alpha_pixels") if alpha_event else None
+                ),
+                "background_alpha_samples": (
+                    alpha_event.get("background_alpha_samples") if alpha_event else None
                 ),
             }
         )
@@ -369,8 +375,17 @@ def main():
                 else None
             ),
             "opaque_foreground_and_partial_background": (
-                (bar["opaque_foreground_pixels"] or 0) > 0
-                and (bar["partial_alpha_pixels"] or 0) > 0
+                (bar["opaque_content_pixels"] or 0) > 0
+                and len(bar["background_alpha_samples"] or []) == 3
+                and all(
+                    isinstance(alpha, int)
+                    for alpha in (bar["background_alpha_samples"] or [])
+                )
+                and all(
+                    0 < alpha < 255
+                    for alpha in (bar["background_alpha_samples"] or [])
+                )
+                and bool(bar["background_alpha_samples"])
             ),
         },
         "telemetry": events,
@@ -384,6 +399,7 @@ def main():
             report["targets"]["first_paint_recorded"],
             report["targets"]["wayland_app_id_retained"],
             report["targets"]["opaque_foreground_and_partial_background"],
+            report["targets"]["popup_first_paint_recorded"] if args.popup else True,
             report["targets"]["wayland_window_recreated"]
             if args.recreate
             else True,

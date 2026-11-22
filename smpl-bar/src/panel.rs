@@ -371,28 +371,24 @@ impl WaylandPanelState {
         layer.commit();
         self.surface = Some(layer);
         self.configured_size = (update.geometry.width, update.geometry.bar_height);
-        self.publish(PanelStatus {
-            active: true,
-            transport: "wayland-layer-shell",
-            message: format!(
-                "exclusive {} edge on {}",
-                edge_name(update.geometry.edge),
-                update.geometry.monitor
-            ),
-        });
+        self.publish(PanelStatus::unavailable(format!(
+            "waiting for {} edge layer configuration on {}",
+            edge_name(update.geometry.edge),
+            update.geometry.monitor
+        )));
     }
 
     fn output_changed(&mut self) {
         self.dirty = true;
     }
 
-    fn draw(&mut self) {
+    fn draw(&mut self) -> bool {
         let Some(surface) = &self.surface else {
-            return;
+            return false;
         };
         let (width, height) = self.configured_size;
         if width == 0 || height == 0 {
-            return;
+            return false;
         }
         let stride = i32::try_from(width.saturating_mul(4)).unwrap_or(i32::MAX);
         let (buffer, canvas) = match self.pool.create_buffer(
@@ -406,7 +402,7 @@ impl WaylandPanelState {
                 self.publish(PanelStatus::unavailable(format!(
                     "cannot create transparent reservation buffer: {error}"
                 )));
-                return;
+                return false;
             }
         };
         canvas.fill(0);
@@ -415,6 +411,9 @@ impl WaylandPanelState {
             .damage_buffer(0, 0, width as i32, height as i32);
         if buffer.attach_to(surface.wl_surface()).is_ok() {
             surface.commit();
+            true
+        } else {
+            false
         }
     }
 
@@ -539,7 +538,19 @@ impl LayerShellHandler for WaylandPanelState {
         let (width, height) = configure.new_size;
         if width > 0 && height > 0 {
             self.configured_size = (width, height);
-            self.draw();
+            if self.draw() {
+                if let Some(update) = self.update.clone() {
+                    self.publish(PanelStatus {
+                        active: true,
+                        transport: "wayland-layer-shell",
+                        message: format!(
+                            "exclusive {} edge on {}",
+                            edge_name(update.geometry.edge),
+                            update.geometry.monitor
+                        ),
+                    });
+                }
+            }
         }
     }
 }
