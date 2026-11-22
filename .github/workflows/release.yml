@@ -263,6 +263,11 @@ jobs:
           echo "$xr_tag" > dist/.xr-version
           ls -lh dist/
 
+      - name: Audit final ELF linkage and write release receipt
+        # Re-audit after optional external binaries are added: every ELF in the
+        # exact release tree must be in the receipt and have closed linkage.
+        run: python scripts/release_assets.py audit dist
+
       - name: Create bundle tarball
         run: |
           VERSION="${{ steps.version.outputs.new }}"
@@ -309,6 +314,7 @@ jobs:
             dist/smpl-hints
             dist/smpl-hintsd
             dist/smpl-calendar-alertd.service
+            dist/linkage-manifest.json
 
       - name: Verify uploads before publishing latest release
         env:

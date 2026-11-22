@@ -28,6 +28,7 @@ BINARIES = (
     "sync-center-daemon", "sync-center-gui", "smpl-calendar",
     "smpl-calendar-alertd", "smpl-hints", "smpl-hintsd",
 )
+LINKAGE_MANIFEST = "linkage-manifest.json"
 SERVICE = "smpl-calendar-alertd.service"
 SERVICE_SOURCE = Path(__file__).resolve().parents[1] / "calendar/systemd" / SERVICE
 CALENDAR_SOURCE = Path(__file__).resolve().parents[1] / "calendar"
@@ -35,7 +36,36 @@ CALENDAR_BINARIES = ("smpl-calendar", "smpl-calendar-alertd")
 
 CONTROL_SURFACE_SOURCE = Path(__file__).resolve().parents[1] / "control-surface"
 CONTROL_SURFACE_BINARIES = ("control-surfaced", "ch552-padprog", "mouse-remapperd")
+CONTROL_SURFACE_LINKAGE_MANIFEST = "usr/share/control-surface/linkage-manifest.json"
 FIRMWARE_DIR = "usr/share/control-surface/firmware"
+# Broad desktop/toolkit libraries deliberately come from the smplOS baseline.
+# ABI-sensitive application/media libraries (libjxl, sndio, ffmpeg, OpenCV,
+# WebKit extension libraries, and private build products) are private unless
+# explicitly admitted here and must be shipped beside the executables.
+SYSTEM_SONAMES = (
+    r"ld-linux-x86-64\.so\.2",
+    r"libc\.so\.6", r"libm\.so\.6", r"libdl\.so\.2",
+    r"libpthread\.so\.0", r"librt\.so\.1", r"libutil\.so\.1",
+    r"libgcc_s\.so\.1", r"libstdc\+\+\.so\.6",
+    r"libfontconfig\.so\.1", r"libfreetype\.so\.6",
+    r"libxkbcommon(?:-x11)?\.so\.0",
+    r"libwayland-(?:client|cursor|egl)\.so\.\d+",
+    r"libX(?:11|ext|cursor|fixes|randr|render|inerama|i|au|dmcp|xcb)\.so\..+",
+    r"libxcb(?:-[A-Za-z0-9_-]+)?\.so\.\d+",
+    r"libglib-2\.0\.so\.0", r"libg(?:io|object|module)-2\.0\.so\.0",
+    r"libgtk-4\.so\.1", r"libgtk4-layer-shell\.so\.0",
+    r"libadwaita-1\.so\.0", r"libgdk_pixbuf-2\.0\.so\.0",
+    r"libpango(?:cairo|-ft2|-1\.0)?-1?\.0?\.so\.0",
+    r"libWebKitGTK-\d+\.\d+\.so\.\d+", r"libjavascriptcoregtk-\d+\.\d+\.so\.\d+",
+    r"lib(?:EGL|GLX|OpenGL|GLESv[12])\.so\.\d+", r"libgbm\.so\.1",
+    r"libdrm(?:_[A-Za-z0-9_]+)?\.so\.\d+", r"libvulkan\.so\.1",
+    r"libQt6[A-Za-z0-9_]+\.so\.6",
+    r"libdbus-1\.so\.3", r"libsystemd\.so\.0", r"libudev\.so\.1",
+    r"libz\.so\.1", r"libbz2\.so\.1\.0", r"liblzma\.so\.5", r"libzstd\.so\.1",
+    r"libexpat\.so\.1", r"libffi\.so\.8", r"libpcre2-8\.so\.0",
+    r"libharfbuzz(?:-gobject)?\.so\.0",
+    r"libsqlite3\.so\.0", r"libssl\.so\.3", r"libcrypto\.so\.3",
+)
 # Runtime baseline of the control-surface asset: the oldest Qt and glibc it
 # must run on (smplOS's installed qt6-base 6.11.2 and glibc 2.44). A Qt
 # binary needs its build's Qt minor or later (the qt_version_tag ABI guard),
@@ -85,6 +115,10 @@ def required_files(directory):
     service = directory / SERVICE
     validate_service(service)
     files[SERVICE] = service
+    manifest = directory / LINKAGE_MANIFEST
+    if manifest.is_symlink() or not manifest.is_file() or not manifest.stat().st_size:
+        raise ValueError(f"Missing or invalid mandatory linkage manifest: {LINKAGE_MANIFEST}")
+    files[LINKAGE_MANIFEST] = manifest
     return files
 
 
@@ -96,13 +130,27 @@ def collect(source, destination):
         target = destination / name
         shutil.copy2(path, target)
         subprocess.run(["strip", str(target)], check=True)
+    source_lib = source / "lib"
+    if source_lib.exists():
+        if source_lib.is_symlink() or not source_lib.is_dir():
+            raise ValueError("Private library source must be a real directory")
+        target_lib = destination / "lib"
+        shutil.copytree(source_lib, target_lib, symlinks=False)
+        for path in target_lib.rglob("*"):
+            if path.is_symlink():
+                raise ValueError(f"Private library must not be a symlink: {path.relative_to(destination)}")
+            if path.is_file() and path.read_bytes()[:4] == b"\x7fELF":
+                subprocess.run(["strip", str(path)], check=True)
     shutil.copyfile(SERVICE_SOURCE, destination / SERVICE)
     (destination / SERVICE).chmod(0o644)
+    audit_release(destination, write_manifest=True)
     required_files(destination)
 
 
 def verify_bundle(directory, bundle):
-    files = required_files(directory)
+    audit_release(directory)
+    files = {path.relative_to(directory).as_posix(): path
+             for path in directory.rglob("*") if path.is_file()}
     with tarfile.open(bundle, "r:gz") as archive:
         members = {}
         for member in archive.getmembers():
@@ -110,6 +158,11 @@ def verify_bundle(directory, bundle):
             if name in members:
                 raise ValueError(f"Duplicate archive member: {name}")
             members[name] = member
+        archived_files = {name: member for name, member in members.items() if member.isfile()}
+        if set(archived_files) != set(files):
+            missing = sorted(set(files) - set(archived_files))
+            extra = sorted(set(archived_files) - set(files))
+            raise ValueError(f"Bundle file set differs (missing={missing}, extra={extra})")
         for name, path in files.items():
             member = members.get(name)
             if member is None or not member.isfile():
@@ -117,7 +170,7 @@ def verify_bundle(directory, bundle):
             if name == SERVICE:
                 if member.mode & 0o777 != 0o644:
                     raise ValueError(f"Bundled service must have mode 0644: {name}")
-            elif not member.mode & 0o111:
+            elif path.name in BINARIES and not member.mode & 0o111:
                 raise ValueError(f"Bundled binary must be executable: {name}")
             with archive.extractfile(member) as stream:
                 archived = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -155,6 +208,14 @@ def build_calendar_rpm(source, destination, version):
     files["smpl-calendar-reminders.desktop"] = CALENDAR_SOURCE / "packaging/smpl-calendar-reminders.desktop"
     files["setup-kde-shortcut.py"] = CALENDAR_SOURCE / "packaging/setup-kde-shortcut.py"
     files["DSEG-LICENSE.txt"] = CALENDAR_SOURCE / "ui/assets/DSEG-LICENSE.txt"
+    calendar_linkage = linkage_manifest(
+        source,
+        [files[name] for name in CALENDAR_BINARIES],
+        private_library_index(source),
+    )
+    calendar_linkage_bytes = (
+        json.dumps(calendar_linkage, indent=2, sort_keys=True) + "\n"
+    ).encode()
     destination.mkdir(parents=True, exist_ok=False)
     topdir = destination.resolve()
     (topdir / "SOURCES").mkdir()
@@ -171,6 +232,10 @@ def build_calendar_rpm(source, destination, version):
         info.size = len(data)
         info.mode = 0o644
         archive.addfile(info, io.BytesIO(data))
+        info = tarfile.TarInfo("smpl-calendar/linkage-manifest.json")
+        info.size = len(calendar_linkage_bytes)
+        info.mode = 0o644
+        archive.addfile(info, io.BytesIO(calendar_linkage_bytes))
     subprocess.run([
         "rpmbuild", "-bb", "--define", f"_topdir {topdir}",
         "--define", f"calendar_version {version}",
@@ -218,6 +283,10 @@ def stage_control_surface(install_root, tarball, source=CONTROL_SURFACE_SOURCE):
             raise ValueError(f"Missing control-surface file: {relative}")
         members[archived] = path
     members.update(current_firmware(source))
+    private_libraries = private_library_index(install_root)
+    elf_paths = [install_root / "usr/bin" / name for name in CONTROL_SURFACE_BINARIES]
+    linkage = linkage_manifest(install_root, elf_paths, private_libraries)
+    linkage_bytes = (json.dumps(linkage, indent=2, sort_keys=True) + "\n").encode()
 
     def normalize(info):
         info.uid = info.gid = 0
@@ -228,6 +297,10 @@ def stage_control_surface(install_root, tarball, source=CONTROL_SURFACE_SOURCE):
     with tarfile.open(tarball, "w:gz") as archive:
         for archived, path in sorted(members.items()):
             archive.add(path, arcname=archived, filter=normalize)
+        info = tarfile.TarInfo(CONTROL_SURFACE_LINKAGE_MANIFEST)
+        info.size = len(linkage_bytes)
+        normalize(info)
+        archive.addfile(info, io.BytesIO(linkage_bytes))
     verify_control_surface(tarball)
 
 
@@ -259,6 +332,18 @@ def verify_control_surface(tarball):
                 actual = hashlib.file_digest(stream, "sha256").hexdigest()
             if info.get("supersededBy") or info.get("sha256") != actual:
                 raise ValueError(f"Firmware image does not match its manifest: {name}")
+        manifest_member = members.get(CONTROL_SURFACE_LINKAGE_MANIFEST)
+        if manifest_member is None or not manifest_member.isfile() or not manifest_member.size:
+            raise ValueError(f"Missing control-surface linkage manifest: {CONTROL_SURFACE_LINKAGE_MANIFEST}")
+        with tempfile.TemporaryDirectory(prefix="control-surface-linkage-") as scratch:
+            with tarfile.open(tarball, "r:gz") as source:
+                source.extractall(scratch, filter="data")
+            root = Path(scratch)
+            elf_paths = [root / "usr/bin" / name for name in CONTROL_SURFACE_BINARIES]
+            expected = linkage_manifest(root, elf_paths, private_library_index(root))
+            encoded = (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode()
+            if (root / CONTROL_SURFACE_LINKAGE_MANIFEST).read_bytes() != encoded:
+                raise ValueError("Control-surface linkage manifest is stale or mismatched")
 
 
 def version_tuple(text):
@@ -272,6 +357,14 @@ def parse_dynamic(text):
     return needed, paths
 
 
+def parse_dynamic_tags(text):
+    tags = re.findall(
+        r"\((RPATH|RUNPATH)\)\s+Library (?:rpath|runpath): \[([^\]]*)\]",
+        text,
+    )
+    return [(tag, value) for tag, value in tags]
+
+
 def parse_version_needs(text):
     """[(library, version name)] from the version needs in `readelf -V -W`."""
     needs = []
@@ -282,6 +375,201 @@ def parse_version_needs(text):
         elif (match := re.search(r"\bName: (\S+)", line)) and library:
             needs.append((library, match[1]))
     return needs
+
+
+def is_elf(path):
+    try:
+        with path.open("rb") as stream:
+            return stream.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def is_system_soname(soname):
+    return any(re.fullmatch(pattern, soname) for pattern in SYSTEM_SONAMES)
+
+
+def readelf_output(path, *options):
+    return subprocess.run(
+        ["readelf", *options, "-W", str(path)],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def private_library_index(root):
+    lib = root / "lib"
+    result = {}
+    if not lib.exists():
+        return result
+    if lib.is_symlink() or not lib.is_dir():
+        raise ValueError("Bundled lib/ must be a real directory")
+    for path in sorted(lib.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"Private libraries must not use symlinks: {path.relative_to(root)}")
+        if not path.is_file() or not is_elf(path):
+            continue
+        dynamic = readelf_output(path, "-d")
+        sonames = re.findall(r"\(SONAME\)\s+Library soname: \[([^\]]+)\]", dynamic)
+        if len(sonames) != 1:
+            raise ValueError(f"Private library lacks exactly one SONAME: {path.relative_to(root)}")
+        soname = sonames[0]
+        if path.relative_to(lib).as_posix() != soname:
+            raise ValueError(
+                f"Private library must use its exact versioned SONAME at lib/{soname}, "
+                f"not {path.relative_to(root)}"
+            )
+        if soname in result:
+            raise ValueError(f"Duplicate bundled private SONAME: {soname}")
+        result[soname] = path
+    unexpected = [
+        path.relative_to(root).as_posix()
+        for path in lib.rglob("*")
+        if path.is_file() and not is_elf(path)
+    ]
+    if unexpected:
+        raise ValueError(f"Unexpected non-ELF files under lib/: {unexpected}")
+    return result
+
+
+def safe_origin_path(path):
+    components = path.split(":") if path else [""]
+    return bool(path) and all(
+        component in ("$ORIGIN", "$ORIGIN/lib", "$ORIGIN/../lib")
+        for component in components
+    )
+
+
+def parse_ldd_paths(text):
+    resolved = {}
+    for match in re.finditer(
+        r"^\s*(\S+)\s+=>\s+(\S+)\s+\(0x[0-9a-fA-F]+\)\s*$",
+        text, re.MULTILINE,
+    ):
+        resolved[match[1]] = match[2]
+    return resolved
+
+
+def audit_elf(path, root, private_libraries):
+    relative = path.relative_to(root).as_posix()
+    dynamic = readelf_output(path, "-d")
+    needed, legacy_paths = parse_dynamic(dynamic)
+    tags = parse_dynamic_tags(dynamic)
+    needs = parse_version_needs(readelf_output(path, "-V"))
+    problems = []
+    for tag, value in tags:
+        if tag == "RPATH":
+            problems.append(f"{relative}: RPATH is forbidden (use private-closure-free linking or a safe RUNPATH)")
+        elif not safe_origin_path(value):
+            problems.append(f"{relative}: unsafe RUNPATH {value!r}; only $ORIGIN-relative paths are allowed")
+    dependencies = []
+    for soname in needed:
+        if soname in private_libraries:
+            dependency_type = "private"
+            resolved = f"lib/{soname}"
+        elif is_system_soname(soname):
+            dependency_type = "system"
+            resolved = None
+        else:
+            problems.append(
+                f"{relative}: {soname} is neither an approved smplOS system SONAME "
+                "nor an exact lib/<SONAME> private dependency"
+            )
+            dependency_type = "unresolved"
+            resolved = None
+        dependencies.append({"soname": soname, "class": dependency_type, "path": resolved})
+
+    private_needed = {item["soname"] for item in dependencies if item["class"] == "private"}
+    runpaths = [value for tag, value in tags if tag == "RUNPATH"]
+    if private_needed:
+        expected = "$ORIGIN" if path.parent == root / "lib" else "$ORIGIN/lib"
+        if expected not in ":".join(runpaths).split(":"):
+            problems.append(f"{relative}: bundled private libraries require RUNPATH {expected}")
+
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C",
+        "LD_LIBRARY_PATH": str(root / "lib") if (root / "lib").is_dir() else "",
+    }
+    result = subprocess.run(
+        ["ldd", str(path.resolve())], capture_output=True, text=True, env=env,
+        timeout=SMOKE_TIMEOUT,
+    )
+    closure = result.stdout + result.stderr
+    if result.returncode:
+        problems.append(f"{relative}: ldd failed ({result.returncode}): {closure.strip()}")
+    if "not found" in closure:
+        problems.append(f"{relative}: unresolved runtime closure:\n{closure.strip()}")
+    resolved_paths = parse_ldd_paths(closure)
+    for soname in needed:
+        resolved_path = resolved_paths.get(soname)
+        if soname in private_libraries:
+            expected_path = private_libraries[soname].resolve()
+            if resolved_path is None or Path(resolved_path).resolve() != expected_path:
+                problems.append(
+                    f"{relative}: private {soname} did not resolve to bundled lib/{soname}"
+                )
+        elif resolved_path is not None and not (
+            resolved_path.startswith("/usr/lib/") or resolved_path.startswith("/lib/")
+        ):
+            problems.append(
+                f"{relative}: {soname} resolved outside the system baseline: {resolved_path}"
+            )
+
+    versions = {}
+    for library, version in needs:
+        versions.setdefault(library, []).append(version)
+    return {
+        "path": relative,
+        "sha256": digest(path),
+        "needed": dependencies,
+        "runpath": runpaths,
+        "version_needs": {library: sorted(set(items)) for library, items in sorted(versions.items())},
+    }, problems
+
+
+def linkage_manifest(root, elf_paths, private_libraries):
+    entries = []
+    problems = []
+    for path in sorted(elf_paths):
+        entry, found = audit_elf(path, root, private_libraries)
+        entries.append(entry)
+        problems.extend(found)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return {
+        "schema": 1,
+        "layout": {
+            "binaries": "root",
+            "private_libraries": "lib/<exact DT_SONAME>",
+            "system_baseline": "smplOS package-managed /usr/lib or /lib; no compat directory",
+        },
+        "system_soname_policy": list(SYSTEM_SONAMES),
+        "private": [
+            {"soname": soname, "path": path.relative_to(root).as_posix(), "sha256": digest(path)}
+            for soname, path in sorted(private_libraries.items())
+        ],
+        "elf": entries,
+    }
+
+
+def audit_release(directory, write_manifest=False):
+    """Audit every shipped ELF and emit/check an exact, relocatable receipt."""
+    required_binaries(directory)
+    private_libraries = private_library_index(directory)
+    elf_paths = [path for path in directory.rglob("*") if path.is_file() and is_elf(path)]
+    if not elf_paths:
+        raise ValueError("Release contains no ELF files")
+    manifest = linkage_manifest(directory, elf_paths, private_libraries)
+    encoded = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+    receipt = directory / LINKAGE_MANIFEST
+    if write_manifest:
+        receipt.write_bytes(encoded)
+        return manifest
+    if receipt.is_symlink() or not receipt.is_file():
+        raise ValueError(f"Missing linkage manifest: {LINKAGE_MANIFEST}")
+    if receipt.read_bytes() != encoded:
+        raise ValueError(f"Linkage manifest is stale or does not match the shipped ELF files: {LINKAGE_MANIFEST}")
+    return manifest
 
 
 def runtime_problems(name, needed, paths, needs):
@@ -435,6 +723,8 @@ def main():
     collect_args = commands.add_parser("collect")
     collect_args.add_argument("source", type=Path)
     collect_args.add_argument("destination", type=Path)
+    audit_args = commands.add_parser("audit")
+    audit_args.add_argument("directory", type=Path)
     for command in ("verify", "uploaded"):
         args = commands.add_parser(command)
         args.add_argument("directory", type=Path)
@@ -456,6 +746,8 @@ def main():
     try:
         if args.command == "collect":
             collect(args.source, args.destination)
+        elif args.command == "audit":
+            audit_release(args.directory, write_manifest=True)
         elif args.command == "verify":
             verify_bundle(args.directory, args.bundle)
         elif args.command == "control-surface":

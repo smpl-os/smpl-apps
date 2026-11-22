@@ -45,6 +45,7 @@ install -Dpm0644 smpl-calendar.desktop %{buildroot}%{_datadir}/applications/smpl
 install -Dpm0644 smpl-calendar-reminders.desktop %{buildroot}%{_sysconfdir}/xdg/autostart/smpl-calendar-reminders.desktop
 install -Dpm0644 smpl-calendar-alertd.service %{buildroot}%{_userunitdir}/smpl-calendar-alertd.service
 install -Dpm0755 setup-kde-shortcut.py %{buildroot}%{_bindir}/smpl-calendar-kde-shortcut
+install -Dpm0644 linkage-manifest.json %{buildroot}%{_datadir}/smpl-calendar/linkage-manifest.json
 
 %post
 %systemd_user_post smpl-calendar-alertd.service
@@ -63,3 +64,4 @@ install -Dpm0755 setup-kde-shortcut.py %{buildroot}%{_bindir}/smpl-calendar-kde-
 %{_sysconfdir}/xdg/autostart/smpl-calendar-reminders.desktop
 %{_userunitdir}/smpl-calendar-alertd.service
 %{_bindir}/smpl-calendar-kde-shortcut
+%{_datadir}/smpl-calendar/linkage-manifest.json

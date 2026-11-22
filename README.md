@@ -1243,6 +1243,51 @@ asset with mode `0644`, never an executable. Its `--foreground` entry and
 `default.target` login enablement are shared with local deployment. The smplOS
 ISO/updater must retain this asset and install it in the systemd user-unit
 directory; extracting executable files alone does not enable reminders.
+
+### Native linkage release contract
+
+Before the app tarball is created, `release_assets.py audit` enumerates every
+ELF in the final `dist/` tree, including optional binaries added by the
+release job. It records every `DT_NEEDED`, version requirement, RUNPATH and
+SHA-256 in `linkage-manifest.json`, then rejects any stale receipt, unresolved
+`ldd` closure, RPATH, non-`$ORIGIN` RUNPATH, system library resolved outside
+`/usr/lib` or `/lib`, or SONAME that is neither approved as a system baseline
+dependency nor bundled at the exact path `lib/<versioned-SONAME>`. Private
+libraries are real regular files (not symlinks), carry one SONAME, and are
+themselves audited recursively. A bundle binary that needs one must resolve
+it through `$ORIGIN/lib`; a private library uses `$ORIGIN` for its private
+closure. The verifier requires the standalone receipt, app binaries, service
+and archive member list to match the packaged tree byte-for-byte.
+
+The system class is intentionally limited to platform/toolkit APIs owned by
+the smplOS image: glibc/GCC runtimes, FreeType/Fontconfig, X11/Wayland,
+GObject/GTK/Adwaita, WebKitGTK, Mesa/OpenGL/Vulkan, D-Bus/systemd/udev and Qt.
+These broad libraries cannot safely be duplicated into every desktop
+application and are stable baseline components that the OS update must move
+as a compatible set. They remain explicit SONAMEs in the receipt, not an
+implicit "anything found on this host" allowlist. Media and application ABIs
+such as libjxl, sndio, ffmpeg, imv/Grafium helpers and OpenCV are not baseline
+exceptions: if a maintained binary starts linking one, its exact versioned
+SONAME and private closure must be staged under `lib/`, or the build fails.
+No release artifact may depend on an OS-wide compatibility directory.
+
+The control-surface asset has the same contract in
+`usr/share/control-surface/linkage-manifest.json`; its existing Qt and glibc
+ceiling remains stricter than the general policy. Slint 1.15.1's Skia renderer
+is statically incorporated by `skia-safe` in all current GUI binaries, so
+there is no private Skia SONAME to ship. The dynamic GUI closure observed in
+the release build is the compiler/runtime, FreeType and Fontconfig baseline;
+if that changes, the receipt identifies and gates the new SONAME.
+
+Focused strict check:
+
+```bash
+cargo build --release --workspace --locked
+python scripts/release_assets.py collect target/release target/release-dist
+tar -czf target/smpl-apps-audit.tar.gz -C target/release-dist .
+python scripts/release_assets.py verify target/release-dist target/smpl-apps-audit.tar.gz
+```
+
 Uploads remain a draft
 until every required remote asset's size and SHA256 matches its local payload.
 Only then is the release published as latest. A failed upload leaves a draft,

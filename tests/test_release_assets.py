@@ -77,6 +77,72 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.verify_metadata(self.upload_metadata())
         self.assertEqual((self.dist / assets.SERVICE).stat().st_mode & 0o777, 0o644)
         self.assertEqual((self.dist / assets.SERVICE).read_bytes(), self.service.read_bytes())
+        manifest = json.loads((self.dist / assets.LINKAGE_MANIFEST).read_text())
+        self.assertEqual(len(manifest["elf"]), len(assets.BINARIES))
+        self.assertTrue(all(item["class"] == "system"
+                            for binary in manifest["elf"]
+                            for item in binary["needed"]))
+
+    def private_fixture(self, runpath=None, bundle=True):
+        build = self.root / "private-build"
+        build.mkdir(exist_ok=True)
+        source = build / "private.c"
+        source.write_text("int private_value(void) { return 7; }\n")
+        library = build / "libprivate.so.7"
+        subprocess.run([
+            "cc", "-shared", "-fPIC", "-Wl,-soname,libprivate.so.7",
+            "-o", str(library), str(source),
+        ], check=True)
+        main = build / "main.c"
+        main.write_text(
+            "extern int private_value(void); int main(void) { return private_value() != 7; }\n"
+        )
+        binary = build / "linked"
+        path = "$ORIGIN/lib" if runpath is None else runpath
+        subprocess.run([
+            "cc", "-o", str(binary), str(main), str(library),
+            f"-Wl,-rpath,{path}", "-Wl,--enable-new-dtags",
+        ], check=True)
+        shutil.copy2(binary, self.source / "settings")
+        if bundle:
+            lib = self.source / "lib"
+            lib.mkdir(exist_ok=True)
+            shutil.copy2(library, lib / "libprivate.so.7")
+
+    def test_exact_private_soname_is_bundled_and_receipted(self):
+        self.private_fixture()
+        assets.collect(self.source, self.dist)
+        manifest = json.loads((self.dist / assets.LINKAGE_MANIFEST).read_text())
+        self.assertEqual(manifest["private"], [{
+            "soname": "libprivate.so.7",
+            "path": "lib/libprivate.so.7",
+            "sha256": assets.digest(self.dist / "lib/libprivate.so.7"),
+        }])
+        settings = next(entry for entry in manifest["elf"] if entry["path"] == "settings")
+        self.assertIn(
+            {"soname": "libprivate.so.7", "class": "private", "path": "lib/libprivate.so.7"},
+            settings["needed"],
+        )
+        self.pack()
+        assets.verify_bundle(self.dist, self.bundle)
+
+    def test_unbundled_private_soname_is_rejected(self):
+        self.private_fixture(bundle=False)
+        with self.assertRaisesRegex(ValueError, "neither an approved smplOS system SONAME"):
+            assets.collect(self.source, self.dist)
+
+    def test_unsafe_runpath_and_stale_receipt_are_rejected(self):
+        self.private_fixture(runpath="/opt/compat")
+        with self.assertRaisesRegex(ValueError, "unsafe RUNPATH"):
+            assets.collect(self.source, self.dist)
+
+        shutil.rmtree(self.dist)
+        self.private_fixture(runpath=None)
+        assets.collect(self.source, self.dist)
+        receipt = self.dist / assets.LINKAGE_MANIFEST
+        receipt.write_text(receipt.read_text() + "{}\n")
+        with self.assertRaisesRegex(ValueError, "stale"):
+            assets.audit_release(self.dist)
 
     def test_service_matches_explicit_foreground_entry(self):
         service = self.service.read_text()
@@ -218,8 +284,11 @@ class ReleaseAssetsTests(unittest.TestCase):
 
     def test_calendar_rpm_contains_only_calendar_and_uses_native_persistent_unit(self):
         destination = self.root / "calendar-rpm"
+        original_run = assets.subprocess.run
 
         def rpmbuild(command, **kwargs):
+            if command[:2] != ["rpmbuild", "-bb"]:
+                return original_run(command, **kwargs)
             self.assertEqual(command[:2], ["rpmbuild", "-bb"])
             output = destination / "RPMS/x86_64"
             output.mkdir(parents=True)
@@ -238,6 +307,7 @@ class ReleaseAssetsTests(unittest.TestCase):
                 "smpl-calendar/smpl-calendar-reminders.desktop",
                 "smpl-calendar/setup-kde-shortcut.py",
                 "smpl-calendar/smpl-calendar-alertd.service",
+                "smpl-calendar/linkage-manifest.json",
             })
             self.assertEqual(
                 archive.extractfile("smpl-calendar/setup-kde-shortcut.py").read(),
@@ -261,6 +331,7 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.assertIn("%systemd_user_preun smpl-calendar-alertd.service", spec)
         self.assertIn("%systemd_user_postun_with_restart smpl-calendar-alertd.service", spec)
         self.assertIn("%{_sysconfdir}/xdg/autostart/smpl-calendar-reminders.desktop", spec)
+        self.assertIn("%{_datadir}/smpl-calendar/linkage-manifest.json", spec)
         self.assertNotIn("rm ", spec)
 
     def test_calendar_rpm_rejects_invalid_version_and_wrong_binary_version(self):
@@ -286,6 +357,8 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.assertIn("${{ env.CALENDAR_RPM }}", workflow)
         self.assertIn('--asset "$CS_ASSET" --asset "$CALENDAR_RPM"', workflow)
         self.assertIn("smpl-calendar-${{ steps.version.outputs.new }}-1.fc43.x86_64.rpm", workflow)
+        self.assertLess(workflow.index("release_assets.py audit dist"),
+                        workflow.index('tar -czf "smpl-apps-'))
         self.assertIn("uses: ./.github/workflows/calendar-rpm.yml", ci)
         self.assertIn("image: fedora:43", calendar)
         self.assertIn("cargo build --release -p smpl-calendar --bins", calendar)
@@ -319,6 +392,7 @@ class ReleaseAssetsTests(unittest.TestCase):
         for name in assets.BINARIES:
             self.assertIn(f"dist/{name}\n", workflow)
         self.assertIn(f"dist/{assets.SERVICE}\n", workflow)
+        self.assertIn(f"dist/{assets.LINKAGE_MANIFEST}\n", workflow)
 
 
 if __name__ == "__main__":
