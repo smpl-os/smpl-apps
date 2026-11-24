@@ -234,6 +234,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_theme_contracts.py' -v
           python -m unittest discover -s start-menu/tests -p 'test_*.py' -v
+          python -m unittest discover -s smpl-bar/tests -p 'test_*.py' -v
           python -m unittest discover -s calendar/tests -p 'test_*.py' -v
 
       - name: Check (all workspace members)

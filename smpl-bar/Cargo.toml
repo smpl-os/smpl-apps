@@ -1,0 +1,30 @@
+[package]
+name              = "smpl-bar"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "smpl-bar"
+path = "src/main.rs"
+
+[dependencies]
+chrono      = { workspace = true }
+i-slint-backend-winit = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+libc        = { workspace = true }
+slint       = { workspace = true }
+smpl-common = { workspace = true }
+smpl-shell  = { workspace = true }
+smithay-client-toolkit = { workspace = true }
+tokio       = { workspace = true }
+futures     = { workspace = true }
+x11rb       = { workspace = true }
+zbus        = { workspace = true }
+zvariant    = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

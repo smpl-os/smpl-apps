@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "smpl-common",
+    "smpl-shell",
+    "smpl-bar",
     "start-menu",
     "notif-center",
     "settings",
@@ -32,6 +34,7 @@ slint                 = { version = "=1.15.1", default-features = false, feature
 i-slint-backend-winit = "=1.15.1"
 slint-build           = "=1.15.1"
 smpl-common           = { path = "smpl-common" }
+smpl-shell            = { path = "smpl-shell" }
 
 # Serialization
 serde      = { version = "1", features = ["derive"] }
@@ -51,6 +54,7 @@ xkbcommon = "0.9"
 libc      = "0.2"
 dirs      = "6"
 nix       = { version = "0.27", features = ["fs"] }
+x11rb     = "0.13"
 
 # Wi-Fi / QR / Security
 qrcode  = "0.14"
@@ -95,6 +99,7 @@ atspi                 = { version = "0.30", default-features = false, features =
 wayland-client        = "0.31"
 wayland-protocols     = { version = "0.32", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3",  features = ["client"] }
+smithay-client-toolkit = { version = "0.19", default-features = false }
 # xkbcommon keysym → wl_pointer motion; already declared above but kept here
 # as a note that hints depends on it.
 # Async runtime is inherited via `tokio` above.

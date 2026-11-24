@@ -74,6 +74,7 @@ fi
 step "Guardrails: shared themes and opaque foregrounds"
 if python3 -m unittest discover -s tests -p 'test_theme_contracts.py' -v \
     && python3 -m unittest discover -s start-menu/tests -p 'test_*.py' -v \
+    && python3 -m unittest discover -s smpl-bar/tests -p 'test_*.py' -v \
     && python3 -m unittest discover -s calendar/tests -p 'test_*.py' -v; then
     pass "Native theme contracts passed"
 else
@@ -112,6 +113,13 @@ check_feat "start-menu: Rust search-pop-char"          start-menu/src/main.rs   
 # settings: keyboard layout dropdown safety
 check_feat "settings: dropdown bounds check"    settings/ui/main.slint "selected-dropdown-index < root.available-layouts.length"
 check_feat "settings: index reset before model" settings/src/main.rs   "set_selected_dropdown_index(-1)"
+
+# smpl-bar: keep native shell separation and the implemented panel/tray gates.
+check_feat "smpl-bar: shared backend init" smpl-bar/src/main.rs 'smpl_common::init(app_id'
+check_feat "smpl-bar: SNI watcher" smpl-bar/src/sni.rs 'org.kde.StatusNotifierWatcher'
+check_feat "smpl-bar: DBusMenu host" smpl-bar/src/sni.rs 'com.canonical.dbusmenu'
+check_feat "smpl-bar: layer reservation" smpl-bar/src/panel.rs 'set_exclusive_zone'
+check_feat "smpl-bar: X11 strut" smpl-bar/src/panel.rs '_NET_WM_STRUT_PARTIAL'
 
 # ── 2. YAML lint (CI workflow files) ────────────────────────────────────────
 
@@ -220,7 +228,7 @@ fi
 if [[ "$MODE" == "--release" ]]; then
     step "Release checks: binary existence"
 
-    for bin in start-menu notif-center settings app-center webapp-center \
+    for bin in smpl-bar start-menu notif-center settings app-center webapp-center \
                sync-center-daemon sync-center-gui \
                smpl-calendar smpl-calendar-alertd \
                smpl-hints smpl-hintsd; do

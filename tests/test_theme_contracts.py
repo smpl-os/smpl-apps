@@ -10,6 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PRIVATE_MOUSE_PROBE = ROOT / "settings/src/mouse/native_tests.rs"
 PRIVATE_PRINTING_PROBE = ROOT / "settings/src/printing/ui/native_tests.rs"
 GUI_SOURCES = {
+    "smpl-bar/src/main.rs": ("smpl-bar", "Application"),
     "start-menu/src/main.rs": ("start-menu", "Popup"),
     "notif-center/src/main.rs": ("notif-center", "Popup"),
     "settings/src/main.rs": ("settings", "Application"),
