@@ -146,6 +146,21 @@ class ReleaseAssetsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "stale"):
             assets.audit_release(self.dist)
 
+    def test_fedora_lib64_paths_are_system_but_compat_paths_are_not(self):
+        for path in (
+            "/lib/libc.so.6",
+            "/lib64/libstdc++.so.6",
+            "/usr/lib/libfreetype.so.6",
+            "/usr/lib64/libfontconfig.so.1",
+        ):
+            self.assertTrue(assets.is_system_library_path(path), path)
+        for path in (
+            "/opt/smplos-compat/libc.so.6",
+            "/usr/local/lib64/libstdc++.so.6",
+            "/lib64compat/libc.so.6",
+        ):
+            self.assertFalse(assets.is_system_library_path(path), path)
+
     def test_service_matches_explicit_foreground_entry(self):
         service = self.service.read_text()
         self.assertIn("ExecStart=/usr/local/bin/smpl-calendar-alertd --foreground\n", service)

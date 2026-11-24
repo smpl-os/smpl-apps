@@ -449,6 +449,12 @@ def parse_ldd_paths(text):
     return resolved
 
 
+def is_system_library_path(path):
+    return path.startswith((
+        "/lib/", "/lib64/", "/usr/lib/", "/usr/lib64/",
+    ))
+
+
 def audit_elf(path, root, private_libraries):
     relative = path.relative_to(root).as_posix()
     dynamic = readelf_output(path, "-d")
@@ -508,9 +514,7 @@ def audit_elf(path, root, private_libraries):
                 problems.append(
                     f"{relative}: private {soname} did not resolve to bundled lib/{soname}"
                 )
-        elif resolved_path is not None and not (
-            resolved_path.startswith("/usr/lib/") or resolved_path.startswith("/lib/")
-        ):
+        elif resolved_path is not None and not is_system_library_path(resolved_path):
             problems.append(
                 f"{relative}: {soname} resolved outside the system baseline: {resolved_path}"
             )
@@ -541,7 +545,7 @@ def linkage_manifest(root, elf_paths, private_libraries):
         "layout": {
             "binaries": "root",
             "private_libraries": "lib/<exact DT_SONAME>",
-            "system_baseline": "smplOS package-managed /usr/lib or /lib; no compat directory",
+            "system_baseline": "package-managed /lib, /lib64, /usr/lib or /usr/lib64; no compat directory",
         },
         "system_soname_policy": list(SYSTEM_SONAMES),
         "private": [

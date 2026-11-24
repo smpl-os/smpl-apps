@@ -1281,7 +1281,7 @@ ELF in the final `dist/` tree, including optional binaries added by the
 release job. It records every `DT_NEEDED`, version requirement, RUNPATH and
 SHA-256 in `linkage-manifest.json`, then rejects any stale receipt, unresolved
 `ldd` closure, RPATH, non-`$ORIGIN` RUNPATH, system library resolved outside
-`/usr/lib` or `/lib`, or SONAME that is neither approved as a system baseline
+`/usr/lib`, `/usr/lib64`, `/lib`, or `/lib64`, or SONAME that is neither approved as a system baseline
 dependency nor bundled at the exact path `lib/<versioned-SONAME>`. Private
 libraries are real regular files (not symlinks), carry one SONAME, and are
 themselves audited recursively. A bundle binary that needs one must resolve
