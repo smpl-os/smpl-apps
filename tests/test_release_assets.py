@@ -692,7 +692,7 @@ class ControlSurfaceRuntimeTests(unittest.TestCase):
         self.assertIn("needs: [control-surface, calendar-rpm]", release)
         self.assertIn("ref: ${{ needs.control-surface.outputs.source-sha }}", release)
         self.assertNotIn("cmake -S control-surface", release)
-        self.assertNotIn("qt6-base", release)
+        self.assertIn("dbus qt6-base python github-cli", release)
         self.assertLess(release.index('release_assets.py control-surface-check "$CS_ASSET"'), release.index("git tag"))
         self.assertLess(release.index("control-surface-check"), release.index("action-gh-release"))
 
