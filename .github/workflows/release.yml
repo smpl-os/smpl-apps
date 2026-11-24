@@ -46,9 +46,18 @@ jobs:
           printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$ARCH_SNAPSHOT" \
             > /etc/pacman.d/mirrorlist
           # -uu also downgrades the image's newer packages to the snapshot.
-          pacman -Syyuu --noconfirm --needed \
-            base-devel git python dbus \
-            cmake ninja qt6-base systemd-libs
+          for attempt in 1 2 3 4 5; do
+            if pacman -Syyuu --noconfirm --needed \
+                base-devel git python dbus \
+                cmake ninja qt6-base systemd-libs; then
+              break
+            fi
+            if [[ "$attempt" -eq 5 ]]; then
+              echo "::error::pacman failed after 5 attempts against $ARCH_SNAPSHOT"
+              exit 1
+            fi
+            sleep 20
+          done
           test "$(pacman -Q qt6-base)" = "$CONTROL_SURFACE_QT_PACKAGE" || {
             echo "::error::expected $CONTROL_SURFACE_QT_PACKAGE, got $(pacman -Q qt6-base)"
             exit 1

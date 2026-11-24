@@ -676,6 +676,9 @@ class ControlSurfaceRuntimeTests(unittest.TestCase):
         build = build.split("\n  control-surface:\n", 1)[1]
         self.assertRegex(build, r'ARCH_SNAPSHOT: "\d{4}/\d{2}/\d{2}"')
         self.assertIn("https://archive.archlinux.org/repos/%s/$repo/os/$arch", build)
+        self.assertIn("for attempt in 1 2 3 4 5;", build)
+        self.assertIn("pacman failed after 5 attempts", build)
+        self.assertIn("sleep 20", build)
         self.assertIn("pacman -Syyuu", build)
         package = re.search(r'CONTROL_SURFACE_QT_PACKAGE: "qt6-base (\d+)\.(\d+)\.\d+-\d+"', build)
         self.assertEqual((int(package[1]), int(package[2])), assets.CONTROL_SURFACE_MAX_QT)
