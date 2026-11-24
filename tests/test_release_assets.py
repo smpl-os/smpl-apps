@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -565,20 +566,51 @@ class ControlSurfaceRuntimeTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(assets.CONTROL_SURFACE_SOURCE / relative, path)
 
+    def with_qt_fixture(self, binary, operation):
+        """Resolve the fixture's Qt SONAME without depending on host Qt."""
+        existing = os.environ.get("LD_LIBRARY_PATH")
+        fixture_path = str(binary.parent)
+        paths = fixture_path if not existing else f"{fixture_path}:{existing}"
+        real_run = subprocess.run
+
+        def run(command, **kwargs):
+            if command and command[0] != "ldd":
+                return real_run(command, **kwargs)
+            env = dict(kwargs.get("env") or os.environ)
+            env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
+            result = real_run(command, **{**kwargs, "env": env})
+            stdout = result.stdout.replace(
+                str(binary.parent / "libQt6Core.so.6"),
+                "/usr/lib/libQt6Core.so.6",
+            )
+            return subprocess.CompletedProcess(
+                result.args, result.returncode, stdout, result.stderr
+            )
+
+        with patch.dict(os.environ, {"LD_LIBRARY_PATH": paths}), \
+                patch.object(assets.subprocess, "run", side_effect=run):
+            return operation()
+
     def stage(self, binary):
         install = self.root / f"install-{binary.parent.name}"
         (install / "usr/bin").mkdir(parents=True)
         for name in assets.CONTROL_SURFACE_BINARIES:
             shutil.copy2(binary, install / "usr/bin" / name)
         tarball = self.root / f"{binary.parent.name}.tar.gz"
-        assets.stage_control_surface(install, tarball, self.source)
+        self.with_qt_fixture(
+            binary,
+            lambda: assets.stage_control_surface(install, tarball, self.source),
+        )
         return tarball
 
     def test_baseline_qt_passes_and_is_reported(self):
         problems, summary = assets.elf_runtime(self.baseline, "fixture")
         self.assertEqual(problems, [])
         self.assertEqual(summary["qt"], assets.CONTROL_SURFACE_MAX_QT)
-        summaries = assets.check_control_surface(self.stage(self.baseline))
+        summaries = self.with_qt_fixture(
+            self.baseline,
+            lambda: assets.check_control_surface(self.stage(self.baseline)),
+        )
         self.assertEqual(set(summaries), set(assets.CONTROL_SURFACE_BINARIES))
 
     def test_asset_built_on_newer_qt_is_rejected(self):
@@ -586,8 +618,11 @@ class ControlSurfaceRuntimeTests(unittest.TestCase):
         # Qt 6.11.2 refused them ("version `Qt_6.12' not found").
         problems, _ = assets.elf_runtime(self.newer, "fixture")
         self.assertTrue(any(f"Qt 6.{assets.CONTROL_SURFACE_MAX_QT[1] + 1}" in p for p in problems), problems)
-        with self.assertRaisesRegex(ValueError, "newer than the supported Qt"):
-            assets.check_control_surface(self.stage(self.newer))
+        def check_newer():
+            with self.assertRaisesRegex(ValueError, "newer than the supported Qt"):
+                assets.check_control_surface(self.stage(self.newer))
+
+        self.with_qt_fixture(self.newer, check_newer)
 
     def test_disabled_version_tagging_private_api_and_rpath_are_rejected(self):
         for binary, reason in ((self.untagged, "version tagging must stay enabled"),
