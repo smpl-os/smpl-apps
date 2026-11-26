@@ -98,7 +98,10 @@ Socket permissions are `0600`; the directory is `0700`.
 | Volume | One bounded `pactl subscribe` process; no process per UI frame |
 | Notifications | Native sync/D-Bus provider state plus bounded `dunstctl` refresh |
 | Battery/brightness/clock | Native sysfs/state and UI-local formatting |
-| Generic tray | Real `org.kde.StatusNotifierWatcher` fallback, host registration, item lifecycle, owner restart/removal, icon name/pixmap/attention/overlay variants, activation, scroll and native DBusMenu |
+| Generic tray | Real `org.kde.StatusNotifierWatcher` fallback, host registration, item lifecycle, owner restart/removal, icon name/pixmap/attention/overlay variants, monochrome theme tinting, activation, scroll and native DBusMenu |
+| 24 px edge layout | Fixed controls use a 20 px Slint item inside the 24 px surface with explicit 2 px vertical insets; start and right-edge glyphs cannot paint against the clipped window edge |
+| Keyboard | The switcher follows compositor-reported switchability and appears only when more than one distinct keyboard layout is configured |
+| Focus title | The monitor connector is confined to the workspace-overview tooltip; bar/popup self-focus cannot replace the last real focused-client title |
 | Tray formats | SNI and DBusMenu; legacy XEmbed/arrow-key tray emulation is intentionally not claimed |
 | Calendar/notification center | Delegates to the existing canonical `popup-toggle` grammar, retaining mutual exclusion and app ownership |
 | Quick Settings | Existing connectivity, airplane, night light, DND, dictation, audio, brightness, settings and power controls |
@@ -119,6 +122,12 @@ Menu data is rendered natively, with bounded flattened depth, visibility,
 enabled, separator and checked state. Menu activation is sent through
 `com.canonical.dbusmenu.Event`. Icon-name, IconPixmap, attention and overlay
 variants are supported. No XEmbed parity is fabricated.
+
+Monochrome pixmaps and symbolic/grayscale SVG files are rendered with the
+application foreground color. Non-symbolic colored tray artwork is retained
+unchanged. Status output names each loaded icon that could not safely be
+recolored in `sni.unrecolored_icons`; this is informational rather than an
+SNI-host failure.
 
 ## Popup and lifecycle contracts
 

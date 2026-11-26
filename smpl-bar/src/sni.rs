@@ -34,6 +34,16 @@ pub enum TrayIcon {
     },
 }
 
+impl TrayIcon {
+    pub fn is_recolorable(&self) -> bool {
+        match self {
+            Self::Empty => false,
+            Self::File(path) => is_recolorable_file(path),
+            Self::Pixmap { rgba, .. } => is_monochrome_rgba(rgba),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrayItem {
     pub key: String,
@@ -79,6 +89,7 @@ pub struct SniStatus {
     pub host_registered: bool,
     pub item_count: usize,
     pub error: String,
+    pub unrecolored_icons: Vec<String>,
 }
 
 impl Default for SniStatus {
@@ -88,6 +99,7 @@ impl Default for SniStatus {
             host_registered: false,
             item_count: 0,
             error: "not connected".to_owned(),
+            unrecolored_icons: Vec::new(),
         }
     }
 }
@@ -933,6 +945,7 @@ impl SniWorker {
             host_registered: self.host_registered,
             item_count: self.registrations.len(),
             error: self.last_error.clone(),
+            unrecolored_icons: Vec::new(),
         };
     }
 }
@@ -1128,6 +1141,114 @@ fn decode_pixmap(width: i32, height: i32, data: Vec<u8>) -> Option<TrayIcon> {
     })
 }
 
+fn is_monochrome_rgba(rgba: &[u8]) -> bool {
+    let mut has_visible = false;
+    for pixel in rgba.as_chunks::<4>().0 {
+        if pixel[3] <= 8 {
+            continue;
+        }
+        has_visible = true;
+        let red = pixel[0];
+        let green = pixel[1];
+        let blue = pixel[2];
+        if red
+            .abs_diff(green)
+            .max(red.abs_diff(blue))
+            .max(green.abs_diff(blue))
+            > 24
+        {
+            return false;
+        }
+    }
+    has_visible
+}
+
+fn is_recolorable_file(path: &Path) -> bool {
+    if path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with("-symbolic"))
+    {
+        return true;
+    }
+    if path.extension().and_then(|extension| extension.to_str()) == Some("png") {
+        let Ok(reader) = image::ImageReader::open(path) else {
+            return false;
+        };
+        let mut reader = match reader.with_guessed_format() {
+            Ok(reader) => reader,
+            Err(_) => return false,
+        };
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(512);
+        limits.max_image_height = Some(512);
+        limits.max_alloc = Some(4 * 1024 * 1024);
+        reader.limits(limits);
+        return reader
+            .decode()
+            .ok()
+            .is_some_and(|image| is_monochrome_rgba(image.to_rgba8().as_raw()));
+    }
+    if path.extension().and_then(|extension| extension.to_str()) != Some("svg") {
+        return false;
+    }
+    let Ok(source) = std::fs::read(path) else {
+        return false;
+    };
+    if source.len() > 256 * 1024 {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&source).to_ascii_lowercase();
+    if text.contains("currentcolor") {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    let mut colors = 0_u32;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'#' {
+            index += 1;
+            continue;
+        }
+        let start = index + 1;
+        let end = bytes[start.min(bytes.len())..]
+            .iter()
+            .position(|byte| !byte.is_ascii_hexdigit())
+            .map_or(bytes.len(), |offset| start + offset);
+        let value = &bytes[start..end];
+        let rgb = match value.len() {
+            3 => Some((hex(value[0]), hex(value[1]), hex(value[2]))),
+            6 | 8 => Some((
+                (hex(value[0]) << 4) | hex(value[1]),
+                (hex(value[2]) << 4) | hex(value[3]),
+                (hex(value[4]) << 4) | hex(value[5]),
+            )),
+            _ => None,
+        };
+        if let Some((red, green, blue)) = rgb {
+            colors += 1;
+            if red
+                .abs_diff(green)
+                .max(red.abs_diff(blue))
+                .max(green.abs_diff(blue))
+                > 24
+            {
+                return false;
+            }
+        }
+        index = end.max(index + 1);
+    }
+    colors > 0
+}
+
+fn hex(value: u8) -> u8 {
+    match value {
+        b'0'..=b'9' => value - b'0',
+        b'a'..=b'f' => value - b'a' + 10,
+        _ => 0,
+    }
+}
+
 fn resolve_in_theme(root: &Path, name: &str) -> Option<PathBuf> {
     if name.contains('/') || matches!(name, "." | "..") {
         return None;
@@ -1243,6 +1364,50 @@ mod tests {
         );
         assert!(decode_pixmap(300, 300, vec![]).is_none());
         assert!(decode_pixmap(-1, 1, vec![]).is_none());
+    }
+
+    #[test]
+    fn only_monochrome_pixmaps_are_recolored() {
+        let white = TrayIcon::Pixmap {
+            width: 1,
+            height: 1,
+            rgba: vec![255, 255, 255, 255],
+        };
+        let colored = TrayIcon::Pixmap {
+            width: 1,
+            height: 1,
+            rgba: vec![10, 120, 250, 255],
+        };
+        assert!(white.is_recolorable());
+        assert!(!colored.is_recolorable());
+    }
+
+    #[test]
+    fn symbolic_and_grayscale_svg_icons_are_recolorable() {
+        let fixture = tempfile::tempdir().unwrap();
+        let symbolic = fixture.path().join("copilot-symbolic.svg");
+        std::fs::write(&symbolic, br##"<svg fill="#fff"><path d="M0 0"/></svg>"##).unwrap();
+        let colored = fixture.path().join("copilot.svg");
+        std::fs::write(&colored, br##"<svg fill="#4080ff"><path d="M0 0"/></svg>"##).unwrap();
+        assert!(TrayIcon::File(symbolic).is_recolorable());
+        assert!(!TrayIcon::File(colored).is_recolorable());
+    }
+
+    #[test]
+    fn monochrome_png_icons_are_recolored_but_colored_pngs_are_preserved() {
+        let fixture = tempfile::tempdir().unwrap();
+        let white = fixture.path().join("copilot.png");
+        let colored = fixture.path().join("status.png");
+        image::RgbaImage::from_raw(1, 1, vec![255, 255, 255, 255])
+            .unwrap()
+            .save(&white)
+            .unwrap();
+        image::RgbaImage::from_raw(1, 1, vec![30, 120, 250, 255])
+            .unwrap()
+            .save(&colored)
+            .unwrap();
+        assert!(TrayIcon::File(white).is_recolorable());
+        assert!(!TrayIcon::File(colored).is_recolorable());
     }
 
     #[test]

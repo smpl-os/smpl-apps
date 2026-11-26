@@ -19,6 +19,7 @@ smpl-shell  = { workspace = true }
 smithay-client-toolkit = { workspace = true }
 tokio       = { workspace = true }
 futures     = { workspace = true }
+image       = { version = "0.25", default-features = false, features = ["png"] }
 x11rb       = { workspace = true }
 zbus        = { workspace = true }
 zvariant    = { workspace = true }

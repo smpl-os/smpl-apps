@@ -4618,6 +4618,7 @@ dependencies = [
  "chrono",
  "futures",
  "i-slint-backend-winit",
+ "image",
  "libc",
  "serde",
  "serde_json",

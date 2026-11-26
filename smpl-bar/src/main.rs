@@ -245,10 +245,11 @@ fn run_resident(
             }
             if let Some(bar) = bar_weak.upgrade() {
                 if let Some(snapshot) = compositor.latest() {
-                    state.borrow_mut().compositor = snapshot.clone();
-                    apply_compositor(&bar, &snapshot, &state.borrow().config);
-                    let geometry =
-                        fit_bar_to_monitor(&bar, &snapshot, &state.borrow().config, preview);
+                    state.borrow_mut().apply_compositor_snapshot(snapshot);
+                    let snapshot = state.borrow().compositor.clone();
+                    let config = state.borrow().config.clone();
+                    apply_compositor(&bar, &snapshot, &config);
+                    let geometry = fit_bar_to_monitor(&bar, &snapshot, &config, preview);
                     if geometry.is_some() && preview && !preview_shown.replace(true) {
                         let _ = bar.show();
                         bar.window().request_redraw();
@@ -267,7 +268,26 @@ fn run_resident(
                 if let Some(snapshot) = sni.changed_since(revision) {
                     state.borrow_mut().sni_revision = snapshot.revision;
                     state.borrow_mut().sni_status = snapshot.status.clone();
-                    apply_sni(&bar, &snapshot);
+                    let unrecolored = apply_sni(&bar, &snapshot);
+                    state
+                        .borrow_mut()
+                        .sni_status
+                        .unrecolored_icons
+                        .clone_from(&unrecolored);
+                    for title in unrecolored {
+                        telemetry.emit(
+                            "sni_icon_not_recolored",
+                            [
+                                ("title", serde_json::json!(title)),
+                                (
+                                    "reason",
+                                    serde_json::json!(
+                                        "colored or raster format; original pixels retained"
+                                    ),
+                                ),
+                            ],
+                        );
+                    }
                     if let Some(menu) = snapshot.menu {
                         open_tray_menu(&menu, state.clone(), &popups, &sni, &telemetry);
                     }
@@ -728,7 +748,6 @@ fn apply_system(bar: &BarWindow, system: &SystemState, config: &BarConfigFile) {
     bar.set_keypad_visible(system.keypad_present);
     bar.set_sync_visible(system.sync_active);
     bar.set_dictation_visible(system.dictation_available);
-    bar.set_keyboard_visible(!bar.get_keyboard_code().is_empty());
     bar.set_wifi_available(system.wifi_available);
     bar.set_wifi_on(system.wifi_on);
     bar.set_network_online(system.online);
@@ -821,7 +840,8 @@ fn apply_compositor(bar: &BarWindow, state: &CompositorState, config: &BarConfig
     bar.set_workspaces(ModelRc::new(VecModel::from_slice(&workspaces)));
 }
 
-fn apply_sni(bar: &BarWindow, snapshot: &SniSnapshot) {
+fn apply_sni(bar: &BarWindow, snapshot: &SniSnapshot) -> Vec<String> {
+    let mut unrecolored = Vec::new();
     let items: Vec<_> = snapshot
         .items
         .iter()
@@ -829,15 +849,21 @@ fn apply_sni(bar: &BarWindow, snapshot: &SniSnapshot) {
         .map(|item| {
             let (icon_image, has_icon) = tray_image(&item.icon);
             let (overlay_image, has_overlay) = tray_image(&item.overlay);
+            let themed_icon = has_icon && item.icon.is_recolorable();
+            let title = if item.title.trim().is_empty() {
+                item.id.clone()
+            } else {
+                item.title.clone()
+            };
+            if has_icon && !themed_icon {
+                unrecolored.push(title.clone());
+            }
             TrayItemUi {
                 key: item.key.clone().into(),
-                title: if item.title.trim().is_empty() {
-                    item.id.clone().into()
-                } else {
-                    item.title.clone().into()
-                },
+                title: title.into(),
                 icon_image,
                 has_icon,
+                themed_icon,
                 overlay_image,
                 has_overlay,
                 attention: item.needs_attention(),
@@ -846,6 +872,7 @@ fn apply_sni(bar: &BarWindow, snapshot: &SniSnapshot) {
         })
         .collect();
     bar.set_sni_items(ModelRc::new(VecModel::from_slice(&items)));
+    unrecolored
 }
 
 fn tray_image(icon: &TrayIcon) -> (Image, bool) {
@@ -1922,6 +1949,7 @@ fn status_json(state: &Rc<RefCell<UiState>>) -> serde_json::Value {
             "host_registered": state.sni_status.host_registered,
             "items": state.sni_status.item_count,
             "error": state.sni_status.error,
+            "unrecolored_icons": state.sni_status.unrecolored_icons,
         },
     })
 }
@@ -2068,6 +2096,13 @@ impl UiState {
         if let Some(present) = self.keypad_override {
             self.system.keypad_present = present;
         }
+    }
+
+    fn apply_compositor_snapshot(&mut self, mut snapshot: CompositorState) {
+        if snapshot.active_window_title.trim().is_empty() {
+            snapshot.active_window_title = self.compositor.active_window_title.clone();
+        }
+        self.compositor = snapshot;
     }
 }
 
@@ -2356,5 +2391,104 @@ mod tests {
         assert_eq!(sheet.keys.len(), 2);
         assert_eq!(sheet.keys[1].control, "key2");
         assert_eq!(sheet.knobs.len(), 1);
+    }
+
+    #[test]
+    fn compositor_updates_retain_real_title_during_shell_focus_transitions() {
+        let mut state = UiState::new(
+            BarConfigFile::default(),
+            ConfigPaths::from_home(Some(Path::new("/tmp"))).unwrap(),
+        );
+        let real = CompositorState {
+            active_window_title: "GitHub Copilot".to_owned(),
+            ..CompositorState::default()
+        };
+        state.apply_compositor_snapshot(real);
+        state.apply_compositor_snapshot(CompositorState::default());
+        assert_eq!(
+            state.compositor.active_window_title, "GitHub Copilot",
+            "bar and popup self-focus must not erase the last real client"
+        );
+        state.apply_compositor_snapshot(CompositorState {
+            active_window_title: "Terminal".to_owned(),
+            ..CompositorState::default()
+        });
+        assert_eq!(state.compositor.active_window_title, "Terminal");
+    }
+
+    #[test]
+    fn renderer_keeps_fixed_icons_inside_a_24px_bar() {
+        if std::env::var_os("SMPL_BAR_LAYOUT_RENDER").is_none() {
+            return;
+        }
+        smpl_common::init(APP_ID, 800.0, 24.0).unwrap();
+        let bar = BarWindow::new().unwrap();
+        bar.set_show_start(true);
+        bar.set_show_workspaces(false);
+        bar.set_show_title(true);
+        bar.set_window_title("".into());
+        bar.set_show_usb(false);
+        bar.set_show_keypad(false);
+        bar.set_show_sync(false);
+        bar.set_show_dictation(false);
+        bar.set_show_keyboard(false);
+        bar.set_show_bluetooth(false);
+        bar.set_show_wifi(false);
+        bar.set_show_network(false);
+        bar.set_show_battery(false);
+        bar.set_show_sni(false);
+        bar.set_show_clock(false);
+        bar.set_show_volume(true);
+        bar.set_volume(50);
+        bar.set_volume_muted(false);
+        bar.set_show_notifications(true);
+        let theme = bar.global::<Theme>();
+        theme.set_bg(slint::Color::from_argb_u8(0, 0, 0, 0));
+        theme.set_bg_light(slint::Color::from_argb_u8(0, 0, 0, 0));
+        theme.set_bg_lighter(slint::Color::from_argb_u8(0, 0, 0, 0));
+        theme.set_fg(slint::Color::from_rgb_u8(255, 255, 255));
+        theme.set_accent(slint::Color::from_rgb_u8(255, 255, 255));
+        theme.set_opacity(0.0);
+
+        bar.window().set_size(slint::LogicalSize::new(800.0, 24.0));
+        bar.show().unwrap();
+        let result = Rc::new(RefCell::new(None));
+        let weak = bar.as_weak();
+        let result_for_timer = result.clone();
+        slint::Timer::single_shot(Duration::from_millis(150), move || {
+            let Some(bar) = weak.upgrade() else {
+                slint::quit_event_loop().unwrap();
+                return;
+            };
+            *result_for_timer.borrow_mut() = bar.window().take_snapshot().ok();
+            slint::quit_event_loop().unwrap();
+        });
+        slint::run_event_loop().unwrap();
+        let snapshot = result.borrow().clone().expect("Slint renderer snapshot");
+        assert_eq!((snapshot.width(), snapshot.height()), (800, 24));
+
+        let pixels = snapshot.as_bytes();
+        let alpha = |x: u32, y: u32| pixels[(y * 800 + x) as usize * 4 + 3];
+        let visible = |x_range: std::ops::Range<u32>| {
+            (0..24)
+                .flat_map(|y| x_range.clone().map(move |x| (x, y)))
+                .filter(|(x, y)| alpha(*x, *y) > 8)
+                .collect::<Vec<_>>()
+        };
+        let left = visible(0..36);
+        let right = visible(720..800);
+        let all_visible = visible(0..800);
+        assert!(
+            !all_visible.is_empty(),
+            "no Slint foreground pixels rendered: {all_visible:?}"
+        );
+        for (name, bounds) in [("start", left), ("right controls", right)] {
+            assert!(
+                !bounds.is_empty(),
+                "{name} icon did not paint; visible points: {all_visible:?}"
+            );
+            assert!(bounds.iter().all(|(x, _)| *x > 0 && *x < 799));
+            assert!(bounds.iter().all(|(_, y)| *y > 0 && *y < 23));
+        }
     }
 }

@@ -42,6 +42,7 @@ export struct TrayItemUi {
     title: string,
     icon_image: image,
     has_icon: bool,
+    themed_icon: bool,
     overlay_image: image,
     has_overlay: bool,
     attention: bool,
@@ -77,12 +78,16 @@ component IconButton inherits Rectangle {
     callback secondary-clicked;
     callback scrolled(float);
     width: 24px;
-    height: 24px;
+    height: 20px;
     border-radius: 4px;
     background: root.enabled && touch.has-hover ? Theme.bg-light : transparent;
     accessible-role: button;
     accessible-label: tip;
     Text {
+        x: 3px;
+        y: 1px;
+        width: 18px;
+        height: 18px;
         horizontal-alignment: center;
         vertical-alignment: center;
         text: root.icon;
@@ -145,16 +150,25 @@ component TrayButton inherits Rectangle {
     callback secondary(string);
     callback scroll(string, float);
     width: 22px;
-    height: 24px;
+    height: 20px;
     border-radius: 4px;
     border-width: item.attention ? 1px : 0px;
     border-color: Theme.warning;
     background: touch.has-hover ? Theme.bg-light : transparent;
     accessible-role: button;
     accessible-label: item.title;
-    if item.has-icon: Image {
-        width: 18px;
-        height: 18px;
+    if item.has-icon && item.themed-icon: Image {
+        width: 16px;
+        height: 16px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        source: item.icon-image;
+        image-fit: contain;
+        colorize: Theme.fg;
+    }
+    if item.has-icon && !item.themed-icon: Image {
+        width: 16px;
+        height: 16px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         source: item.icon-image;
@@ -318,6 +332,8 @@ export component BarWindow inherits Window {
         HorizontalLayout {
             padding-left: 4px;
             padding-right: 4px;
+            padding-top: 2px;
+            padding-bottom: 2px;
             spacing: 3px;
 
             if show-start: IconButton {
@@ -334,8 +350,8 @@ export component BarWindow inherits Window {
                     clicked(id) => { root.select-workspace(id); }
                 }
                 IconButton {
-                    icon: root.monitor-label;
-                    tip: "Workspace overview";
+                    icon: "󰍹";
+                    tip: "Workspace overview on " + root.monitor-label;
                     width: 34px;
                     clicked => { root.open-overview(); }
                 }
@@ -359,8 +375,8 @@ export component BarWindow inherits Window {
                     clicked(id) => { root.select-workspace(id); }
                 }
                 IconButton {
-                    icon: root.monitor-label;
-                    tip: "Workspace overview";
+                    icon: "󰍹";
+                    tip: "Workspace overview on " + root.monitor-label;
                     width: 34px;
                     clicked => { root.open-overview(); }
                 }
@@ -437,6 +453,7 @@ export component BarWindow inherits Window {
             }
             if show-clock: Rectangle {
                 width: 62px;
+                height: 20px;
                 VerticalLayout {
                     alignment: center;
                     Text {

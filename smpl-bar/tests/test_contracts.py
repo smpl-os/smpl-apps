@@ -60,6 +60,25 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn("NameOwnerChanged", sni)
         self.assertIn('"Activate"', sni)
 
+    def test_24px_layout_keyboard_title_and_tray_theme_contracts(self):
+        ui = (BAR / "ui/main.slint").read_text()
+        source = (BAR / "src/main.rs").read_text()
+        compositor = (ROOT / "smpl-shell/src/compositor.rs").read_text()
+        self.assertIn("height: 20px;", ui)
+        self.assertIn("padding-top: 2px;", ui)
+        self.assertIn("padding-bottom: 2px;", ui)
+        self.assertIn('tip: "Workspace overview on " + root.monitor-label', ui)
+        self.assertNotIn("icon: root.monitor-label", ui)
+        self.assertIn("if item.has-icon && item.themed-icon: Image", ui)
+        self.assertIn("if item.has-icon && !item.themed-icon: Image", ui)
+        self.assertIn("colorize: Theme.fg", ui)
+        apply_system = source[source.index("fn apply_system"):source.index("fn apply_provider_state")]
+        self.assertNotIn("set_keyboard_visible", apply_system)
+        self.assertIn("state.keyboard.visible", source)
+        self.assertIn("is_shell_surface", compositor)
+        self.assertIn('"GitHub Copilot"', source)
+        self.assertIn('"unrecolored_icons"', source)
+
     def test_popup_callbacks_route_through_os_mutual_exclusion(self):
         source = (BAR / "src/main.rs").read_text()
         callbacks = source[source.index("fn bind_bar_callbacks"):source.index("fn handle_request")]

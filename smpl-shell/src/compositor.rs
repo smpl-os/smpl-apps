@@ -40,11 +40,37 @@ pub enum Action {
     Quit,
 }
 
+fn is_shell_surface(app_id: Option<&str>, title: Option<&str>) -> bool {
+    let app_id = app_id.unwrap_or_default().to_ascii_lowercase();
+    let title = title.unwrap_or_default();
+    app_id.starts_with("smpl-bar")
+        || matches!(
+            app_id.as_str(),
+            "start-menu" | "notif-center" | "hints-overlay"
+        )
+        || title == "smpl-bar"
+        || title.starts_with("smpl-bar:")
+}
+
 pub struct CompositorHandle {
     pub kind: CompositorKind,
     pub states: Receiver<CompositorState>,
     actions: SyncSender<Action>,
     panel_ack: Arc<Mutex<Option<PanelPlacementTarget>>>,
+}
+
+#[test]
+fn shell_and_popup_focus_do_not_replace_the_real_window_title() {
+    for (app_id, title) in [
+        (Some("smpl-bar"), Some("smpl-bar")),
+        (Some("smpl-bar-preview"), Some("smpl-bar-preview")),
+        (Some("start-menu"), Some("smplOS")),
+        (Some("notif-center"), Some("Notifications")),
+        (Some("hints-overlay"), Some("hints-overlay")),
+    ] {
+        assert!(is_shell_surface(app_id, title), "{app_id:?} {title:?}");
+    }
+    assert!(!is_shell_surface(Some("code"), Some("GitHub Copilot")));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -348,11 +374,7 @@ impl HyprlandWorker {
         }
     }
 
-    fn handle_action(
-        &self,
-        action: Action,
-        panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
-    ) {
+    fn handle_action(&self, action: Action, panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>) {
         let panel_target = PanelPlacementTarget::from_action(&action);
         let started = std::time::Instant::now();
         let result = match action {
@@ -536,7 +558,12 @@ impl HyprlandWorker {
             policy_primary: policy_primary(),
             focused_workspace: active_workspace,
             focused_monitor: active_monitor,
-            active_window_title: active.and_then(|window| window.title).unwrap_or_default(),
+            active_window_title: active
+                .filter(|window| {
+                    !is_shell_surface(window.class.as_deref(), window.title.as_deref())
+                })
+                .and_then(|window| window.title)
+                .unwrap_or_default(),
             keyboard,
             error: String::new(),
         })
@@ -1126,6 +1153,7 @@ impl NiriLiveState {
             .windows
             .iter()
             .find(|window| window.is_focused)
+            .filter(|window| !is_shell_surface(window.app_id.as_deref(), window.title.as_deref()))
             .and_then(|window| window.title.clone())
             .unwrap_or_default();
         let monitors = outputs
@@ -1338,6 +1366,7 @@ impl X11Context {
         let active_atom = self.atom(b"_NET_ACTIVE_WINDOW")?;
         let name_atom = self.atom(b"_NET_WM_NAME")?;
         let wm_name_atom = self.atom(b"WM_NAME")?;
+        let class_atom = self.atom(b"WM_CLASS")?;
         let desktop_atom = self.atom(b"_NET_WM_DESKTOP")?;
         let utf8_atom = self.atom(b"UTF8_STRING")?;
         let screen = self
@@ -1363,18 +1392,23 @@ impl X11Context {
                 }
             }
         }
-        let title = if active_window != 0 {
+        let (title, class) = if active_window != 0 {
             let property = self
                 .connection
                 .get_property(false, active_window, name_atom, utf8_atom, 0, 4096)?
                 .reply()?;
-            if property.value.is_empty() {
+            let title = if property.value.is_empty() {
                 String::from_utf8_lossy(&self.property(active_window, wm_name_atom)?).into_owned()
             } else {
                 String::from_utf8_lossy(&property.value).into_owned()
-            }
+            };
+            let class = String::from_utf8_lossy(&self.property(active_window, class_atom)?)
+                .split('\0')
+                .rfind(|part| !part.is_empty())
+                .map(str::to_owned);
+            (title, class)
         } else {
-            String::new()
+            (String::new(), None)
         };
         let workspaces = (1..=count)
             .map(|id| Workspace {
@@ -1405,7 +1439,11 @@ impl X11Context {
             policy_primary: String::new(),
             focused_workspace: current,
             focused_monitor: "X11".to_owned(),
-            active_window_title: title,
+            active_window_title: if is_shell_surface(class.as_deref(), Some(&title)) {
+                String::new()
+            } else {
+                title
+            },
             keyboard: KeyboardState::default(),
             error: String::new(),
         })
@@ -1476,6 +1514,7 @@ struct HyprWorkspaceRef {
 #[derive(Debug, Deserialize)]
 struct HyprWindow {
     title: Option<String>,
+    class: Option<String>,
     monitor: i64,
     workspace: Option<HyprWorkspaceRef>,
 }
