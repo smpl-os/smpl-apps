@@ -371,7 +371,7 @@ impl SniWorker {
             (probe, false)
         } else {
             let watcher = StatusNotifierWatcher {
-                    state: watcher_state.clone(),
+                state: watcher_state.clone(),
                 registrations: registration_tx.clone(),
             };
             match zbus::connection::Builder::session()
@@ -463,15 +463,17 @@ impl SniWorker {
             self.host_registered = false;
             self.last_error = "StatusNotifierWatcher disappeared; reacquiring".to_owned();
             if self.ensure_watcher().await {
-                self.host_registered =
-                    call_host_register(&self.connection, &self.host_name).await.is_ok();
+                self.host_registered = call_host_register(&self.connection, &self.host_name)
+                    .await
+                    .is_ok();
                 self.last_error.clear();
                 self.refresh_registry().await;
             }
         } else if name == WATCHER {
             self.watcher_owned = false;
-            self.host_registered =
-                call_host_register(&self.connection, &self.host_name).await.is_ok();
+            self.host_registered = call_host_register(&self.connection, &self.host_name)
+                .await
+                .is_ok();
             self.refresh_registry().await;
         }
         for item in self.registrations.values_mut() {
@@ -503,12 +505,7 @@ impl SniWorker {
         if name_has_owner(&self.connection, WATCHER).await {
             return true;
         }
-        if self
-            .connection
-            .request_name(WATCHER)
-            .await
-            .is_err()
-        {
+        if self.connection.request_name(WATCHER).await.is_err() {
             return false;
         }
         let watcher = StatusNotifierWatcher {
