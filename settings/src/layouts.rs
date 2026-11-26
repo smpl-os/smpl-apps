@@ -1,4 +1,7 @@
 use crate::debug_log;
+use crate::display::hyprctl::{
+    hyprctl, hyprctl_ok, lua_string, parse_provider, Provider, Runner, SystemRunner,
+};
 use std::io::BufRead;
 use std::process::Command;
 
@@ -16,7 +19,10 @@ pub fn cleanup_legacy_config() {
         if legacy.exists() {
             match std::fs::remove_file(&legacy) {
                 Ok(_) => debug_log!("[settings] removed legacy config {:?}", legacy),
-                Err(e) => eprintln!("[settings] failed to remove legacy config {:?}: {}", legacy, e),
+                Err(e) => eprintln!(
+                    "[settings] failed to remove legacy config {:?}: {}",
+                    legacy, e
+                ),
             }
         }
     }
@@ -59,9 +65,16 @@ pub fn load_from_os_config(available: &[AvailableLayout]) -> Option<Vec<ActiveLa
         if code.is_empty() {
             continue;
         }
-        let variant = variants.get(i).map(|v| v.trim().to_string()).unwrap_or_default();
+        let variant = variants
+            .get(i)
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default();
         let description = describe(available, &code, &variant);
-        result.push(ActiveLayout { code, variant, description });
+        result.push(ActiveLayout {
+            code,
+            variant,
+            description,
+        });
     }
 
     if result.is_empty() {
@@ -182,7 +195,9 @@ fn is_valid_variant(available: &[AvailableLayout], code: &str, variant: &str) ->
     if variant.is_empty() {
         return true;
     }
-    available.iter().any(|a| a.code == code && a.variant == variant)
+    available
+        .iter()
+        .any(|a| a.code == code && a.variant == variant)
 }
 
 /// Validate and repair layout↔variant assignments parsed from a config file.
@@ -208,13 +223,22 @@ fn validate_layout_variants(available: &[AvailableLayout], layouts: &mut [Active
     for (bad_idx, variant) in &orphans {
         layouts[*bad_idx].variant.clear();
         // Find the first layout (without a variant) that accepts this variant.
-        if let Some(target) = layouts.iter_mut().find(|l| {
-            l.variant.is_empty() && is_valid_variant(available, &l.code, variant)
-        }) {
-            debug_log!("[settings] rehomed variant '{}' → layout '{}'", variant, target.code);
+        if let Some(target) = layouts
+            .iter_mut()
+            .find(|l| l.variant.is_empty() && is_valid_variant(available, &l.code, variant))
+        {
+            debug_log!(
+                "[settings] rehomed variant '{}' → layout '{}'",
+                variant,
+                target.code
+            );
             target.variant = variant.clone();
         } else {
-            debug_log!("[settings] dropped invalid variant '{}' from layout '{}'", variant, layouts[*bad_idx].code);
+            debug_log!(
+                "[settings] dropped invalid variant '{}' from layout '{}'",
+                variant,
+                layouts[*bad_idx].code
+            );
         }
     }
 
@@ -234,17 +258,18 @@ pub fn load_from_hyprland(available: &[AvailableLayout]) -> Option<Vec<ActiveLay
     }
 
     let variant_str = hyprctl_get_option("input:kb_variant").unwrap_or_default();
-    debug_log!("[settings] hyprland: layouts={:?} variants={:?}", layout_str, variant_str);
+    debug_log!(
+        "[settings] hyprland: layouts={:?} variants={:?}",
+        layout_str,
+        variant_str
+    );
     parse_layout_variant_csv(available, &layout_str, &variant_str)
 }
 
 /// Compositor-agnostic fallback: use setxkbmap -query to detect current layouts.
 pub fn load_from_system(available: &[AvailableLayout]) -> Option<Vec<ActiveLayout>> {
     debug_log!("[settings] load_from_system: setxkbmap -query");
-    let out = Command::new("setxkbmap")
-        .args(["-query"])
-        .output()
-        .ok()?;
+    let out = Command::new("setxkbmap").args(["-query"]).output().ok()?;
 
     if !out.status.success() {
         return None;
@@ -263,7 +288,11 @@ pub fn load_from_system(available: &[AvailableLayout]) -> Option<Vec<ActiveLayou
         }
     }
 
-    debug_log!("[settings] system: layouts={:?} variants={:?}", layout_str, variant_str);
+    debug_log!(
+        "[settings] system: layouts={:?} variants={:?}",
+        layout_str,
+        variant_str
+    );
     if layout_str.is_empty() {
         return None;
     }
@@ -285,9 +314,16 @@ fn parse_layout_variant_csv(
         .enumerate()
         .map(|(i, code)| {
             let code = code.trim().to_string();
-            let variant = variants.get(i).map(|v| v.trim().to_string()).unwrap_or_default();
+            let variant = variants
+                .get(i)
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default();
             let description = describe(available, &code, &variant);
-            ActiveLayout { code, variant, description }
+            ActiveLayout {
+                code,
+                variant,
+                description,
+            }
         })
         .collect();
 
@@ -302,27 +338,57 @@ pub fn sync_to_compositor(active: &[ActiveLayout]) {
         return;
     }
 
-    let valid: Vec<&ActiveLayout> = active.iter().filter(|a| !a.code.trim().is_empty()).collect();
+    let valid: Vec<&ActiveLayout> = active
+        .iter()
+        .filter(|a| !a.code.trim().is_empty())
+        .collect();
     if valid.is_empty() {
         return;
     }
 
-    let layouts: String = valid.iter().map(|a| a.code.as_str()).collect::<Vec<_>>().join(",");
-    let variants: String = valid.iter().map(|a| a.variant.as_str()).collect::<Vec<_>>().join(",");
+    let layouts: String = valid
+        .iter()
+        .map(|a| a.code.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let variants: String = valid
+        .iter()
+        .map(|a| a.variant.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
 
-    update_input_conf(&layouts, &variants);
+    let options = match update_input_conf(&layouts, &variants) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("[settings] keyboard configuration not applied: {error}");
+            return;
+        }
+    };
 
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
-        debug_log!("[settings] sync: hyprctl {} {}", layouts, variants);
-        hyprctl_keyword("input:kb_layout", &layouts);
-        hyprctl_keyword("input:kb_variant", &variants);
+        debug_log!(
+            "[settings] sync: Hyprland layouts={} variants={} options={}",
+            layouts,
+            variants,
+            options
+        );
+        if let Err(error) = apply_hyprland(&SystemRunner, &layouts, &variants, &options) {
+            eprintln!("[settings] keyboard configuration saved but live apply failed: {error}");
+        }
     } else {
         debug_log!("[settings] sync: setxkbmap {} {}", layouts, variants);
-        let mut args = vec!["-layout", &layouts];
+        let mut args = vec!["-layout", &layouts, "-option", options.as_str()];
         if !variants.replace(',', "").is_empty() {
             args.extend_from_slice(&["-variant", &variants]);
         }
-        let _ = Command::new("setxkbmap").args(&args).output();
+        match Command::new("setxkbmap").args(&args).output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => eprintln!(
+                "[settings] setxkbmap failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Err(error) => eprintln!("[settings] could not run setxkbmap: {error}"),
+        }
     }
 }
 
@@ -332,18 +398,19 @@ pub fn sync_to_compositor(active: &[ActiveLayout]) {
 ///   1. No empty layout codes (e.g. ",ru" is rejected)
 ///   2. Variant count == layout count (padded or truncated)
 ///   3. The resulting keymap compiles under XKB
-fn update_input_conf(layouts: &str, variants: &str) {
-    let clean_layouts: String = layouts.split(',').filter(|s| !s.trim().is_empty()).collect::<Vec<_>>().join(",");
+fn update_input_conf(layouts: &str, variants: &str) -> Result<String, String> {
+    let clean_layouts: String = layouts
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
     if clean_layouts.is_empty() {
-        debug_log!("[settings] update_input_conf: refusing to write empty layout");
-        return;
+        return Err("refusing to write an empty layout".to_owned());
     }
 
     let layout_count = clean_layouts.split(',').count();
-    let mut variant_parts: Vec<String> = variants
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .collect();
+    let mut variant_parts: Vec<String> =
+        variants.split(',').map(|s| s.trim().to_string()).collect();
     if variant_parts.len() < layout_count {
         variant_parts.resize(layout_count, String::new());
     } else if variant_parts.len() > layout_count {
@@ -354,7 +421,13 @@ fn update_input_conf(layouts: &str, variants: &str) {
     // Verify the keymap compiles before writing to the config file.
     // This prevents boot-time XKB errors from bad layout/variant combos.
     if let Ok(out) = Command::new("xkbcli")
-        .args(["compile-keymap", "--layout", &clean_layouts, "--variant", &clean_variants])
+        .args([
+            "compile-keymap",
+            "--layout",
+            &clean_layouts,
+            "--variant",
+            &clean_variants,
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -362,10 +435,16 @@ fn update_input_conf(layouts: &str, variants: &str) {
     {
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            eprintln!("[settings] update_input_conf: XKB compile failed for layout={} variant={}: {}",
-                clean_layouts, clean_variants, stderr.lines().next().unwrap_or("unknown error"));
-            debug_log!("[settings] update_input_conf: REFUSED to write invalid keymap");
-            return;
+            eprintln!(
+                "[settings] update_input_conf: XKB compile failed for layout={} variant={}: {}",
+                clean_layouts,
+                clean_variants,
+                stderr.lines().next().unwrap_or("unknown error")
+            );
+            return Err(format!(
+                "invalid XKB keymap layout={clean_layouts} variant={clean_variants}: {}",
+                stderr.lines().next().unwrap_or("unknown error")
+            ));
         }
     }
 
@@ -374,15 +453,17 @@ fn update_input_conf(layouts: &str, variants: &str) {
 
     let home = match std::env::var("HOME") {
         Ok(h) => h,
-        Err(_) => return,
+        Err(_) => return Err("HOME is not set".to_owned()),
     };
     let path = format!("{}/.config/hypr/input.conf", home);
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(error) => return Err(format!("could not read {path}: {error}")),
     };
+    let options = switch_options(&input_options(&content));
 
     let mut result = String::new();
+    let mut wrote_options = false;
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("kb_layout") && trimmed.contains('=') {
@@ -391,24 +472,89 @@ fn update_input_conf(layouts: &str, variants: &str) {
         } else if trimmed.starts_with("kb_variant") && trimmed.contains('=') {
             let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
             result.push_str(&format!("{}kb_variant = {}", indent, variants));
+        } else if trimmed.starts_with("kb_options") && trimmed.contains('=') {
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            result.push_str(&format!("{}kb_options = {}", indent, options));
+            wrote_options = true;
         } else {
             result.push_str(line);
         }
         result.push('\n');
     }
 
-    match std::fs::write(&path, &result) {
-        Ok(_) => debug_log!("[settings] update_input_conf: OK"),
-        Err(e) => eprintln!("[settings] update_input_conf failed: {}", e),
+    if !wrote_options {
+        return Err(format!("{path} has no kb_options entry"));
+    }
+
+    std::fs::write(&path, &result).map_err(|error| format!("could not write {path}: {error}"))?;
+    debug_log!("[settings] update_input_conf: OK");
+    Ok(options)
+}
+
+fn input_options(content: &str) -> String {
+    content
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.trim().split_once('=')?;
+            (key.trim() == "kb_options").then(|| value.trim().to_owned())
+        })
+        .unwrap_or_default()
+}
+
+fn switch_options(options: &str) -> String {
+    const SWITCH: &str = "grp:alt_shift_toggle";
+    let mut result: Vec<&str> = options
+        .split(',')
+        .map(str::trim)
+        .filter(|option| !option.is_empty() && *option != SWITCH)
+        .collect();
+    result.push(SWITCH);
+    result.join(",")
+}
+
+fn apply_hyprland(
+    runner: &dyn Runner,
+    layouts: &str,
+    variants: &str,
+    options: &str,
+) -> Result<(), String> {
+    let provider = parse_provider(&hyprctl(runner, &["systeminfo"])?)?;
+    match provider {
+        Provider::Lua => {
+            let expression = format!(
+                "hl.config({{ input = {{ kb_layout = {}, kb_variant = {}, kb_options = {} }} }})",
+                lua_string(layouts),
+                lua_string(variants),
+                lua_string(options)
+            );
+            hyprctl_ok(runner, &["eval", &expression])
+        }
+        Provider::Legacy => {
+            let batch = format!(
+                "keyword input:kb_layout {layouts}; keyword input:kb_variant {variants}; keyword input:kb_options {options}"
+            );
+            let reply = hyprctl(runner, &["--batch", &batch])?;
+            if reply
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .any(|line| line != "ok")
+            {
+                return Err(format!("Hyprland refused keyboard batch: {}", reply.trim()));
+            }
+            Ok(())
+        }
     }
 }
 
 /// Detect current layouts from the running compositor.
 pub fn load_from_compositor(available: &[AvailableLayout]) -> Option<Vec<ActiveLayout>> {
-    debug_log!("[settings] load_from_compositor: wayland={}", std::env::var("WAYLAND_DISPLAY").is_ok());
+    debug_log!(
+        "[settings] load_from_compositor: wayland={}",
+        std::env::var("WAYLAND_DISPLAY").is_ok()
+    );
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
-        load_from_hyprland(available)
-            .or_else(|| load_from_system(available))
+        load_from_hyprland(available).or_else(|| load_from_system(available))
     } else {
         load_from_system(available)
     }
@@ -425,9 +571,74 @@ fn hyprctl_get_option(option: &str) -> Option<String> {
     }
 
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    json.get("str").and_then(|v| v.as_str()).map(|s| s.to_string())
+    json.get("str")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
-fn hyprctl_keyword(key: &str, value: &str) {
-    let _ = Command::new("hyprctl").args(["keyword", key, value]).output();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::hyprctl::tests::{reply, MockRunner};
+
+    #[test]
+    fn switch_option_is_preserved_exactly_once() {
+        assert_eq!(
+            switch_options("ctrl:nocaps,grp:alt_shift_toggle,altwin:menu_win,grp:alt_shift_toggle"),
+            "ctrl:nocaps,altwin:menu_win,grp:alt_shift_toggle"
+        );
+        assert_eq!(switch_options(""), "grp:alt_shift_toggle");
+    }
+
+    #[test]
+    fn lua_provider_applies_all_keyboard_fields_in_one_mutation() {
+        let runner = MockRunner::new(|_, args| match args {
+            ["systeminfo"] => reply("configProvider: lua\n"),
+            ["eval", expression] => {
+                assert_eq!(
+                    *expression,
+                    r#"hl.config({ input = { kb_layout = "us,ru", kb_variant = ",phonetic", kb_options = "ctrl:nocaps,grp:alt_shift_toggle" } })"#
+                );
+                reply("ok\n")
+            }
+            _ => panic!("unexpected hyprctl arguments: {args:?}"),
+        });
+
+        apply_hyprland(
+            &runner,
+            "us,ru",
+            ",phonetic",
+            "ctrl:nocaps,grp:alt_shift_toggle",
+        )
+        .unwrap();
+        assert_eq!(runner.calls().len(), 2);
+        assert_eq!(
+            runner.calls()[1],
+            "hyprctl eval hl.config({ input = { kb_layout = \"us,ru\", kb_variant = \",phonetic\", kb_options = \"ctrl:nocaps,grp:alt_shift_toggle\" } })"
+        );
+    }
+
+    #[test]
+    fn legacy_provider_uses_one_coherent_batch() {
+        let runner = MockRunner::new(|_, args| match args {
+            ["systeminfo"] => reply("configProvider: hyprlang\n"),
+            ["--batch", batch] => {
+                assert_eq!(
+                    *batch,
+                    "keyword input:kb_layout us,ru; keyword input:kb_variant ,phonetic; keyword input:kb_options ctrl:nocaps,grp:alt_shift_toggle"
+                );
+                reply("ok\nok\nok\n")
+            }
+            _ => panic!("unexpected hyprctl arguments: {args:?}"),
+        });
+
+        apply_hyprland(
+            &runner,
+            "us,ru",
+            ",phonetic",
+            "ctrl:nocaps,grp:alt_shift_toggle",
+        )
+        .unwrap();
+        assert_eq!(runner.calls().len(), 2);
+    }
 }

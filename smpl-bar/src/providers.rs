@@ -33,6 +33,8 @@ pub struct ProviderState {
     pub ssid: Option<String>,
     pub bluetooth_available: Option<bool>,
     pub bluetooth_on: Option<bool>,
+    pub airplane: Option<bool>,
+    pub nightlight: Option<bool>,
     pub volume: Option<u8>,
     pub volume_muted: Option<bool>,
     pub notification_count: Option<u32>,
@@ -81,8 +83,7 @@ impl ProviderHandle {
                     return;
                 };
                 runtime.block_on(run(worker_snapshot, action_rx, telemetry));
-            })
-        {
+            }) {
             Ok(worker) => Some(worker),
             Err(error) => {
                 let mut state = snapshot
@@ -185,6 +186,7 @@ impl ProviderWorker {
     async fn refresh_all(&mut self) {
         self.refresh_network().await;
         self.refresh_bluetooth().await;
+        self.refresh_system_menu().await;
         self.refresh_control_surface().await;
         self.refresh_sync().await;
         self.refresh_audio().await;
@@ -231,8 +233,16 @@ impl ProviderWorker {
         )
         .await
         .unwrap_or_default();
+        let devices = bounded_output(["nmcli", "-g", "TYPE", "device", "status"], SAMPLE_TIMEOUT)
+            .await
+            .map(|output| {
+                String::from_utf8_lossy(&output)
+                    .lines()
+                    .map(|line| line.trim().to_ascii_lowercase())
+                    .filter(|line| !line.is_empty())
+                    .collect::<std::collections::HashSet<String>>()
+            });
         let mut wired = false;
-        let mut wireless = false;
         let mut vpn = false;
         let mut ssid = String::new();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -254,7 +264,6 @@ impl ProviderWorker {
             }
             match kind.as_str() {
                 "802-11-wireless" => {
-                    wireless = true;
                     if ssid.is_empty() {
                         if let Ok(access_point) = property::<OwnedObjectPath>(
                             system,
@@ -289,15 +298,46 @@ impl ProviderWorker {
             }
         }
         self.update(ProviderState {
-            wifi_available: wireless_enabled.map(|_| true),
-            wifi_on: wireless_enabled.map(|enabled| enabled && wireless),
-            wired_available: wired.then_some(true),
+            wifi_available: devices
+                .as_ref()
+                .map(|types| types.contains("wifi"))
+                .or_else(|| wireless_enabled.map(|_| true)),
+            wifi_on: wireless_enabled,
+            wired_available: devices
+                .as_ref()
+                .map(|types| types.contains("ethernet"))
+                .or_else(|| Some(wired)),
             wired: Some(wired),
             online: connectivity
                 .map(|value| value == 4)
                 .or_else(|| state.map(|value| value >= 50)),
             vpn: Some(vpn),
             ssid: Some(ssid),
+            ..ProviderState::default()
+        });
+    }
+
+    async fn refresh_system_menu(&self) {
+        let rfkill = bounded_output(["rfkill", "-o", "SOFT", "-n", "list"], SAMPLE_TIMEOUT)
+            .await
+            .map(|output| String::from_utf8_lossy(&output).into_owned());
+        let airplane = rfkill.map(|output| {
+            let mut has_radio = false;
+            let mut any_unblocked = false;
+            for line in output.lines() {
+                if matches!(line.trim(), "blocked" | "unblocked") {
+                    has_radio = true;
+                    any_unblocked |= line.trim() == "unblocked";
+                }
+            }
+            has_radio && !any_unblocked
+        });
+        let nightlight = bounded_output(["pgrep", "-x", "gammastep"], SAMPLE_TIMEOUT)
+            .await
+            .is_some();
+        self.update(ProviderState {
+            airplane,
+            nightlight: Some(nightlight),
             ..ProviderState::default()
         });
     }
@@ -698,6 +738,8 @@ async fn run(
     };
     let mut refresh = tokio::time::interval(Duration::from_secs(15));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut fast_refresh = tokio::time::interval(Duration::from_secs(3));
+    fast_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     worker.refresh_all().await;
     let mut audio_lines = spawn_audio_subscriber();
     loop {
@@ -753,6 +795,10 @@ async fn run(
                 if audio_lines.is_none() {
                     audio_lines = spawn_audio_subscriber();
                 }
+            }
+            _ = fast_refresh.tick() => {
+                worker.refresh_system_menu().await;
+                worker.refresh_notifications().await;
             }
         }
     }
@@ -856,6 +902,8 @@ fn merge_provider(current: &mut ProviderState, patch: ProviderState) {
     take!(ssid);
     take!(bluetooth_available);
     take!(bluetooth_on);
+    take!(airplane);
+    take!(nightlight);
     take!(volume);
     take!(volume_muted);
     take!(notification_count);
@@ -873,17 +921,21 @@ mod tests {
         let mut state = ProviderState {
             volume: Some(30),
             ssid: Some("office".to_owned()),
+            nightlight: Some(true),
             ..ProviderState::default()
         };
         merge_provider(
             &mut state,
             ProviderState {
                 volume: Some(50),
+                airplane: Some(true),
                 ..ProviderState::default()
             },
         );
         assert_eq!(state.volume, Some(50));
         assert_eq!(state.ssid.as_deref(), Some("office"));
+        assert_eq!(state.airplane, Some(true));
+        assert_eq!(state.nightlight, Some(true));
     }
 
     #[test]

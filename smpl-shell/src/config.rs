@@ -191,9 +191,39 @@ pub fn load(paths: &ConfigPaths) -> Result<BarConfigFile, ConfigError> {
                 message: error.to_string(),
             })?;
         config = native;
+        migrate_keyboard_module(&mut config);
     }
     validate(&config).map_err(ConfigError::Validation)?;
     Ok(config)
+}
+
+fn migrate_keyboard_module(config: &mut BarConfigFile) {
+    if config
+        .left
+        .iter()
+        .chain(&config.right)
+        .any(|module| *module == Module::Keyboard)
+    {
+        return;
+    }
+    let index = config
+        .right
+        .iter()
+        .position(|module| {
+            matches!(
+                module,
+                Module::Bluetooth
+                    | Module::Wifi
+                    | Module::Network
+                    | Module::Volume
+                    | Module::Battery
+                    | Module::Sni
+                    | Module::Clock
+                    | Module::Notifications
+            )
+        })
+        .unwrap_or(config.right.len());
+    config.right.insert(index, Module::Keyboard);
 }
 
 fn read_config(path: &Path) -> Result<String, ConfigError> {
@@ -434,6 +464,36 @@ mod tests {
         assert!(config.right.contains(&Module::Volume));
         assert!(config.right.contains(&Module::Notifications));
         assert!(config.right.contains(&Module::Sni));
+        assert!(config.right.contains(&Module::Keyboard));
+    }
+
+    #[test]
+    fn native_module_overrides_migrate_the_keyboard_module() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::from_home(Some(directory.path())).unwrap();
+        std::fs::create_dir_all(paths.native.parent().unwrap()).unwrap();
+        std::fs::write(
+            &paths.native,
+            r#"{
+                "right": ["usb", "keypad", "sync", "dictation", "bluetooth", "wifi"],
+                "left": ["start", "workspaces", "window-title"]
+            }"#,
+        )
+        .unwrap();
+
+        let config = load(&paths).unwrap();
+        assert_eq!(
+            config.right,
+            vec![
+                Module::Usb,
+                Module::Keypad,
+                Module::Sync,
+                Module::Dictation,
+                Module::Keyboard,
+                Module::Bluetooth,
+                Module::Wifi
+            ]
+        );
     }
 
     #[test]

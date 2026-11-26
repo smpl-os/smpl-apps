@@ -300,7 +300,7 @@ impl HyprlandWorker {
                             ("error", serde_json::json!(error.to_string())),
                         ],
                     );
-                    if self.wait_for_action(&actions, &panel_ack) {
+                    if self.wait_for_action(&actions, &panel_ack, &state_tx) {
                         return;
                     }
                     continue;
@@ -316,8 +316,9 @@ impl HyprlandWorker {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
             let mut reader = BufReader::new(stream);
             let mut buffer = Vec::new();
+            let mut last_snapshot = std::time::Instant::now();
             loop {
-                if self.drain_actions(&actions, &panel_ack) {
+                if self.drain_actions(&actions, &panel_ack, &state_tx) {
                     return;
                 }
                 buffer.clear();
@@ -327,7 +328,10 @@ impl HyprlandWorker {
                         let event = String::from_utf8_lossy(&buffer);
                         if event_needs_snapshot(&event) {
                             match self.snapshot() {
-                                Ok(state) => publish(&state_tx, state),
+                                Ok(state) => {
+                                    publish(&state_tx, state);
+                                    last_snapshot = std::time::Instant::now();
+                                }
                                 Err(error) => {
                                     publish(&state_tx, error_state(CompositorKind::Hyprland, error))
                                 }
@@ -341,6 +345,17 @@ impl HyprlandWorker {
                         ) => {}
                     Err(_) => break,
                 }
+                if last_snapshot.elapsed() >= Duration::from_millis(250) {
+                    match self.snapshot() {
+                        Ok(state) => {
+                            publish(&state_tx, state);
+                            last_snapshot = std::time::Instant::now();
+                        }
+                        Err(error) => {
+                            publish(&state_tx, error_state(CompositorKind::Hyprland, error))
+                        }
+                    }
+                }
             }
         }
     }
@@ -349,11 +364,18 @@ impl HyprlandWorker {
         &self,
         actions: &Receiver<Action>,
         panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+        state_tx: &SyncSender<CompositorState>,
     ) -> bool {
         match actions.recv_timeout(Duration::from_millis(500)) {
             Ok(Action::Quit) => true,
             Ok(action) => {
-                self.handle_action(action, panel_ack);
+                if matches!(&action, Action::NextKeyboardLayout)
+                    && self.handle_action(action, panel_ack)
+                {
+                    if let Ok(state) = self.snapshot() {
+                        publish(state_tx, state);
+                    }
+                }
                 false
             }
             Err(_) => false,
@@ -364,17 +386,30 @@ impl HyprlandWorker {
         &self,
         actions: &Receiver<Action>,
         panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+        state_tx: &SyncSender<CompositorState>,
     ) -> bool {
         loop {
             match actions.try_recv() {
                 Ok(Action::Quit) => return true,
-                Ok(action) => self.handle_action(action, panel_ack),
+                Ok(action) => {
+                    if matches!(&action, Action::NextKeyboardLayout)
+                        && self.handle_action(action, panel_ack)
+                    {
+                        if let Ok(state) = self.snapshot() {
+                            publish(state_tx, state);
+                        }
+                    }
+                }
                 Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return false,
             }
         }
     }
 
-    fn handle_action(&self, action: Action, panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>) {
+    fn handle_action(
+        &self,
+        action: Action,
+        panel_ack: &Arc<Mutex<Option<PanelPlacementTarget>>>,
+    ) -> bool {
         let panel_target = PanelPlacementTarget::from_action(&action);
         let started = std::time::Instant::now();
         let result = match action {
@@ -382,10 +417,7 @@ impl HyprlandWorker {
             Action::FocusMonitor(connector) => {
                 self.dispatch(format!("hl.dsp.focus({{monitor='{connector}'}})"))
             }
-            Action::NextKeyboardLayout => self
-                .request("switchxkblayout current next")
-                .map(|_| ())
-                .map_err(WorkerError::from),
+            Action::NextKeyboardLayout => self.switch_keyboard_layout(),
             Action::PlacePanel {
                 monitor,
                 x,
@@ -429,6 +461,7 @@ impl HyprlandWorker {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = panel_target;
         }
+        result.is_ok()
     }
 
     fn request(&self, command: &str) -> std::io::Result<Vec<u8>> {
@@ -448,6 +481,17 @@ impl HyprlandWorker {
             ));
         }
         Ok(reply)
+    }
+
+    fn switch_keyboard_layout(&self) -> Result<(), WorkerError> {
+        let reply = self.request("switchxkblayout current next")?;
+        if String::from_utf8_lossy(&reply).trim() != "ok" {
+            return Err(WorkerError::Message(format!(
+                "Hyprland rejected keyboard switch: {}",
+                String::from_utf8_lossy(&reply).trim()
+            )));
+        }
+        Ok(())
     }
 
     fn json<T: for<'de> Deserialize<'de>>(&self, command: &str) -> Result<T, WorkerError> {
@@ -527,21 +571,16 @@ impl HyprlandWorker {
                 temporary: false,
             })
             .collect();
-        let keyboard = devices
-            .keyboards
-            .into_iter()
-            .find(|keyboard| {
-                !keyboard.name.to_ascii_lowercase().contains("power")
-                    && !keyboard.name.to_ascii_lowercase().contains("button")
-            })
+        let keyboard = preferred_keyboard(&devices.keyboards)
             .map(|keyboard| {
                 let layouts = split_option(&layouts.map(|option| option.str).unwrap_or_default());
-                let variants = split_option(&variants.map(|option| option.str).unwrap_or_default());
+                let variants =
+                    split_indexed_option(&variants.map(|option| option.str).unwrap_or_default());
                 let index = keyboard.active_layout_index.unwrap_or(0) as usize;
                 KeyboardState {
                     visible: layouts.len() > 1 && keyboard.active_keymap.is_some(),
                     code: layout_code(keyboard.active_keymap.as_deref().unwrap_or("")),
-                    layout: keyboard.active_keymap.unwrap_or_default(),
+                    layout: keyboard.active_keymap.clone().unwrap_or_default(),
                     xkb_layout: layouts
                         .get(index)
                         .or_else(|| layouts.first())
@@ -1537,10 +1576,27 @@ struct HyprDevices {
 #[derive(Debug, Deserialize)]
 struct HyprKeyboard {
     name: String,
+    #[serde(default)]
+    main: bool,
     #[serde(rename = "active_keymap")]
     active_keymap: Option<String>,
     #[serde(rename = "active_layout_index")]
     active_layout_index: Option<u32>,
+}
+
+fn preferred_keyboard(keyboards: &[HyprKeyboard]) -> Option<&HyprKeyboard> {
+    let eligible = keyboards
+        .iter()
+        .filter(|keyboard| {
+            !keyboard.name.to_ascii_lowercase().contains("power")
+                && !keyboard.name.to_ascii_lowercase().contains("button")
+        })
+        .collect::<Vec<_>>();
+    eligible
+        .iter()
+        .find(|keyboard| keyboard.main)
+        .copied()
+        .or_else(|| eligible.first().copied())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1555,6 +1611,13 @@ fn split_option(value: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+        .collect()
+}
+
+fn split_indexed_option(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|value| value.trim().to_owned())
         .collect()
 }
 
@@ -1702,7 +1765,26 @@ mod tests {
     #[test]
     fn option_lists_preserve_keyboard_layout_indices() {
         assert_eq!(split_option(" us, ru, "), ["us", "ru"]);
+        assert_eq!(
+            split_indexed_option(" , phonetic_azerty"),
+            ["", "phonetic_azerty"]
+        );
         assert_eq!(split_option(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn hyprland_keyboard_selection_prefers_the_main_device() {
+        let devices: HyprDevices = serde_json::from_str(
+            r#"{"keyboards":[
+                {"name":"virtual-keyboard","main":false,"active_keymap":"English (US)","active_layout_index":0},
+                {"name":"usb-keyboard","main":true,"active_keymap":"Russian","active_layout_index":1}
+            ]}"#,
+        )
+        .unwrap();
+
+        let keyboard = preferred_keyboard(&devices.keyboards).unwrap();
+        assert_eq!(keyboard.name, "usb-keyboard");
+        assert_eq!(keyboard.active_layout_index, Some(1));
     }
 
     #[test]

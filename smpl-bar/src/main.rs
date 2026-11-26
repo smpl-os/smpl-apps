@@ -310,11 +310,18 @@ fn run_resident(
                 apply_system(&bar, &system, &state.borrow().config);
                 if let Some(ui) = &popups.borrow().quick {
                     ui.set_volume(system.volume.into());
+                    ui.set_volume_muted(system.volume_muted);
                     ui.set_dnd_on(system.notifications_paused);
+                    ui.set_wifi_available(system.wifi_available);
                     ui.set_wifi_on(system.wifi_on);
+                    ui.set_bluetooth_available(system.bluetooth_available);
                     ui.set_bluetooth_on(system.bluetooth_on);
                     ui.set_bluetooth_label(if system.bluetooth_on { "On" } else { "Off" }.into());
+                    ui.set_wired_available(system.wired_available);
                     ui.set_wired_on(system.wired);
+                    ui.set_vpn_on(system.vpn);
+                    ui.set_airplane_on(system.airplane);
+                    ui.set_nightlight_on(system.nightlight);
                     ui.set_network_label(
                         if system.ssid.is_empty() {
                             if system.wifi_on {
@@ -787,6 +794,12 @@ fn apply_provider_state(system: &mut SystemState, provider: &ProviderState) {
     if let Some(value) = provider.bluetooth_on {
         system.bluetooth_on = value;
     }
+    if let Some(value) = provider.airplane {
+        system.airplane = value;
+    }
+    if let Some(value) = provider.nightlight {
+        system.nightlight = value;
+    }
     if let Some(value) = provider.volume {
         system.volume = value;
     }
@@ -805,7 +818,9 @@ fn apply_provider_state(system: &mut SystemState, provider: &ProviderState) {
     if let Some(value) = provider.keypad_present {
         system.keypad_present = value;
     }
-    system.airplane = system.wifi_available && !system.wifi_on && !system.bluetooth_on;
+    if provider.airplane.is_none() {
+        system.airplane = system.wifi_available && !system.wifi_on && !system.bluetooth_on;
+    }
 }
 
 fn apply_compositor(bar: &BarWindow, state: &CompositorState, config: &BarConfigFile) {
@@ -1084,7 +1099,6 @@ fn synchronize_panel(
         } else if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
             let _ = panel.hide();
         }
-
     }
 
     if update.visible || preview {
@@ -1133,6 +1147,11 @@ fn resize_window(window: &slint::Window, width: f64, height: f64) {
     window.with_winit_window(|winit: &i_slint_backend_winit::winit::window::Window| {
         let _ = winit.request_inner_size(LogicalSize::new(width, height));
     });
+}
+
+fn size_popup_after_show(window: &slint::Window, width: f64, height: f64) {
+    window.set_size(slint::LogicalSize::new(width as f32, height as f32));
+    resize_window(window, width, height);
 }
 
 fn update_clock(bar: &BarWindow, config: &BarConfigFile) {
@@ -1269,7 +1288,11 @@ fn record_snapshot_paint(
                 .enumerate()
                 .skip(3.min(height))
                 .take(height.saturating_sub(6))
-                .flat_map(|(_, row)| row.iter().skip(12.min(width)).take(width.saturating_sub(24)))
+                .flat_map(|(_, row)| {
+                    row.iter()
+                        .skip(12.min(width))
+                        .take(width.saturating_sub(24))
+                })
                 .filter(|pixel| pixel[3] == 255)
                 .count();
             telemetry.duration_since(
@@ -1282,7 +1305,10 @@ fn record_snapshot_paint(
                     ("opaque_pixels", serde_json::json!(opaque)),
                     ("partial_alpha_pixels", serde_json::json!(partial)),
                     ("transparent_pixels", serde_json::json!(transparent)),
-                    ("background_alpha_samples", serde_json::json!(background_alpha)),
+                    (
+                        "background_alpha_samples",
+                        serde_json::json!(background_alpha),
+                    ),
                     ("opaque_content_pixels", serde_json::json!(opaque_content)),
                 ],
             );
@@ -1318,6 +1344,7 @@ fn open_quick_settings(
         ui.set_wifi_on(system.wifi_on);
         ui.set_bluetooth_on(system.bluetooth_on);
         ui.set_wired_on(system.wired);
+        ui.set_vpn_on(system.vpn);
         ui.set_airplane_on(system.airplane);
         ui.set_nightlight_on(system.nightlight);
         ui.set_nightlight_available(
@@ -1327,6 +1354,7 @@ fn open_quick_settings(
         ui.set_dictation_on(system.dictation_active);
         ui.set_dictation_available(system.dictation_available);
         ui.set_volume(system.volume.into());
+        ui.set_volume_muted(system.volume_muted);
         ui.set_brightness(system.brightness.into());
         ui.set_network_label(
             if system.ssid.is_empty() {
@@ -1342,8 +1370,8 @@ fn open_quick_settings(
         );
         ui.set_bluetooth_label(if system.bluetooth_on { "On" } else { "Off" }.into());
         install_render_telemetry(ui.window(), telemetry, Some(started));
-        resize_window(ui.window(), 430.0, 340.0);
         let _ = ui.show();
+        size_popup_after_show(ui.window(), 430.0, 340.0);
         if telemetry.enabled() {
             let weak = ui.as_weak();
             let paint_telemetry = telemetry.clone();
@@ -1371,6 +1399,19 @@ fn open_quick_settings(
     );
 }
 
+fn quick_toggle_command(name: &str) -> Option<&'static str> {
+    match name {
+        "wifi" => Some("wifi-toggle"),
+        "bluetooth" => Some("bt-toggle"),
+        "wired" => Some("wired-toggle"),
+        "airplane" => Some("airplane-toggle"),
+        "nightlight" => Some("nightlight-toggle"),
+        "dnd" => Some("dnd-toggle"),
+        "dictation" => Some("dictation-toggle"),
+        _ => None,
+    }
+}
+
 fn bind_quick(
     ui: &QuickSettingsWindow,
     state: &Rc<RefCell<UiState>>,
@@ -1382,15 +1423,16 @@ fn bind_quick(
     let state_toggle = state.clone();
     let weak = ui.as_weak();
     ui.on_toggle(move |name| {
-        let command = match name.as_str() {
-            "wifi" => "wifi-toggle",
-            "bluetooth" => "bt-toggle",
-            "wired" => "wired-toggle",
-            "airplane" => "airplane-toggle",
-            "nightlight" => "nightlight-toggle",
-            "dnd" => "dnd-toggle",
-            "dictation" => "dictation-toggle",
-            _ => return,
+        if name.as_str() == "volume" {
+            spawn(&children_toggle, ["volume-ctl", "toggle"]);
+            if let Some(ui) = weak.upgrade() {
+                ui.set_volume_muted(!ui.get_volume_muted());
+                state_toggle.borrow_mut().system.volume_muted = ui.get_volume_muted();
+            }
+            return;
+        }
+        let Some(command) = quick_toggle_command(name.as_str()) else {
+            return;
         };
         spawn(&children_toggle, [command]);
         if let Some(ui) = weak.upgrade() {
@@ -1428,10 +1470,10 @@ fn bind_quick(
         }
     });
     let children_tools = children.clone();
-    ui.on_open_tool(move |tool| {
-        if tool.as_str() == "settings" {
-            spawn(&children_tools, ["smplos-settings"]);
-        }
+    ui.on_open_tool(move |tool| match tool.as_str() {
+        "settings" => spawn(&children_tools, ["smplos-settings"]),
+        "network" => spawn(&children_tools, ["nm-connection-editor"]),
+        _ => {}
     });
     let children_action = children.clone();
     ui.on_action(move |action| match action.as_str() {
@@ -1530,12 +1572,12 @@ fn open_usb(
         .collect();
     ui.set_devices(ModelRc::new(VecModel::from_slice(&devices)));
     install_render_telemetry(ui.window(), telemetry, Some(started));
-    resize_window(
+    let _ = ui.show();
+    size_popup_after_show(
         ui.window(),
         360.0,
         (150 + devices.len().saturating_mul(58)) as f64,
     );
-    let _ = ui.show();
     if telemetry.enabled() {
         let weak = ui.as_weak();
         let paint_telemetry = telemetry.clone();
@@ -1605,12 +1647,12 @@ fn open_overview(
         .collect();
     ui.set_workspaces(ModelRc::new(VecModel::from_slice(&workspaces)));
     install_render_telemetry(ui.window(), telemetry, Some(started));
-    resize_window(
+    let _ = ui.show();
+    size_popup_after_show(
         ui.window(),
         620.0,
         (170 + monitors.len().saturating_mul(50)) as f64,
     );
-    let _ = ui.show();
     if telemetry.enabled() {
         let weak = ui.as_weak();
         let paint_telemetry = telemetry.clone();
@@ -1654,8 +1696,8 @@ fn open_identify(
             .into(),
         );
         install_render_telemetry(ui.window(), telemetry, Some(started));
-        resize_window(ui.window(), 380.0, 140.0);
         let _ = ui.show();
+        size_popup_after_show(ui.window(), 380.0, 140.0);
         let scale = monitor.scale.max(0.5);
         let logical_width = monitor.width as f64 / scale;
         let logical_height = monitor.height as f64 / scale;
@@ -1783,10 +1825,10 @@ fn apply_keypad_sheet(
         }
     }
     ui.set_keys(ModelRc::new(VecModel::from_slice(&keys)));
-    resize_window(ui.window(), 720.0, 360.0);
     let started = Instant::now();
     install_render_telemetry(ui.window(), telemetry, Some(started));
     let _ = ui.show();
+    size_popup_after_show(ui.window(), 720.0, 360.0);
     ui.window()
         .with_winit_window(|native: &i_slint_backend_winit::winit::window::Window| {
             if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
@@ -1863,12 +1905,12 @@ fn open_tray_menu(
         .collect();
     ui.set_entries(ModelRc::new(VecModel::from_slice(&entries)));
     install_render_telemetry(ui.window(), telemetry, Some(started));
-    resize_window(
+    let _ = ui.show();
+    size_popup_after_show(
         ui.window(),
         300.0,
         (80 + menu.entries.len().saturating_mul(34)).min(520) as f64,
     );
-    let _ = ui.show();
     telemetry.emit(
         "popup_open_requested",
         [("popup", serde_json::json!("tray-menu"))],
@@ -1940,6 +1982,13 @@ fn status_json(state: &Rc<RefCell<UiState>>) -> serde_json::Value {
         "compositor": state.compositor.kind.as_str(),
         "focused_workspace": state.compositor.focused_workspace,
         "window_title": state.compositor.active_window_title,
+        "keyboard": {
+            "visible": state.compositor.keyboard.visible,
+            "code": state.compositor.keyboard.code,
+            "layout": state.compositor.keyboard.layout,
+            "xkb_layout": state.compositor.keyboard.xkb_layout,
+            "xkb_variant": state.compositor.keyboard.xkb_variant,
+        },
         "system": system_summary(&state.system),
         "compositor_error": state.compositor.error,
         "panel": state.panel_status,
@@ -1962,6 +2011,11 @@ fn system_summary(state: &SystemState) -> serde_json::Value {
         "network_online": state.online,
         "wifi": state.wifi_on,
         "bluetooth": state.bluetooth_on,
+        "wired": state.wired,
+        "wired_available": state.wired_available,
+        "vpn": state.vpn,
+        "airplane": state.airplane,
+        "nightlight": state.nightlight,
         "volume": state.volume,
         "volume_muted": state.volume_muted,
         "notifications": state.notification_count,
@@ -2360,6 +2414,22 @@ mod tests {
             arguments.control_request,
             Some(Request::SetKeypadPresent { present: true })
         );
+    }
+
+    #[test]
+    fn quick_settings_preserves_system_action_contracts() {
+        for (name, command) in [
+            ("wifi", "wifi-toggle"),
+            ("bluetooth", "bt-toggle"),
+            ("wired", "wired-toggle"),
+            ("airplane", "airplane-toggle"),
+            ("nightlight", "nightlight-toggle"),
+            ("dnd", "dnd-toggle"),
+            ("dictation", "dictation-toggle"),
+        ] {
+            assert_eq!(quick_toggle_command(name), Some(command));
+        }
+        assert_eq!(quick_toggle_command("vpn"), None);
     }
 
     #[test]

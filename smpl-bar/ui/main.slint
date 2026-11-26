@@ -492,6 +492,7 @@ export component QuickSettingsWindow inherits Window {
     in-out property <bool> wifi-on;
     in-out property <bool> bluetooth-on;
     in-out property <bool> wired-on;
+    in-out property <bool> vpn-on;
     in-out property <bool> airplane-on;
     in-out property <bool> nightlight-on;
     in-out property <bool> nightlight-available;
@@ -499,6 +500,7 @@ export component QuickSettingsWindow inherits Window {
     in-out property <bool> dictation-on;
     in-out property <bool> dictation-available;
     in-out property <int> volume: 50;
+    in-out property <bool> volume-muted: false;
     in-out property <int> brightness: 100;
     in-out property <string> network-label: "Offline";
     in-out property <string> bluetooth-label: "Off";
@@ -549,6 +551,12 @@ export component QuickSettingsWindow inherits Window {
                 }
                 Row {
                     TogglePill {
+                        icon: "󰖂";
+                        label: vpn-on ? "VPN active" : "VPN off";
+                        active: vpn-on;
+                        clicked => root.open-tool("network");
+                    }
+                    TogglePill {
                         icon: "󰍬";
                         label: dictation-on ? "Recording" : "Dictation";
                         active: dictation-on;
@@ -565,7 +573,12 @@ export component QuickSettingsWindow inherits Window {
                     padding-left: 10px;
                     padding-right: 10px;
                     spacing: 8px;
-                    Text { text: "󰕾"; color: Theme.fg; vertical-alignment: center; }
+                    IconButton {
+                        icon: volume-muted || volume == 0 ? "󰖁" : "󰕾";
+                        tip: volume-muted ? "Unmute volume" : "Mute volume";
+                        active: !volume-muted;
+                        clicked => root.toggle("volume");
+                    }
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 6px;
