@@ -388,14 +388,20 @@ component QuickSlider inherits Rectangle {
     in-out property <bool> dragging: false;
     callback change(int);
     callback toggle-mute;
+    out property <length> track-width: track.width;
+    out property <length> track-x: track-touch.absolute-position.x;
+    out property <length> track-y: track-touch.absolute-position.y;
     min-width: 0px;
+    width: 100%;
+    horizontal-stretch: 1;
     height: 42px;
     border-radius: 9px;
     border-width: 1px;
     border-color: Theme.bg-lighter.transparentize(0.56);
     background: Theme.bg-light.transparentize(0.74);
     HorizontalLayout {
-        alignment: center;
+        width: 100%;
+        height: 100%;
         padding-left: 10px;
         padding-right: 10px;
         spacing: 9px;
@@ -427,29 +433,29 @@ component QuickSlider inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
         }
-        Rectangle {
-            min-width: 20px;
+        track := Rectangle {
+            min-width: 72px;
             horizontal-stretch: 1;
-            height: 20px;
+            height: 28px;
             Rectangle {
-                x: 0px;
-                y: 7px;
-                width: parent.width;
+                x: 6px;
+                y: 11px;
+                width: max(0px, parent.width - 12px);
                 height: 6px;
                 border-radius: 3px;
                 background: Theme.fg.transparentize(0.89);
             }
             Rectangle {
-                x: 0px;
-                y: 7px;
-                width: parent.width * clamp(root.value, root.minimum, 100) / 100;
+                x: 6px;
+                y: 11px;
+                width: max(0px, parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;
                 height: 6px;
                 border-radius: 3px;
                 background: muted ? Theme.danger : Theme.accent;
             }
             Rectangle {
                 x: (parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;
-                y: 4px;
+                y: 8px;
                 width: 12px;
                 height: 12px;
                 border-radius: 6px;
@@ -457,19 +463,22 @@ component QuickSlider inherits Rectangle {
                 border-color: Theme.bg-light;
                 background: muted ? Theme.danger : Theme.accent;
             }
-            TouchArea {
+            track-touch := TouchArea {
                 x: 0px;
                 y: 0px;
-                width: 100%;
-                height: 100%;
+                width: parent.width;
+                height: parent.height;
+                moved => {
+                    if (self.pressed) {
+                        root.value = clamp(round(((self.mouse-x - 6px) / max(1px, self.width - 12px)) * 100), root.minimum, 100);
+                        root.change(root.value);
+                    }
+                }
                 pointer-event(event) => {
-                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    if (event.kind == PointerEventKind.down) {
                         root.dragging = true;
-                        root.value = clamp(round((self.mouse-x / self.width) * 100), root.minimum, 100);
-                    } else if (event.button == PointerEventButton.left
-                        && event.kind == PointerEventKind.move
-                        && root.dragging) {
-                        root.value = clamp(round((self.mouse-x / self.width) * 100), root.minimum, 100);
+                        root.value = clamp(round(((self.mouse-x - 6px) / max(1px, self.width - 12px)) * 100), root.minimum, 100);
+                        root.change(root.value);
                     } else if (event.kind == PointerEventKind.up && root.dragging) {
                         root.change(root.value);
                         root.dragging = false;
@@ -961,6 +970,9 @@ export component QuickSettingsWindow inherits Window {
     out property <length> layout-content-height: quick-content.height;
     out property <length> layout-viewport-width: quick-scroll.width;
     out property <length> layout-viewport-height: quick-scroll.height;
+    out property <length> layout-volume-track-width: volume-slider.track-width;
+    out property <length> layout-volume-track-x: volume-slider.track-x;
+    out property <length> layout-volume-track-y: volume-slider.track-y;
     out property <bool> layout-overflows-width: quick-content.width > quick-scroll.width + 0.5px;
     out property <bool> layout-scrolls: quick-content.height > quick-scroll.height + 0.5px;
     title: "smpl-bar:quick-settings";
@@ -1005,7 +1017,7 @@ export component QuickSettingsWindow inherits Window {
                         font-weight: 700;
                         letter-spacing: 0.8px;
                     }
-                    QuickSlider {
+                    volume-slider := QuickSlider {
                         icon: root.volume-muted || root.volume == 0 ? "󰖁" : "󰕾";
                         label: "VOLUME";
                         value <=> root.volume;

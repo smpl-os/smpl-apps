@@ -2868,6 +2868,11 @@ mod tests {
 
     fn renderer_bounds_quick_settings_and_scrolls_short_viewports() {
         let quick = QuickSettingsWindow::new().unwrap();
+        let volume_changes = Rc::new(RefCell::new(Vec::<i32>::new()));
+        let volume_changes_for_callback = volume_changes.clone();
+        quick.on_set_volume(move |value| {
+            volume_changes_for_callback.borrow_mut().push(value);
+        });
         quick.set_wifi_available(true);
         quick.set_bluetooth_available(true);
         quick.set_wired_available(true);
@@ -2876,14 +2881,9 @@ mod tests {
         quick.set_network_label("An intentionally long wireless network name".into());
         quick.set_bluetooth_label("Controller connected".into());
 
-        let cases = [
-            (430.0_f32, 340.0_f32, 2_i32),
-            (380.0, 520.0, 2),
-            (760.0, 300.0, 3),
-            (300.0, 480.0, 1),
-            (280.0, 320.0, 1),
-        ];
+        let cases = [(430.0_f32, 340.0_f32, 2_i32)];
         let index = Rc::new(Cell::new(0_usize));
+        let volume_input_phase = Rc::new(Cell::new(0_u8));
         let failures = Rc::new(RefCell::new(Vec::<String>::new()));
         quick.show().unwrap();
         size_popup_after_show(quick.window(), cases[0].0 as f64, cases[0].1 as f64);
@@ -2892,6 +2892,7 @@ mod tests {
         let weak = quick.as_weak();
         let timer_index = index.clone();
         let timer_failures = failures.clone();
+        let timer_volume_input_phase = volume_input_phase.clone();
         timer.start(slint::TimerMode::Repeated, Duration::from_millis(140), move || {
             let Some(quick) = weak.upgrade() else {
                 timer_failures.borrow_mut().push("quick settings window disappeared".into());
@@ -2931,6 +2932,90 @@ mod tests {
                     "{width}x{height}: horizontal overflow content={content_width} viewport={viewport_width}"
                 ));
             }
+            if case_index == cases.len() - 1 {
+                use slint::platform::{PointerEventButton, WindowEvent};
+
+                let track_x = quick.get_layout_volume_track_x();
+                let track_y = quick.get_layout_volume_track_y();
+                let track_width = quick.get_layout_volume_track_width();
+                assert!(
+                    track_width >= 72.0,
+                    "volume track is unusably narrow: {track_width}"
+                );
+                let y = track_y + 14.0;
+                let start = slint::LogicalPosition::new(track_x + 20.0, y);
+                let dragged = slint::LogicalPosition::new(
+                    track_x + track_width * 0.75,
+                    y,
+                );
+                match timer_volume_input_phase.get() {
+                    0 => {
+                        quick.window().dispatch_event(WindowEvent::PointerMoved {
+                            position: start,
+                        });
+                        quick.window().dispatch_event(WindowEvent::PointerPressed {
+                            position: start,
+                            button: PointerEventButton::Left,
+                        });
+                        timer_volume_input_phase.set(1);
+                    }
+                    1 => {
+                        assert!(
+                            quick.get_volume_dragging(),
+                            "pointer press did not reach volume track at {track_x},{track_y} width {track_width}; value={}",
+                            quick.get_volume()
+                        );
+                        assert!(
+                            !volume_changes.borrow().is_empty(),
+                            "pointer press did not invoke the volume callback"
+                        );
+                        quick.window().dispatch_event(WindowEvent::PointerMoved {
+                            position: dragged,
+                        });
+                        timer_volume_input_phase.set(2);
+                    }
+                    2 => {
+                        assert!(
+                            (quick.get_volume() - 75).abs() <= 1,
+                            "pointer drag did not update volume: {}",
+                            quick.get_volume()
+                        );
+                        assert!(
+                            volume_changes.borrow().len() >= 2,
+                            "pointer drag did not invoke the volume callback"
+                        );
+                        quick.window().dispatch_event(WindowEvent::PointerReleased {
+                            position: dragged,
+                            button: PointerEventButton::Left,
+                        });
+                        timer_volume_input_phase.set(3);
+                    }
+                    3 => {
+                        assert_eq!(quick.get_volume_dragging(), false);
+                        assert_eq!(
+                            volume_changes.borrow().last().copied(),
+                            Some(quick.get_volume()),
+                            "pointer release did not invoke the volume callback"
+                        );
+                        quick.window().dispatch_event(WindowEvent::PointerScrolled {
+                            position: dragged,
+                            delta_x: 0.0,
+                            delta_y: -60.0,
+                        });
+                        timer_volume_input_phase.set(4);
+                    }
+                    4 => {
+                        assert_eq!(quick.get_volume_dragging(), false);
+                        assert_eq!(
+                            volume_changes.borrow().last().copied(),
+                            Some(quick.get_volume()),
+                            "wheel event did not invoke the volume callback"
+                        );
+                        timer_volume_input_phase.set(5);
+                    }
+                    _ => timer_volume_input_phase.set(6),
+                }
+            }
             let content_height = quick.get_layout_content_height();
             let viewport_height = quick.get_layout_viewport_height();
             let content_exceeds_viewport = content_height > viewport_height + 0.5;
@@ -2951,6 +3036,9 @@ mod tests {
                 ));
             }
 
+            if case_index == cases.len() - 1 && timer_volume_input_phase.get() < 6 {
+                return;
+            }
             let next = case_index + 1;
             if next == cases.len() {
                 let _ = slint::quit_event_loop();

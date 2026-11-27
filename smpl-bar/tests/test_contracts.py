@@ -200,11 +200,14 @@ class SmplBarContracts(unittest.TestCase):
             ui.index("component QuickSlider") : ui.index("component CommandAction")
         ]
         self.assertIn("height: 42px;", slider)
+        self.assertIn("width: 100%;", slider)
+        self.assertIn("horizontal-stretch: 1;", slider)
         self.assertIn("alignment: center;", slider)
-        self.assertIn("x: 0px;", slider)
-        self.assertIn("width: parent.width;", slider)
+        self.assertIn("min-width: 72px;", slider)
+        self.assertIn("height: 28px;", slider)
+        self.assertIn("x: 6px;", slider)
         self.assertIn(
-            "width: parent.width * clamp(root.value, root.minimum, 100) / 100;",
+            "width: max(0px, parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;",
             slider,
         )
         self.assertIn(
@@ -214,7 +217,8 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn("width: 12px;", slider)
         self.assertNotIn("max(6px", slider)
         self.assertIn("root.dragging = true;", slider)
-        self.assertIn("event.kind == PointerEventKind.move", slider)
+        self.assertIn("moved =>", slider)
+        self.assertIn("if (self.pressed)", slider)
         self.assertIn("event.kind == PointerEventKind.up && root.dragging", slider)
         self.assertIn("scroll-event(event) =>", slider)
         self.assertIn("if (event.delta-y != 0px)", slider)
@@ -222,16 +226,14 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn("root.change(root.value);", slider)
         self.assertLess(
             slider.index("root.dragging = true;"),
-            slider.index("event.kind == PointerEventKind.move"),
-        )
-        self.assertLess(
-            slider.index("event.kind == PointerEventKind.move"),
             slider.index("event.kind == PointerEventKind.up && root.dragging"),
         )
-        self.assertEqual(slider.count("root.change(root.value);"), 2)
+        self.assertEqual(slider.count("root.change(root.value);"), 4)
         self.assertIn("preferred-height: 560px;", quick)
         self.assertIn("dragging <=> root.volume-dragging;", quick)
         self.assertIn("dragging <=> root.brightness-dragging;", quick)
+        self.assertIn("volume-slider := QuickSlider", quick)
+        self.assertIn("layout-volume-track-width", quick)
         brightness_start = source.index("ui.on_set_brightness")
         brightness_callback = source[
             brightness_start : source.index(
@@ -245,6 +247,14 @@ class SmplBarContracts(unittest.TestCase):
         start_icon = (BAR / "ui/assets/start.svg").read_text()
         self.assertIn('M 221 95', start_icon)
         self.assertIn('H 109', start_icon)
+
+        rust = (BAR / "src/main.rs").read_text()
+        self.assertIn("WindowEvent::PointerPressed", rust)
+        self.assertIn("WindowEvent::PointerMoved", rust)
+        self.assertIn("WindowEvent::PointerReleased", rust)
+        self.assertIn("WindowEvent::PointerScrolled", rust)
+        self.assertIn("pointer release did not invoke the volume callback", rust)
+        self.assertIn("wheel event did not invoke the volume callback", rust)
 
     def test_quick_settings_two_column_geometry_fits_without_scrolling(self):
         ui = (BAR / "ui/main.slint").read_text()
