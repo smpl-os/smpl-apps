@@ -245,17 +245,7 @@ fn run_resident(
             }
             if let Some(bar) = bar_weak.upgrade() {
                 if let Some(snapshot) = compositor.latest() {
-                    let native_popup_focused = snapshot.active_window_is_popup;
                     state.borrow_mut().apply_compositor_snapshot(snapshot);
-                    if popups
-                        .borrow_mut()
-                        .observe_popup_focus(native_popup_focused)
-                    {
-                        telemetry.emit(
-                            "popup_closed",
-                            [("reason", serde_json::json!("focus-left-popup"))],
-                        );
-                    }
                     let snapshot = state.borrow().compositor.clone();
                     let config = state.borrow().config.clone();
                     apply_compositor(&bar, &snapshot, &config);
@@ -353,6 +343,7 @@ fn run_resident(
                         .into(),
                     );
                 }
+                state.borrow_mut().reap_quick_commands();
                 reap_children(&mut children.borrow_mut());
                 let requests = server.borrow().drain();
                 for (request, mut stream) in requests {
@@ -675,7 +666,16 @@ fn handle_request(
         Request::Popup { name } => {
             match name {
                 Popup::QuickSettings => {
-                    open_quick_settings(state, popups, children, compositor, telemetry);
+                    if popups
+                        .borrow()
+                        .quick
+                        .as_ref()
+                        .is_some_and(|window| window.window().is_visible())
+                    {
+                        popups.borrow_mut().close_all();
+                    } else {
+                        open_quick_settings(state, popups, children, compositor, telemetry);
+                    }
                 }
                 Popup::Usb => open_usb(state, popups, children, compositor, telemetry),
                 Popup::WorkspaceOverview => {
@@ -1565,24 +1565,42 @@ fn bind_quick(
         }
     });
     let children_tools = children.clone();
+    let state_tools = state.clone();
+    let weak_tools = ui.as_weak();
     ui.on_open_tool(move |tool| match tool.as_str() {
-        "settings" => spawn(&children_tools, ["smplos-settings"]),
+        "settings" => spawn_quick_command(
+            &state_tools,
+            weak_tools.clone(),
+            "Opening Settings",
+            SETTINGS_COMMAND,
+        ),
         "network" => spawn(&children_tools, ["nm-connection-editor"]),
         _ => {}
     });
     let children_action = children.clone();
+    let state_action = state.clone();
+    let weak_action = ui.as_weak();
     ui.on_action(move |action| match action.as_str() {
-        "logout" => {
-            if let Some(user) = std::env::var_os("USER") {
-                spawn_owned(
-                    &children_action,
-                    vec![
-                        "loginctl".to_owned(),
-                        "terminate-user".to_owned(),
-                        user.to_string_lossy().into_owned(),
-                    ],
-                );
+        "logout-request" => {
+            if let Some(ui) = weak_action.upgrade() {
+                ui.set_logout_confirmation(true);
             }
+        }
+        "logout-cancel" => {
+            if let Some(ui) = weak_action.upgrade() {
+                ui.set_logout_confirmation(false);
+            }
+        }
+        "logout-confirmed" => {
+            if let Some(ui) = weak_action.upgrade() {
+                ui.set_logout_confirmation(false);
+            }
+            spawn_quick_command(
+                &state_action,
+                weak_action.clone(),
+                "Logging out",
+                LOGOUT_COMMAND,
+            );
         }
         "poweroff" => spawn(&children_action, ["systemctl", "poweroff"]),
         _ => {}
@@ -2066,19 +2084,44 @@ fn spawn<const N: usize>(children: &Rc<RefCell<Vec<Child>>>, arguments: [&str; N
     }
 }
 
-fn spawn_owned(children: &Rc<RefCell<Vec<Child>>>, arguments: Vec<String>) {
-    if arguments.is_empty() {
+const SETTINGS_COMMAND: &[&str] = &["smplos-settings"];
+const LOGOUT_COMMAND: &[&str] = &["smplos-session-logout", "--confirmed"];
+
+struct QuickCommand {
+    child: Child,
+    label: String,
+    ui: slint::Weak<QuickSettingsWindow>,
+}
+
+fn spawn_quick_command(
+    state: &Rc<RefCell<UiState>>,
+    ui: slint::Weak<QuickSettingsWindow>,
+    label: &str,
+    arguments: &[&str],
+) {
+    let Some(program) = arguments.first() else {
         return;
-    }
-    let mut command = launch::command(&arguments[0]);
+    };
+    let mut command = launch::command(program);
     command
         .args(&arguments[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(window) = ui.upgrade() {
+        window.set_action_error("".into());
+    }
     match command.spawn() {
-        Ok(child) => children.borrow_mut().push(child),
-        Err(error) => eprintln!("smpl-bar: cannot launch {}: {error}", arguments[0]),
+        Ok(child) => state.borrow_mut().quick_commands.push(QuickCommand {
+            child,
+            label: label.to_owned(),
+            ui,
+        }),
+        Err(error) => {
+            if let Some(ui) = ui.upgrade() {
+                ui.set_action_error(format!("{label} failed: {error}").into());
+            }
+        }
     }
 }
 
@@ -2175,7 +2218,6 @@ struct PopupWindows {
     keypad: Option<KeypadCheatsheetWindow>,
     identify: Vec<IdentifyWindow>,
     tray_menu: Option<TrayMenuWindow>,
-    popup_focused: bool,
 }
 
 impl PopupWindows {
@@ -2198,44 +2240,8 @@ impl PopupWindows {
         if let Some(window) = &self.tray_menu {
             let _ = window.hide();
         }
-        self.popup_focused = false;
         let marker = ipc_runtime().join("smplos/native-popup.active");
         let _ = std::fs::remove_file(marker);
-    }
-
-    fn observe_popup_focus(&mut self, popup_has_focus: bool) -> bool {
-        let dismissible_visible = [
-            self.quick
-                .as_ref()
-                .is_some_and(|window| window.window().is_visible()),
-            self.usb
-                .as_ref()
-                .is_some_and(|window| window.window().is_visible()),
-            self.overview
-                .as_ref()
-                .is_some_and(|window| window.window().is_visible()),
-            self.keypad
-                .as_ref()
-                .is_some_and(|window| window.window().is_visible() && !window.get_click_through()),
-            self.tray_menu
-                .as_ref()
-                .is_some_and(|window| window.window().is_visible()),
-        ]
-        .into_iter()
-        .any(|visible| visible);
-        if !dismissible_visible {
-            self.popup_focused = false;
-            return false;
-        }
-        if popup_has_focus {
-            self.popup_focused = true;
-            return false;
-        }
-        if self.popup_focused {
-            self.close_all();
-            return true;
-        }
-        false
     }
 }
 
@@ -2262,6 +2268,7 @@ struct UiState {
     provider_state: ProviderState,
     provider_error: String,
     last_system_sample: Instant,
+    quick_commands: Vec<QuickCommand>,
 }
 
 impl UiState {
@@ -2290,7 +2297,34 @@ impl UiState {
             provider_state: ProviderState::default(),
             provider_error: String::new(),
             last_system_sample: Instant::now(),
+            quick_commands: Vec::new(),
         }
+    }
+
+    fn reap_quick_commands(&mut self) {
+        self.quick_commands
+            .retain_mut(|command| match command.child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        if let Some(ui) = command.ui.upgrade() {
+                            ui.set_action_error(
+                                format!("{} failed with exit status {status}", command.label)
+                                    .into(),
+                            );
+                        }
+                    }
+                    false
+                }
+                Ok(None) => true,
+                Err(error) => {
+                    if let Some(ui) = command.ui.upgrade() {
+                        ui.set_action_error(
+                            format!("{} could not be checked: {error}", command.label).into(),
+                        );
+                    }
+                    false
+                }
+            });
     }
 
     fn refresh_system(&mut self) {
@@ -2620,6 +2654,8 @@ mod tests {
             assert_eq!(quick_toggle_command(name), Some(command));
         }
         assert_eq!(quick_toggle_command("vpn"), None);
+        assert_eq!(SETTINGS_COMMAND, ["smplos-settings"]);
+        assert_eq!(LOGOUT_COMMAND, ["smplos-session-logout", "--confirmed"]);
     }
 
     #[test]

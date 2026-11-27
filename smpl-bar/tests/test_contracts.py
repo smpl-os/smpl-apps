@@ -146,7 +146,9 @@ class SmplBarContracts(unittest.TestCase):
             'root.toggle("volume")',
             'root.open-tool("network")',
             'root.open-tool("settings")',
-            'root.action("logout")',
+            'root.action("logout-request")',
+            'root.action("logout-cancel")',
+            'root.action("logout-confirmed")',
             'root.action("poweroff")',
             "root.set-volume(value)",
             "root.set-brightness(value)",
@@ -155,11 +157,15 @@ class SmplBarContracts(unittest.TestCase):
         for implementation in (
             '["volume-ctl", "toggle"]',
             '["nm-connection-editor"]',
-            '["smplos-settings"]',
-            '"loginctl"',
+            '"smplos-settings"',
+            '"smplos-session-logout", "--confirmed"',
             '"systemctl", "poweroff"',
         ):
             self.assertIn(implementation, source)
+        self.assertNotIn('"loginctl"', source)
+        self.assertNotIn('"terminate-user"', source)
+        self.assertIn("logout-confirmation", quick)
+        self.assertIn("action-error", quick)
         self.assertIn('@image-url("assets/start.svg")', ui)
         self.assertNotIn('icon: "󰍜"', ui)
         self.assertNotIn("drop-shadow", quick)
@@ -168,7 +174,7 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn('M 221 95', start_icon)
         self.assertIn('H 109', start_icon)
 
-    def test_all_native_popups_are_floating_bounded_and_focus_dismissed(self):
+    def test_all_native_popups_are_floating_bounded_and_explicitly_dismissed(self):
         source = (BAR / "src/main.rs").read_text()
         compositor = (ROOT / "smpl-shell/src/compositor.rs").read_text()
         for title in (
@@ -180,8 +186,9 @@ class SmplBarContracts(unittest.TestCase):
         ):
             self.assertIn(f'"{title}"', source)
         self.assertGreaterEqual(source.count("show_popup_at_anchor("), 6)
-        self.assertIn("observe_popup_focus", source)
-        self.assertIn("focus-left-popup", source)
+        self.assertIn("Request::ClosePopups", source)
+        self.assertNotIn("observe_popup_focus", source)
+        self.assertNotIn("focus-left-popup", source)
         self.assertIn("Action::PlacePopup", source)
         self.assertIn("resizewindowpixel exact", compositor)
         self.assertIn("set_floating", compositor)

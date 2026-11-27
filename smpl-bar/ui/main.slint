@@ -761,6 +761,8 @@ export component QuickSettingsWindow inherits Window {
     in-out property <int> brightness: 100;
     in-out property <string> network-label: "Offline";
     in-out property <string> bluetooth-label: "Off";
+    in-out property <string> action-error: "";
+    in-out property <bool> logout-confirmation: false;
     callback close;
     callback toggle(string);
     callback open-tool(string);
@@ -809,6 +811,29 @@ export component QuickSettingsWindow inherits Window {
                     padding-top: 2px;
                     padding-bottom: 2px;
                     spacing: 8px;
+                    Text {
+                        text: "OUTPUT + DISPLAY";
+                        color: Theme.fg-dim;
+                        font-size: 8px;
+                        font-weight: 700;
+                        letter-spacing: 0.8px;
+                    }
+                    QuickSlider {
+                        icon: root.volume-muted || root.volume == 0 ? "󰖁" : "󰕾";
+                        label: "VOLUME";
+                        value <=> root.volume;
+                        muted: root.volume-muted;
+                        mute-control: true;
+                        change(value) => root.set-volume(value);
+                        toggle-mute => root.toggle("volume");
+                    }
+                    QuickSlider {
+                        icon: "󰃠";
+                        label: "BRIGHTNESS";
+                        value <=> root.brightness;
+                        minimum: 1;
+                        change(value) => root.set-brightness(value);
+                    }
                     Text {
                         text: "CONNECTIVITY + MODES";
                         color: Theme.fg-dim;
@@ -906,29 +931,6 @@ export component QuickSettingsWindow inherits Window {
                             clicked => root.toggle("dictation");
                         }
                     }
-                    Text {
-                        text: "OUTPUT + DISPLAY";
-                        color: Theme.fg-dim;
-                        font-size: 8px;
-                        font-weight: 700;
-                        letter-spacing: 0.8px;
-                    }
-                    QuickSlider {
-                        icon: root.volume-muted || root.volume == 0 ? "󰖁" : "󰕾";
-                        label: "VOLUME";
-                        value <=> root.volume;
-                        muted: root.volume-muted;
-                        mute-control: true;
-                        change(value) => root.set-volume(value);
-                        toggle-mute => root.toggle("volume");
-                    }
-                    QuickSlider {
-                        icon: "󰃠";
-                        label: "BRIGHTNESS";
-                        value <=> root.brightness;
-                        minimum: 1;
-                        change(value) => root.set-brightness(value);
-                    }
                 }
             }
             HorizontalLayout {
@@ -944,7 +946,7 @@ export component QuickSettingsWindow inherits Window {
                     horizontal-stretch: 1;
                     icon: "󰗽";
                     label: "Log out";
-                    clicked => root.action("logout");
+                    clicked => root.action("logout-request");
                 }
                 CommandAction {
                     horizontal-stretch: 1;
@@ -952,6 +954,65 @@ export component QuickSettingsWindow inherits Window {
                     label: "Power";
                     tint: Theme.danger;
                     clicked => root.action("poweroff");
+                }
+            }
+            if action-error != "": Text {
+                text: action-error;
+                color: Theme.danger;
+                font-size: 11px;
+                wrap: word-wrap;
+                accessible-role: text;
+                accessible-label: action-error;
+            }
+        }
+        if logout-confirmation: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            background: Theme.bg.transparentize(0.14);
+            border-radius: 14px;
+            Rectangle {
+                x: 24px;
+                y: (parent.height - self.height) / 2;
+                width: max(240px, min(360px, parent.width - 48px));
+                height: 164px;
+                background: Theme.bg-light;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: Theme.danger.transparentize(0.38);
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 10px;
+                    Text {
+                        text: "Log out of smplOS?";
+                        color: Theme.fg;
+                        font-size: 16px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: "Save your work first. This ends only the current desktop session.";
+                        color: Theme.fg-dim;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        vertical-stretch: 1;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        CommandAction {
+                            horizontal-stretch: 1;
+                            icon: "×";
+                            label: "Cancel";
+                            clicked => root.action("logout-cancel");
+                        }
+                        CommandAction {
+                            horizontal-stretch: 1;
+                            icon: "󰗽";
+                            label: "Log out";
+                            tint: Theme.danger;
+                            clicked => root.action("logout-confirmed");
+                        }
+                    }
                 }
             }
         }

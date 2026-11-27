@@ -246,6 +246,13 @@ The smplOS integration still owns:
 * no-focus and no-shadow treatment for the reservation's Winit panel;
 * the resident user service/autostart switch only after explicit backend opt-in.
 
+Quick Settings remains open while the pointer leaves its surface. It closes
+only through its close button, an IPC/toggle close (including the OS click-away
+bridge), or a mutually exclusive popup request. Settings launches
+`smplos-settings`; launch failures are shown in the panel. Logout opens an
+in-app confirmation and then executes only
+`smplos-session-logout --confirmed`.
+
 Niri implementation uses its documented native socket protocol; no `niri msg`
 helper process runs in the event or input path. Exact new app-side panel and
 identify titles must be included in smplOS compositor rules when their source
