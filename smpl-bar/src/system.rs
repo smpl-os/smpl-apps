@@ -45,6 +45,7 @@ pub struct SystemSampler {
     battery_path: Option<PathBuf>,
     battery_discovered: bool,
     backlight_path: Option<PathBuf>,
+    last_brightness: u8,
     path_directories: Vec<PathBuf>,
     home: PathBuf,
     runtime: PathBuf,
@@ -62,6 +63,7 @@ impl SystemSampler {
                     PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
                 }),
             path_directories: executable_directories(),
+            last_brightness: 100,
             ..Self::default()
         }
     }
@@ -73,6 +75,7 @@ impl SystemSampler {
             path_directories: sampler.path_directories,
             home: root.to_owned(),
             runtime: root.join("run"),
+            last_brightness: sampler.last_brightness,
             ..Self::default()
         }
     }
@@ -110,6 +113,10 @@ impl SystemSampler {
         state
     }
 
+    pub fn remember_brightness(&mut self, brightness: u8) {
+        self.last_brightness = brightness.clamp(1, 100);
+    }
+
     fn sample_battery(&mut self, root: PathBuf, state: &mut SystemState) {
         if !self.battery_discovered {
             self.battery_path = first_battery(&root);
@@ -127,11 +134,15 @@ impl SystemSampler {
     }
 
     fn sample_brightness(&mut self, root: PathBuf, state: &mut SystemState) {
-        if self.backlight_path.is_none() {
+        if self
+            .backlight_path
+            .as_ref()
+            .is_none_or(|path| !path.is_dir())
+        {
             self.backlight_path = sorted_dirs(&root).into_iter().next();
         }
         let Some(path) = &self.backlight_path else {
-            state.brightness = 100;
+            state.brightness = self.last_brightness;
             return;
         };
         let maximum = read_number(path.join("max_brightness")).unwrap_or(0);
@@ -142,6 +153,7 @@ impl SystemSampler {
             .checked_div(maximum)
             .unwrap_or(100)
             .clamp(1, 100) as u8;
+        self.last_brightness = state.brightness;
     }
 
     fn sample_network(
@@ -443,6 +455,40 @@ mod tests {
             sampler.sample_below(fixture.path(), &fixture.path().join("proc"), fixture.path());
         assert_eq!(state.battery_level, 12);
         assert!(state.battery_low);
+    }
+
+    #[test]
+    fn sampler_preserves_brightness_without_a_sysfs_backlight() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut sampler = SystemSampler::with_roots(fixture.path());
+        sampler.remember_brightness(47);
+
+        let state =
+            sampler.sample_below(fixture.path(), &fixture.path().join("proc"), fixture.path());
+
+        assert_eq!(state.brightness, 47);
+    }
+
+    #[test]
+    fn sampler_remembers_brightness_read_from_sysfs() {
+        let fixture = tempfile::tempdir().unwrap();
+        let backlight = fixture.path().join("sys/class/backlight/external");
+        std::fs::create_dir_all(&backlight).unwrap();
+        std::fs::write(backlight.join("max_brightness"), "200\n").unwrap();
+        std::fs::write(backlight.join("brightness"), "74\n").unwrap();
+        let mut sampler = SystemSampler::with_roots(fixture.path());
+
+        let state =
+            sampler.sample_below(fixture.path(), &fixture.path().join("proc"), fixture.path());
+        assert_eq!(state.brightness, 37);
+
+        std::fs::remove_dir_all(&backlight).unwrap();
+        assert_eq!(
+            sampler
+                .sample_below(fixture.path(), &fixture.path().join("proc"), fixture.path())
+                .brightness,
+            37
+        );
     }
 
     #[test]

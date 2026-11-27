@@ -313,6 +313,13 @@ component QuickSettingCard inherits Rectangle {
     in property <bool> active;
     in property <bool> enabled: true;
     callback clicked;
+    out property <length> icon-size: icon-box.width;
+    out property <length> glyph-x: icon-glyph.x;
+    out property <length> glyph-y: icon-glyph.y;
+    out property <length> glyph-width: icon-glyph.width;
+    out property <length> glyph-height: icon-glyph.height;
+    out property <length> icon-center-offset-y: (icon-box.absolute-position.y + icon-box.height / 2)
+        - (self.absolute-position.y + self.height / 2);
     min-width: 0px;
     height: 66px;
     border-radius: 10px;
@@ -326,22 +333,36 @@ component QuickSettingCard inherits Rectangle {
     accessible-role: button;
     accessible-label: title;
     HorizontalLayout {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
         alignment: center;
         padding: 10px;
         spacing: 9px;
         Rectangle {
             width: 34px;
-            height: 34px;
-            border-radius: 9px;
-            background: active ? Theme.accent.transparentize(0.68)
-                : Theme.bg-lighter.transparentize(0.64);
-            Text {
-                text: icon;
-                font-family: "JetBrains Mono Nerd Font";
-                font-size: 17px;
-                color: enabled ? (active ? Theme.accent : Theme.fg) : Theme.fg-dim;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            height: 100%;
+            icon-box := Rectangle {
+                x: 0px;
+                y: (parent.height - self.height) / 2;
+                width: 34px;
+                height: 34px;
+                border-radius: 9px;
+                background: active ? Theme.accent.transparentize(0.68)
+                    : Theme.bg-lighter.transparentize(0.64);
+                icon-glyph := Text {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
+                    text: icon;
+                    font-family: "JetBrains Mono Nerd Font";
+                    font-size: 17px;
+                    color: enabled ? (active ? Theme.accent : Theme.fg) : Theme.fg-dim;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
         }
         VerticalLayout {
@@ -391,6 +412,13 @@ component QuickSlider inherits Rectangle {
     out property <length> track-width: track.width;
     out property <length> track-x: track-touch.absolute-position.x;
     out property <length> track-y: track-touch.absolute-position.y;
+    out property <length> icon-size: icon-box.width;
+    out property <length> icon-glyph-x: icon-glyph.x;
+    out property <length> icon-glyph-y: icon-glyph.y;
+    out property <length> icon-glyph-width: icon-glyph.width;
+    out property <length> icon-glyph-height: icon-glyph.height;
+    out property <length> icon-center-offset-y: (icon-box.absolute-position.y + icon-box.height / 2)
+        - (self.absolute-position.y + self.height / 2);
     min-width: 0px;
     width: 100%;
     horizontal-stretch: 1;
@@ -407,21 +435,31 @@ component QuickSlider inherits Rectangle {
         spacing: 9px;
         Rectangle {
             width: 26px;
-            height: 28px;
-            border-radius: 7px;
-            background: muted ? Theme.danger.transparentize(0.80) : Theme.accent.transparentize(0.84);
-            Text {
-                text: icon;
-                color: muted ? Theme.danger : Theme.accent;
-                font-family: "JetBrains Mono Nerd Font";
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                font-size: 15px;
-            }
-            TouchArea {
-                enabled: root.mute-control;
-                mouse-cursor: root.mute-control ? pointer : default;
-                clicked => root.toggle-mute();
+            height: 100%;
+            icon-box := Rectangle {
+                x: 0px;
+                y: (parent.height - self.height) / 2;
+                width: 26px;
+                height: 26px;
+                border-radius: 7px;
+                background: muted ? Theme.danger.transparentize(0.80) : Theme.accent.transparentize(0.84);
+                icon-glyph := Text {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
+                    text: icon;
+                    color: muted ? Theme.danger : Theme.accent;
+                    font-family: "JetBrains Mono Nerd Font";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    font-size: 15px;
+                }
+                TouchArea {
+                    enabled: root.mute-control;
+                    mouse-cursor: root.mute-control ? pointer : default;
+                    clicked => root.toggle-mute();
+                }
             }
         }
         Text {
@@ -510,6 +548,13 @@ component CommandAction inherits Rectangle {
     in property <string> label;
     in property <color> tint: Theme.accent;
     callback clicked;
+    out property <length> icon-size: icon-box.width;
+    out property <length> glyph-x: icon-glyph.x;
+    out property <length> glyph-y: icon-glyph.y;
+    out property <length> glyph-width: icon-glyph.width;
+    out property <length> glyph-height: icon-glyph.height;
+    out property <length> icon-center-offset-y: (icon-box.absolute-position.y + icon-box.height / 2)
+        - (self.absolute-position.y + self.height / 2);
     min-width: 0px;
     height: 38px;
     border-radius: 8px;
@@ -520,16 +565,35 @@ component CommandAction inherits Rectangle {
     accessible-role: button;
     accessible-label: label;
     HorizontalLayout {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
         alignment: center;
         padding-left: 8px;
         padding-right: 8px;
         spacing: 7px;
-        Text {
-            text: icon;
-            color: tint;
-            font-family: "JetBrains Mono Nerd Font";
-            font-size: 14px;
-            vertical-alignment: center;
+        Rectangle {
+            width: 26px;
+            height: 100%;
+            icon-box := Rectangle {
+                x: 0px;
+                y: (parent.height - self.height) / 2;
+                width: 26px;
+                height: 26px;
+                icon-glyph := Text {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
+                    text: icon;
+                    color: tint;
+                    font-family: "JetBrains Mono Nerd Font";
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
         }
         Text {
             text: label;
@@ -973,6 +1037,24 @@ export component QuickSettingsWindow inherits Window {
     out property <length> layout-volume-track-width: volume-slider.track-width;
     out property <length> layout-volume-track-x: volume-slider.track-x;
     out property <length> layout-volume-track-y: volume-slider.track-y;
+    out property <length> layout-slider-icon-size: volume-slider.icon-size;
+    out property <length> layout-slider-glyph-x: volume-slider.icon-glyph-x;
+    out property <length> layout-slider-glyph-y: volume-slider.icon-glyph-y;
+    out property <length> layout-slider-glyph-width: volume-slider.icon-glyph-width;
+    out property <length> layout-slider-glyph-height: volume-slider.icon-glyph-height;
+    out property <length> layout-slider-icon-offset-y: volume-slider.icon-center-offset-y;
+    out property <length> layout-card-icon-size: wifi-card.icon-size;
+    out property <length> layout-card-glyph-x: wifi-card.glyph-x;
+    out property <length> layout-card-glyph-y: wifi-card.glyph-y;
+    out property <length> layout-card-glyph-width: wifi-card.glyph-width;
+    out property <length> layout-card-glyph-height: wifi-card.glyph-height;
+    out property <length> layout-card-icon-offset-y: wifi-card.icon-center-offset-y;
+    out property <length> layout-action-icon-size: settings-action.icon-size;
+    out property <length> layout-action-glyph-x: settings-action.glyph-x;
+    out property <length> layout-action-glyph-y: settings-action.glyph-y;
+    out property <length> layout-action-glyph-width: settings-action.glyph-width;
+    out property <length> layout-action-glyph-height: settings-action.glyph-height;
+    out property <length> layout-action-icon-offset-y: settings-action.icon-center-offset-y;
     out property <bool> layout-overflows-width: quick-content.width > quick-scroll.width + 0.5px;
     out property <bool> layout-scrolls: quick-content.height > quick-scroll.height + 0.5px;
     title: "smpl-bar:quick-settings";
@@ -1045,7 +1127,7 @@ export component QuickSettingsWindow inherits Window {
                     GridLayout {
                         min-width: 0px;
                         spacing: 7px;
-                        QuickSettingCard {
+                        wifi-card := QuickSettingCard {
                             row: 0;
                             col: 0;
                             icon: "󰤨";
@@ -1137,7 +1219,7 @@ export component QuickSettingsWindow inherits Window {
             HorizontalLayout {
                 min-height: 40px;
                 spacing: 7px;
-                CommandAction {
+                settings-action := CommandAction {
                     horizontal-stretch: 1;
                     icon: "󰒓";
                     label: "Settings";

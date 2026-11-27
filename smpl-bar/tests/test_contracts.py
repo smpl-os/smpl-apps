@@ -240,7 +240,10 @@ class SmplBarContracts(unittest.TestCase):
                 "let telemetry = telemetry.clone();", brightness_start
             )
         ]
-        self.assertIn("spawn_quick_command(", brightness_callback)
+        self.assertIn("brightness_write.schedule(", brightness_callback)
+        self.assertIn("sampler.remember_brightness(", brightness_callback)
+        self.assertIn("ui.set_brightness(brightness.into())", brightness_callback)
+        self.assertNotIn("spawn_quick_command(", brightness_callback)
         self.assertIn("if !ui.get_volume_dragging()", source)
         self.assertIn("if !ui.get_brightness_dragging()", source)
         self.assertIn("430.0,\n            560.0,", source)
@@ -282,6 +285,44 @@ class SmplBarContracts(unittest.TestCase):
         viewport_height = popup_height - 2 - 24 - 48 - 40 - (2 * 8)
         content_height = 4 + 20 + (2 * 42) + 32 + (4 * 66) + (3 * 7)
         self.assertLessEqual(content_height, viewport_height)
+
+    def test_quick_settings_icons_are_boxed_centered_and_brightness_is_serial(self):
+        ui = (BAR / "ui/main.slint").read_text()
+        source = (BAR / "src/main.rs").read_text()
+        system = (BAR / "src/system.rs").read_text()
+        card = ui[ui.index("component QuickSettingCard") : ui.index(
+            "component QuickSlider"
+        )]
+        slider = ui[ui.index("component QuickSlider") : ui.index(
+            "component CommandAction"
+        )]
+        action = ui[ui.index("component CommandAction") : ui.index(
+            "export component BarWindow"
+        )]
+
+        for component, size in ((card, "34px"), (slider, "26px"), (action, "26px")):
+            self.assertIn(f"width: {size};", component)
+            self.assertIn(f"height: {size};", component)
+            self.assertIn("x: 0px;", component)
+            self.assertIn("y: 0px;", component)
+            self.assertIn("width: 100%;", component)
+            self.assertIn("height: 100%;", component)
+            self.assertIn("horizontal-alignment: center;", component)
+            self.assertIn("vertical-alignment: center;", component)
+            self.assertIn("alignment: center;", component)
+
+        self.assertIn("BRIGHTNESS_DEBOUNCE", source)
+        self.assertIn("brightness_command.is_some()", source)
+        self.assertIn("brightness_write.take_ready", source)
+        self.assertIn("brightness_write.retain_ui", source)
+        self.assertIn("retain_brightness", source)
+        self.assertNotIn("spawn_quick_command(\n", source[source.index(
+            "ui.on_set_brightness"
+        ):source.index("let telemetry = telemetry.clone();", source.index(
+            "ui.on_set_brightness"
+        ))])
+        self.assertIn("state.brightness = self.last_brightness", system)
+        self.assertIn("remember_brightness", system)
 
     def test_all_native_popups_are_floating_bounded_and_explicitly_dismissed(self):
         source = (BAR / "src/main.rs").read_text()

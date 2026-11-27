@@ -33,6 +33,7 @@ slint::include_modules!();
 
 const INITIAL_WIDTH: f64 = 1600.0;
 const CONTROL_INTERVAL: Duration = Duration::from_millis(50);
+const BRIGHTNESS_DEBOUNCE: Duration = Duration::from_millis(120);
 const PROCESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 const APP_ID: &str = "smpl-bar";
 const PREVIEW_APP_ID: &str = "smpl-bar-preview";
@@ -349,6 +350,7 @@ fn run_resident(
                     );
                 }
                 state.borrow_mut().reap_quick_commands();
+                state.borrow_mut().poll_brightness_write();
                 reap_children(&mut children.borrow_mut());
                 let requests = server.borrow().drain();
                 for (request, mut stream) in requests {
@@ -1657,14 +1659,16 @@ fn bind_quick(
     let state_brightness = state.clone();
     let weak_brightness = ui.as_weak();
     ui.on_set_brightness(move |value| {
-        state_brightness.borrow_mut().system.brightness = value as u8;
-        let value = value.to_string();
-        spawn_quick_command(
-            &state_brightness,
-            weak_brightness.clone(),
-            "Setting brightness",
-            &brightness_set_command(&value),
-        );
+        let brightness = value.clamp(1, 100) as u8;
+        let mut state = state_brightness.borrow_mut();
+        state.system.brightness = brightness;
+        state.sampler.remember_brightness(brightness);
+        state.brightness_write.schedule(brightness, Instant::now());
+        state.brightness_ui = weak_brightness.clone();
+        drop(state);
+        if let Some(ui) = weak_brightness.upgrade() {
+            ui.set_brightness(brightness.into());
+        }
     });
     let telemetry = telemetry.clone();
     ui.on_close({
@@ -2139,6 +2143,30 @@ struct QuickCommand {
     ui: slint::Weak<QuickSettingsWindow>,
 }
 
+#[derive(Default)]
+struct BrightnessWrite {
+    pending: Option<u8>,
+    ready_at: Option<Instant>,
+    retain_ui: bool,
+}
+
+impl BrightnessWrite {
+    fn schedule(&mut self, value: u8, now: Instant) {
+        self.pending = Some(value);
+        self.ready_at = Some(now + BRIGHTNESS_DEBOUNCE);
+        self.retain_ui = true;
+    }
+
+    fn take_ready(&mut self, now: Instant) -> Option<u8> {
+        if self.ready_at.is_some_and(|ready_at| now >= ready_at) {
+            self.ready_at = None;
+            self.pending.take()
+        } else {
+            None
+        }
+    }
+}
+
 fn spawn_quick_command(
     state: &Rc<RefCell<UiState>>,
     ui: slint::Weak<QuickSettingsWindow>,
@@ -2322,6 +2350,9 @@ struct UiState {
     provider_error: String,
     last_system_sample: Instant,
     quick_commands: Vec<QuickCommand>,
+    brightness_write: BrightnessWrite,
+    brightness_command: Option<QuickCommand>,
+    brightness_ui: slint::Weak<QuickSettingsWindow>,
 }
 
 impl UiState {
@@ -2351,6 +2382,9 @@ impl UiState {
             provider_error: String::new(),
             last_system_sample: Instant::now(),
             quick_commands: Vec::new(),
+            brightness_write: BrightnessWrite::default(),
+            brightness_command: None,
+            brightness_ui: slint::Weak::default(),
         }
     }
 
@@ -2380,13 +2414,83 @@ impl UiState {
             });
     }
 
+    fn poll_brightness_write(&mut self) {
+        let finished =
+            self.brightness_command
+                .as_mut()
+                .and_then(|command| match command.child.try_wait() {
+                    Ok(Some(status)) if !status.success() => {
+                        Some(Err(format!("exit status {status}")))
+                    }
+                    Ok(Some(_)) => Some(Ok(())),
+                    Ok(None) => None,
+                    Err(error) => Some(Err(format!("could not be checked: {error}"))),
+                });
+        if let Some(result) = finished {
+            let command = self
+                .brightness_command
+                .take()
+                .expect("finished brightness command");
+            match result {
+                Ok(()) => {
+                    self.brightness_write.retain_ui = self.brightness_write.pending.is_some();
+                }
+                Err(error) => {
+                    self.brightness_write.retain_ui = true;
+                    if let Some(ui) = command.ui.upgrade() {
+                        ui.set_action_error(format!("{} failed: {error}", command.label).into());
+                    }
+                }
+            }
+        }
+        if self.brightness_command.is_some() {
+            return;
+        }
+        let Some(value) = self.brightness_write.take_ready(Instant::now()) else {
+            return;
+        };
+        let value = value.to_string();
+        let arguments = brightness_set_command(&value);
+        let mut process = launch::command(arguments[0]);
+        process
+            .args(&arguments[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(ui) = self.brightness_ui.upgrade() {
+            ui.set_action_error("".into());
+        }
+        match process.spawn() {
+            Ok(child) => {
+                self.brightness_command = Some(QuickCommand {
+                    child,
+                    label: "Setting brightness".to_owned(),
+                    ui: self.brightness_ui.clone(),
+                });
+            }
+            Err(error) => {
+                if let Some(ui) = self.brightness_ui.upgrade() {
+                    ui.set_action_error(format!("Setting brightness failed: {error}").into());
+                }
+            }
+        }
+    }
+
     fn refresh_system(&mut self) {
         if self.last_system_sample.elapsed() < Duration::from_millis(1_000) {
             apply_provider_state(&mut self.system, &self.provider_state);
             return;
         }
         self.last_system_sample = Instant::now();
+        let retain_brightness = self.brightness_write.retain_ui
+            || self.brightness_command.is_some()
+            || self.brightness_write.pending.is_some();
+        let brightness = self.system.brightness;
         self.system = self.sampler.sample();
+        if retain_brightness {
+            self.system.brightness = brightness;
+            self.sampler.remember_brightness(brightness);
+        }
         apply_provider_state(&mut self.system, &self.provider_state);
         if let Some(present) = self.keypad_override {
             self.system.keypad_present = present;
@@ -2736,6 +2840,21 @@ mod tests {
     }
 
     #[test]
+    fn brightness_writes_wait_and_keep_only_the_latest_value() {
+        let mut writes = BrightnessWrite::default();
+        let started = Instant::now();
+        writes.schedule(35, started);
+        writes.schedule(62, started + Duration::from_millis(40));
+
+        assert_eq!(writes.take_ready(started + BRIGHTNESS_DEBOUNCE), None);
+        assert_eq!(
+            writes.take_ready(started + BRIGHTNESS_DEBOUNCE + Duration::from_millis(40)),
+            Some(62)
+        );
+        assert_eq!(writes.take_ready(started + Duration::from_secs(1)), None);
+    }
+
+    #[test]
     fn keypad_sheet_is_strictly_typed_but_tolerates_unbound_rows() {
         let value = serde_json::json!({
             "visible": true,
@@ -2921,6 +3040,73 @@ mod tests {
                     "{width}x{height}: expected {expected_columns} columns, got {}",
                     quick.get_layout_columns()
                 ));
+            }
+            for (name, actual, expected) in [
+                ("slider icon width", quick.get_layout_slider_icon_size(), 26.0),
+                (
+                    "slider glyph width",
+                    quick.get_layout_slider_glyph_width(),
+                    26.0,
+                ),
+                (
+                    "slider glyph height",
+                    quick.get_layout_slider_glyph_height(),
+                    26.0,
+                ),
+                ("card icon width", quick.get_layout_card_icon_size(), 34.0),
+                (
+                    "card glyph width",
+                    quick.get_layout_card_glyph_width(),
+                    34.0,
+                ),
+                (
+                    "card glyph height",
+                    quick.get_layout_card_glyph_height(),
+                    34.0,
+                ),
+                ("action icon width", quick.get_layout_action_icon_size(), 26.0),
+                (
+                    "action glyph width",
+                    quick.get_layout_action_glyph_width(),
+                    26.0,
+                ),
+                (
+                    "action glyph height",
+                    quick.get_layout_action_glyph_height(),
+                    26.0,
+                ),
+            ] {
+                if (actual - expected).abs() > 0.5 {
+                    timer_failures.borrow_mut().push(format!(
+                        "{width}x{height}: {name}={actual}, expected {expected}"
+                    ));
+                }
+            }
+            for (name, actual) in [
+                ("slider glyph x", quick.get_layout_slider_glyph_x()),
+                ("slider glyph y", quick.get_layout_slider_glyph_y()),
+                ("card glyph x", quick.get_layout_card_glyph_x()),
+                ("card glyph y", quick.get_layout_card_glyph_y()),
+                ("action glyph x", quick.get_layout_action_glyph_x()),
+                ("action glyph y", quick.get_layout_action_glyph_y()),
+                (
+                    "slider icon center offset",
+                    quick.get_layout_slider_icon_offset_y(),
+                ),
+                (
+                    "card icon center offset",
+                    quick.get_layout_card_icon_offset_y(),
+                ),
+                (
+                    "action icon center offset",
+                    quick.get_layout_action_icon_offset_y(),
+                ),
+            ] {
+                if actual.abs() > 0.5 {
+                    timer_failures.borrow_mut().push(format!(
+                        "{width}x{height}: {name} is off-center by {actual}"
+                    ));
+                }
             }
             let content_width = quick.get_layout_content_width();
             let viewport_width = quick.get_layout_viewport_width();
