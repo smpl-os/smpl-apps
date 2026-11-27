@@ -306,7 +306,7 @@ impl ProviderWorker {
             wired_available: devices
                 .as_ref()
                 .map(|types| types.contains("ethernet"))
-                .or_else(|| Some(wired)),
+                .or(Some(wired)),
             wired: Some(wired),
             online: connectivity
                 .map(|value| value == 4)
