@@ -419,6 +419,27 @@ component QuickSlider inherits Rectangle {
     out property <length> icon-glyph-height: icon-glyph.height;
     out property <length> icon-center-offset-y: (icon-box.absolute-position.y + icon-box.height / 2)
         - (self.absolute-position.y + self.height / 2);
+    out property <length> icon-column-width: icon-cell.width;
+    out property <length> label-column-width: label-cell.width;
+    out property <length> track-column-width: track-cell.width;
+    out property <length> value-column-width: value-cell.width;
+    out property <length> label-y: label-text.absolute-position.y;
+    out property <length> label-height: label-text.height;
+    out property <length> value-y: value-text.absolute-position.y;
+    out property <length> value-height: value-text.height;
+    out property <bool> columns-valid: icon-cell.width == 30px
+        && label-cell.width == 64px
+        && track-cell.width >= 72px
+        && value-cell.width == 38px
+        && label-cell.x == icon-cell.x + icon-cell.width + 8px
+        && track-cell.x == label-cell.x + label-cell.width + 8px
+        && value-cell.x == track-cell.x + track-cell.width + 8px
+        && label-text.height == self.height
+        && value-text.height == self.height
+        && abs((label-text.absolute-position.y + label-text.height / 2)
+            - (self.absolute-position.y + self.height / 2)) <= 0.5px
+        && abs((value-text.absolute-position.y + value-text.height / 2)
+            - (self.absolute-position.y + self.height / 2)) <= 0.5px;
     min-width: 0px;
     width: 100%;
     horizontal-stretch: 1;
@@ -427,118 +448,166 @@ component QuickSlider inherits Rectangle {
     border-width: 1px;
     border-color: Theme.bg-lighter.transparentize(0.56);
     background: Theme.bg-light.transparentize(0.74);
-    HorizontalLayout {
+    GridLayout {
+        x: 0px;
+        y: 0px;
         width: 100%;
         height: 100%;
         padding-left: 10px;
         padding-right: 10px;
-        spacing: 9px;
-        Rectangle {
-            width: 26px;
+        spacing: 8px;
+        icon-cell := Rectangle {
+            row: 0;
+            col: 0;
+            width: 30px;
             height: 100%;
-            icon-box := Rectangle {
+            Rectangle {
                 x: 0px;
-                y: (parent.height - self.height) / 2;
-                width: 26px;
-                height: 26px;
-                border-radius: 7px;
-                background: muted ? Theme.danger.transparentize(0.80) : Theme.accent.transparentize(0.84);
-                icon-glyph := Text {
+                y: 0px;
+                width: 100%;
+                height: 100%;
+                icon-box := Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 7px;
+                    background: muted ? Theme.danger.transparentize(0.80) : Theme.accent.transparentize(0.84);
+                    icon-glyph := Text {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: 100%;
+                        text: icon;
+                        color: muted ? Theme.danger : Theme.accent;
+                        font-family: "JetBrains Mono Nerd Font";
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        font-size: 15px;
+                    }
+                    TouchArea {
+                        enabled: root.mute-control;
+                        mouse-cursor: root.mute-control ? pointer : default;
+                        clicked => root.toggle-mute();
+                    }
+                }
+            }
+        }
+        label-cell := Rectangle {
+            row: 0;
+            col: 1;
+            width: 64px;
+            height: 100%;
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: 100%;
+                label-text := Text {
                     x: 0px;
                     y: 0px;
                     width: 100%;
                     height: 100%;
-                    text: icon;
-                    color: muted ? Theme.danger : Theme.accent;
-                    font-family: "JetBrains Mono Nerd Font";
-                    horizontal-alignment: center;
+                    text: label;
+                    color: Theme.fg-dim;
+                    font-size: 9px;
+                    font-weight: 600;
                     vertical-alignment: center;
-                    font-size: 15px;
-                }
-                TouchArea {
-                    enabled: root.mute-control;
-                    mouse-cursor: root.mute-control ? pointer : default;
-                    clicked => root.toggle-mute();
+                    overflow: elide;
                 }
             }
         }
-        Text {
-            text: label;
-            width: 56px;
-            color: Theme.fg-dim;
-            font-size: 9px;
-            font-weight: 600;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        track := Rectangle {
+        track-cell := Rectangle {
+            row: 0;
+            col: 2;
             min-width: 72px;
             horizontal-stretch: 1;
-            height: 28px;
-            Rectangle {
-                x: 6px;
-                y: 11px;
-                width: max(0px, parent.width - 12px);
-                height: 6px;
-                border-radius: 3px;
-                background: Theme.fg.transparentize(0.89);
-            }
-            Rectangle {
-                x: 6px;
-                y: 11px;
-                width: max(0px, parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;
-                height: 6px;
-                border-radius: 3px;
-                background: muted ? Theme.danger : Theme.accent;
-            }
-            Rectangle {
-                x: (parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;
-                y: 8px;
-                width: 12px;
-                height: 12px;
-                border-radius: 6px;
-                border-width: 2px;
-                border-color: Theme.bg-light;
-                background: muted ? Theme.danger : Theme.accent;
-            }
-            track-touch := TouchArea {
+            height: 100%;
+            track := Rectangle {
                 x: 0px;
                 y: 0px;
-                width: parent.width;
-                height: parent.height;
-                moved => {
-                    if (self.pressed) {
-                        root.value = clamp(round(((self.mouse-x - 6px) / max(1px, self.width - 12px)) * 100), root.minimum, 100);
-                        root.change(root.value);
-                    }
+                width: 100%;
+                height: 100%;
+                Rectangle {
+                    x: 6px;
+                    y: (parent.height - self.height) / 2;
+                    width: max(0px, parent.width - 12px);
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.fg.transparentize(0.89);
                 }
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down) {
-                        root.dragging = true;
-                        root.value = clamp(round(((self.mouse-x - 6px) / max(1px, self.width - 12px)) * 100), root.minimum, 100);
-                        root.change(root.value);
-                    } else if (event.kind == PointerEventKind.up && root.dragging) {
-                        root.change(root.value);
-                        root.dragging = false;
-                    }
+                Rectangle {
+                    x: 6px;
+                    y: (parent.height - self.height) / 2;
+                    width: max(0px, parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: muted ? Theme.danger : Theme.accent;
                 }
-                scroll-event(event) => {
-                    if (event.delta-y != 0px) {
-                        root.value = clamp(root.value + (event.delta-y < 0px ? 5 : -5), root.minimum, 100);
-                        root.change(root.value);
+                Rectangle {
+                    x: (parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;
+                    y: (parent.height - self.height) / 2;
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 6px;
+                    border-width: 2px;
+                    border-color: Theme.bg-light;
+                    background: muted ? Theme.danger : Theme.accent;
+                }
+                track-touch := TouchArea {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
+                    moved => {
+                        if (self.pressed) {
+                            root.value = clamp(round(((self.mouse-x - 6px) / max(1px, self.width - 12px)) * 100), root.minimum, 100);
+                            root.change(root.value);
+                        }
                     }
-                    return accept;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down) {
+                            root.dragging = true;
+                            root.value = clamp(round(((self.mouse-x - 6px) / max(1px, self.width - 12px)) * 100), root.minimum, 100);
+                            root.change(root.value);
+                        } else if (event.kind == PointerEventKind.up && root.dragging) {
+                            root.change(root.value);
+                            root.dragging = false;
+                        }
+                    }
+                    scroll-event(event) => {
+                        if (event.delta-y != 0px) {
+                            root.value = clamp(root.value + (event.delta-y < 0px ? 5 : -5), root.minimum, 100);
+                            root.change(root.value);
+                        }
+                        return accept;
+                    }
                 }
             }
         }
-        Text {
-            text: value + "%";
-            width: 34px;
-            color: Theme.fg;
-            font-size: 10px;
-            font-weight: 600;
-            horizontal-alignment: right;
-            vertical-alignment: center;
+        value-cell := Rectangle {
+            row: 0;
+            col: 3;
+            width: 38px;
+            height: 100%;
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: 100%;
+                value-text := Text {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
+                    text: value + "%";
+                    color: Theme.fg;
+                    font-size: 10px;
+                    font-weight: 600;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
         }
     }
 }
@@ -1043,6 +1112,14 @@ export component QuickSettingsWindow inherits Window {
     out property <length> layout-slider-glyph-width: volume-slider.icon-glyph-width;
     out property <length> layout-slider-glyph-height: volume-slider.icon-glyph-height;
     out property <length> layout-slider-icon-offset-y: volume-slider.icon-center-offset-y;
+    out property <length> layout-slider-icon-column-width: volume-slider.icon-column-width;
+    out property <length> layout-slider-label-column-width: volume-slider.label-column-width;
+    out property <length> layout-slider-track-column-width: volume-slider.track-column-width;
+    out property <length> layout-slider-value-column-width: volume-slider.value-column-width;
+    out property <length> layout-brightness-icon-column-width: brightness-slider.icon-column-width;
+    out property <length> layout-brightness-label-column-width: brightness-slider.label-column-width;
+    out property <length> layout-brightness-track-column-width: brightness-slider.track-column-width;
+    out property <length> layout-brightness-value-column-width: brightness-slider.value-column-width;
     out property <length> layout-card-icon-size: wifi-card.icon-size;
     out property <length> layout-card-glyph-x: wifi-card.glyph-x;
     out property <length> layout-card-glyph-y: wifi-card.glyph-y;
@@ -1055,12 +1132,77 @@ export component QuickSettingsWindow inherits Window {
     out property <length> layout-action-glyph-width: settings-action.glyph-width;
     out property <length> layout-action-glyph-height: settings-action.glyph-height;
     out property <length> layout-action-icon-offset-y: settings-action.icon-center-offset-y;
+    out property <bool> layout-sliders-valid: volume-slider.columns-valid
+        && brightness-slider.columns-valid
+        && volume-slider.height == 42px
+        && brightness-slider.height == 42px
+        && volume-slider.absolute-position.x >= quick-content.absolute-position.x - 0.5px
+        && volume-slider.absolute-position.x + volume-slider.width
+            <= quick-content.absolute-position.x + quick-content.width + 0.5px
+        && brightness-slider.absolute-position.x + brightness-slider.width
+            <= quick-content.absolute-position.x + quick-content.width + 0.5px
+        && brightness-slider.absolute-position.y + brightness-slider.height
+            <= quick-content.absolute-position.y + quick-content.height + 0.5px
+        && abs(brightness-slider.absolute-position.y
+            - volume-slider.absolute-position.y - 50px) <= 0.5px;
+    out property <bool> layout-cards-valid: wifi-card.height == 66px
+        && bluetooth-card.height == 66px
+        && wired-card.height == 66px
+        && airplane-card.height == 66px
+        && nightlight-card.height == 66px
+        && dnd-card.height == 66px
+        && vpn-card.height == 66px
+        && dictation-card.height == 66px
+        && wifi-card.width > 0px
+        && bluetooth-card.width > 0px
+        && wired-card.width > 0px
+        && airplane-card.width > 0px
+        && nightlight-card.width > 0px
+        && dnd-card.width > 0px
+        && vpn-card.width > 0px
+        && dictation-card.width > 0px
+        && wifi-card.absolute-position.x >= quick-content.absolute-position.x - 0.5px
+        && wifi-card.absolute-position.y + wifi-card.height
+            <= quick-content.absolute-position.y + quick-content.height + 0.5px
+        && bluetooth-card.absolute-position.x + bluetooth-card.width
+            <= quick-content.absolute-position.x + quick-content.width + 0.5px
+        && bluetooth-card.absolute-position.y + bluetooth-card.height
+            <= quick-content.absolute-position.y + quick-content.height + 0.5px
+        && wired-card.absolute-position.x + wired-card.width
+            <= quick-content.absolute-position.x + quick-content.width + 0.5px
+        && airplane-card.absolute-position.x + airplane-card.width
+            <= quick-content.absolute-position.x + quick-content.width + 0.5px
+        && nightlight-card.absolute-position.x + nightlight-card.width
+            <= quick-content.absolute-position.x + quick-content.width + 0.5px
+        && dnd-card.absolute-position.x + dnd-card.width
+            <= quick-content.absolute-position.x + quick-content.width + 0.5px
+        && vpn-card.absolute-position.y + vpn-card.height
+            <= quick-content.absolute-position.y + quick-content.height + 0.5px
+        && dictation-card.absolute-position.x + dictation-card.width
+            <= quick-content.absolute-position.x + quick-content.width + 0.5px
+        && dictation-card.absolute-position.y + dictation-card.height
+            <= quick-content.absolute-position.y + quick-content.height + 0.5px;
+    out property <bool> layout-actions-valid: settings-action.height == 38px
+        && logout-action.height == 38px
+        && power-action.height == 38px
+        && settings-action.width > 0px
+        && logout-action.width > 0px
+        && power-action.width > 0px
+        && settings-action.absolute-position.x >= shell.absolute-position.x
+        && settings-action.absolute-position.y + settings-action.height
+            <= shell.absolute-position.y + shell.height
+        && logout-action.absolute-position.y + logout-action.height
+            <= shell.absolute-position.y + shell.height
+        && power-action.absolute-position.x + power-action.width
+            <= shell.absolute-position.x + shell.width;
     out property <bool> layout-overflows-width: quick-content.width > quick-scroll.width + 0.5px;
     out property <bool> layout-scrolls: quick-content.height > quick-scroll.height + 0.5px;
+    out property <bool> layout-scroll-indicator-visible: quick-scroll-indicator.visible;
     title: "smpl-bar:quick-settings";
     no-frame: true;
+    min-width: 1px;
+    min-height: 1px;
     preferred-width: 480px;
-    preferred-height: 560px;
     background: transparent;
     shell := Rectangle {
         x: 1px;
@@ -1080,18 +1222,27 @@ export component QuickSettingsWindow inherits Window {
                 title: "Quick Settings";
                 close => root.close();
             }
-            quick-scroll := Flickable {
+            quick-scroll-frame := Rectangle {
                 min-width: 0px;
                 min-height: 0px;
                 vertical-stretch: 1;
-                viewport-width: self.width;
-                viewport-height: max(self.height, quick-content.min-height);
-                quick-content := VerticalLayout {
-                    width: parent.viewport-width;
-                    min-width: 0px;
-                    padding-top: 2px;
-                    padding-bottom: 2px;
-                    spacing: 8px;
+                background: transparent;
+                quick-scroll := Flickable {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
+                    viewport-width: self.width;
+                    viewport-height: max(self.height, quick-content.min-height);
+                    quick-content := VerticalLayout {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.viewport-width;
+                        height: self.min-height;
+                        min-width: 0px;
+                        padding-top: 2px;
+                        padding-bottom: 2px;
+                        spacing: 8px;
                     Text {
                         text: "OUTPUT + DISPLAY";
                         color: Theme.fg-dim;
@@ -1109,7 +1260,7 @@ export component QuickSettingsWindow inherits Window {
                         change(value) => root.set-volume(value);
                         toggle-mute => root.toggle("volume");
                     }
-                    QuickSlider {
+                    brightness-slider := QuickSlider {
                         icon: "󰃠";
                         label: "BRIGHTNESS";
                         value <=> root.brightness;
@@ -1138,7 +1289,7 @@ export component QuickSettingsWindow inherits Window {
                             enabled: wifi-available;
                             clicked => root.toggle("wifi");
                         }
-                        QuickSettingCard {
+                        bluetooth-card := QuickSettingCard {
                             row: 1 / root.layout-columns;
                             col: Math.mod(1, root.layout-columns);
                             icon: "󰂯";
@@ -1149,7 +1300,7 @@ export component QuickSettingsWindow inherits Window {
                             enabled: bluetooth-available;
                             clicked => root.toggle("bluetooth");
                         }
-                        QuickSettingCard {
+                        wired-card := QuickSettingCard {
                             row: 2 / root.layout-columns;
                             col: Math.mod(2, root.layout-columns);
                             icon: "󰈁";
@@ -1160,7 +1311,7 @@ export component QuickSettingsWindow inherits Window {
                             enabled: wired-available;
                             clicked => root.toggle("wired");
                         }
-                        QuickSettingCard {
+                        airplane-card := QuickSettingCard {
                             row: 3 / root.layout-columns;
                             col: Math.mod(3, root.layout-columns);
                             icon: "󰀝";
@@ -1171,7 +1322,7 @@ export component QuickSettingsWindow inherits Window {
                             enabled: wifi-available || bluetooth-available;
                             clicked => root.toggle("airplane");
                         }
-                        QuickSettingCard {
+                        nightlight-card := QuickSettingCard {
                             row: 4 / root.layout-columns;
                             col: Math.mod(4, root.layout-columns);
                             icon: "󰛨";
@@ -1182,7 +1333,7 @@ export component QuickSettingsWindow inherits Window {
                             enabled: nightlight-available;
                             clicked => root.toggle("nightlight");
                         }
-                        QuickSettingCard {
+                        dnd-card := QuickSettingCard {
                             row: 5 / root.layout-columns;
                             col: Math.mod(5, root.layout-columns);
                             icon: "󰂛";
@@ -1192,7 +1343,7 @@ export component QuickSettingsWindow inherits Window {
                             active: dnd-on;
                             clicked => root.toggle("dnd");
                         }
-                        QuickSettingCard {
+                        vpn-card := QuickSettingCard {
                             row: 6 / root.layout-columns;
                             col: Math.mod(6, root.layout-columns);
                             icon: "󰖂";
@@ -1202,7 +1353,7 @@ export component QuickSettingsWindow inherits Window {
                             active: vpn-on;
                             clicked => root.open-tool("network");
                         }
-                        QuickSettingCard {
+                        dictation-card := QuickSettingCard {
                             row: 7 / root.layout-columns;
                             col: Math.mod(7, root.layout-columns);
                             icon: "󰍬";
@@ -1215,7 +1366,35 @@ export component QuickSettingsWindow inherits Window {
                         }
                     }
                 }
-            }
+                }
+                quick-scroll-indicator := Rectangle {
+                        x: parent.width - self.width;
+                        y: 4px;
+                        width: 4px;
+                        height: max(0px, parent.height - 8px);
+                        visible: root.layout-scrolls;
+                        border-radius: 2px;
+                        background: Theme.bg-lighter.transparentize(0.48);
+                        Rectangle {
+                            x: 0px;
+                            y: clamp(
+                                -quick-scroll.viewport-y
+                                    / max(1px, quick-scroll.viewport-height - quick-scroll.height)
+                                    * (parent.height - self.height),
+                                0px,
+                                max(0px, parent.height - self.height)
+                            );
+                            width: 100%;
+                            height: max(
+                                20px,
+                                parent.height
+                                    * min(1.0, quick-scroll.height / max(1px, quick-scroll.viewport-height))
+                            );
+                            border-radius: 2px;
+                            background: Theme.fg-dim;
+                        }
+                    }
+                }
             HorizontalLayout {
                 min-height: 40px;
                 spacing: 7px;
@@ -1225,13 +1404,13 @@ export component QuickSettingsWindow inherits Window {
                     label: "Settings";
                     clicked => root.open-tool("settings");
                 }
-                CommandAction {
+                logout-action := CommandAction {
                     horizontal-stretch: 1;
                     icon: "󰗽";
                     label: "Log out";
                     clicked => root.action("logout-request");
                 }
-                CommandAction {
+                power-action := CommandAction {
                     horizontal-stretch: 1;
                     icon: "⏻";
                     label: "Power";

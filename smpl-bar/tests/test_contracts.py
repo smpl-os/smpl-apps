@@ -159,6 +159,9 @@ class SmplBarContracts(unittest.TestCase):
             self.assertIn(f"out property <", quick)
             self.assertIn(property_name, quick)
         self.assertIn("viewport-height: max(self.height, quick-content.min-height)", quick)
+        self.assertIn("height: self.min-height;", quick)
+        self.assertIn("quick-scroll-indicator := Rectangle", quick)
+        self.assertIn("visible: root.layout-scrolls;", quick)
         for action in (
             'root.toggle("wifi")',
             'root.toggle("bluetooth")',
@@ -204,7 +207,8 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn("horizontal-stretch: 1;", slider)
         self.assertIn("alignment: center;", slider)
         self.assertIn("min-width: 72px;", slider)
-        self.assertIn("height: 28px;", slider)
+        self.assertIn("track := Rectangle {", slider)
+        self.assertIn("height: 100%;", slider)
         self.assertIn("x: 6px;", slider)
         self.assertIn(
             "width: max(0px, parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;",
@@ -229,7 +233,7 @@ class SmplBarContracts(unittest.TestCase):
             slider.index("event.kind == PointerEventKind.up && root.dragging"),
         )
         self.assertEqual(slider.count("root.change(root.value);"), 4)
-        self.assertIn("preferred-height: 560px;", quick)
+        self.assertIn("min-height: 1px;", quick)
         self.assertIn("dragging <=> root.volume-dragging;", quick)
         self.assertIn("dragging <=> root.brightness-dragging;", quick)
         self.assertIn("volume-slider := QuickSlider", quick)
@@ -246,7 +250,7 @@ class SmplBarContracts(unittest.TestCase):
         self.assertNotIn("spawn_quick_command(", brightness_callback)
         self.assertIn("if !ui.get_volume_dragging()", source)
         self.assertIn("if !ui.get_brightness_dragging()", source)
-        self.assertIn("430.0,\n            560.0,", source)
+        self.assertIn("430.0,\n            720.0,", source)
         start_icon = (BAR / "ui/assets/start.svg").read_text()
         self.assertIn('M 221 95', start_icon)
         self.assertIn('H 109', start_icon)
@@ -281,7 +285,7 @@ class SmplBarContracts(unittest.TestCase):
         self.assertEqual(quick.count("QuickSettingCard {"), 8)
         self.assertIn("root.width >= 340px ? 2 : 1", quick)
 
-        popup_height = 560
+        popup_height = 720
         viewport_height = popup_height - 2 - 24 - 48 - 40 - (2 * 8)
         content_height = 4 + 20 + (2 * 42) + 32 + (4 * 66) + (3 * 7)
         self.assertLessEqual(content_height, viewport_height)
@@ -300,7 +304,7 @@ class SmplBarContracts(unittest.TestCase):
             "export component BarWindow"
         )]
 
-        for component, size in ((card, "34px"), (slider, "26px"), (action, "26px")):
+        for component, size in ((card, "34px"), (slider, "30px"), (action, "26px")):
             self.assertIn(f"width: {size};", component)
             self.assertIn(f"height: {size};", component)
             self.assertIn("x: 0px;", component)
@@ -323,6 +327,14 @@ class SmplBarContracts(unittest.TestCase):
         ))])
         self.assertIn("state.brightness = self.last_brightness", system)
         self.assertIn("remember_brightness", system)
+
+        self.assertIn("GridLayout {", slider)
+        self.assertIn("width: 30px;", slider)
+        self.assertIn("width: 64px;", slider)
+        self.assertIn("width: 38px;", slider)
+        self.assertIn("label-text := Text", slider)
+        self.assertIn("value-text := Text", slider)
+        self.assertEqual(slider.count("vertical-alignment: center;") >= 3, True)
 
     def test_all_native_popups_are_floating_bounded_and_explicitly_dismissed(self):
         source = (BAR / "src/main.rs").read_text()

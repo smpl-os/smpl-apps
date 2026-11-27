@@ -1454,12 +1454,10 @@ fn open_quick_settings(
     {
         let mut windows = popups.borrow_mut();
         windows.close_all();
-        if windows.quick.is_none() {
-            let ui = QuickSettingsWindow::new().expect("Slint window construction");
-            bind_quick(&ui, state, children, popups, telemetry);
-            apply_theme_values(&ui.global::<Theme>(), &state.borrow().popup_theme);
-            windows.quick = Some(ui);
-        }
+        let ui = QuickSettingsWindow::new().expect("Slint window construction");
+        bind_quick(&ui, state, children, popups, telemetry);
+        apply_theme_values(&ui.global::<Theme>(), &state.borrow().popup_theme);
+        windows.quick = Some(ui);
         let ui = windows.quick.as_ref().expect("quick settings was created");
         let system = state.borrow().system.clone();
         ui.set_wifi_available(system.wifi_available);
@@ -1501,7 +1499,7 @@ fn open_quick_settings(
             state,
             compositor,
             430.0,
-            560.0,
+            720.0,
         );
         if telemetry.enabled() {
             let weak = ui.as_weak();
@@ -2986,6 +2984,17 @@ mod tests {
     }
 
     fn renderer_bounds_quick_settings_and_scrolls_short_viewports() {
+        renderer_bounds_quick_settings_case(430.0, 720.0, 2, false);
+        renderer_bounds_quick_settings_case(430.0, 340.0, 2, true);
+        renderer_bounds_quick_settings_case(280.0, 300.0, 1, true);
+    }
+
+    fn renderer_bounds_quick_settings_case(
+        width: f32,
+        height: f32,
+        expected_columns: i32,
+        should_scroll: bool,
+    ) {
         let quick = QuickSettingsWindow::new().unwrap();
         let volume_changes = Rc::new(RefCell::new(Vec::<i32>::new()));
         let volume_changes_for_callback = volume_changes.clone();
@@ -3000,26 +3009,23 @@ mod tests {
         quick.set_network_label("An intentionally long wireless network name".into());
         quick.set_bluetooth_label("Controller connected".into());
 
-        let cases = [(430.0_f32, 340.0_f32, 2_i32)];
-        let index = Rc::new(Cell::new(0_usize));
         let volume_input_phase = Rc::new(Cell::new(0_u8));
+        let volume_input_attempts = Rc::new(Cell::new(0_u8));
         let failures = Rc::new(RefCell::new(Vec::<String>::new()));
         quick.show().unwrap();
-        size_popup_after_show(quick.window(), cases[0].0 as f64, cases[0].1 as f64);
+        size_popup_after_show(quick.window(), width as f64, height as f64);
 
         let timer = slint::Timer::default();
         let weak = quick.as_weak();
-        let timer_index = index.clone();
         let timer_failures = failures.clone();
         let timer_volume_input_phase = volume_input_phase.clone();
+        let timer_volume_input_attempts = volume_input_attempts.clone();
         timer.start(slint::TimerMode::Repeated, Duration::from_millis(140), move || {
             let Some(quick) = weak.upgrade() else {
                 timer_failures.borrow_mut().push("quick settings window disappeared".into());
                 let _ = slint::quit_event_loop();
                 return;
             };
-            let case_index = timer_index.get();
-            let (width, height, expected_columns) = cases[case_index];
             let snapshot = quick.window().take_snapshot();
             if let Ok(snapshot) = snapshot {
                 if snapshot.width() != width as u32 || snapshot.height() != height as u32 {
@@ -3042,16 +3048,16 @@ mod tests {
                 ));
             }
             for (name, actual, expected) in [
-                ("slider icon width", quick.get_layout_slider_icon_size(), 26.0),
+                ("slider icon width", quick.get_layout_slider_icon_size(), 30.0),
                 (
                     "slider glyph width",
                     quick.get_layout_slider_glyph_width(),
-                    26.0,
+                    30.0,
                 ),
                 (
                     "slider glyph height",
                     quick.get_layout_slider_glyph_height(),
-                    26.0,
+                    30.0,
                 ),
                 ("card icon width", quick.get_layout_card_icon_size(), 34.0),
                 (
@@ -3081,6 +3087,59 @@ mod tests {
                         "{width}x{height}: {name}={actual}, expected {expected}"
                     ));
                 }
+            }
+            for (name, actual, expected) in [
+                (
+                    "volume icon column",
+                    quick.get_layout_slider_icon_column_width(),
+                    30.0,
+                ),
+                (
+                    "volume label column",
+                    quick.get_layout_slider_label_column_width(),
+                    64.0,
+                ),
+                (
+                    "volume value column",
+                    quick.get_layout_slider_value_column_width(),
+                    38.0,
+                ),
+                (
+                    "brightness icon column",
+                    quick.get_layout_brightness_icon_column_width(),
+                    30.0,
+                ),
+                (
+                    "brightness label column",
+                    quick.get_layout_brightness_label_column_width(),
+                    64.0,
+                ),
+                (
+                    "brightness value column",
+                    quick.get_layout_brightness_value_column_width(),
+                    38.0,
+                ),
+            ] {
+                if (actual - expected).abs() > 0.5 {
+                    timer_failures.borrow_mut().push(format!(
+                        "{width}x{height}: {name}={actual}, expected {expected}"
+                    ));
+                }
+            }
+            if quick.get_layout_slider_track_column_width() < 72.0
+                || quick.get_layout_brightness_track_column_width() < 72.0
+                || !quick.get_layout_sliders_valid()
+                || !quick.get_layout_cards_valid()
+                || !quick.get_layout_actions_valid()
+            {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: control geometry invalid; sliders={}, cards={}, actions={}, volume-track={}, brightness-track={}",
+                    quick.get_layout_sliders_valid(),
+                    quick.get_layout_cards_valid(),
+                    quick.get_layout_actions_valid(),
+                    quick.get_layout_slider_track_column_width(),
+                    quick.get_layout_brightness_track_column_width(),
+                ));
             }
             for (name, actual) in [
                 ("slider glyph x", quick.get_layout_slider_glyph_x()),
@@ -3118,7 +3177,7 @@ mod tests {
                     "{width}x{height}: horizontal overflow content={content_width} viewport={viewport_width}"
                 ));
             }
-            if case_index == cases.len() - 1 {
+            if !should_scroll {
                 use slint::platform::{PointerEventButton, WindowEvent};
 
                 let track_x = quick.get_layout_volume_track_x();
@@ -3129,7 +3188,7 @@ mod tests {
                     "volume track is unusably narrow: {track_width}"
                 );
                 let y = track_y + 14.0;
-                let start = slint::LogicalPosition::new(track_x + 20.0, y);
+                let start = slint::LogicalPosition::new(track_x + track_width * 0.25, y);
                 let dragged = slint::LogicalPosition::new(
                     track_x + track_width * 0.75,
                     y,
@@ -3146,6 +3205,20 @@ mod tests {
                         timer_volume_input_phase.set(1);
                     }
                     1 => {
+                        if !quick.get_volume_dragging()
+                            && timer_volume_input_attempts.get() < 8
+                        {
+                            timer_volume_input_attempts
+                                .set(timer_volume_input_attempts.get() + 1);
+                            quick.window().dispatch_event(WindowEvent::PointerMoved {
+                                position: start,
+                            });
+                            quick.window().dispatch_event(WindowEvent::PointerPressed {
+                                position: start,
+                                button: PointerEventButton::Left,
+                            });
+                            return;
+                        }
                         assert!(
                             quick.get_volume_dragging(),
                             "pointer press did not reach volume track at {track_x},{track_y} width {track_width}; value={}",
@@ -3216,23 +3289,37 @@ mod tests {
                     "{width}x{height}: clipped content is not scrollable"
                 ));
             }
-            if (height <= 340.0 || width <= 300.0) && !quick.get_layout_scrolls() {
+            if should_scroll && !quick.get_layout_scrolls() {
                 timer_failures.borrow_mut().push(format!(
                     "{width}x{height}: constrained viewport must expose vertical scrolling"
                 ));
             }
+            if !should_scroll && quick.get_layout_scrolls() {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: 430x720 should contain all quick settings without scrolling"
+                ));
+            }
+            if quick.get_layout_scroll_indicator_visible() != should_scroll {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: scroll indicator visible={}, expected {should_scroll}",
+                    quick.get_layout_scroll_indicator_visible()
+                ));
+            }
+            if !should_scroll
+                && (viewport_height <= 0.0
+                    || content_height <= 0.0
+                    || content_height > height
+                    || quick.get_layout_scrolls())
+            {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: intended content is not wholly laid out; content={content_height}, viewport={viewport_height}"
+                ));
+            }
 
-            if case_index == cases.len() - 1 && timer_volume_input_phase.get() < 6 {
+            if !should_scroll && timer_volume_input_phase.get() < 6 {
                 return;
             }
-            let next = case_index + 1;
-            if next == cases.len() {
-                let _ = slint::quit_event_loop();
-            } else {
-                timer_index.set(next);
-                let (next_width, next_height, _) = cases[next];
-                size_popup_after_show(quick.window(), next_width as f64, next_height as f64);
-            }
+            let _ = slint::quit_event_loop();
         });
         slint::run_event_loop().unwrap();
         drop(timer);
