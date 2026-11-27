@@ -175,6 +175,8 @@ class SmplBarContracts(unittest.TestCase):
         slider = ui[
             ui.index("component QuickSlider") : ui.index("component CommandAction")
         ]
+        self.assertIn("height: 42px;", slider)
+        self.assertIn("alignment: center;", slider)
         self.assertIn("x: 0px;", slider)
         self.assertIn("width: parent.width;", slider)
         self.assertIn(
@@ -187,6 +189,25 @@ class SmplBarContracts(unittest.TestCase):
         )
         self.assertIn("width: 12px;", slider)
         self.assertNotIn("max(6px", slider)
+        self.assertIn("root.dragging = true;", slider)
+        self.assertIn("event.kind == PointerEventKind.move", slider)
+        self.assertIn("event.kind == PointerEventKind.up && root.dragging", slider)
+        self.assertIn("scroll-event(event) =>", slider)
+        self.assertIn("if (event.delta-y != 0px)", slider)
+        self.assertIn("event.delta-y < 0px ? 5 : -5", slider)
+        self.assertIn("root.change(root.value);", slider)
+        self.assertLess(
+            slider.index("root.dragging = true;"),
+            slider.index("event.kind == PointerEventKind.move"),
+        )
+        self.assertLess(
+            slider.index("event.kind == PointerEventKind.move"),
+            slider.index("event.kind == PointerEventKind.up && root.dragging"),
+        )
+        self.assertEqual(slider.count("root.change(root.value);"), 2)
+        self.assertIn("preferred-height: 560px;", quick)
+        self.assertIn("dragging <=> root.volume-dragging;", quick)
+        self.assertIn("dragging <=> root.brightness-dragging;", quick)
         brightness_start = source.index("ui.on_set_brightness")
         brightness_callback = source[
             brightness_start : source.index(
@@ -194,9 +215,39 @@ class SmplBarContracts(unittest.TestCase):
             )
         ]
         self.assertIn("spawn_quick_command(", brightness_callback)
+        self.assertIn("if !ui.get_volume_dragging()", source)
+        self.assertIn("if !ui.get_brightness_dragging()", source)
+        self.assertIn("430.0,\n            560.0,", source)
         start_icon = (BAR / "ui/assets/start.svg").read_text()
         self.assertIn('M 221 95', start_icon)
         self.assertIn('H 109', start_icon)
+
+    def test_quick_settings_two_column_geometry_fits_without_scrolling(self):
+        ui = (BAR / "ui/main.slint").read_text()
+        quick = ui[ui.index("component QuickSettingsWindow") : ui.index(
+            "component UsbWindow"
+        )]
+        card = ui[
+            ui.index("component QuickSettingCard") : ui.index("component QuickSlider")
+        ]
+        action = ui[
+            ui.index("component CommandAction") : ui.index("component BarWindow")
+        ]
+        header = ui[
+            ui.index("component PopupHeader") : ui.index("component QuickSettingCard")
+        ]
+
+        self.assertIn("height: 48px;", header)
+        self.assertIn("alignment: center;", header)
+        self.assertIn("alignment: center;", action)
+        self.assertIn("height: 66px;", card)
+        self.assertEqual(quick.count("QuickSettingCard {"), 8)
+        self.assertIn("root.width >= 340px ? 2 : 1", quick)
+
+        popup_height = 560
+        viewport_height = popup_height - 2 - 24 - 48 - 40 - (2 * 8)
+        content_height = 4 + 20 + (2 * 42) + 32 + (4 * 66) + (3 * 7)
+        self.assertLessEqual(content_height, viewport_height)
 
     def test_all_native_popups_are_floating_bounded_and_explicitly_dismissed(self):
         source = (BAR / "src/main.rs").read_text()

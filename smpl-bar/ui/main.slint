@@ -264,6 +264,7 @@ component PopupHeader inherits Rectangle {
     callback close;
     height: 48px;
     HorizontalLayout {
+        alignment: center;
         padding-left: 2px;
         padding-right: 2px;
         spacing: 10px;
@@ -325,6 +326,7 @@ component QuickSettingCard inherits Rectangle {
     accessible-role: button;
     accessible-label: title;
     HorizontalLayout {
+        alignment: center;
         padding: 10px;
         spacing: 9px;
         Rectangle {
@@ -383,15 +385,17 @@ component QuickSlider inherits Rectangle {
     in property <bool> muted: false;
     in property <bool> mute-control: false;
     in property <int> minimum: 0;
+    in-out property <bool> dragging: false;
     callback change(int);
     callback toggle-mute;
     min-width: 0px;
-    height: 50px;
+    height: 42px;
     border-radius: 9px;
     border-width: 1px;
     border-color: Theme.bg-lighter.transparentize(0.56);
     background: Theme.bg-light.transparentize(0.74);
     HorizontalLayout {
+        alignment: center;
         padding-left: 10px;
         padding-right: 10px;
         spacing: 9px;
@@ -459,12 +463,24 @@ component QuickSlider inherits Rectangle {
                 width: 100%;
                 height: 100%;
                 pointer-event(event) => {
-                    if (event.button == PointerEventButton.left
-                        && (event.kind == PointerEventKind.down || event.kind == PointerEventKind.move)
-                        && self.pressed) {
+                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                        root.dragging = true;
                         root.value = clamp(round((self.mouse-x / self.width) * 100), root.minimum, 100);
+                    } else if (event.button == PointerEventButton.left
+                        && event.kind == PointerEventKind.move
+                        && root.dragging) {
+                        root.value = clamp(round((self.mouse-x / self.width) * 100), root.minimum, 100);
+                    } else if (event.kind == PointerEventKind.up && root.dragging) {
+                        root.change(root.value);
+                        root.dragging = false;
+                    }
+                }
+                scroll-event(event) => {
+                    if (event.delta-y != 0px) {
+                        root.value = clamp(root.value + (event.delta-y < 0px ? 5 : -5), root.minimum, 100);
                         root.change(root.value);
                     }
+                    return accept;
                 }
             }
         }
@@ -775,6 +791,8 @@ export component QuickSettingsWindow inherits Window {
     in-out property <int> volume: 50;
     in-out property <bool> volume-muted: false;
     in-out property <int> brightness: 100;
+    in-out property <bool> volume-dragging: false;
+    in-out property <bool> brightness-dragging: false;
     in-out property <string> network-label: "Offline";
     in-out property <string> bluetooth-label: "Off";
     in-out property <string> action-error: "";
@@ -795,7 +813,7 @@ export component QuickSettingsWindow inherits Window {
     title: "smpl-bar:quick-settings";
     no-frame: true;
     preferred-width: 480px;
-    preferred-height: 430px;
+    preferred-height: 560px;
     background: transparent;
     shell := Rectangle {
         x: 1px;
@@ -838,6 +856,7 @@ export component QuickSettingsWindow inherits Window {
                         icon: root.volume-muted || root.volume == 0 ? "󰖁" : "󰕾";
                         label: "VOLUME";
                         value <=> root.volume;
+                        dragging <=> root.volume-dragging;
                         muted: root.volume-muted;
                         mute-control: true;
                         change(value) => root.set-volume(value);
@@ -847,6 +866,7 @@ export component QuickSettingsWindow inherits Window {
                         icon: "󰃠";
                         label: "BRIGHTNESS";
                         value <=> root.brightness;
+                        dragging <=> root.brightness-dragging;
                         minimum: 1;
                         change(value) => root.set-brightness(value);
                     }

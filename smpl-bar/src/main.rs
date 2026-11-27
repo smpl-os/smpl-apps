@@ -317,7 +317,9 @@ fn run_resident(
                 let system = state.borrow().system.clone();
                 apply_system(&bar, &system, &state.borrow().config);
                 if let Some(ui) = &popups.borrow().quick {
-                    ui.set_volume(system.volume.into());
+                    if !ui.get_volume_dragging() {
+                        ui.set_volume(system.volume.into());
+                    }
                     ui.set_volume_muted(system.volume_muted);
                     ui.set_dnd_on(system.notifications_paused);
                     ui.set_wifi_available(system.wifi_available);
@@ -330,6 +332,9 @@ fn run_resident(
                     ui.set_vpn_on(system.vpn);
                     ui.set_airplane_on(system.airplane);
                     ui.set_nightlight_on(system.nightlight);
+                    if !ui.get_brightness_dragging() {
+                        ui.set_brightness(system.brightness.into());
+                    }
                     ui.set_network_label(
                         if system.ssid.is_empty() {
                             if system.wifi_on {
@@ -1468,7 +1473,7 @@ fn open_quick_settings(
             state,
             compositor,
             430.0,
-            340.0,
+            560.0,
         );
         if telemetry.enabled() {
             let weak = ui.as_weak();
