@@ -648,12 +648,15 @@ fn handle_request(
             };
             Response::ok(None)
         }
-        Request::Apply => match reload_config(&state.borrow().paths) {
+        Request::Apply => match reload_state_config(state) {
             Ok(config) => {
-                bar.set_window_title_label(panel_title(&config, state.borrow().preview).into());
-                state.borrow_mut().config = config.clone();
+                let (preview, compositor_state) = {
+                    let state = state.borrow();
+                    (state.preview, state.compositor.clone())
+                };
+                bar.set_window_title_label(panel_title(&config, preview).into());
                 apply_config(bar, &config);
-                apply_compositor(bar, &state.borrow().compositor, &config);
+                apply_compositor(bar, &compositor_state, &config);
                 telemetry.emit("config_reloaded", []);
                 Response::ok(None)
             }
@@ -1507,6 +1510,14 @@ fn quick_toggle_command(name: &str) -> Option<&'static str> {
     }
 }
 
+fn volume_set_command(value: &str) -> [&str; 3] {
+    ["volume-ctl", "set", value]
+}
+
+fn brightness_set_command(value: &str) -> [&str; 3] {
+    ["brightness-ctl", value, "set"]
+}
+
 fn bind_quick(
     ui: &QuickSettingsWindow,
     state: &Rc<RefCell<UiState>>,
@@ -1609,15 +1620,19 @@ fn bind_quick(
     let state_volume = state.clone();
     ui.on_set_volume(move |value| {
         state_volume.borrow_mut().system.volume = value as u8;
-        spawn(&children_volume, ["volume-ctl", "set", &value.to_string()]);
+        let value = value.to_string();
+        spawn(&children_volume, volume_set_command(&value));
     });
-    let children_brightness = children.clone();
     let state_brightness = state.clone();
+    let weak_brightness = ui.as_weak();
     ui.on_set_brightness(move |value| {
         state_brightness.borrow_mut().system.brightness = value as u8;
-        spawn(
-            &children_brightness,
-            ["brightness-ctl", &value.to_string(), "set"],
+        let value = value.to_string();
+        spawn_quick_command(
+            &state_brightness,
+            weak_brightness.clone(),
+            "Setting brightness",
+            &brightness_set_command(&value),
         );
     });
     let telemetry = telemetry.clone();
@@ -2133,6 +2148,13 @@ fn reload_config(paths: &ConfigPaths) -> Result<BarConfigFile, config::ConfigErr
     config::load(paths)
 }
 
+fn reload_state_config(state: &Rc<RefCell<UiState>>) -> Result<BarConfigFile, config::ConfigError> {
+    let paths = state.borrow().paths.clone();
+    let config = reload_config(&paths)?;
+    state.borrow_mut().config = config.clone();
+    Ok(config)
+}
+
 fn status_json(state: &Rc<RefCell<UiState>>) -> serde_json::Value {
     let state = state.borrow();
     serde_json::json!({
@@ -2572,6 +2594,21 @@ mod tests {
     }
 
     #[test]
+    fn apply_reload_updates_resident_config_without_panicking_on_state_borrow() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let paths = ConfigPaths::from_home(Some(manifest)).unwrap();
+        let mut old_config = BarConfigFile::default();
+        old_config.edge = PanelEdge::Top;
+        let state = Rc::new(RefCell::new(UiState::new(old_config, paths)));
+
+        let config = reload_state_config(&state).unwrap();
+
+        assert_eq!(config.edge, PanelEdge::Bottom);
+        assert_eq!(state.borrow().config.edge, PanelEdge::Bottom);
+        assert!(state.try_borrow_mut().is_ok());
+    }
+
+    #[test]
     fn popup_dimensions_never_exceed_the_focused_monitor() {
         let mut compositor = CompositorState {
             focused_monitor: "DP-1".to_owned(),
@@ -2654,6 +2691,11 @@ mod tests {
             assert_eq!(quick_toggle_command(name), Some(command));
         }
         assert_eq!(quick_toggle_command("vpn"), None);
+        assert_eq!(volume_set_command("37"), ["volume-ctl", "set", "37"]);
+        assert_eq!(
+            brightness_set_command("64"),
+            ["brightness-ctl", "64", "set"]
+        );
         assert_eq!(SETTINGS_COMMAND, ["smplos-settings"]);
         assert_eq!(LOGOUT_COMMAND, ["smplos-session-logout", "--confirmed"]);
     }

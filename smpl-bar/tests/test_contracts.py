@@ -155,6 +155,8 @@ class SmplBarContracts(unittest.TestCase):
         ):
             self.assertIn(action, quick)
         for implementation in (
+            '["brightness-ctl", value, "set"]',
+            '["volume-ctl", "set", value]',
             '["volume-ctl", "toggle"]',
             '["nm-connection-editor"]',
             '"smplos-settings"',
@@ -170,6 +172,28 @@ class SmplBarContracts(unittest.TestCase):
         self.assertNotIn('icon: "󰍜"', ui)
         self.assertNotIn("drop-shadow", quick)
         self.assertNotIn("blur", quick.lower())
+        slider = ui[
+            ui.index("component QuickSlider") : ui.index("component CommandAction")
+        ]
+        self.assertIn("x: 0px;", slider)
+        self.assertIn("width: parent.width;", slider)
+        self.assertIn(
+            "width: parent.width * clamp(root.value, root.minimum, 100) / 100;",
+            slider,
+        )
+        self.assertIn(
+            "x: (parent.width - 12px) * clamp(root.value, root.minimum, 100) / 100;",
+            slider,
+        )
+        self.assertIn("width: 12px;", slider)
+        self.assertNotIn("max(6px", slider)
+        brightness_start = source.index("ui.on_set_brightness")
+        brightness_callback = source[
+            brightness_start : source.index(
+                "let telemetry = telemetry.clone();", brightness_start
+            )
+        ]
+        self.assertIn("spawn_quick_command(", brightness_callback)
         start_icon = (BAR / "ui/assets/start.svg").read_text()
         self.assertIn('M 221 95', start_icon)
         self.assertIn('H 109', start_icon)
