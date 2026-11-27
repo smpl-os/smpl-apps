@@ -10,7 +10,7 @@ const WORKER_FAILURE: &str =
 #[derive(Default)]
 struct State {
     scheduler: Scheduler,
-    errors: [String; 7],
+    errors: [String; 9],
     read_error: String,
     worker_error: String,
 }
@@ -86,11 +86,23 @@ fn outcome_message(setting: Setting, outcome: Result<SaveOutcome>) -> String {
 }
 
 fn publish(ui: &MainWindow, snapshot: Snapshot) {
-    let [count, position, spacing, style, format, clock_24h, date] = snapshot.values;
+    let [
+        count,
+        position,
+        spacing,
+        style,
+        edge,
+        mode,
+        format,
+        clock_24h,
+        date,
+    ] = snapshot.values;
     ui.set_tb_ws_count(count);
     ui.set_tb_ws_position_index(position);
     ui.set_tb_ws_spacing(spacing);
     ui.set_tb_ws_style_index(style);
+    ui.set_tb_edge_index(edge);
+    ui.set_tb_mode_index(mode);
     ui.set_tb_clock_format_index(format);
     ui.set_tb_clock_24h(clock_24h != 0);
     ui.set_tb_clock_date_fmt_index(date);
@@ -189,6 +201,8 @@ pub fn install(ui: &MainWindow) {
     ui.on_tb_set_ws_position(callback(Setting::Position));
     ui.on_tb_set_ws_spacing(callback(Setting::Spacing));
     ui.on_tb_set_ws_style(callback(Setting::Style));
+    ui.on_tb_set_edge(callback(Setting::Edge));
+    ui.on_tb_set_mode(callback(Setting::Mode));
     ui.on_tb_set_clock_format(callback(Setting::ClockFormat));
     ui.on_tb_set_clock_date_fmt(callback(Setting::ClockDate));
     let set_24h = callback(Setting::Clock24h);
@@ -203,13 +217,15 @@ mod tests {
     #[test]
     fn successful_changes_are_quiet_but_failures_distinguish_saved_values() {
         assert!(outcome_message(Setting::Count, Ok(SaveOutcome::Updated)).is_empty());
-        assert!(outcome_message(
-            Setting::Count,
-            Ok(SaveOutcome::SavedButNotApplied(Error::Command(
-                "details".into()
-            )))
-        )
-        .contains("Saved, but"));
+        assert!(
+            outcome_message(
+                Setting::Count,
+                Ok(SaveOutcome::SavedButNotApplied(Error::Command(
+                    "details".into()
+                )))
+            )
+            .contains("Saved, but")
+        );
         let failed = outcome_message(Setting::Count, Err(Error::Invalid("details".into())));
         assert!(failed.contains("Couldn't save"));
         assert!(!failed.contains("details"));

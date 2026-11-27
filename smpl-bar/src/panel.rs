@@ -59,20 +59,46 @@ impl PanelGeometry {
         let width = ((monitor.width as f64) / scale).round().max(1.0) as u32;
         let height = ((monitor.height as f64) / scale).round().max(1.0) as u32;
         let margin = margin as i32;
-        let y = match edge {
-            PanelEdge::Top => monitor.y + margin,
-            PanelEdge::Bottom => monitor
-                .y
-                .saturating_add_unsigned(height)
-                .saturating_sub_unsigned(bar_height as u32)
-                .saturating_sub(margin),
+        let (x, y, panel_width, panel_height) = match edge {
+            PanelEdge::Top => (
+                monitor.x + margin,
+                monitor.y + margin,
+                width.saturating_sub(2 * margin.max(0) as u32),
+                bar_height as u32,
+            ),
+            PanelEdge::Bottom => (
+                monitor.x + margin,
+                monitor
+                    .y
+                    .saturating_add_unsigned(height)
+                    .saturating_sub_unsigned(bar_height as u32)
+                    .saturating_sub(margin),
+                width.saturating_sub(2 * margin.max(0) as u32),
+                bar_height as u32,
+            ),
+            PanelEdge::Left => (
+                monitor.x + margin,
+                monitor.y + margin,
+                bar_height as u32,
+                height.saturating_sub(2 * margin.max(0) as u32),
+            ),
+            PanelEdge::Right => (
+                monitor
+                    .x
+                    .saturating_add_unsigned(width)
+                    .saturating_sub_unsigned(bar_height as u32)
+                    .saturating_sub(margin),
+                monitor.y + margin,
+                bar_height as u32,
+                height.saturating_sub(2 * margin.max(0) as u32),
+            ),
         };
         Self {
             monitor: monitor.connector.clone(),
-            x: monitor.x + margin,
+            x,
             y,
-            width: width.saturating_sub(2 * margin.max(0) as u32),
-            height: bar_height as u32,
+            width: panel_width,
+            height: panel_height,
             bar_height: bar_height as u32,
             edge,
             mode,
@@ -347,12 +373,16 @@ impl WaylandPanelState {
         let anchor = match update.geometry.edge {
             PanelEdge::Top => Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
             PanelEdge::Bottom => Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+            PanelEdge::Left => Anchor::LEFT | Anchor::TOP | Anchor::BOTTOM,
+            PanelEdge::Right => Anchor::RIGHT | Anchor::TOP | Anchor::BOTTOM,
         };
         layer.set_anchor(anchor);
         let margin = update.geometry.margin.max(0);
         match update.geometry.edge {
             PanelEdge::Top => layer.set_margin(margin, 0, 0, 0),
             PanelEdge::Bottom => layer.set_margin(0, 0, margin, 0),
+            PanelEdge::Left => layer.set_margin(0, 0, 0, margin),
+            PanelEdge::Right => layer.set_margin(0, margin, 0, 0),
         }
         layer.set_exclusive_zone(
             i32::try_from(
@@ -363,7 +393,18 @@ impl WaylandPanelState {
             )
             .unwrap_or(i32::MAX),
         );
-        layer.set_size(0, update.geometry.bar_height);
+        layer.set_size(
+            if matches!(update.geometry.edge, PanelEdge::Left | PanelEdge::Right) {
+                update.geometry.bar_height
+            } else {
+                0
+            },
+            if matches!(update.geometry.edge, PanelEdge::Top | PanelEdge::Bottom) {
+                update.geometry.bar_height
+            } else {
+                0
+            },
+        );
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         if let Ok(region) = Region::new(&self.compositor) {
             layer.set_input_region(Some(region.wl_region()));
@@ -429,6 +470,8 @@ fn edge_name(edge: PanelEdge) -> &'static str {
     match edge {
         PanelEdge::Top => "top",
         PanelEdge::Bottom => "bottom",
+        PanelEdge::Left => "left",
+        PanelEdge::Right => "right",
     }
 }
 
@@ -703,38 +746,18 @@ impl X11Panel {
     fn set_strut(&self, window: u32, geometry: &PanelGeometry) -> io::Result<()> {
         use x11rb::protocol::xproto::{AtomEnum, PropMode};
 
-        let (top, bottom) = match geometry.edge {
-            PanelEdge::Top => (geometry.y + geometry.bar_height as i32, 0),
-            PanelEdge::Bottom => {
-                let screen = self
-                    .connection
-                    .setup()
-                    .roots
-                    .iter()
-                    .find(|screen| screen.root == self.root)
-                    .ok_or_else(|| io::Error::other("X11 root screen disappeared"))?;
-                (
-                    0,
-                    i32::from(screen.height_in_pixels)
-                        .saturating_sub(geometry.y)
-                        .max(geometry.bar_height as i32),
-                )
-            }
-        };
-        let partial = [
-            0,
-            0,
-            top.max(0) as u32,
-            bottom.max(0) as u32,
-            0,
-            0,
-            0,
-            0,
-            geometry.x.max(0) as u32,
-            (geometry.x + geometry.width as i32 - 1).max(geometry.x) as u32,
-            geometry.x.max(0) as u32,
-            (geometry.x + geometry.width as i32 - 1).max(geometry.x) as u32,
-        ];
+        let screen = self
+            .connection
+            .setup()
+            .roots
+            .iter()
+            .find(|screen| screen.root == self.root)
+            .ok_or_else(|| io::Error::other("X11 root screen disappeared"))?;
+        let (partial, strut) = strut_values(
+            i32::from(screen.width_in_pixels),
+            i32::from(screen.height_in_pixels),
+            geometry,
+        );
         self.connection
             .change_property32(
                 PropMode::REPLACE,
@@ -752,7 +775,7 @@ impl X11Panel {
                 window,
                 self.atom(b"_NET_WM_STRUT")?,
                 AtomEnum::CARDINAL,
-                &[0, 0, top.max(0) as u32, bottom.max(0) as u32],
+                &strut,
             )
             .map_err(|error| io::Error::other(error.to_string()))?
             .check()
@@ -796,6 +819,79 @@ impl X11Panel {
     }
 }
 
+fn strut_values(
+    screen_width: i32,
+    screen_height: i32,
+    geometry: &PanelGeometry,
+) -> ([u32; 12], [u32; 4]) {
+    let start_x = geometry.x.max(0) as u32;
+    let end_x = geometry
+        .x
+        .saturating_add_unsigned(geometry.width.saturating_sub(1))
+        .max(geometry.x)
+        .max(0) as u32;
+    let start_y = geometry.y.max(0) as u32;
+    let end_y = geometry
+        .y
+        .saturating_add_unsigned(geometry.height.saturating_sub(1))
+        .max(geometry.y)
+        .max(0) as u32;
+    let strut = match geometry.edge {
+        PanelEdge::Top => [
+            0,
+            0,
+            (geometry.y + geometry.bar_height as i32).max(0) as u32,
+            0,
+        ],
+        PanelEdge::Bottom => [
+            0,
+            0,
+            0,
+            screen_height
+                .saturating_sub(geometry.y)
+                .max(geometry.bar_height as i32)
+                .max(0) as u32,
+        ],
+        PanelEdge::Left => [
+            (geometry.x + geometry.bar_height as i32).max(0) as u32,
+            0,
+            0,
+            0,
+        ],
+        PanelEdge::Right => [
+            0,
+            screen_width
+                .saturating_sub(geometry.x)
+                .max(geometry.bar_height as i32)
+                .max(0) as u32,
+            0,
+            0,
+        ],
+    };
+    let mut partial = [
+        strut[0], strut[1], strut[2], strut[3], 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    match geometry.edge {
+        PanelEdge::Left => {
+            partial[4] = start_y;
+            partial[5] = end_y;
+        }
+        PanelEdge::Right => {
+            partial[6] = start_y;
+            partial[7] = end_y;
+        }
+        PanelEdge::Top => {
+            partial[8] = start_x;
+            partial[9] = end_x;
+        }
+        PanelEdge::Bottom => {
+            partial[10] = start_x;
+            partial[11] = end_x;
+        }
+    }
+    (partial, strut)
+}
+
 fn x11_window(window: &Window) -> Option<u32> {
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok(),
@@ -824,5 +920,41 @@ mod tests {
         assert_eq!((bottom.width, bottom.x, bottom.y), (1276, 1922, 786));
         let top = PanelGeometry::for_monitor(&monitor, PanelEdge::Top, PanelMode::Floating, 4, 36);
         assert_eq!((top.width, top.x, top.y), (1272, 1924, 104));
+        let left = PanelGeometry::for_monitor(&monitor, PanelEdge::Left, PanelMode::Pinned, 3, 40);
+        assert_eq!(
+            (left.width, left.height, left.x, left.y),
+            (40, 714, 1923, 103)
+        );
+        let right =
+            PanelGeometry::for_monitor(&monitor, PanelEdge::Right, PanelMode::Floating, 2, 32);
+        assert_eq!(
+            (right.width, right.height, right.x, right.y),
+            (32, 716, 3166, 102)
+        );
+    }
+
+    #[test]
+    fn x11_struts_reserve_each_supported_edge_and_range() {
+        let monitor = Monitor {
+            connector: "DP-1".to_owned(),
+            x: 100,
+            y: 50,
+            width: 1600,
+            height: 900,
+            scale: 1.0,
+            ..Monitor::default()
+        };
+        for (edge, expected_strut, range) in [
+            (PanelEdge::Left, [134, 0, 0, 0], (4, 5, 52, 947)),
+            (PanelEdge::Right, [0, 334, 0, 0], (6, 7, 52, 947)),
+            (PanelEdge::Top, [0, 0, 84, 0], (8, 9, 102, 1697)),
+            (PanelEdge::Bottom, [0, 0, 0, 84], (10, 11, 102, 1697)),
+        ] {
+            let geometry = PanelGeometry::for_monitor(&monitor, edge, PanelMode::Pinned, 2, 32);
+            let (partial, strut) = strut_values(2000, 1000, &geometry);
+            assert_eq!(strut, expected_strut);
+            assert_eq!(partial[range.0], range.2);
+            assert_eq!(partial[range.1], range.3);
+        }
     }
 }

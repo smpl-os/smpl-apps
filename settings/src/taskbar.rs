@@ -18,16 +18,20 @@ pub enum Setting {
     Position,
     Spacing,
     Style,
+    Edge,
+    Mode,
     ClockFormat,
     Clock24h,
     ClockDate,
 }
 
-const SETTINGS: [Setting; 7] = [
+const SETTINGS: [Setting; 9] = [
     Setting::Count,
     Setting::Position,
     Setting::Spacing,
     Setting::Style,
+    Setting::Edge,
+    Setting::Mode,
     Setting::ClockFormat,
     Setting::Clock24h,
     Setting::ClockDate,
@@ -40,6 +44,8 @@ impl Setting {
             Self::Position => "ws_position",
             Self::Spacing => "ws_spacing",
             Self::Style => "ws_style",
+            Self::Edge => "bar_edge",
+            Self::Mode => "bar_mode",
             Self::ClockFormat => "clock_format",
             Self::Clock24h => "clock_24h",
             Self::ClockDate => "clock_date_fmt",
@@ -52,6 +58,8 @@ impl Setting {
             Self::Position => "Workspace position",
             Self::Spacing => "Workspace spacing",
             Self::Style => "Workspace style",
+            Self::Edge => "Taskbar position",
+            Self::Mode => "Taskbar behavior",
             Self::ClockFormat => "Clock format",
             Self::Clock24h => "Time format",
             Self::ClockDate => "Date format",
@@ -62,6 +70,8 @@ impl Setting {
         match self {
             Self::Position => &["center", "left"],
             Self::Style => &["numbers", "squares"],
+            Self::Edge => &["bottom", "top", "left", "right"],
+            Self::Mode => &["pinned", "floating"],
             Self::ClockFormat => &["time", "dow", "date"],
             Self::Clock24h => &["false", "true"],
             Self::ClockDate => &["M/D", "D/M", "ISO", "Mon D"],
@@ -97,13 +107,6 @@ impl Setting {
             _ => Err(Error::Invalid(self.key().into())),
         }
     }
-
-    fn workspace(self) -> bool {
-        matches!(
-            self,
-            Self::Count | Self::Position | Self::Spacing | Self::Style
-        )
-    }
 }
 
 #[derive(Debug)]
@@ -135,7 +138,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Snapshot {
-    values: [i32; 7],
+    values: [i32; 9],
 }
 
 impl Default for Snapshot {
@@ -146,7 +149,7 @@ impl Default for Snapshot {
             .unwrap_or_else(|| "en_US.UTF-8".into());
         let international = i32::from(!locale.starts_with("en_US"));
         Self {
-            values: [4, 0, 1, 0, 0, international, international],
+            values: [4, 0, 1, 0, 0, 0, 0, international, international],
         }
     }
 }
@@ -154,7 +157,7 @@ impl Default for Snapshot {
 impl Snapshot {
     fn parse(text: &str) -> Result<Self> {
         let mut snapshot = Self::default();
-        let mut seen = [false; 7];
+        let mut seen = [false; 9];
         for line in text.lines() {
             if line.trim_start().starts_with('#') {
                 continue;
@@ -306,36 +309,7 @@ pub fn change(
     let text = edit(original.as_deref().unwrap_or(""), setting, value)?;
     replace(path, &original, &text)?;
     let applied = (|| {
-        if setting.workspace() {
-            runtime.run("bar-ctl", &["apply"])?;
-        } else {
-            let config = path
-                .parent()
-                .and_then(Path::parent)
-                .ok_or_else(|| Error::Invalid("bar.conf path".into()))?
-                .join("eww");
-            let top = runtime.run(
-                "sh",
-                &[&config.join("scripts/clock-top.sh").to_string_lossy()],
-            )?;
-            let bottom = runtime.run(
-                "sh",
-                &[&config.join("scripts/clock-bot.sh").to_string_lossy()],
-            )?;
-            if top.is_empty() {
-                return Err(Error::Command("Clock script returned no time".into()));
-            }
-            runtime.run(
-                "eww",
-                &[
-                    "--config",
-                    &config.to_string_lossy(),
-                    "update",
-                    &format!("clock-top={top}"),
-                    &format!("clock-bot={bottom}"),
-                ],
-            )?;
-        }
+        runtime.run("bar-ctl", &["apply"])?;
         if read_text(path)?.as_deref() != Some(text.as_str()) {
             return Err(Error::Conflict);
         }

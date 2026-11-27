@@ -1,6 +1,6 @@
 use super::*;
 use std::cell::RefCell;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{PermissionsExt, symlink};
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -55,7 +55,7 @@ impl Runtime for Mock {
 const ORIGINAL: &str = "# Personal bar preferences\nws_count=7\nws_position=left\nws_spacing=1\nws_style=numbers\nclock_format=date\n# Keep clock preferences\nclock_date_fmt=Mon D\ncustom=value # untouched\n";
 
 #[test]
-fn all_workspace_controls_save_exact_values_and_only_use_bar_apply() {
+fn all_taskbar_controls_save_exact_values_and_only_use_bar_apply() {
     for (setting, value, encoded) in [
         (Setting::Count, 1, "1"),
         (Setting::Count, 10, "10"),
@@ -65,6 +65,12 @@ fn all_workspace_controls_save_exact_values_and_only_use_bar_apply() {
         (Setting::Spacing, 10, "10"),
         (Setting::Style, 0, "numbers"),
         (Setting::Style, 1, "squares"),
+        (Setting::Edge, 0, "bottom"),
+        (Setting::Edge, 1, "top"),
+        (Setting::Edge, 2, "left"),
+        (Setting::Edge, 3, "right"),
+        (Setting::Mode, 0, "pinned"),
+        (Setting::Mode, 1, "floating"),
     ] {
         let fixture = Fixture::new();
         let path = fixture.write(ORIGINAL);
@@ -93,7 +99,7 @@ fn all_workspace_controls_save_exact_values_and_only_use_bar_apply() {
 }
 
 #[test]
-fn all_clock_setters_share_scoped_writer_and_checked_coherent_updates() {
+fn all_clock_setters_reload_the_native_bar_through_bar_ctl() {
     for setting in [Setting::ClockFormat, Setting::Clock24h, Setting::ClockDate] {
         for value in 0..setting.choices().len() as i32 {
             let fixture = Fixture::new();
@@ -103,19 +109,14 @@ fn all_clock_setters_share_scoped_writer_and_checked_coherent_updates() {
             let snapshot = read(&path).unwrap();
             assert_eq!(snapshot.values[setting as usize], value);
             assert_eq!(&snapshot.values[..4], &[7, 1, 1, 0]);
-            assert!(fs::read_to_string(&path)
-                .unwrap()
-                .contains("custom=value # untouched\n"));
-            let calls = runtime.calls.borrow();
-            assert_eq!(
-                calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
-                ["sh", "sh", "eww"]
+            assert!(
+                fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("custom=value # untouched\n")
             );
-            assert!(calls[0].1[0].ends_with("/.config/eww/scripts/clock-top.sh"));
-            assert!(calls[1].1[0].ends_with("/.config/eww/scripts/clock-bot.sh"));
             assert_eq!(
-                &calls[2].1[2..],
-                ["update", "clock-top=12:34", "clock-bot=12:34"]
+                *runtime.calls.borrow(),
+                vec![("bar-ctl".into(), vec!["apply".into()])]
             );
         }
     }
@@ -197,20 +198,19 @@ fn failed_apply_retains_saved_preferences_and_failed_save_never_runs_commands() 
 }
 
 #[test]
-fn failure_at_any_clock_apply_stage_is_not_reported_as_success() {
-    for fail_at in 1..=3 {
-        let fixture = Fixture::new();
-        let path = fixture.write(ORIGINAL);
-        let runtime = Mock {
-            fail_at: Some(fail_at),
-            ..Mock::default()
-        };
-        assert!(matches!(
-            change(&path, &runtime, Setting::Clock24h, 1).unwrap(),
-            SaveOutcome::SavedButNotApplied(_)
-        ));
-        assert_eq!(runtime.calls.borrow().len(), fail_at);
-    }
+fn failed_clock_apply_keeps_saved_value_and_reports_it() {
+    let fixture = Fixture::new();
+    let path = fixture.write(ORIGINAL);
+    let runtime = Mock {
+        fail_at: Some(1),
+        ..Mock::default()
+    };
+    assert!(matches!(
+        change(&path, &runtime, Setting::Clock24h, 1).unwrap(),
+        SaveOutcome::SavedButNotApplied(_)
+    ));
+    assert_eq!(read(&path).unwrap().values[Setting::Clock24h as usize], 1);
+    assert_eq!(runtime.calls.borrow().len(), 1);
 }
 
 #[test]
@@ -273,9 +273,11 @@ fn comments_crlf_permissions_and_unknown_keys_survive_while_changed_key_is_canon
         0o640
     );
     change(&path, &Mock::default(), Setting::Style, 1).unwrap();
-    assert!(fs::read_to_string(&path)
-        .unwrap()
-        .ends_with("ws_style=squares\r\n"));
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .ends_with("ws_style=squares\r\n")
+    );
 }
 
 #[test]
@@ -284,7 +286,7 @@ fn explicit_auto_clock_preferences_match_locale_defaults_without_read_time_write
     let text = "# automatic clock\nclock_24h=auto\nclock_date_fmt=auto\n";
     let path = fixture.write(text);
     let snapshot = read(&path).unwrap();
-    assert_eq!(snapshot.values[5..], Snapshot::default().values[5..]);
+    assert_eq!(snapshot.values[7..], Snapshot::default().values[7..]);
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     change(&path, &Mock::default(), Setting::Style, 1).unwrap();
     assert!(fs::read_to_string(path).unwrap().starts_with(text));
@@ -320,10 +322,20 @@ fn coalesced_slider_and_clock_choices_persist_final_values_without_window_moves(
     }
     assert_eq!(
         read(&path).unwrap().values,
-        [10, 1, 1, 1, 2, Snapshot::default().values[5], 2]
+        [
+            10,
+            1,
+            1,
+            1,
+            Snapshot::default().values[4],
+            Snapshot::default().values[5],
+            2,
+            Snapshot::default().values[7],
+            2
+        ]
     );
     let calls = runtime.calls.borrow();
-    assert_eq!(calls.iter().filter(|c| c.0 == "bar-ctl").count(), 2);
+    assert_eq!(calls.iter().filter(|c| c.0 == "bar-ctl").count(), 3);
     assert!(!calls.iter().any(|c| matches!(
         c.0.as_str(),
         "hyprctl" | "workspace-group" | "workspace-ctl"
@@ -332,12 +344,16 @@ fn coalesced_slider_and_clock_choices_persist_final_values_without_window_moves(
 
 #[test]
 fn command_runner_reports_missing_and_failed_commands() {
-    assert!(System
-        .run("/nonexistent/settings-taskbar-test-command", &[])
-        .is_err());
-    assert!(System
-        .run("sh", &["-c", "printf 'test failure' >&2; exit 4"])
-        .is_err());
+    assert!(
+        System
+            .run("/nonexistent/settings-taskbar-test-command", &[])
+            .is_err()
+    );
+    assert!(
+        System
+            .run("sh", &["-c", "printf 'test failure' >&2; exit 4"])
+            .is_err()
+    );
     assert_eq!(
         System.run("sh", &["-c", "printf 'test success'"]).unwrap(),
         "test success"
@@ -359,6 +375,8 @@ fn ui_requests_changes_without_optimistic_confirmed_values_and_refreshes_on_entr
         "tb-ws-spacing",
         "tb-ws-style-index",
         "tb-ws-position-index",
+        "tb-edge-index",
+        "tb-mode-index",
         "tb-clock-format-index",
         "tb-clock-24h",
         "tb-clock-date-fmt-index",

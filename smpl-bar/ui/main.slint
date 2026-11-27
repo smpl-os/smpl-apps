@@ -586,6 +586,7 @@ export component BarWindow inherits Window {
     in-out property <bool> show-notifications: true;
     in-out property <bool> show-sni: true;
     in-out property <[TrayItemUi]> sni-items;
+    in-out property <bool> vertical: false;
 
     callback open-start;
     callback select-workspace(int);
@@ -607,7 +608,7 @@ export component BarWindow inherits Window {
 
     title: root.window-title-label;
     no-frame: true;
-    min-width: 800px;
+    min-width: 24px;
     min-height: 24px;
     preferred-width: 1600px;
     preferred-height: 32px;
@@ -620,7 +621,7 @@ export component BarWindow inherits Window {
         border-color: Theme.bg-lighter.transparentize(0.55);
         border-radius: 3px;
         background: Theme.bg.transparentize(1.0 - Theme.opacity);
-        HorizontalLayout {
+        if !root.vertical: HorizontalLayout {
             padding-left: 4px;
             padding-right: 4px;
             padding-top: 2px;
@@ -756,6 +757,158 @@ export component BarWindow inherits Window {
                         horizontal-alignment: center;
                         color: Theme.fg-dim;
                         font-size: 8px;
+                    }
+                }
+                TouchArea {
+                    clicked => { root.open-calendar(); }
+                    mouse-cursor: pointer;
+                }
+            }
+            if show-notifications: IconButton {
+                icon: notifications-paused ? "󰂛" : (notification-count > 0 ? "󰂞" : "󰂜");
+                tip: notification-count + " notifications";
+                active: notification-count > 0;
+                clicked => { root.open-notifications(); }
+                secondary-clicked => { root.clear-notifications(); }
+            }
+        }
+
+        if root.vertical: VerticalLayout {
+            padding-left: 2px;
+            padding-right: 2px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+            spacing: 3px;
+            alignment: center;
+
+            if show-start: StartButton {
+                clicked => { root.open-start(); }
+            }
+
+            if show-workspaces && !workspace-center: VerticalLayout {
+                spacing: root.workspace-spacing;
+                alignment: center;
+                for workspace in root.workspaces: WorkspaceButton {
+                    item: workspace;
+                    squares: root.workspace-squares;
+                    clicked(id) => { root.select-workspace(id); }
+                }
+                IconButton {
+                    icon: "󰍹";
+                    tip: "Workspace overview on " + root.monitor-label;
+                    clicked => { root.open-overview(); }
+                }
+            }
+
+            if show-title: IconButton {
+                icon: "󰖯";
+                tip: root.window-title;
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            if show-workspaces && workspace-center: VerticalLayout {
+                spacing: root.workspace-spacing;
+                alignment: center;
+                for workspace in root.workspaces: WorkspaceButton {
+                    item: workspace;
+                    squares: root.workspace-squares;
+                    clicked(id) => { root.select-workspace(id); }
+                }
+                IconButton {
+                    icon: "󰍹";
+                    tip: "Workspace overview on " + root.monitor-label;
+                    clicked => { root.open-overview(); }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            if show-usb && usb-visible: IconButton {
+                icon: "󰕓";
+                tip: "Removable drives";
+                clicked => { root.open-usb(); }
+            }
+            if show-keypad && keypad-visible: IconButton {
+                icon: "󰌌";
+                tip: "Macro keypad";
+                clicked => { root.open-keypad(); }
+            }
+            if show-sync && sync-visible: IconButton {
+                icon: "󰓦";
+                tip: "Sync in progress";
+                clicked => { root.open-sync(); }
+            }
+            if show-dictation && dictation-visible: IconButton {
+                icon: "󰍬";
+                tip: "Toggle dictation";
+                active: true;
+                clicked => { root.toggle-dictation(); }
+            }
+            if show-keyboard && keyboard-visible: IconButton {
+                icon: keyboard-code;
+                tip: "Switch keyboard layout";
+                clicked => { root.next-keyboard(); }
+                secondary-clicked => { root.open-keyboard-settings(); }
+            }
+            if show-bluetooth && bluetooth-available: IconButton {
+                icon: bluetooth-on ? "󰂯" : "󰂲";
+                tip: "Bluetooth";
+                active: bluetooth-on;
+                clicked => { root.open-quick-settings(); }
+            }
+            if show-wifi && wifi-available: IconButton {
+                icon: wifi-on ? "󰤨" : "󰤮";
+                tip: "Wi-Fi";
+                active: wifi-on;
+                clicked => { root.open-quick-settings(); }
+            }
+            if show-network: IconButton {
+                icon: vpn-on ? "󰖂" : (network-online ? "󰒍" : "󰣴");
+                tip: vpn-on ? "VPN active" : (network-online ? "Network connected" : "Network offline");
+                active: network-online || vpn-on;
+                clicked => { root.open-quick-settings(); }
+            }
+            if show-volume: IconButton {
+                icon: volume-muted || volume == 0 ? "󰖁" : (volume < 50 ? "󰖀" : "󰕾");
+                tip: "Volume " + volume + "%";
+                active: !volume-muted;
+                clicked => { root.open-quick-settings(); }
+                scrolled(delta) => { root.volume-scroll(delta); }
+            }
+            if show-battery && battery-visible: IconButton {
+                icon: battery-charging ? "󰂄" : (battery-low ? "󰂃" : "󰁹");
+                tip: "Battery " + battery + "%";
+                active: !battery-low;
+                clicked => { root.open-quick-settings(); }
+            }
+            if show-sni: VerticalLayout {
+                spacing: 1px;
+                alignment: center;
+                for item in root.sni-items: TrayButton {
+                    item: item;
+                    activate(key) => root.sni-activate(key);
+                    secondary(key) => root.sni-secondary(key);
+                    scroll(key, delta) => root.sni-scroll(key, delta);
+                }
+            }
+            if show-clock: Rectangle {
+                width: 24px;
+                height: 34px;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 0px;
+                    Text {
+                        text: clock-main;
+                        horizontal-alignment: center;
+                        color: Theme.fg;
+                        font-size: 8px;
+                    }
+                    if clock-sub != "": Text {
+                        text: clock-sub;
+                        horizontal-alignment: center;
+                        color: Theme.fg-dim;
+                        font-size: 7px;
                     }
                 }
                 TouchArea {

@@ -772,6 +772,7 @@ fn apply_config(bar: &BarWindow, config: &BarConfigFile) {
         config.workspace_position,
         config::WorkspacePosition::Center
     ));
+    bar.set_vertical(matches!(config.edge, PanelEdge::Left | PanelEdge::Right));
 }
 
 fn apply_system(bar: &BarWindow, system: &SystemState, config: &BarConfigFile) {
@@ -966,10 +967,15 @@ fn fit_bar_to_monitor(
         config.height,
     );
     if preview {
-        geometry.width = (geometry.width as f64 * 0.72).round().max(640.0) as u32;
-        geometry.y = monitor.y + config.preview_offset_y as i32;
+        if matches!(config.edge, PanelEdge::Left | PanelEdge::Right) {
+            geometry.height = (geometry.height as f64 * 0.72).round().max(480.0) as u32;
+            geometry.x = monitor.x + config.preview_offset_y as i32;
+        } else {
+            geometry.width = (geometry.width as f64 * 0.72).round().max(640.0) as u32;
+            geometry.y = monitor.y + config.preview_offset_y as i32;
+        }
     }
-    resize_window(bar.window(), geometry.width as f64, config.height as f64);
+    resize_window(bar.window(), geometry.width as f64, geometry.height as f64);
     if preview {
         set_window_position(bar.window(), geometry.x, geometry.y);
     }
@@ -988,6 +994,8 @@ fn panel_title(config: &BarConfigFile, preview: bool) -> String {
         match config.edge {
             PanelEdge::Top => "top",
             PanelEdge::Bottom => "bottom",
+            PanelEdge::Left => "left",
+            PanelEdge::Right => "right",
         },
         match config.mode {
             PanelMode::Pinned => "pinned",
@@ -1091,6 +1099,8 @@ fn synchronize_panel(
                     serde_json::json!(match geometry.edge {
                         PanelEdge::Top => "top",
                         PanelEdge::Bottom => "bottom",
+                        PanelEdge::Left => "left",
+                        PanelEdge::Right => "right",
                     }),
                 ),
                 (
@@ -1222,20 +1232,36 @@ fn show_popup_at_anchor(
         let logical_width = monitor.width as f64 / scale;
         let logical_height = monitor.height as f64 / scale;
         let inset = 10.0;
-        let x = monitor.x + (logical_width - width - inset).max(inset).round() as i32;
-        let y = monitor.y
-            + match state.config.edge {
-                PanelEdge::Bottom => {
-                    logical_height
-                        - state.config.height as f64
-                        - state.config.margin as f64
-                        - height
-                        - inset
-                }
-                PanelEdge::Top => state.config.height as f64 + state.config.margin as f64 + inset,
-            }
-            .max(inset)
-            .round() as i32;
+        let (x, y) = match state.config.edge {
+            PanelEdge::Left => (
+                state.config.height as f64 + state.config.margin as f64 + inset,
+                (logical_height - height - inset).max(inset),
+            ),
+            PanelEdge::Right => (
+                (logical_width
+                    - state.config.height as f64
+                    - state.config.margin as f64
+                    - width
+                    - inset)
+                    .max(inset),
+                (logical_height - height - inset).max(inset),
+            ),
+            PanelEdge::Bottom => (
+                (logical_width - width - inset).max(inset),
+                (logical_height
+                    - state.config.height as f64
+                    - state.config.margin as f64
+                    - height
+                    - inset)
+                    .max(inset),
+            ),
+            PanelEdge::Top => (
+                (logical_width - width - inset).max(inset),
+                state.config.height as f64 + state.config.margin as f64 + inset,
+            ),
+        };
+        let x = monitor.x + x.round() as i32;
+        let y = monitor.y + y.round() as i32;
         set_window_position(window, x, y);
         compositor.send(Action::PlacePopup {
             title: title.to_owned(),
@@ -2648,6 +2674,10 @@ mod tests {
         assert_eq!(panel_title(&config, false), "smpl-bar");
         config.edge = PanelEdge::Top;
         assert_eq!(panel_title(&config, false), "smpl-bar:panel-top-pinned");
+        config.edge = PanelEdge::Left;
+        assert_eq!(panel_title(&config, false), "smpl-bar:panel-left-pinned");
+        config.edge = PanelEdge::Right;
+        assert_eq!(panel_title(&config, false), "smpl-bar:panel-right-pinned");
         config.mode = PanelMode::Floating;
         assert_eq!(panel_title(&config, true), "smpl-bar-preview");
     }

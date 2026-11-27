@@ -2185,6 +2185,8 @@ export component MainWindow inherits Window {
     in-out property <int>  tb-ws-position-index: 0;      // 0 = center, 1 = left
     in-out property <int>  tb-ws-spacing: 1;             // pixel gap between dots (1-10)
     in-out property <int>  tb-ws-style-index: 0;         // 0 = numbers, 1 = squares
+    in-out property <int>  tb-edge-index: 0;              // 0=bottom, 1=top, 2=left, 3=right
+    in-out property <int>  tb-mode-index: 0;              // 0=pinned, 1=floating
     // Clock
     in-out property <int>  tb-clock-format-index: 0;    // 0=time, 1=dow, 2=date
     in-out property <bool> tb-clock-24h: false;          // true=24h, false=AM/PM
@@ -2332,6 +2334,8 @@ export component MainWindow inherits Window {
     callback tb-set-ws-position(int);
     callback tb-set-ws-spacing(int);
     callback tb-set-ws-style(int);
+    callback tb-set-edge(int);
+    callback tb-set-mode(int);
     callback tb-set-clock-format(int);     // 0=time, 1=dow, 2=date
     callback tb-set-clock-24h(bool);       // true=24h, false=AM/PM
     callback tb-set-clock-date-fmt(int);   // 0=M/D, 1=D/M, 2=ISO, 3=Mon D
@@ -6386,6 +6390,91 @@ export component MainWindow inherits Window {
                     text: "Saving...";
                     color: Theme.fg_dim;
                     font-size: Typography.secondary;
+                }
+
+                Rectangle {
+                    border-radius: 6px;
+                    background: Theme.panel;
+                    border-width: (root.highlight-setting == "Taskbar Position" || root.highlight-setting == "Taskbar Edge" || root.highlight-setting == "Taskbar Behavior" || root.highlight-setting == "Pinned Taskbar") && root.highlight-blink-on ? 2px : 0px;
+                    border-color: (root.highlight-setting == "Taskbar Position" || root.highlight-setting == "Taskbar Edge" || root.highlight-setting == "Taskbar Behavior" || root.highlight-setting == "Pinned Taskbar") && root.highlight-blink-on ? Theme.accent : transparent;
+                    animate border-width { duration: 400ms; easing: ease-in-out; }
+                    animate border-color { duration: 400ms; easing: ease-in-out; }
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+
+                        Text {
+                            text: "Taskbar Position";
+                            color: Theme.fg_dim;
+                            font-size: Typography.secondary;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: "Choose an edge of the screen. Vertical taskbars arrange modules from top to bottom.";
+                            color: Theme.fg_dim;
+                            font-size: Typography.secondary;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            for edge[idx] in ["Bottom", "Top", "Left", "Right"]: Rectangle {
+                                min-width: 72px;
+                                horizontal-stretch: 1;
+                                height: Typography.compact-control;
+                                border-radius: 4px;
+                                background: root.tb-edge-index == idx
+                                    ? Theme.accent
+                                    : edge-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                Text {
+                                    text: edge;
+                                    color: root.tb-edge-index == idx ? Theme.bg : Theme.fg;
+                                    font-size: Typography.body;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                edge-touch := TouchArea {
+                                    clicked => { root.tb-set-edge(idx); }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "Behavior";
+                            color: Theme.fg_dim;
+                            font-size: Typography.secondary;
+                            font-weight: 600;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            for mode[idx] in ["Pinned", "Floating"]: Rectangle {
+                                min-width: 120px;
+                                height: Typography.compact-control;
+                                border-radius: 4px;
+                                background: root.tb-mode-index == idx
+                                    ? Theme.accent
+                                    : tb-mode-touch.has-hover ? Theme.bg_lighter : Theme.bg;
+                                Text {
+                                    text: mode;
+                                    color: root.tb-mode-index == idx ? Theme.bg : Theme.fg;
+                                    font-size: Typography.body;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                tb-mode-touch := TouchArea {
+                                    clicked => { root.tb-set-mode(idx); }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Pinned reserves space at the edge. Floating leaves the desktop work area unchanged.";
+                            color: Theme.fg_dim;
+                            font-size: Typography.secondary;
+                            wrap: word-wrap;
+                        }
+                    }
                 }
 
                 // ── Workspace Count card ──

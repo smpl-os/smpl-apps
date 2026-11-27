@@ -156,6 +156,10 @@ fn settings_search_index() -> Vec<(&'static str, &'static str, i32)> {
         ("Hotkeys", "keybindings", 5),
         ("Shortcut", "keybindings", 5),
         // Taskbar
+        ("Taskbar Position", "taskbar", 6),
+        ("Taskbar Edge", "taskbar", 6),
+        ("Taskbar Behavior", "taskbar", 6),
+        ("Pinned Taskbar", "taskbar", 6),
         ("Workspace Count", "taskbar", 6),
         ("Workspace Position", "taskbar", 6),
         ("Workspace Spacing", "taskbar", 6),

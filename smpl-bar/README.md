@@ -35,7 +35,7 @@ On X11, smpl-bar sets `_NET_WM_WINDOW_TYPE_DOCK`,
 `_NET_WM_STRUT_PARTIAL` ranges for a pinned panel. Floating mode uses a normal
 window and clears the strut.
 
-Top/bottom and pinned/floating behavior is configured by:
+All four edges and pinned/floating behavior are configured by:
 
 ```json
 {
@@ -47,9 +47,12 @@ Top/bottom and pinned/floating behavior is configured by:
 }
 ```
 
-Older `bar.conf` files can use `bar_edge=top|bottom`,
+Older `bar.conf` files can use `bar_edge=top|bottom|left|right`,
 `bar_mode=pinned|floating`, and `bar_margin=0..24`. Unknown legacy keys remain
-untouched.
+untouched. When both files exist, native `bar.json` remains the owner of
+module layout and native-only options, while `bar.conf` values written by
+Settings are authoritative for workspaces, clock formatting, edge, mode and
+margin.
 
 ## Run
 
@@ -89,7 +92,7 @@ Socket permissions are `0600`; the directory is `0700`.
 |---|---|
 | Start menu | Closes native/OS popups, then signals the resident Start Menu PID with `SIGUSR1`; hidden state, position and cache remain resident |
 | Workspaces/title | Hyprland direct sockets, direct Niri socket event stream, X11 EWMH PropertyNotify |
-| Geometry | Per-output top/bottom placement, direct compositor positioning, Wayland exclusive reservation, X11 EWMH struts, workspace-policy primary monitor |
+| Geometry | Per-output top/bottom/left/right placement, direct compositor positioning, Wayland exclusive reservation, X11 EWMH struts, workspace-policy primary monitor |
 | Monitor overview | Native monitor geometry plus active/focused workspace state |
 | Monitor identify | One independent overlay on every connected output, placed by Hyprland/Niri IPC or X11 positioning |
 | USB/keypad/dictation/sync/keyboard | Native sysfs/procfs plus D-Bus event providers; bounded fallback probes |
@@ -144,8 +147,9 @@ not replace the window, therefore hidden state and position survive.
 
 ## Typed customization
 
-The existing `ws_count`, `ws_position`, `ws_spacing`, and `ws_style` values
-remain authoritative. A fully typed native overlay may be saved as:
+The Settings-owned values in `bar.conf`—workspace count/position/spacing/style,
+clock formatting, edge, mode and margin—remain authoritative. A fully typed
+native overlay may still own module layout and native-only options:
 
 ```json
 {

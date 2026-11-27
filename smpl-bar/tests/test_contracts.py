@@ -110,6 +110,30 @@ class SmplBarContracts(unittest.TestCase):
         self.assertNotIn('["msg", "event-stream"]', compositor)
         self.assertIn("PlacePopup", compositor)
 
+    def test_settings_preferences_win_without_replacing_native_layout(self):
+        config = (ROOT / "smpl-shell/src/config.rs").read_text()
+        settings = (ROOT / "settings/src/taskbar.rs").read_text()
+        settings_ui = (ROOT / "settings/ui/main.slint").read_text()
+        panel = (BAR / "src/panel.rs").read_text()
+        ui = (BAR / "ui/main.slint").read_text()
+
+        self.assertLess(
+            config.index("if paths.native.exists()"),
+            config.index("if paths.legacy.exists()"),
+        )
+        self.assertIn('"bar_edge"', settings)
+        self.assertIn('"bar_mode"', settings)
+        self.assertIn('runtime.run("bar-ctl", &["apply"])?', settings)
+        self.assertNotIn('runtime.run(\n            "eww"', settings)
+        for edge in ("Bottom", "Top", "Left", "Right"):
+            self.assertIn(f'"{edge}"', settings_ui)
+        self.assertIn('"Pinned", "Floating"', settings_ui)
+        for edge in ("Left", "Right"):
+            self.assertIn(f"PanelEdge::{edge}", panel)
+        self.assertIn("Anchor::LEFT | Anchor::TOP | Anchor::BOTTOM", panel)
+        self.assertIn("Anchor::RIGHT | Anchor::TOP | Anchor::BOTTOM", panel)
+        self.assertIn("if root.vertical: VerticalLayout", ui)
+
     def test_click_through_is_real_on_x11_and_rejected_on_wayland(self):
         source = (BAR / "src/main.rs").read_text()
         panel = (BAR / "src/panel.rs").read_text()

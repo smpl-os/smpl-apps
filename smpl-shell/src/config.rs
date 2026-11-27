@@ -42,6 +42,8 @@ pub enum ClockDateFormat {
 pub enum PanelEdge {
     Top,
     Bottom,
+    Left,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -180,9 +182,6 @@ impl ConfigPaths {
 
 pub fn load(paths: &ConfigPaths) -> Result<BarConfigFile, ConfigError> {
     let mut config = BarConfigFile::default();
-    if paths.legacy.exists() {
-        merge_legacy(&mut config, &read_config(&paths.legacy)?, &paths.legacy)?;
-    }
     if paths.native.exists() {
         let source = read_config(&paths.native)?;
         let native: BarConfigFile =
@@ -192,6 +191,9 @@ pub fn load(paths: &ConfigPaths) -> Result<BarConfigFile, ConfigError> {
             })?;
         config = native;
         migrate_keyboard_module(&mut config);
+    }
+    if paths.legacy.exists() {
+        merge_legacy(&mut config, &read_config(&paths.legacy)?, &paths.legacy)?;
     }
     validate(&config).map_err(ConfigError::Validation)?;
     Ok(config)
@@ -300,6 +302,8 @@ pub fn merge_legacy(
                 config.edge = match value {
                     "top" => PanelEdge::Top,
                     "bottom" => PanelEdge::Bottom,
+                    "left" => PanelEdge::Left,
+                    "right" => PanelEdge::Right,
                     _ => return Err(invalid_legacy(path, number, key, value)),
                 }
             }
@@ -497,6 +501,59 @@ mod tests {
     }
 
     #[test]
+    fn settings_preferences_override_native_values_but_keep_native_layout() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::from_home(Some(directory.path())).unwrap();
+        std::fs::create_dir_all(paths.native.parent().unwrap()).unwrap();
+        std::fs::write(
+            &paths.native,
+            r#"{
+                "workspace-count": 2,
+                "edge": "top",
+                "mode": "floating",
+                "clock-format": "time",
+                "clock-24h": false,
+                "left": ["start", "workspaces"],
+                "right": ["clock"]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &paths.legacy,
+            "ws_count=9\nbar_edge=left\nbar_mode=pinned\nclock_format=date\nclock_24h=true\nclock_date_fmt=ISO\n",
+        )
+        .unwrap();
+
+        let config = load(&paths).unwrap();
+        assert_eq!(config.workspace_count, 9);
+        assert_eq!(config.edge, PanelEdge::Left);
+        assert_eq!(config.mode, PanelMode::Pinned);
+        assert_eq!(config.clock_format, ClockFormat::Date);
+        assert!(config.clock_24h);
+        assert_eq!(config.clock_date_format, ClockDateFormat::Iso);
+        assert_eq!(config.left, vec![Module::Start, Module::Workspaces]);
+        assert!(config.right.contains(&Module::Clock));
+        assert!(config.right.contains(&Module::Keyboard));
+    }
+
+    #[test]
+    fn native_layout_defaults_are_not_applied_over_native_only_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::from_home(Some(directory.path())).unwrap();
+        std::fs::create_dir_all(paths.native.parent().unwrap()).unwrap();
+        std::fs::write(
+            &paths.native,
+            r#"{"height": 40, "left": ["start"], "right": ["clock"]}"#,
+        )
+        .unwrap();
+
+        let config = load(&paths).unwrap();
+        assert_eq!(config.height, 40);
+        assert_eq!(config.left, vec![Module::Start]);
+        assert_eq!(config.right, vec![Module::Keyboard, Module::Clock]);
+    }
+
+    #[test]
     fn legacy_reader_rejects_duplicate_and_invalid_managed_values() {
         let path = Path::new("/fixture/bar.conf");
         let mut config = BarConfigFile::default();
@@ -533,6 +590,11 @@ mod tests {
         assert_eq!(config.mode, PanelMode::Floating);
         assert_eq!(config.margin, 7);
         assert!(merge_legacy(&mut config, "bar_margin=25\n", path).is_err());
+        config.margin = 7;
+        merge_legacy(&mut config, "bar_edge=left\n", path).unwrap();
+        assert_eq!(config.edge, PanelEdge::Left);
+        merge_legacy(&mut config, "bar_edge=right\n", path).unwrap();
+        assert_eq!(config.edge, PanelEdge::Right);
     }
 
     #[test]
