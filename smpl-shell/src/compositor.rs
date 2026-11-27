@@ -52,6 +52,20 @@ fn is_shell_surface(app_id: Option<&str>, title: Option<&str>) -> bool {
         || title.starts_with("smpl-bar:")
 }
 
+fn is_native_popup(app_id: Option<&str>, title: Option<&str>) -> bool {
+    app_id.is_some_and(|app_id| app_id.starts_with("smpl-bar"))
+        && title.is_some_and(|title| {
+            matches!(
+                title,
+                "smpl-bar:quick-settings"
+                    | "smpl-bar:usb"
+                    | "smpl-bar:workspace-overview"
+                    | "smpl-bar:keypad-cheatsheet"
+                    | "smpl-bar:tray-menu"
+            )
+        })
+}
+
 pub struct CompositorHandle {
     pub kind: CompositorKind,
     pub states: Receiver<CompositorState>,
@@ -71,6 +85,15 @@ fn shell_and_popup_focus_do_not_replace_the_real_window_title() {
         assert!(is_shell_surface(app_id, title), "{app_id:?} {title:?}");
     }
     assert!(!is_shell_surface(Some("code"), Some("GitHub Copilot")));
+    assert!(is_native_popup(
+        Some("smpl-bar"),
+        Some("smpl-bar:quick-settings")
+    ));
+    assert!(!is_native_popup(Some("smpl-bar"), Some("smpl-bar")));
+    assert!(!is_native_popup(
+        Some("smpl-bar"),
+        Some("smpl-bar:panel-bottom-pinned")
+    ));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -432,9 +455,9 @@ impl HyprlandWorker {
                 monitor,
                 x,
                 y,
-                width: _,
-                height: _,
-            } => self.place_window(&title, &monitor, x, y),
+                width,
+                height,
+            } => self.place_window(&title, &monitor, x, y, width, height),
             Action::Quit => Ok(()),
         };
         self.telemetry.emit(
@@ -590,6 +613,9 @@ impl HyprlandWorker {
                 }
             })
             .unwrap_or_default();
+        let active_window_is_popup = active.as_ref().is_some_and(|window| {
+            is_native_popup(window.class.as_deref(), window.title.as_deref())
+        });
         Ok(CompositorState {
             kind: CompositorKind::Hyprland,
             monitors,
@@ -603,6 +629,7 @@ impl HyprlandWorker {
                 })
                 .and_then(|window| window.title)
                 .unwrap_or_default(),
+            active_window_is_popup,
             keyboard,
             error: String::new(),
         })
@@ -632,7 +659,7 @@ impl HyprlandWorker {
     }
 
     fn place_panel(&self, monitor: &str, x: i32, y: i32) -> Result<(), WorkerError> {
-        self.place_matching_window(monitor, x, y, |client| {
+        self.place_matching_window(monitor, x, y, 0, 0, |client| {
             client.pid == i64::from(std::process::id())
                 && client.class.as_deref() == Some("smpl-bar")
                 && client.title.as_deref().is_some_and(|title| {
@@ -641,8 +668,16 @@ impl HyprlandWorker {
         })
     }
 
-    fn place_window(&self, title: &str, monitor: &str, x: i32, y: i32) -> Result<(), WorkerError> {
-        self.place_matching_window(monitor, x, y, |client| {
+    fn place_window(
+        &self,
+        title: &str,
+        monitor: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), WorkerError> {
+        self.place_matching_window(monitor, x, y, width, height, |client| {
             client.pid == i64::from(std::process::id())
                 && client.class.as_deref() == Some("smpl-bar")
                 && client.title.as_deref() == Some(title)
@@ -654,6 +689,8 @@ impl HyprlandWorker {
         monitor: &str,
         x: i32,
         y: i32,
+        width: u32,
+        height: u32,
         matches: impl Fn(&HyprPanelClient) -> bool,
     ) -> Result<(), WorkerError> {
         let mut client = None;
@@ -678,6 +715,24 @@ impl HyprlandWorker {
                     "hl.dsp.window.move({{window=hl.get_window('address:{}'),monitor={}}})",
                     client.address, target.id
                 ))?;
+            }
+        }
+        if width > 0 && height > 0 {
+            if !client.floating {
+                self.dispatch(format!(
+                    "hl.dsp.window.set_floating({{window=hl.get_window('address:{}'),value=true}})",
+                    client.address
+                ))?;
+            }
+            let reply = self.request(&format!(
+                "dispatch resizewindowpixel exact {width} {height},address:{}",
+                client.address
+            ))?;
+            if String::from_utf8_lossy(&reply).trim() != "ok" {
+                return Err(WorkerError::Message(format!(
+                    "Hyprland rejected native window resize: {}",
+                    String::from_utf8_lossy(&reply).trim()
+                )));
             }
         }
         let reply = self.request(&format!(
@@ -1195,6 +1250,13 @@ impl NiriLiveState {
             .filter(|window| !is_shell_surface(window.app_id.as_deref(), window.title.as_deref()))
             .and_then(|window| window.title.clone())
             .unwrap_or_default();
+        let active_window_is_popup = self
+            .windows
+            .iter()
+            .find(|window| window.is_focused)
+            .is_some_and(|window| {
+                is_native_popup(window.app_id.as_deref(), window.title.as_deref())
+            });
         let monitors = outputs
             .into_iter()
             .filter_map(|output| {
@@ -1253,6 +1315,7 @@ impl NiriLiveState {
                 .unwrap_or(1),
             focused_monitor,
             active_window_title,
+            active_window_is_popup,
             keyboard: KeyboardState {
                 visible: self.layouts.names.len() > 1 && !current_layout.is_empty(),
                 code: layout_code(&current_layout),
@@ -1481,8 +1544,9 @@ impl X11Context {
             active_window_title: if is_shell_surface(class.as_deref(), Some(&title)) {
                 String::new()
             } else {
-                title
+                title.clone()
             },
+            active_window_is_popup: is_native_popup(class.as_deref(), Some(title.as_str())),
             keyboard: KeyboardState::default(),
             error: String::new(),
         })
@@ -1565,6 +1629,8 @@ struct HyprPanelClient {
     class: Option<String>,
     title: Option<String>,
     monitor: Option<i64>,
+    #[serde(default)]
+    floating: bool,
 }
 
 #[derive(Debug, Deserialize)]

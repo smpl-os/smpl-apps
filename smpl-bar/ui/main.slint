@@ -111,6 +111,29 @@ component IconButton inherits Rectangle {
     }
 }
 
+component StartButton inherits Rectangle {
+    callback clicked;
+    width: 24px;
+    height: 20px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.bg-light : transparent;
+    accessible-role: button;
+    accessible-label: "Start menu";
+    Image {
+        x: 3px;
+        y: 1px;
+        width: 18px;
+        height: 18px;
+        source: @image-url("assets/start.svg");
+        image-fit: contain;
+        colorize: Theme.accent;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => root.clicked();
+    }
+}
+
 component WorkspaceButton inherits Rectangle {
     in property <WorkspaceUi> item;
     in property <bool> squares;
@@ -212,38 +235,274 @@ component TrayButton inherits Rectangle {
     }
 }
 
-component TogglePill inherits Rectangle {
+component PopupCloseButton inherits Rectangle {
+    callback clicked;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: touch.has-hover ? Theme.bg-lighter.transparentize(0.55) : Theme.bg-light.transparentize(0.58);
+    border-width: 1px;
+    border-color: Theme.bg-lighter.transparentize(0.48);
+    accessible-role: button;
+    accessible-label: "Close";
+    Text {
+        text: "×";
+        font-size: 18px;
+        color: Theme.fg-dim;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => root.clicked();
+    }
+}
+
+component PopupHeader inherits Rectangle {
+    in property <string> eyebrow: "SMPL / CONTROL";
+    in property <string> title;
+    callback close;
+    height: 48px;
+    HorizontalLayout {
+        padding-left: 2px;
+        padding-right: 2px;
+        spacing: 10px;
+        Rectangle {
+            width: 3px;
+            height: 28px;
+            border-radius: 1.5px;
+            background: Theme.accent;
+            y: (parent.height - self.height) / 2;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            Text {
+                text: eyebrow;
+                color: Theme.accent;
+                font-size: 8px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                overflow: elide;
+            }
+            Text {
+                text: title;
+                color: Theme.fg;
+                font-size: 16px;
+                font-weight: 600;
+                overflow: elide;
+            }
+        }
+        PopupCloseButton { clicked => root.close(); }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        width: 100%;
+        height: 1px;
+        background: Theme.bg-lighter.transparentize(0.48);
+    }
+}
+
+component QuickSettingCard inherits Rectangle {
+    in property <string> icon;
+    in property <string> title;
+    in property <string> label;
+    in property <string> detail;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked;
+    min-width: 0px;
+    height: 66px;
+    border-radius: 10px;
+    background: !enabled ? Theme.bg-light.transparentize(0.88)
+        : active ? Theme.accent.transparentize(0.80)
+        : touch.has-hover ? Theme.bg-light.transparentize(0.48)
+        : Theme.bg-light.transparentize(0.68);
+    border-width: 1px;
+    border-color: active ? Theme.accent.transparentize(0.28)
+        : Theme.bg-lighter.transparentize(0.52);
+    accessible-role: button;
+    accessible-label: title;
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 9px;
+        Rectangle {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            background: active ? Theme.accent.transparentize(0.68)
+                : Theme.bg-lighter.transparentize(0.64);
+            Text {
+                text: icon;
+                font-family: "JetBrains Mono Nerd Font";
+                font-size: 17px;
+                color: enabled ? (active ? Theme.accent : Theme.fg) : Theme.fg-dim.transparentize(0.45);
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        VerticalLayout {
+            min-width: 0px;
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: label;
+                color: enabled ? Theme.fg : Theme.fg-dim;
+                font-size: 12px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: detail;
+                color: Theme.fg-dim;
+                font-size: 9px;
+                overflow: elide;
+            }
+        }
+        Rectangle {
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: active ? Theme.accent
+                : enabled ? Theme.fg-dim.transparentize(0.55)
+                : transparent;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => root.clicked();
+        mouse-cursor: root.enabled ? pointer : default;
+    }
+}
+
+component QuickSlider inherits Rectangle {
     in property <string> icon;
     in property <string> label;
-    in property <bool> active;
-    in property <bool> show: true;
+    in-out property <int> value;
+    in property <bool> muted: false;
+    in property <bool> mute-control: false;
+    in property <int> minimum: 0;
+    callback change(int);
+    callback toggle-mute;
+    min-width: 0px;
+    height: 50px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: Theme.bg-lighter.transparentize(0.56);
+    background: Theme.bg-light.transparentize(0.74);
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 9px;
+        Rectangle {
+            width: 26px;
+            height: 28px;
+            border-radius: 7px;
+            background: muted ? Theme.danger.transparentize(0.80) : Theme.accent.transparentize(0.84);
+            Text {
+                text: icon;
+                color: muted ? Theme.danger : Theme.accent;
+                font-family: "JetBrains Mono Nerd Font";
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                font-size: 15px;
+            }
+            TouchArea {
+                enabled: root.mute-control;
+                mouse-cursor: root.mute-control ? pointer : default;
+                clicked => root.toggle-mute();
+            }
+        }
+        Text {
+            text: label;
+            width: 56px;
+            color: Theme.fg-dim;
+            font-size: 9px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle {
+            min-width: 20px;
+            horizontal-stretch: 1;
+            height: 20px;
+            Rectangle {
+                y: 7px;
+                width: 100%;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.fg.transparentize(0.89);
+            }
+            Rectangle {
+                y: 7px;
+                width: min(parent.width, max(6px, root.value * parent.width / 100));
+                height: 6px;
+                border-radius: 3px;
+                background: muted ? Theme.danger : Theme.accent;
+            }
+            TouchArea {
+                pointer-event(event) => {
+                    if (event.button == PointerEventButton.left
+                        && (event.kind == PointerEventKind.down || event.kind == PointerEventKind.move)
+                        && self.pressed) {
+                        root.value = clamp(round((self.mouse-x / self.width) * 100), root.minimum, 100);
+                        root.change(root.value);
+                    }
+                }
+            }
+        }
+        Text {
+            text: value + "%";
+            width: 34px;
+            color: Theme.fg;
+            font-size: 10px;
+            font-weight: 600;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component CommandAction inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <color> tint: Theme.accent;
     callback clicked;
-    height: 40px;
-    border-radius: 20px;
-    background: active ? Theme.accent : Theme.bg-light.transparentize(0.20);
-    visible: show;
+    min-width: 0px;
+    height: 38px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.bg-lighter.transparentize(0.54);
+    background: touch.has-hover ? Theme.bg-light.transparentize(0.42)
+        : Theme.bg-light.transparentize(0.78);
     accessible-role: button;
     accessible-label: label;
     HorizontalLayout {
         alignment: center;
-        spacing: 6px;
-        padding-left: 10px;
-        padding-right: 10px;
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 7px;
         Text {
             text: icon;
-            font-size: 15px;
-            color: active ? Theme.bg : Theme.fg;
+            color: tint;
+            font-family: "JetBrains Mono Nerd Font";
+            font-size: 14px;
+            vertical-alignment: center;
         }
         Text {
             text: label;
+            color: Theme.fg;
+            font-size: 10px;
+            font-weight: 600;
             overflow: elide;
-            font-size: 12px;
-            color: active ? Theme.bg : Theme.fg;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
         }
     }
-    TouchArea {
-        clicked => { root.clicked(); }
+    touch := TouchArea {
         mouse-cursor: pointer;
+        clicked => root.clicked();
     }
 }
 
@@ -336,9 +595,7 @@ export component BarWindow inherits Window {
             padding-bottom: 2px;
             spacing: 3px;
 
-            if show-start: IconButton {
-                icon: "󰍜";
-                tip: "Start menu";
+            if show-start: StartButton {
                 clicked => { root.open-start(); }
             }
 
@@ -510,136 +767,192 @@ export component QuickSettingsWindow inherits Window {
     callback set-volume(int);
     callback set-brightness(int);
     callback action(string);
+    out property <int> layout-columns: root.width >= 560px ? 3 : root.width >= 340px ? 2 : 1;
+    out property <length> layout-content-width: quick-content.width;
+    out property <length> layout-content-height: quick-content.height;
+    out property <length> layout-viewport-width: quick-scroll.width;
+    out property <length> layout-viewport-height: quick-scroll.height;
+    out property <bool> layout-overflows-width: quick-content.width > quick-scroll.width + 0.5px;
+    out property <bool> layout-scrolls: quick-content.height > quick-scroll.height + 0.5px;
     title: "smpl-bar:quick-settings";
     no-frame: true;
-    preferred-width: 430px;
-    preferred-height: 340px;
+    preferred-width: 480px;
+    preferred-height: 430px;
     background: transparent;
-    Rectangle {
+    shell := Rectangle {
+        x: 1px;
+        y: 1px;
+        width: max(0px, parent.width - 2px);
+        height: max(0px, parent.height - 2px);
         background: Theme.bg.transparentize(1.0 - Theme.popup-opacity);
-        border-radius: 8px;
+        border-radius: 14px;
         border-width: 1px;
-        border-color: Theme.bg-lighter.transparentize(0.55);
+        border-color: Theme.accent.transparentize(0.48);
+        clip: true;
         VerticalLayout {
             padding: 12px;
-            spacing: 10px;
+            spacing: 8px;
+            PopupHeader {
+                eyebrow: "SMPL / COMMAND CENTER";
+                title: "Quick Settings";
+                close => root.close();
+            }
+            quick-scroll := Flickable {
+                min-width: 0px;
+                min-height: 0px;
+                vertical-stretch: 1;
+                viewport-width: self.width;
+                viewport-height: max(self.height, quick-content.min-height);
+                quick-content := VerticalLayout {
+                    width: parent.viewport-width;
+                    min-width: 0px;
+                    padding-top: 2px;
+                    padding-bottom: 2px;
+                    spacing: 8px;
+                    Text {
+                        text: "CONNECTIVITY + MODES";
+                        color: Theme.fg-dim;
+                        font-size: 8px;
+                        font-weight: 700;
+                        letter-spacing: 0.8px;
+                    }
+                    GridLayout {
+                        min-width: 0px;
+                        spacing: 7px;
+                        QuickSettingCard {
+                            row: 0;
+                            col: 0;
+                            icon: "󰤨";
+                            title: "Wi-Fi";
+                            label: network-label;
+                            detail: wifi-on ? "Active link" : wifi-available ? "Wireless ready" : "Unavailable";
+                            active: wifi-on;
+                            enabled: wifi-available;
+                            clicked => root.toggle("wifi");
+                        }
+                        QuickSettingCard {
+                            row: 1 / root.layout-columns;
+                            col: Math.mod(1, root.layout-columns);
+                            icon: "󰂯";
+                            title: "Bluetooth";
+                            label: "Bluetooth";
+                            detail: bluetooth-on ? bluetooth-label + " · connected" : bluetooth-label + " · standby";
+                            active: bluetooth-on;
+                            enabled: bluetooth-available;
+                            clicked => root.toggle("bluetooth");
+                        }
+                        QuickSettingCard {
+                            row: 2 / root.layout-columns;
+                            col: Math.mod(2, root.layout-columns);
+                            icon: "󰈁";
+                            title: "Wired network";
+                            label: "Wired";
+                            detail: wired-on ? "Link active" : wired-available ? "Disconnected" : "Unavailable";
+                            active: wired-on;
+                            enabled: wired-available;
+                            clicked => root.toggle("wired");
+                        }
+                        QuickSettingCard {
+                            row: 3 / root.layout-columns;
+                            col: Math.mod(3, root.layout-columns);
+                            icon: "󰀝";
+                            title: "Airplane mode";
+                            label: "Airplane";
+                            detail: airplane-on ? "Radios suspended" : "Radios available";
+                            active: airplane-on;
+                            enabled: wifi-available || bluetooth-available;
+                            clicked => root.toggle("airplane");
+                        }
+                        QuickSettingCard {
+                            row: 4 / root.layout-columns;
+                            col: Math.mod(4, root.layout-columns);
+                            icon: "󰛨";
+                            title: "Night light";
+                            label: "Night light";
+                            detail: nightlight-on ? "Warm display" : nightlight-available ? "Display neutral" : "Unavailable";
+                            active: nightlight-on;
+                            enabled: nightlight-available;
+                            clicked => root.toggle("nightlight");
+                        }
+                        QuickSettingCard {
+                            row: 5 / root.layout-columns;
+                            col: Math.mod(5, root.layout-columns);
+                            icon: "󰂛";
+                            title: "Do not disturb";
+                            label: "Do not disturb";
+                            detail: dnd-on ? "Alerts silenced" : "Alerts enabled";
+                            active: dnd-on;
+                            clicked => root.toggle("dnd");
+                        }
+                        QuickSettingCard {
+                            row: 6 / root.layout-columns;
+                            col: Math.mod(6, root.layout-columns);
+                            icon: "󰖂";
+                            title: "VPN and network editor";
+                            label: vpn-on ? "VPN / Mullvad" : "VPN";
+                            detail: vpn-on ? "Secure tunnel active" : "Open network editor";
+                            active: vpn-on;
+                            clicked => root.open-tool("network");
+                        }
+                        QuickSettingCard {
+                            row: 7 / root.layout-columns;
+                            col: Math.mod(7, root.layout-columns);
+                            icon: "󰍬";
+                            title: "Dictation";
+                            label: dictation-on ? "Recording" : "Dictation";
+                            detail: dictation-on ? "Voice capture live" : dictation-available ? "Ready for input" : "Unavailable";
+                            active: dictation-on;
+                            enabled: dictation-available;
+                            clicked => root.toggle("dictation");
+                        }
+                    }
+                    Text {
+                        text: "OUTPUT + DISPLAY";
+                        color: Theme.fg-dim;
+                        font-size: 8px;
+                        font-weight: 700;
+                        letter-spacing: 0.8px;
+                    }
+                    QuickSlider {
+                        icon: root.volume-muted || root.volume == 0 ? "󰖁" : "󰕾";
+                        label: "VOLUME";
+                        value <=> root.volume;
+                        muted: root.volume-muted;
+                        mute-control: true;
+                        change(value) => root.set-volume(value);
+                        toggle-mute => root.toggle("volume");
+                    }
+                    QuickSlider {
+                        icon: "󰃠";
+                        label: "BRIGHTNESS";
+                        value <=> root.brightness;
+                        minimum: 1;
+                        change(value) => root.set-brightness(value);
+                    }
+                }
+            }
             HorizontalLayout {
-                Text {
-                    text: "System Menu";
-                    font-size: 16px;
-                    font-weight: 600;
-                    color: Theme.fg;
+                min-height: 40px;
+                spacing: 7px;
+                CommandAction {
                     horizontal-stretch: 1;
+                    icon: "󰒓";
+                    label: "Settings";
+                    clicked => root.open-tool("settings");
                 }
-                IconButton {
-                    icon: "×";
-                    tip: "Close";
-                    clicked => { root.close(); }
+                CommandAction {
+                    horizontal-stretch: 1;
+                    icon: "󰗽";
+                    label: "Log out";
+                    clicked => root.action("logout");
                 }
-            }
-            GridLayout {
-                spacing: 8px;
-                Row {
-                    TogglePill { icon: "󰤨"; label: network-label; active: wifi-on; show: wifi-available; clicked => root.toggle("wifi"); }
-                    TogglePill { icon: "󰂯"; label: bluetooth-label; active: bluetooth-on; show: bluetooth-available; clicked => root.toggle("bluetooth"); }
-                    TogglePill { icon: "󰈁"; label: wired-on ? "Wired" : "Off"; active: wired-on; show: wired-available; clicked => root.toggle("wired"); }
+                CommandAction {
+                    horizontal-stretch: 1;
+                    icon: "⏻";
+                    label: "Power";
+                    tint: Theme.danger;
+                    clicked => root.action("poweroff");
                 }
-                Row {
-                    TogglePill { icon: "󰀝"; label: "Airplane"; active: airplane-on; show: wifi-available || bluetooth-available; clicked => root.toggle("airplane"); }
-                    TogglePill { icon: "󰛨"; label: "Night light"; active: nightlight-on; show: nightlight-available; clicked => root.toggle("nightlight"); }
-                    TogglePill { icon: "󰂛"; label: "DND"; active: dnd-on; clicked => root.toggle("dnd"); }
-                }
-                Row {
-                    TogglePill {
-                        icon: "󰖂";
-                        label: vpn-on ? "VPN active" : "VPN off";
-                        active: vpn-on;
-                        clicked => root.open-tool("network");
-                    }
-                    TogglePill {
-                        icon: "󰍬";
-                        label: dictation-on ? "Recording" : "Dictation";
-                        active: dictation-on;
-                        show: dictation-available;
-                        clicked => root.toggle("dictation");
-                    }
-                }
-            }
-            Rectangle {
-                height: 42px;
-                background: Theme.bg-light.transparentize(0.75);
-                border-radius: 8px;
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
-                    spacing: 8px;
-                    IconButton {
-                        icon: volume-muted || volume == 0 ? "󰖁" : "󰕾";
-                        tip: volume-muted ? "Unmute volume" : "Mute volume";
-                        active: !volume-muted;
-                        clicked => root.toggle("volume");
-                    }
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 6px;
-                        border-radius: 3px;
-                        background: Theme.fg.transparentize(0.88);
-                        Rectangle {
-                            width: root.volume * parent.width / 100;
-                            height: 100%;
-                            border-radius: 3px;
-                            background: Theme.accent;
-                        }
-                        TouchArea {
-                            pointer-event(event) => {
-                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
-                                    root.volume = clamp(round((self.mouse-x / self.width) * 100), 0, 100);
-                                    root.set-volume(root.volume);
-                                }
-                            }
-                        }
-                    }
-                    Text { text: volume + "%"; width: 40px; color: Theme.fg-dim; vertical-alignment: center; horizontal-alignment: right; }
-                }
-            }
-            Rectangle {
-                height: 42px;
-                background: Theme.bg-light.transparentize(0.75);
-                border-radius: 8px;
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
-                    spacing: 8px;
-                    Text { text: "󰃠"; color: Theme.fg; vertical-alignment: center; }
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 6px;
-                        border-radius: 3px;
-                        background: Theme.fg.transparentize(0.88);
-                        Rectangle {
-                            width: root.brightness * parent.width / 100;
-                            height: 100%;
-                            border-radius: 3px;
-                            background: Theme.accent;
-                        }
-                        TouchArea {
-                            pointer-event(event) => {
-                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
-                                    root.brightness = clamp(round((self.mouse-x / self.width) * 100), 1, 100);
-                                    root.set-brightness(root.brightness);
-                                }
-                            }
-                        }
-                    }
-                    Text { text: brightness + "%"; width: 40px; color: Theme.fg-dim; vertical-alignment: center; horizontal-alignment: right; }
-                }
-            }
-            HorizontalLayout {
-                alignment: end;
-                spacing: 8px;
-                IconButton { icon: "󰒓"; tip: "Settings"; clicked => root.open-tool("settings"); }
-                IconButton { icon: "󰗽"; tip: "Log out"; clicked => root.action("logout"); }
-                IconButton { icon: "⏻"; tip: "Power off"; active: true; clicked => root.action("poweroff"); }
             }
         }
     }
@@ -655,16 +968,22 @@ export component UsbWindow inherits Window {
     preferred-height: 220px;
     background: transparent;
     Rectangle {
+        x: 1px;
+        y: 1px;
+        width: max(0px, parent.width - 2px);
+        height: max(0px, parent.height - 2px);
         background: Theme.bg.transparentize(1.0 - Theme.popup-opacity);
-        border-radius: 8px;
+        border-radius: 12px;
         border-width: 1px;
-        border-color: Theme.bg-lighter.transparentize(0.55);
+        border-color: Theme.accent.transparentize(0.50);
+        clip: true;
         VerticalLayout {
             padding: 12px;
             spacing: 8px;
-            HorizontalLayout {
-                Text { text: "Removable Drives"; font-size: 15px; font-weight: 600; color: Theme.fg; horizontal-stretch: 1; }
-                IconButton { icon: "×"; tip: "Close"; clicked => root.close(); }
+            PopupHeader {
+                eyebrow: "STORAGE / DEVICES";
+                title: "Removable Drives";
+                close => root.close();
             }
             if devices.length == 0: Text {
                 text: "No mounted removable drives";
@@ -714,16 +1033,22 @@ export component WorkspaceOverviewWindow inherits Window {
     preferred-height: 220px;
     background: transparent;
     Rectangle {
+        x: 1px;
+        y: 1px;
+        width: max(0px, parent.width - 2px);
+        height: max(0px, parent.height - 2px);
         background: Theme.bg.transparentize(1.0 - Theme.popup-opacity);
-        border-radius: 8px;
+        border-radius: 12px;
         border-width: 1px;
-        border-color: Theme.bg-lighter.transparentize(0.55);
+        border-color: Theme.accent.transparentize(0.50);
+        clip: true;
         VerticalLayout {
             padding: 12px;
             spacing: 10px;
-            HorizontalLayout {
-                Text { text: "Workspaces · " + focused-monitor; color: Theme.fg; font-size: 15px; font-weight: 600; horizontal-stretch: 1; }
-                IconButton { icon: "×"; tip: "Close"; clicked => root.close(); }
+            PopupHeader {
+                eyebrow: "DESKTOP / " + focused-monitor;
+                title: "Workspace Overview";
+                close => root.close();
             }
             if error != "": Text { text: error; color: Theme.warning; wrap: word-wrap; }
             for monitor in monitors: Rectangle {
@@ -866,23 +1191,22 @@ export component TrayMenuWindow inherits Window {
         preferred-height: 360px;
         background: transparent;
         Rectangle {
+            x: 1px;
+            y: 1px;
+            width: max(0px, parent.width - 2px);
+            height: max(0px, parent.height - 2px);
             background: Theme.bg.transparentize(1.0 - Theme.popup-opacity);
-            border-radius: 8px;
+            border-radius: 12px;
             border-width: 1px;
-            border-color: Theme.bg-lighter.transparentize(0.5);
+            border-color: Theme.accent.transparentize(0.50);
+            clip: true;
             VerticalLayout {
                 padding: 10px;
                 spacing: 4px;
-                HorizontalLayout {
-                    Text {
-                        text: menu-title;
-                        font-size: 14px;
-                        font-weight: 600;
-                        color: Theme.fg;
-                        overflow: elide;
-                        horizontal-stretch: 1;
-                    }
-                    IconButton { icon: "×"; tip: "Close"; clicked => root.close(); }
+                PopupHeader {
+                    eyebrow: "STATUS / ACTIONS";
+                    title: menu-title;
+                    close => root.close();
                 }
                 Flickable {
                     vertical-stretch: 1;

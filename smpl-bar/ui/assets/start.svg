@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320">
+  <rect x="30" y="30" width="260" height="260" rx="60" ry="60"
+        stroke="#fff" stroke-width="24" fill="none"/>
+  <path d="
+    M 221 95
+    H 109
+    Q 99 95 99 110
+    V 145
+    Q 99 160 109 160
+    H 221
+    Q 231 160 231 175
+    V 210
+    Q 231 225 221 225
+    H 109
+  "
+    fill="none"
+    stroke="#fff"
+    stroke-width="33"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+</svg>

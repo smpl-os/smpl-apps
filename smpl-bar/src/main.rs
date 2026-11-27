@@ -245,7 +245,17 @@ fn run_resident(
             }
             if let Some(bar) = bar_weak.upgrade() {
                 if let Some(snapshot) = compositor.latest() {
+                    let native_popup_focused = snapshot.active_window_is_popup;
                     state.borrow_mut().apply_compositor_snapshot(snapshot);
+                    if popups
+                        .borrow_mut()
+                        .observe_popup_focus(native_popup_focused)
+                    {
+                        telemetry.emit(
+                            "popup_closed",
+                            [("reason", serde_json::json!("focus-left-popup"))],
+                        );
+                    }
                     let snapshot = state.borrow().compositor.clone();
                     let config = state.borrow().config.clone();
                     apply_compositor(&bar, &snapshot, &config);
@@ -289,7 +299,14 @@ fn run_resident(
                         );
                     }
                     if let Some(menu) = snapshot.menu {
-                        open_tray_menu(&menu, state.clone(), &popups, &sni, &telemetry);
+                        open_tray_menu(
+                            &menu,
+                            state.clone(),
+                            &popups,
+                            &compositor,
+                            &sni,
+                            &telemetry,
+                        );
                     }
                 }
                 let provider_revision = state.borrow().provider_revision;
@@ -299,7 +316,8 @@ fn run_resident(
                     state.borrow_mut().provider_state = snapshot.state;
                     state.borrow_mut().provider_error = snapshot.error;
                     if let Some(sheet) = snapshot.keypad_sheet {
-                        if let Err(error) = apply_keypad_sheet(&sheet, &state, &popups, &telemetry)
+                        if let Err(error) =
+                            apply_keypad_sheet(&sheet, &state, &popups, &compositor, &telemetry)
                         {
                             state.borrow_mut().provider_error = error;
                         }
@@ -657,16 +675,20 @@ fn handle_request(
         Request::Popup { name } => {
             match name {
                 Popup::QuickSettings => {
-                    open_quick_settings(state, popups, children, telemetry);
+                    open_quick_settings(state, popups, children, compositor, telemetry);
                 }
-                Popup::Usb => open_usb(state, popups, children, telemetry),
-                Popup::WorkspaceOverview => open_overview(state, popups, children, telemetry),
+                Popup::Usb => open_usb(state, popups, children, compositor, telemetry),
+                Popup::WorkspaceOverview => {
+                    open_overview(state, popups, children, compositor, telemetry)
+                }
                 Popup::KeypadCheatsheet => {
                     let sheet = match retained_keypad_sheet(state) {
                         Ok(sheet) => sheet,
                         Err(error) => return Response::error(error),
                     };
-                    if let Err(error) = apply_keypad_sheet(&sheet, state, popups, telemetry) {
+                    if let Err(error) =
+                        apply_keypad_sheet(&sheet, state, popups, compositor, telemetry)
+                    {
                         return Response::error(error);
                     }
                 }
@@ -689,7 +711,7 @@ fn handle_request(
         }
         Request::KeypadSheet { sheet } => {
             state.borrow_mut().keypad_sheet = Some(sheet.clone());
-            match apply_keypad_sheet(&sheet, state, popups, telemetry) {
+            match apply_keypad_sheet(&sheet, state, popups, compositor, telemetry) {
                 Ok(()) => Response::ok(None),
                 Err(error) => Response::error(error),
             }
@@ -1154,6 +1176,71 @@ fn size_popup_after_show(window: &slint::Window, width: f64, height: f64) {
     resize_window(window, width, height);
 }
 
+fn popup_monitor(compositor: &CompositorState) -> Option<&smpl_shell::monitor::Monitor> {
+    compositor
+        .monitors
+        .iter()
+        .find(|monitor| {
+            !compositor.focused_monitor.is_empty()
+                && monitor.connector == compositor.focused_monitor
+        })
+        .or_else(|| compositor.primary_monitor())
+}
+
+fn fit_popup_to_monitor(compositor: &CompositorState, width: f64, height: f64) -> (f64, f64) {
+    let monitor = popup_monitor(compositor);
+    let Some(monitor) = monitor else {
+        return (width, height);
+    };
+    let scale = monitor.scale.max(0.5);
+    let usable_width = (monitor.width as f64 / scale - 20.0).max(1.0);
+    let usable_height = (monitor.height as f64 / scale - 48.0).max(1.0);
+    (width.min(usable_width), height.min(usable_height))
+}
+
+fn show_popup_at_anchor(
+    window: &slint::Window,
+    title: &str,
+    state: &Rc<RefCell<UiState>>,
+    compositor: &Rc<CompositorHandle>,
+    width: f64,
+    height: f64,
+) -> (f64, f64) {
+    let state = state.borrow();
+    let (width, height) = fit_popup_to_monitor(&state.compositor, width, height);
+    size_popup_after_show(window, width, height);
+    if let Some(monitor) = popup_monitor(&state.compositor) {
+        let scale = monitor.scale.max(0.5);
+        let logical_width = monitor.width as f64 / scale;
+        let logical_height = monitor.height as f64 / scale;
+        let inset = 10.0;
+        let x = monitor.x + (logical_width - width - inset).max(inset).round() as i32;
+        let y = monitor.y
+            + match state.config.edge {
+                PanelEdge::Bottom => {
+                    logical_height
+                        - state.config.height as f64
+                        - state.config.margin as f64
+                        - height
+                        - inset
+                }
+                PanelEdge::Top => state.config.height as f64 + state.config.margin as f64 + inset,
+            }
+            .max(inset)
+            .round() as i32;
+        set_window_position(window, x, y);
+        compositor.send(Action::PlacePopup {
+            title: title.to_owned(),
+            monitor: monitor.connector.clone(),
+            x,
+            y,
+            width: width.round() as u32,
+            height: height.round() as u32,
+        });
+    }
+    (width, height)
+}
+
 fn update_clock(bar: &BarWindow, config: &BarConfigFile) {
     let now = Local::now();
     let time_format = if config.clock_24h {
@@ -1324,6 +1411,7 @@ fn open_quick_settings(
     state: &Rc<RefCell<UiState>>,
     popups: &Rc<RefCell<PopupWindows>>,
     children: &Rc<RefCell<Vec<Child>>>,
+    compositor: &Rc<CompositorHandle>,
     telemetry: &Rc<Telemetry>,
 ) {
     let started = Instant::now();
@@ -1371,7 +1459,14 @@ fn open_quick_settings(
         ui.set_bluetooth_label(if system.bluetooth_on { "On" } else { "Off" }.into());
         install_render_telemetry(ui.window(), telemetry, Some(started));
         let _ = ui.show();
-        size_popup_after_show(ui.window(), 430.0, 340.0);
+        show_popup_at_anchor(
+            ui.window(),
+            "smpl-bar:quick-settings",
+            state,
+            compositor,
+            430.0,
+            340.0,
+        );
         if telemetry.enabled() {
             let weak = ui.as_weak();
             let paint_telemetry = telemetry.clone();
@@ -1524,6 +1619,7 @@ fn open_usb(
     state: &Rc<RefCell<UiState>>,
     popups: &Rc<RefCell<PopupWindows>>,
     children: &Rc<RefCell<Vec<Child>>>,
+    compositor: &Rc<CompositorHandle>,
     telemetry: &Rc<Telemetry>,
 ) {
     let started = Instant::now();
@@ -1573,8 +1669,11 @@ fn open_usb(
     ui.set_devices(ModelRc::new(VecModel::from_slice(&devices)));
     install_render_telemetry(ui.window(), telemetry, Some(started));
     let _ = ui.show();
-    size_popup_after_show(
+    show_popup_at_anchor(
         ui.window(),
+        "smpl-bar:usb",
+        state,
+        compositor,
         360.0,
         (150 + devices.len().saturating_mul(58)) as f64,
     );
@@ -1597,6 +1696,7 @@ fn open_overview(
     state: &Rc<RefCell<UiState>>,
     popups: &Rc<RefCell<PopupWindows>>,
     children: &Rc<RefCell<Vec<Child>>>,
+    compositor: &Rc<CompositorHandle>,
     telemetry: &Rc<Telemetry>,
 ) {
     let started = Instant::now();
@@ -1648,8 +1748,11 @@ fn open_overview(
     ui.set_workspaces(ModelRc::new(VecModel::from_slice(&workspaces)));
     install_render_telemetry(ui.window(), telemetry, Some(started));
     let _ = ui.show();
-    size_popup_after_show(
+    show_popup_at_anchor(
         ui.window(),
+        "smpl-bar:workspace-overview",
+        state,
+        compositor,
         620.0,
         (170 + monitors.len().saturating_mul(50)) as f64,
     );
@@ -1743,6 +1846,7 @@ fn apply_keypad_sheet(
     value: &serde_json::Value,
     state: &Rc<RefCell<UiState>>,
     popups: &Rc<RefCell<PopupWindows>>,
+    compositor: &Rc<CompositorHandle>,
     telemetry: &Rc<Telemetry>,
 ) -> Result<(), String> {
     let sheet: KeypadSheet =
@@ -1828,11 +1932,20 @@ fn apply_keypad_sheet(
     let started = Instant::now();
     install_render_telemetry(ui.window(), telemetry, Some(started));
     let _ = ui.show();
-    size_popup_after_show(ui.window(), 720.0, 360.0);
+    let (width, height) = show_popup_at_anchor(
+        ui.window(),
+        "smpl-bar:keypad-cheatsheet",
+        state,
+        compositor,
+        720.0,
+        360.0,
+    );
     ui.window()
         .with_winit_window(|native: &i_slint_backend_winit::winit::window::Window| {
             if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
-                if let Err(error) = panel.set_input_passthrough(native, click_through, 720, 360) {
+                if let Err(error) =
+                    panel.set_input_passthrough(native, click_through, width as u32, height as u32)
+                {
                     telemetry.emit(
                         "keypad_input_region_failed",
                         [("error", serde_json::json!(error.to_string()))],
@@ -1860,6 +1973,7 @@ fn open_tray_menu(
     menu: &sni::TrayMenu,
     state: Rc<RefCell<UiState>>,
     popups: &Rc<RefCell<PopupWindows>>,
+    compositor: &Rc<CompositorHandle>,
     sni: &Rc<SniHandle>,
     telemetry: &Rc<Telemetry>,
 ) {
@@ -1906,8 +2020,11 @@ fn open_tray_menu(
     ui.set_entries(ModelRc::new(VecModel::from_slice(&entries)));
     install_render_telemetry(ui.window(), telemetry, Some(started));
     let _ = ui.show();
-    size_popup_after_show(
+    show_popup_at_anchor(
         ui.window(),
+        "smpl-bar:tray-menu",
+        &state,
+        compositor,
         300.0,
         (80 + menu.entries.len().saturating_mul(34)).min(520) as f64,
     );
@@ -2058,6 +2175,7 @@ struct PopupWindows {
     keypad: Option<KeypadCheatsheetWindow>,
     identify: Vec<IdentifyWindow>,
     tray_menu: Option<TrayMenuWindow>,
+    popup_focused: bool,
 }
 
 impl PopupWindows {
@@ -2080,8 +2198,44 @@ impl PopupWindows {
         if let Some(window) = &self.tray_menu {
             let _ = window.hide();
         }
+        self.popup_focused = false;
         let marker = ipc_runtime().join("smplos/native-popup.active");
         let _ = std::fs::remove_file(marker);
+    }
+
+    fn observe_popup_focus(&mut self, popup_has_focus: bool) -> bool {
+        let dismissible_visible = [
+            self.quick
+                .as_ref()
+                .is_some_and(|window| window.window().is_visible()),
+            self.usb
+                .as_ref()
+                .is_some_and(|window| window.window().is_visible()),
+            self.overview
+                .as_ref()
+                .is_some_and(|window| window.window().is_visible()),
+            self.keypad
+                .as_ref()
+                .is_some_and(|window| window.window().is_visible() && !window.get_click_through()),
+            self.tray_menu
+                .as_ref()
+                .is_some_and(|window| window.window().is_visible()),
+        ]
+        .into_iter()
+        .any(|visible| visible);
+        if !dismissible_visible {
+            self.popup_focused = false;
+            return false;
+        }
+        if popup_has_focus {
+            self.popup_focused = true;
+            return false;
+        }
+        if self.popup_focused {
+            self.close_all();
+            return true;
+        }
+        false
     }
 }
 
@@ -2341,6 +2495,13 @@ impl Arguments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Once;
+
+    static RENDERER_INIT: Once = Once::new();
+
+    fn init_layout_renderer() {
+        RENDERER_INIT.call_once(|| smpl_common::init(APP_ID, 800.0, 24.0).unwrap());
+    }
 
     #[test]
     fn popup_callbacks_use_the_authoritative_os_coordinator() {
@@ -2374,6 +2535,35 @@ mod tests {
     fn hidden_duplicate_handoff_does_not_show_the_resident() {
         assert_eq!(duplicate_handoff(true), None);
         assert_eq!(duplicate_handoff(false), Some(Request::Show));
+    }
+
+    #[test]
+    fn popup_dimensions_never_exceed_the_focused_monitor() {
+        let mut compositor = CompositorState {
+            focused_monitor: "DP-1".to_owned(),
+            ..CompositorState::default()
+        };
+        compositor.monitors = vec![
+            smpl_shell::monitor::Monitor {
+                connector: "DP-1".to_owned(),
+                width: 300,
+                height: 360,
+                scale: 1.0,
+                ..smpl_shell::monitor::Monitor::default()
+            },
+            smpl_shell::monitor::Monitor {
+                connector: "DP-2".to_owned(),
+                width: 1920,
+                height: 1080,
+                scale: 1.0,
+                ..smpl_shell::monitor::Monitor::default()
+            },
+        ];
+        let (width, height) = fit_popup_to_monitor(&compositor, 430.0, 340.0);
+        assert!((width - 280.0).abs() < f64::EPSILON);
+        assert!((height - 312.0).abs() < f64::EPSILON);
+        assert!(width <= 300.0 / 1.0 - 20.0);
+        assert!(height <= 360.0 / 1.0 - 48.0);
     }
 
     #[test]
@@ -2491,7 +2681,7 @@ mod tests {
         if std::env::var_os("SMPL_BAR_LAYOUT_RENDER").is_none() {
             return;
         }
-        smpl_common::init(APP_ID, 800.0, 24.0).unwrap();
+        init_layout_renderer();
         let bar = BarWindow::new().unwrap();
         bar.set_show_start(true);
         bar.set_show_workspaces(false);
@@ -2560,5 +2750,109 @@ mod tests {
             assert!(bounds.iter().all(|(x, _)| *x > 0 && *x < 799));
             assert!(bounds.iter().all(|(_, y)| *y > 0 && *y < 23));
         }
+        renderer_bounds_quick_settings_and_scrolls_short_viewports();
+    }
+
+    fn renderer_bounds_quick_settings_and_scrolls_short_viewports() {
+        let quick = QuickSettingsWindow::new().unwrap();
+        quick.set_wifi_available(true);
+        quick.set_bluetooth_available(true);
+        quick.set_wired_available(true);
+        quick.set_nightlight_available(true);
+        quick.set_dictation_available(true);
+        quick.set_network_label("An intentionally long wireless network name".into());
+        quick.set_bluetooth_label("Controller connected".into());
+
+        let cases = [
+            (430.0_f32, 340.0_f32, 2_i32),
+            (380.0, 520.0, 2),
+            (760.0, 300.0, 3),
+            (300.0, 480.0, 1),
+            (280.0, 320.0, 1),
+        ];
+        let index = Rc::new(Cell::new(0_usize));
+        let failures = Rc::new(RefCell::new(Vec::<String>::new()));
+        quick.show().unwrap();
+        size_popup_after_show(quick.window(), cases[0].0 as f64, cases[0].1 as f64);
+
+        let timer = slint::Timer::default();
+        let weak = quick.as_weak();
+        let timer_index = index.clone();
+        let timer_failures = failures.clone();
+        timer.start(slint::TimerMode::Repeated, Duration::from_millis(140), move || {
+            let Some(quick) = weak.upgrade() else {
+                timer_failures.borrow_mut().push("quick settings window disappeared".into());
+                let _ = slint::quit_event_loop();
+                return;
+            };
+            let case_index = timer_index.get();
+            let (width, height, expected_columns) = cases[case_index];
+            let snapshot = quick.window().take_snapshot();
+            if let Ok(snapshot) = snapshot {
+                if snapshot.width() != width as u32 || snapshot.height() != height as u32 {
+                    timer_failures.borrow_mut().push(format!(
+                        "{width}x{height}: snapshot was {}x{}",
+                        snapshot.width(),
+                        snapshot.height()
+                    ));
+                }
+            } else {
+                timer_failures
+                    .borrow_mut()
+                    .push(format!("{width}x{height}: renderer returned no snapshot"));
+            }
+
+            if quick.get_layout_columns() != expected_columns {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: expected {expected_columns} columns, got {}",
+                    quick.get_layout_columns()
+                ));
+            }
+            let content_width = quick.get_layout_content_width();
+            let viewport_width = quick.get_layout_viewport_width();
+            if quick.get_layout_overflows_width()
+                || content_width > viewport_width + 0.5
+                || viewport_width > width
+            {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: horizontal overflow content={content_width} viewport={viewport_width}"
+                ));
+            }
+            let content_height = quick.get_layout_content_height();
+            let viewport_height = quick.get_layout_viewport_height();
+            let content_exceeds_viewport = content_height > viewport_height + 0.5;
+            if quick.get_layout_scrolls() != content_exceeds_viewport {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: scroll={}; content={content_height}, viewport={viewport_height}",
+                    quick.get_layout_scrolls()
+                ));
+            }
+            if content_exceeds_viewport && !quick.get_layout_scrolls() {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: clipped content is not scrollable"
+                ));
+            }
+            if (height <= 340.0 || width <= 300.0) && !quick.get_layout_scrolls() {
+                timer_failures.borrow_mut().push(format!(
+                    "{width}x{height}: constrained viewport must expose vertical scrolling"
+                ));
+            }
+
+            let next = case_index + 1;
+            if next == cases.len() {
+                let _ = slint::quit_event_loop();
+            } else {
+                timer_index.set(next);
+                let (next_width, next_height, _) = cases[next];
+                size_popup_after_show(quick.window(), next_width as f64, next_height as f64);
+            }
+        });
+        slint::run_event_loop().unwrap();
+        drop(timer);
+        assert!(
+            failures.borrow().is_empty(),
+            "quick settings layout failures: {}",
+            failures.borrow().join("; ")
+        );
     }
 }

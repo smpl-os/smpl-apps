@@ -74,6 +74,7 @@ pub struct CompositorState {
     pub focused_workspace: i32,
     pub focused_monitor: String,
     pub active_window_title: String,
+    pub active_window_is_popup: bool,
     pub keyboard: KeyboardState,
     pub error: String,
 }
@@ -88,6 +89,7 @@ impl Default for CompositorState {
             focused_workspace: 1,
             focused_monitor: String::new(),
             active_window_title: String::new(),
+            active_window_is_popup: false,
             keyboard: KeyboardState::default(),
             error: String::new(),
         }

@@ -119,6 +119,74 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn('ProviderAction::ToggleCheatsheet', source)
         self.assertIn("CheatsheetVisibilityChanged", (BAR / "src/providers.rs").read_text())
 
+    def test_quick_settings_responsive_layout_actions_and_brand_contracts(self):
+        ui = (BAR / "ui/main.slint").read_text()
+        source = (BAR / "src/main.rs").read_text()
+        quick = ui[ui.index("component QuickSettingsWindow") : ui.index(
+            "component UsbWindow"
+        )]
+        for property_name in (
+            "layout-columns",
+            "layout-overflows-width",
+            "layout-scrolls",
+            "layout-content-width",
+            "layout-viewport-width",
+        ):
+            self.assertIn(f"out property <", quick)
+            self.assertIn(property_name, quick)
+        self.assertIn("viewport-height: max(self.height, quick-content.min-height)", quick)
+        for action in (
+            'root.toggle("wifi")',
+            'root.toggle("bluetooth")',
+            'root.toggle("wired")',
+            'root.toggle("airplane")',
+            'root.toggle("nightlight")',
+            'root.toggle("dnd")',
+            'root.toggle("dictation")',
+            'root.toggle("volume")',
+            'root.open-tool("network")',
+            'root.open-tool("settings")',
+            'root.action("logout")',
+            'root.action("poweroff")',
+            "root.set-volume(value)",
+            "root.set-brightness(value)",
+        ):
+            self.assertIn(action, quick)
+        for implementation in (
+            '["volume-ctl", "toggle"]',
+            '["nm-connection-editor"]',
+            '["smplos-settings"]',
+            '"loginctl"',
+            '"systemctl", "poweroff"',
+        ):
+            self.assertIn(implementation, source)
+        self.assertIn('@image-url("assets/start.svg")', ui)
+        self.assertNotIn('icon: "󰍜"', ui)
+        self.assertNotIn("drop-shadow", quick)
+        self.assertNotIn("blur", quick.lower())
+        start_icon = (BAR / "ui/assets/start.svg").read_text()
+        self.assertIn('M 221 95', start_icon)
+        self.assertIn('H 109', start_icon)
+
+    def test_all_native_popups_are_floating_bounded_and_focus_dismissed(self):
+        source = (BAR / "src/main.rs").read_text()
+        compositor = (ROOT / "smpl-shell/src/compositor.rs").read_text()
+        for title in (
+            "smpl-bar:quick-settings",
+            "smpl-bar:usb",
+            "smpl-bar:workspace-overview",
+            "smpl-bar:keypad-cheatsheet",
+            "smpl-bar:tray-menu",
+        ):
+            self.assertIn(f'"{title}"', source)
+        self.assertGreaterEqual(source.count("show_popup_at_anchor("), 6)
+        self.assertIn("observe_popup_focus", source)
+        self.assertIn("focus-left-popup", source)
+        self.assertIn("Action::PlacePopup", source)
+        self.assertIn("resizewindowpixel exact", compositor)
+        self.assertIn("set_floating", compositor)
+        self.assertIn("active_window_is_popup", (ROOT / "smpl-shell/src/monitor.rs").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

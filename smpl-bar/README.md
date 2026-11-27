@@ -104,7 +104,7 @@ Socket permissions are `0600`; the directory is `0700`.
 | Focus title | The monitor connector is confined to the workspace-overview tooltip; bar/popup self-focus cannot replace the last real focused-client title |
 | Tray formats | SNI and DBusMenu; legacy XEmbed/arrow-key tray emulation is intentionally not claimed |
 | Calendar/notification center | Delegates to the existing canonical `popup-toggle` grammar, retaining mutual exclusion and app ownership |
-| Quick Settings | Existing connectivity, airplane, night light, DND, dictation, audio, brightness, settings and power controls |
+| Quick Settings | Theme-token command-center popup with a 3/2/1-column responsive grid, bounded viewport, vertical fallback scroll for short/narrow sizes, and the existing connectivity, airplane, night light, DND, dictation, audio, brightness, settings and power actions |
 | Keypad cheatsheet | Typed JSON UI plus Control Surface `CheatsheetChanged`/`CheatsheetVisibilityChanged`; real X11 input-shape pass-through |
 | Keypad safety | Wayland click-through requests are rejected unless a real compositor input region is available; the JSON flag never makes an unsafe claim |
 
@@ -207,7 +207,8 @@ The script samples an explicitly supplied EWW PID (or the one installed EWW
 process), then starts smpl-bar in a private Weston headless compositor. It
 retains raw telemetry and compares RSS, PSS, HWM, threads and release binary
 size. It does not invent an EWW cold-start paint ratio from an already-running
-process.
+process. Its private Wayland and D-Bus sockets live below the short
+`XDG_RUNTIME_DIR` to remain below the Unix socket path limit in deep worktrees.
 
 The absolute stretch target remains 23 MiB mapped RSS. The alpha-safe patched
 Skia/softbuffer CPU stack, Slint scene, icon/SNI surfaces and resident desktop

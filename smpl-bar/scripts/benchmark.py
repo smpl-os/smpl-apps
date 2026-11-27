@@ -89,7 +89,8 @@ def private_run(binary, duration, output_dir, hidden, popup, recreate):
     dbus_daemon = shutil.which("dbus-daemon")
     if not dbus_daemon:
         raise SystemExit("dbus-daemon is required for the private provider fixture")
-    runtime = (ROOT / "target" / f"r-{os.getpid()}").resolve()
+    runtime_base = Path(os.environ.get("XDG_RUNTIME_DIR", ROOT / "target"))
+    runtime = (runtime_base / f"smpl-bar-bench-{os.getpid()}").resolve()
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     runtime.chmod(0o700)
     telemetry_path = output_dir / "smpl-bar-telemetry.jsonl"
