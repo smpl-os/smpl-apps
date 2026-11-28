@@ -35,15 +35,16 @@ On X11, smpl-bar sets `_NET_WM_WINDOW_TYPE_DOCK`,
 `_NET_WM_STRUT_PARTIAL` ranges for a pinned panel. Floating mode uses a normal
 window and clears the strut.
 
-All four edges and pinned/floating behavior are configured by:
+The bar derives its 32 px cross-axis size from its content contract; it is not
+configurable or resizable. All four edges and pinned/floating behavior are
+configured by:
 
 ```json
 {
   "version": 1,
   "edge": "bottom",
   "mode": "pinned",
-  "margin": 2,
-  "height": 32
+  "margin": 2
 }
 ```
 
@@ -102,12 +103,12 @@ Socket permissions are `0600`; the directory is `0700`.
 | Notifications | Native sync/D-Bus provider state plus bounded `dunstctl` refresh |
 | Battery/brightness/clock | Native sysfs/state and UI-local formatting |
 | Generic tray | Real `org.kde.StatusNotifierWatcher` fallback, host registration, item lifecycle, owner restart/removal, icon name/pixmap/attention/overlay variants, monochrome theme tinting, activation, scroll and native DBusMenu |
-| 24 px edge layout | Fixed controls use a 20 px Slint item inside the 24 px surface with explicit 2 px vertical insets; start and right-edge glyphs cannot paint against the clipped window edge |
+| Fixed 32 px edge layout | The cross-axis size is calculated internally as 32 px; 28 px controls share one centered horizontal line with 24 px workspace/clock content. Legacy serialized `height` values are accepted and ignored |
 | Keyboard | The switcher follows compositor-reported switchability and appears only when more than one distinct keyboard layout is configured |
 | Focus title | The monitor connector is confined to the workspace-overview tooltip; bar/popup self-focus cannot replace the last real focused-client title |
 | Tray formats | SNI and DBusMenu; legacy XEmbed/arrow-key tray emulation is intentionally not claimed |
 | Calendar/notification center | Delegates to the existing canonical `popup-toggle` grammar, retaining mutual exclusion and app ownership |
-| Quick Settings | Theme-token command-center popup anchored at 430×720 on normal 1440p displays, with fixed four-column sliders, a 3/2/1-column card grid, monitor fitting, overflow-only vertical scroll indication, and the existing connectivity, airplane, night light, DND, dictation, audio, brightness, settings and power actions |
+| Quick Settings | Compact theme-token popup anchored at 430×500 on normal 1440p displays, with fixed four-column sliders, a 3/2/1-column card grid, monitor fitting, overflow-only vertical scroll indication, and the existing connectivity, airplane, night light, DND, dictation, audio, brightness, settings and power actions |
 | Keypad cheatsheet | Typed JSON UI plus Control Surface `CheatsheetChanged`/`CheatsheetVisibilityChanged`; real X11 input-shape pass-through |
 | Keypad safety | Wayland click-through requests are rejected unless a real compositor input region is available; the JSON flag never makes an unsafe claim |
 
@@ -158,7 +159,6 @@ native overlay may still own module layout and native-only options:
   "workspace-position": "left",
   "workspace-spacing": 2,
   "workspace-style": "numbers",
-  "height": 32,
   "edge": "bottom",
   "mode": "pinned",
   "margin": 2,

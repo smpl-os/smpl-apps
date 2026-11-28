@@ -78,14 +78,14 @@ component IconButton inherits Rectangle {
     callback secondary-clicked;
     callback scrolled(float);
     width: 24px;
-    height: 20px;
+    height: 28px;
     border-radius: 4px;
     background: root.enabled && touch.has-hover ? Theme.bg-light : transparent;
     accessible-role: button;
     accessible-label: tip;
     Text {
         x: 3px;
-        y: 1px;
+        y: (parent.height - self.height) / 2;
         width: 18px;
         height: 18px;
         horizontal-alignment: center;
@@ -114,14 +114,14 @@ component IconButton inherits Rectangle {
 component StartButton inherits Rectangle {
     callback clicked;
     width: 24px;
-    height: 20px;
+    height: 28px;
     border-radius: 4px;
     background: touch.has-hover ? Theme.bg-light : transparent;
     accessible-role: button;
     accessible-label: "Start menu";
     Image {
         x: 3px;
-        y: 1px;
+        y: (parent.height - self.height) / 2;
         width: 18px;
         height: 18px;
         source: @image-url("assets/start.svg");
@@ -173,7 +173,7 @@ component TrayButton inherits Rectangle {
     callback secondary(string);
     callback scroll(string, float);
     width: 22px;
-    height: 20px;
+    height: 28px;
     border-radius: 4px;
     border-width: item.attention ? 1px : 0px;
     border-color: Theme.warning;
@@ -750,8 +750,8 @@ export component BarWindow inherits Window {
 
     title: root.window-title-label;
     no-frame: true;
-    min-width: 24px;
-    min-height: 24px;
+    min-width: 32px;
+    min-height: 32px;
     preferred-width: 1600px;
     preferred-height: 32px;
     background: transparent;
@@ -776,6 +776,7 @@ export component BarWindow inherits Window {
 
             if show-workspaces && !workspace-center: HorizontalLayout {
                 spacing: root.workspace-spacing;
+                alignment: center;
                 for workspace in root.workspaces: WorkspaceButton {
                     item: workspace;
                     squares: root.workspace-squares;
@@ -792,6 +793,7 @@ export component BarWindow inherits Window {
             if show-title: Text {
                 text: root.window-title;
                 color: Theme.fg-dim;
+                height: 28px;
                 vertical-alignment: center;
                 overflow: elide;
                 max-width: 480px;
@@ -801,6 +803,7 @@ export component BarWindow inherits Window {
 
             if show-workspaces && workspace-center: HorizontalLayout {
                 spacing: root.workspace-spacing;
+                alignment: center;
                 for workspace in root.workspaces: WorkspaceButton {
                     item: workspace;
                     squares: root.workspace-squares;
@@ -876,6 +879,7 @@ export component BarWindow inherits Window {
             }
             if show-sni: HorizontalLayout {
                 spacing: 1px;
+                alignment: center;
                 for item in root.sni-items: TrayButton {
                     item: item;
                     activate(key) => root.sni-activate(key);
@@ -885,7 +889,7 @@ export component BarWindow inherits Window {
             }
             if show-clock: Rectangle {
                 width: 62px;
-                height: 20px;
+                height: 28px;
                 VerticalLayout {
                     alignment: center;
                     Text {
@@ -1203,6 +1207,7 @@ export component QuickSettingsWindow inherits Window {
     min-width: 1px;
     min-height: 1px;
     preferred-width: 480px;
+    preferred-height: 500px;
     background: transparent;
     shell := Rectangle {
         x: 1px;
@@ -1217,11 +1222,6 @@ export component QuickSettingsWindow inherits Window {
         VerticalLayout {
             padding: 12px;
             spacing: 8px;
-            PopupHeader {
-                eyebrow: "SMPL / COMMAND CENTER";
-                title: "Quick Settings";
-                close => root.close();
-            }
             quick-scroll-frame := Rectangle {
                 min-width: 0px;
                 min-height: 0px;

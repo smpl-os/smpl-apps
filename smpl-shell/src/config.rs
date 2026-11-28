@@ -88,7 +88,8 @@ pub struct BarConfigFile {
     pub workspace_position: WorkspacePosition,
     pub workspace_spacing: usize,
     pub workspace_style: WorkspaceStyle,
-    pub height: usize,
+    #[serde(rename = "height", skip_serializing)]
+    legacy_height: usize,
     pub edge: PanelEdge,
     pub mode: PanelMode,
     pub margin: usize,
@@ -108,7 +109,7 @@ impl Default for BarConfigFile {
             workspace_position: WorkspacePosition::Left,
             workspace_spacing: 2,
             workspace_style: WorkspaceStyle::Numbers,
-            height: 32,
+            legacy_height: 32,
             edge: PanelEdge::Bottom,
             mode: PanelMode::Pinned,
             margin: 2,
@@ -373,9 +374,6 @@ pub fn validate(config: &BarConfigFile) -> Result<(), String> {
     if !(1..=10).contains(&config.workspace_spacing) {
         return Err("workspace-spacing must be in 1..=10".to_owned());
     }
-    if !(24..=48).contains(&config.height) {
-        return Err("height must be in 24..=48".to_owned());
-    }
     if config.margin > 24 {
         return Err("margin must be in 0..=24".to_owned());
     }
@@ -537,18 +535,20 @@ mod tests {
     }
 
     #[test]
-    fn native_layout_defaults_are_not_applied_over_native_only_fields() {
+    fn legacy_native_height_is_accepted_but_never_serialized() {
         let directory = tempfile::tempdir().unwrap();
         let paths = ConfigPaths::from_home(Some(directory.path())).unwrap();
         std::fs::create_dir_all(paths.native.parent().unwrap()).unwrap();
         std::fs::write(
             &paths.native,
-            r#"{"height": 40, "left": ["start"], "right": ["clock"]}"#,
+            r#"{"height": 999, "left": ["start"], "right": ["clock"]}"#,
         )
         .unwrap();
 
         let config = load(&paths).unwrap();
-        assert_eq!(config.height, 40);
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(!serialized.contains("\"height\""));
+        assert_eq!(config.legacy_height, 999);
         assert_eq!(config.left, vec![Module::Start]);
         assert_eq!(config.right, vec![Module::Keyboard, Module::Clock]);
     }

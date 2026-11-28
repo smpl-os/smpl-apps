@@ -32,6 +32,7 @@ use system::{SystemSampler, SystemState, UsbDevice};
 slint::include_modules!();
 
 const INITIAL_WIDTH: f64 = 1600.0;
+const BAR_CROSS_AXIS_SIZE: usize = 32;
 const CONTROL_INTERVAL: Duration = Duration::from_millis(50);
 const BRIGHTNESS_DEBOUNCE: Duration = Duration::from_millis(120);
 const PROCESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
@@ -130,7 +131,6 @@ fn run_resident(
     preview: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let process_started = Instant::now();
-    let bar_height = config.height;
     let compositor_kind = compositor::detect();
     let app_id = preview_app_id(preview, compositor_kind)?;
     let socket =
@@ -170,7 +170,7 @@ fn run_resident(
         )],
     );
 
-    smpl_common::init(app_id, INITIAL_WIDTH, config.height as f64)?;
+    smpl_common::init(app_id, INITIAL_WIDTH, BAR_CROSS_AXIS_SIZE as f64)?;
     slint::set_xdg_app_id(app_id)?;
     telemetry.emit(
         "backend_initialized",
@@ -389,7 +389,7 @@ fn run_resident(
     if hidden {
         telemetry.emit("resident_hidden", []);
     } else if !preview {
-        resize_window(bar.window(), INITIAL_WIDTH, bar_height as f64);
+        resize_bar_window(bar.window(), INITIAL_WIDTH, BAR_CROSS_AXIS_SIZE as f64);
         bar.show()?;
         bar.window().request_redraw();
         if telemetry.enabled() {
@@ -966,7 +966,7 @@ fn fit_bar_to_monitor(
         config.edge,
         config.mode,
         config.margin,
-        config.height,
+        BAR_CROSS_AXIS_SIZE,
     );
     if preview {
         if matches!(config.edge, PanelEdge::Left | PanelEdge::Right) {
@@ -977,7 +977,7 @@ fn fit_bar_to_monitor(
             geometry.y = monitor.y + config.preview_offset_y as i32;
         }
     }
-    resize_window(bar.window(), geometry.width as f64, geometry.height as f64);
+    resize_bar_window(bar.window(), geometry.width as f64, geometry.height as f64);
     if preview {
         set_window_position(bar.window(), geometry.x, geometry.y);
     }
@@ -1071,7 +1071,7 @@ fn synchronize_panel(
                 state.config.edge,
                 state.config.mode,
                 state.config.margin,
-                state.config.height,
+                BAR_CROSS_AXIS_SIZE,
             )
         })
     }) else {
@@ -1116,7 +1116,7 @@ fn synchronize_panel(
         );
         reservation.update(update.clone());
         if update.visible {
-            resize_window(bar.window(), geometry.width as f64, geometry.height as f64);
+            resize_bar_window(bar.window(), geometry.width as f64, geometry.height as f64);
             state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(150);
             send_panel_placement(compositor, &geometry);
             bar.window().with_winit_window(
@@ -1135,7 +1135,7 @@ fn synchronize_panel(
                 },
             );
         } else if preview {
-            resize_window(bar.window(), geometry.width as f64, geometry.height as f64);
+            resize_bar_window(bar.window(), geometry.width as f64, geometry.height as f64);
             state.borrow_mut().panel_retry_at = Instant::now() + Duration::from_millis(150);
             send_panel_placement(compositor, &geometry);
         } else if let Some(panel) = state.borrow_mut().x11_panel.as_mut() {
@@ -1191,6 +1191,18 @@ fn resize_window(window: &slint::Window, width: f64, height: f64) {
     });
 }
 
+fn resize_bar_window(window: &slint::Window, width: f64, height: f64) {
+    window.with_winit_window(|winit: &i_slint_backend_winit::winit::window::Window| {
+        let size = LogicalSize::new(width, height);
+        winit.set_resizable(false);
+        winit.set_min_inner_size(None::<LogicalSize<f64>>);
+        winit.set_max_inner_size(None::<LogicalSize<f64>>);
+        winit.set_min_inner_size(Some(size));
+        winit.set_max_inner_size(Some(size));
+        let _ = winit.request_inner_size(size);
+    });
+}
+
 fn size_popup_after_show(window: &slint::Window, width: f64, height: f64) {
     window.set_size(slint::LogicalSize::new(width as f32, height as f32));
     resize_window(window, width, height);
@@ -1236,12 +1248,12 @@ fn show_popup_at_anchor(
         let inset = 10.0;
         let (x, y) = match state.config.edge {
             PanelEdge::Left => (
-                state.config.height as f64 + state.config.margin as f64 + inset,
+                BAR_CROSS_AXIS_SIZE as f64 + state.config.margin as f64 + inset,
                 (logical_height - height - inset).max(inset),
             ),
             PanelEdge::Right => (
                 (logical_width
-                    - state.config.height as f64
+                    - BAR_CROSS_AXIS_SIZE as f64
                     - state.config.margin as f64
                     - width
                     - inset)
@@ -1251,7 +1263,7 @@ fn show_popup_at_anchor(
             PanelEdge::Bottom => (
                 (logical_width - width - inset).max(inset),
                 (logical_height
-                    - state.config.height as f64
+                    - BAR_CROSS_AXIS_SIZE as f64
                     - state.config.margin as f64
                     - height
                     - inset)
@@ -1259,7 +1271,7 @@ fn show_popup_at_anchor(
             ),
             PanelEdge::Top => (
                 (logical_width - width - inset).max(inset),
-                state.config.height as f64 + state.config.margin as f64 + inset,
+                BAR_CROSS_AXIS_SIZE as f64 + state.config.margin as f64 + inset,
             ),
         };
         let x = monitor.x + x.round() as i32;
@@ -1499,7 +1511,7 @@ fn open_quick_settings(
             state,
             compositor,
             430.0,
-            720.0,
+            500.0,
         );
         if telemetry.enabled() {
             let weak = ui.as_weak();
@@ -2689,7 +2701,7 @@ mod tests {
     static RENDERER_INIT: Once = Once::new();
 
     fn init_layout_renderer() {
-        RENDERER_INIT.call_once(|| smpl_common::init(APP_ID, 800.0, 24.0).unwrap());
+        RENDERER_INIT.call_once(|| smpl_common::init(APP_ID, 800.0, 32.0).unwrap());
     }
 
     #[test]
@@ -2907,7 +2919,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_keeps_fixed_icons_inside_a_24px_bar() {
+    fn renderer_keeps_fixed_icons_inside_a_32px_bar() {
         if std::env::var_os("SMPL_BAR_LAYOUT_RENDER").is_none() {
             return;
         }
@@ -2940,7 +2952,7 @@ mod tests {
         theme.set_accent(slint::Color::from_rgb_u8(255, 255, 255));
         theme.set_opacity(0.0);
 
-        bar.window().set_size(slint::LogicalSize::new(800.0, 24.0));
+        bar.window().set_size(slint::LogicalSize::new(800.0, 32.0));
         bar.show().unwrap();
         let result = Rc::new(RefCell::new(None));
         let weak = bar.as_weak();
@@ -2955,12 +2967,12 @@ mod tests {
         });
         slint::run_event_loop().unwrap();
         let snapshot = result.borrow().clone().expect("Slint renderer snapshot");
-        assert_eq!((snapshot.width(), snapshot.height()), (800, 24));
+        assert_eq!((snapshot.width(), snapshot.height()), (800, 32));
 
         let pixels = snapshot.as_bytes();
         let alpha = |x: u32, y: u32| pixels[(y * 800 + x) as usize * 4 + 3];
         let visible = |x_range: std::ops::Range<u32>| {
-            (0..24)
+            (0..32)
                 .flat_map(|y| x_range.clone().map(move |x| (x, y)))
                 .filter(|(x, y)| alpha(*x, *y) > 8)
                 .collect::<Vec<_>>()
@@ -2978,13 +2990,13 @@ mod tests {
                 "{name} icon did not paint; visible points: {all_visible:?}"
             );
             assert!(bounds.iter().all(|(x, _)| *x > 0 && *x < 799));
-            assert!(bounds.iter().all(|(_, y)| *y > 0 && *y < 23));
+            assert!(bounds.iter().all(|(_, y)| *y > 0 && *y < 31));
         }
         renderer_bounds_quick_settings_and_scrolls_short_viewports();
     }
 
     fn renderer_bounds_quick_settings_and_scrolls_short_viewports() {
-        renderer_bounds_quick_settings_case(430.0, 720.0, 2, false);
+        renderer_bounds_quick_settings_case(430.0, 500.0, 2, false);
         renderer_bounds_quick_settings_case(430.0, 340.0, 2, true);
         renderer_bounds_quick_settings_case(280.0, 300.0, 1, true);
     }
@@ -3296,7 +3308,7 @@ mod tests {
             }
             if !should_scroll && quick.get_layout_scrolls() {
                 timer_failures.borrow_mut().push(format!(
-                    "{width}x{height}: 430x720 should contain all quick settings without scrolling"
+                    "{width}x{height}: 430x500 should contain all quick settings without scrolling"
                 ));
             }
             if quick.get_layout_scroll_indicator_visible() != should_scroll {

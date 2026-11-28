@@ -60,13 +60,18 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn("NameOwnerChanged", sni)
         self.assertIn('"Activate"', sni)
 
-    def test_24px_layout_keyboard_title_and_tray_theme_contracts(self):
+    def test_fixed_32px_layout_keyboard_title_and_tray_theme_contracts(self):
         ui = (BAR / "ui/main.slint").read_text()
         source = (BAR / "src/main.rs").read_text()
         compositor = (ROOT / "smpl-shell/src/compositor.rs").read_text()
-        self.assertIn("height: 20px;", ui)
+        self.assertIn("const BAR_CROSS_AXIS_SIZE: usize = 32;", source)
+        self.assertIn("height: 28px;", ui)
         self.assertIn("padding-top: 2px;", ui)
         self.assertIn("padding-bottom: 2px;", ui)
+        self.assertIn("alignment: center;", ui)
+        self.assertIn("winit.set_resizable(false);", source)
+        self.assertIn("winit.set_min_inner_size(Some(size));", source)
+        self.assertIn("winit.set_max_inner_size(Some(size));", source)
         self.assertIn('tip: "Workspace overview on " + root.monitor-label', ui)
         self.assertNotIn("icon: root.monitor-label", ui)
         self.assertIn("if item.has-icon && item.themed-icon: Image", ui)
@@ -123,11 +128,16 @@ class SmplBarContracts(unittest.TestCase):
         )
         self.assertIn('"bar_edge"', settings)
         self.assertIn('"bar_mode"', settings)
+        self.assertNotIn("bar_height", settings)
+        self.assertNotIn("bar-height", settings)
+        self.assertIn('rename = "height", skip_serializing', config)
         self.assertIn('runtime.run("bar-ctl", &["apply"])?', settings)
         self.assertNotIn('runtime.run(\n            "eww"', settings)
         for edge in ("Bottom", "Top", "Left", "Right"):
             self.assertIn(f'"{edge}"', settings_ui)
         self.assertIn('"Pinned", "Floating"', settings_ui)
+        self.assertIn('for edge[idx] in ["Bottom", "Top", "Left", "Right"]', settings_ui)
+        self.assertIn('for mode[idx] in ["Pinned", "Floating"]', settings_ui)
         for edge in ("Left", "Right"):
             self.assertIn(f"PanelEdge::{edge}", panel)
         self.assertIn("Anchor::LEFT | Anchor::TOP | Anchor::BOTTOM", panel)
@@ -250,7 +260,7 @@ class SmplBarContracts(unittest.TestCase):
         self.assertNotIn("spawn_quick_command(", brightness_callback)
         self.assertIn("if !ui.get_volume_dragging()", source)
         self.assertIn("if !ui.get_brightness_dragging()", source)
-        self.assertIn("430.0,\n            720.0,", source)
+        self.assertIn("430.0,\n            500.0,", source)
         start_icon = (BAR / "ui/assets/start.svg").read_text()
         self.assertIn('M 221 95', start_icon)
         self.assertIn('H 109', start_icon)
@@ -274,19 +284,17 @@ class SmplBarContracts(unittest.TestCase):
         action = ui[
             ui.index("component CommandAction") : ui.index("component BarWindow")
         ]
-        header = ui[
-            ui.index("component PopupHeader") : ui.index("component QuickSettingCard")
-        ]
-
-        self.assertIn("height: 48px;", header)
-        self.assertIn("alignment: center;", header)
         self.assertIn("alignment: center;", action)
         self.assertIn("height: 66px;", card)
         self.assertEqual(quick.count("QuickSettingCard {"), 8)
         self.assertIn("root.width >= 340px ? 2 : 1", quick)
+        self.assertNotIn("PopupHeader", quick)
+        self.assertNotIn("SMPL / COMMAND CENTER", quick)
+        self.assertNotIn("Quick Settings", quick)
+        self.assertIn("preferred-height: 500px;", quick)
 
-        popup_height = 720
-        viewport_height = popup_height - 2 - 24 - 48 - 40 - (2 * 8)
+        popup_height = 500
+        viewport_height = popup_height - 2 - 24 - 40 - 8
         content_height = 4 + 20 + (2 * 42) + 32 + (4 * 66) + (3 * 7)
         self.assertLessEqual(content_height, viewport_height)
 
