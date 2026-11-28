@@ -364,6 +364,67 @@ class SmplBarContracts(unittest.TestCase):
         self.assertIn("set_floating", compositor)
         self.assertIn("active_window_is_popup", (ROOT / "smpl-shell/src/monitor.rs").read_text())
 
+    def test_quick_settings_escape_closes_popup_but_not_persistent_panel(self):
+        ui = (BAR / "ui/main.slint").read_text()
+        source = (BAR / "src/main.rs").read_text()
+        bar = ui[ui.index("component BarWindow") : ui.index(
+            "component QuickSettingsWindow"
+        )]
+        quick = ui[ui.index("component QuickSettingsWindow") : ui.index(
+            "component UsbWindow"
+        )]
+        self.assertIn("forward-focus: quick-scope;", quick)
+        self.assertIn("quick-scope := FocusScope", quick)
+        self.assertIn("event.text == Key.Escape", quick)
+        self.assertIn("root.close();", quick)
+        self.assertNotIn("Key.Escape", bar)
+        self.assertIn("window.focus_window()", source)
+
+    def test_taskbar_workspace_position_and_clock_apply_contract(self):
+        ui = (BAR / "ui/main.slint").read_text()
+        source = (BAR / "src/main.rs").read_text()
+        bar = ui[ui.index("component BarWindow") : ui.index(
+            "component QuickSettingsWindow"
+        )]
+        horizontal = bar[bar.index("if !root.vertical: HorizontalLayout") : bar.index(
+            "if root.vertical: VerticalLayout"
+        )]
+        self.assertEqual(horizontal.count("if show-workspaces &&"), 2)
+        self.assertEqual(horizontal.count("horizontal-stretch: 0;"), 2)
+        self.assertIn("if show-title && !workspace-center: Text", horizontal)
+        self.assertLess(
+            horizontal.index("if root.workspace-center: Rectangle"),
+            horizontal.index("if show-workspaces && workspace-center: HorizontalLayout"),
+        )
+        self.assertIn("update_clock(bar, config);", source[source.index(
+            "fn apply_config"
+        ):source.index("fn apply_system")])
+
+    def test_hyprland_popup_focuses_exact_window_after_placement_only(self):
+        compositor = (ROOT / "smpl-shell/src/compositor.rs").read_text()
+        popup = compositor[
+            compositor.index("    fn place_window("):
+            compositor.index("    fn place_matching_window(", compositor.index(
+                "    fn place_window("
+            ))
+        ]
+        placement = compositor[
+            compositor.index("    fn place_matching_window(", compositor.index(
+                "    fn place_window("
+            )):
+            compositor.index("\n}\n\nfn event_needs_snapshot")
+        ]
+        self.assertIn("width, height, true, |client|", popup)
+        self.assertLess(placement.index("movewindowpixel"), placement.index(
+            "hl.dsp.focus({{window=hl.get_window('address:{}')}})"
+        ))
+        self.assertIn("if focus_after_placement", placement)
+        panel = compositor[
+            compositor.index("    fn place_panel("):
+            compositor.index("    fn place_window(")
+        ]
+        self.assertIn("0, 0, false, |client|", panel)
+
 
 if __name__ == "__main__":
     unittest.main()

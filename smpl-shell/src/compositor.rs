@@ -659,7 +659,7 @@ impl HyprlandWorker {
     }
 
     fn place_panel(&self, monitor: &str, x: i32, y: i32) -> Result<(), WorkerError> {
-        self.place_matching_window(monitor, x, y, 0, 0, |client| {
+        self.place_matching_window(monitor, x, y, 0, 0, false, |client| {
             client.pid == i64::from(std::process::id())
                 && client.class.as_deref() == Some("smpl-bar")
                 && client.title.as_deref().is_some_and(|title| {
@@ -677,7 +677,7 @@ impl HyprlandWorker {
         width: u32,
         height: u32,
     ) -> Result<(), WorkerError> {
-        self.place_matching_window(monitor, x, y, width, height, |client| {
+        self.place_matching_window(monitor, x, y, width, height, true, |client| {
             client.pid == i64::from(std::process::id())
                 && client.class.as_deref() == Some("smpl-bar")
                 && client.title.as_deref() == Some(title)
@@ -691,6 +691,7 @@ impl HyprlandWorker {
         y: i32,
         width: u32,
         height: u32,
+        focus_after_placement: bool,
         matches: impl Fn(&HyprPanelClient) -> bool,
     ) -> Result<(), WorkerError> {
         let mut client = None;
@@ -744,6 +745,12 @@ impl HyprlandWorker {
                 "Hyprland rejected native window placement: {}",
                 String::from_utf8_lossy(&reply).trim()
             )));
+        }
+        if focus_after_placement {
+            self.dispatch(format!(
+                "hl.dsp.focus({{window=hl.get_window('address:{}')}})",
+                client.address
+            ))?;
         }
         Ok(())
     }

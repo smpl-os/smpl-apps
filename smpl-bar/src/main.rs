@@ -775,6 +775,7 @@ fn apply_config(bar: &BarWindow, config: &BarConfigFile) {
         config::WorkspacePosition::Center
     ));
     bar.set_vertical(matches!(config.edge, PanelEdge::Left | PanelEdge::Right));
+    update_clock(bar, config);
 }
 
 fn apply_system(bar: &BarWindow, system: &SystemState, config: &BarConfigFile) {
@@ -1513,6 +1514,10 @@ fn open_quick_settings(
             430.0,
             500.0,
         );
+        ui.window()
+            .with_winit_window(|window: &i_slint_backend_winit::winit::window::Window| {
+                window.focus_window()
+            });
         if telemetry.enabled() {
             let weak = ui.as_weak();
             let paint_telemetry = telemetry.clone();
@@ -2704,6 +2709,21 @@ mod tests {
         RENDERER_INIT.call_once(|| smpl_common::init(APP_ID, 800.0, 32.0).unwrap());
     }
 
+    fn snapshot_after_layout(bar: &BarWindow) -> slint::SharedPixelBuffer<slint::Rgba8Pixel> {
+        let result = Rc::new(RefCell::new(None));
+        let result_for_timer = result.clone();
+        let weak = bar.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(50), move || {
+            if let Some(bar) = weak.upgrade() {
+                *result_for_timer.borrow_mut() = bar.window().take_snapshot().ok();
+            }
+            let _ = slint::quit_event_loop();
+        });
+        slint::run_event_loop().unwrap();
+        let snapshot = result.borrow_mut().take().expect("Slint renderer snapshot");
+        snapshot
+    }
+
     #[test]
     fn popup_callbacks_use_the_authoritative_os_coordinator() {
         assert_eq!(PopupTarget::QuickSettings.argument(), "quick-settings");
@@ -2847,6 +2867,109 @@ mod tests {
         );
         assert_eq!(SETTINGS_COMMAND, ["smplos-settings"]);
         assert_eq!(LOGOUT_COMMAND, ["smplos-session-logout", "--confirmed"]);
+    }
+
+    fn verify_escape_closes_quick_settings_without_closing_persistent_panel() {
+        let quick = QuickSettingsWindow::new().unwrap();
+        let closes = Rc::new(Cell::new(0));
+        let closes_for_callback = closes.clone();
+        quick.on_close(move || closes_for_callback.set(closes_for_callback.get() + 1));
+        quick.show().unwrap();
+        quick
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        assert_eq!(closes.get(), 1);
+
+        let panel = BarWindow::new().unwrap();
+        panel.show().unwrap();
+        panel
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        assert!(panel.window().is_visible());
+        let _ = quick.hide();
+        let _ = panel.hide();
+    }
+
+    fn verify_workspace_position_and_clock_settings() {
+        let bar = BarWindow::new().unwrap();
+        let mut config = BarConfigFile::default();
+        config.left = vec![config::Module::Workspaces];
+        config.right.clear();
+        bar.show().unwrap();
+        resize_window(bar.window(), 1000.0, 32.0);
+        let theme = bar.global::<Theme>();
+        theme.set_bg(slint::Color::from_argb_u8(0, 0, 0, 0));
+        theme.set_accent(slint::Color::from_rgb_u8(255, 0, 0));
+        theme.set_fg(slint::Color::from_rgb_u8(0, 0, 0));
+        theme.set_fg_dim(slint::Color::from_argb_u8(0, 0, 0, 0));
+        theme.set_opacity(0.0);
+        bar.set_workspaces(ModelRc::new(VecModel::from_slice(&[
+            WorkspaceUi {
+                id: 1,
+                label: "1".into(),
+                occupied: true,
+                visible: true,
+                focused: true,
+                temporary: false,
+            },
+            WorkspaceUi {
+                id: 2,
+                label: "2".into(),
+                occupied: false,
+                visible: false,
+                focused: false,
+                temporary: false,
+            },
+        ])));
+
+        config.workspace_position = config::WorkspacePosition::Left;
+        apply_config(&bar, &config);
+        let left = snapshot_after_layout(&bar);
+        let left_x = (0..left.width())
+            .flat_map(|x| (0..left.height()).map(move |y| (x, y)))
+            .find_map(|(x, y)| {
+                let pixels = left.as_bytes();
+                let offset = (y * left.width() + x) as usize * 4;
+                (pixels[offset..offset + 4] == [255, 0, 0, 255]).then_some(x as f32)
+            })
+            .expect("left workspace button did not render");
+        assert!(left_x < 30.0, "left workspace button started at {left_x}px");
+
+        config.workspace_position = config::WorkspacePosition::Center;
+        apply_config(&bar, &config);
+        let center = snapshot_after_layout(&bar);
+        let center_x = (0..center.width())
+            .flat_map(|x| (0..center.height()).map(move |y| (x, y)))
+            .find_map(|(x, y)| {
+                let pixels = center.as_bytes();
+                let offset = (y * center.width() + x) as usize * 4;
+                (pixels[offset..offset + 4] == [255, 0, 0, 255]).then_some(x as f32)
+            })
+            .expect("centered workspace button did not render");
+        let centered_first_button_x = center.width() as f32 / 2.0 - 42.0;
+        assert!(
+            (center_x - centered_first_button_x).abs() < 30.0,
+            "centered workspace button started at {center_x}px in a {}px bar",
+            center.width()
+        );
+
+        config.clock_24h = false;
+        config.clock_format = config::ClockFormat::Time;
+        apply_config(&bar, &config);
+        assert!(bar.get_clock_main().ends_with(" AM") || bar.get_clock_main().ends_with(" PM"));
+        assert!(bar.get_clock_sub().is_empty());
+
+        config.clock_24h = true;
+        config.clock_format = config::ClockFormat::Date;
+        config.clock_date_format = config::ClockDateFormat::Iso;
+        apply_config(&bar, &config);
+        assert_eq!(bar.get_clock_main().chars().count(), 5);
+        assert_eq!(bar.get_clock_sub().split('-').count(), 3);
+        let _ = bar.hide();
     }
 
     #[test]
@@ -2993,6 +3116,8 @@ mod tests {
             assert!(bounds.iter().all(|(_, y)| *y > 0 && *y < 31));
         }
         renderer_bounds_quick_settings_and_scrolls_short_viewports();
+        verify_workspace_position_and_clock_settings();
+        verify_escape_closes_quick_settings_without_closing_persistent_panel();
     }
 
     fn renderer_bounds_quick_settings_and_scrolls_short_viewports() {
